@@ -1,0 +1,100 @@
+{
+  "metadata": {
+    "matchId": "NA1_9876543210",
+    "participants": [
+      "test-puuid-0001", "test-puuid-0002", "test-puuid-0003", "test-puuid-0004", "test-puuid-0005",
+      "test-puuid-0006", "test-puuid-0007", "test-puuid-0008", "test-puuid-0009", "test-puuid-0010"
+    ]
+  },
+  "info": {
+    "gameStartTimestamp": 1700100000000,
+    "gameDuration": 1200,
+    "gameMode": "ARAM",
+    "gameType": "MATCHED_GAME",
+    "gameVersion": "13.24.1",
+    "queueId": 450,
+    "platformId": "NA1",
+    "participants": [
+      {
+        "puuid": "test-puuid-0001", "championId": 103, "championName": "Ahri",
+        "teamId": 100, "teamPosition": "", "role": "NONE",
+        "win": false, "kills": 6, "deaths": 8, "assists": 12,
+        "goldEarned": 11000, "totalDamageDealtToChampions": 22000,
+        "totalMinionsKilled": 80, "visionScore": 0,
+        "item0": 3089, "item1": 3135, "item2": 3157, "item3": 0, "item4": 0, "item5": 0, "item6": 3364
+      },
+      {
+        "puuid": "test-puuid-0002", "championId": 21, "championName": "MissFortune",
+        "teamId": 100, "teamPosition": "", "role": "NONE",
+        "win": false, "kills": 9, "deaths": 7, "assists": 8,
+        "goldEarned": 12000, "totalDamageDealtToChampions": 26000,
+        "totalMinionsKilled": 90, "visionScore": 0,
+        "item0": 3031, "item1": 3094, "item2": 3006, "item3": 0, "item4": 0, "item5": 0, "item6": 3363
+      },
+      {
+        "puuid": "test-puuid-0003", "championId": 25, "championName": "Morgana",
+        "teamId": 100, "teamPosition": "", "role": "NONE",
+        "win": false, "kills": 3, "deaths": 9, "assists": 15,
+        "goldEarned": 8500, "totalDamageDealtToChampions": 12000,
+        "totalMinionsKilled": 50, "visionScore": 0,
+        "item0": 3190, "item1": 3109, "item2": 0, "item3": 0, "item4": 0, "item5": 0, "item6": 3364
+      },
+      {
+        "puuid": "test-puuid-0004", "championId": 54, "championName": "Malphite",
+        "teamId": 100, "teamPosition": "", "role": "NONE",
+        "win": false, "kills": 2, "deaths": 10, "assists": 14,
+        "goldEarned": 8000, "totalDamageDealtToChampions": 10000,
+        "totalMinionsKilled": 40, "visionScore": 0,
+        "item0": 3075, "item1": 3143, "item2": 0, "item3": 0, "item4": 0, "item5": 0, "item6": 3364
+      },
+      {
+        "puuid": "test-puuid-0005", "championId": 99, "championName": "Lux",
+        "teamId": 100, "teamPosition": "", "role": "NONE",
+        "win": false, "kills": 5, "deaths": 6, "assists": 10,
+        "goldEarned": 10000, "totalDamageDealtToChampions": 18000,
+        "totalMinionsKilled": 70, "visionScore": 0,
+        "item0": 3089, "item1": 3135, "item2": 0, "item3": 0, "item4": 0, "item5": 0, "item6": 3364
+      },
+      {
+        "puuid": "test-puuid-0006", "championId": 110, "championName": "Varus",
+        "teamId": 200, "teamPosition": "", "role": "NONE",
+        "win": true, "kills": 12, "deaths": 4, "assists": 10,
+        "goldEarned": 14000, "totalDamageDealtToChampions": 30000,
+        "totalMinionsKilled": 100, "visionScore": 0,
+        "item0": 3031, "item1": 3094, "item2": 3006, "item3": 3036, "item4": 0, "item5": 0, "item6": 3363
+      },
+      {
+        "puuid": "test-puuid-0007", "championId": 115, "championName": "Ziggs",
+        "teamId": 200, "teamPosition": "", "role": "NONE",
+        "win": true, "kills": 10, "deaths": 5, "assists": 12,
+        "goldEarned": 13000, "totalDamageDealtToChampions": 28000,
+        "totalMinionsKilled": 110, "visionScore": 0,
+        "item0": 3089, "item1": 3135, "item2": 3157, "item3": 0, "item4": 0, "item5": 0, "item6": 3364
+      },
+      {
+        "puuid": "test-puuid-0008", "championId": 16, "championName": "Soraka",
+        "teamId": 200, "teamPosition": "", "role": "NONE",
+        "win": true, "kills": 1, "deaths": 6, "assists": 20,
+        "goldEarned": 9000, "totalDamageDealtToChampions": 6000,
+        "totalMinionsKilled": 30, "visionScore": 0,
+        "item0": 3504, "item1": 3107, "item2": 3190, "item3": 0, "item4": 0, "item5": 0, "item6": 3364
+      },
+      {
+        "puuid": "test-puuid-0009", "championId": 36, "championName": "DrMundo",
+        "teamId": 200, "teamPosition": "", "role": "NONE",
+        "win": true, "kills": 7, "deaths": 8, "assists": 9,
+        "goldEarned": 11000, "totalDamageDealtToChampions": 16000,
+        "totalMinionsKilled": 60, "visionScore": 0,
+        "item0": 3075, "item1": 3065, "item2": 3143, "item3": 0, "item4": 0, "item5": 0, "item6": 3364
+      },
+      {
+        "puuid": "test-puuid-0010", "championId": 555, "championName": "Pyke",
+        "teamId": 200, "teamPosition": "", "role": "NONE",
+        "win": true, "kills": 15, "deaths": 5, "assists": 8,
+        "goldEarned": 15000, "totalDamageDealtToChampions": 20000,
+        "totalMinionsKilled": 20, "visionScore": 0,
+        "item0": 6693, "item1": 3142, "item2": 3814, "item3": 0, "item4": 0, "item5": 0, "item6": 3364
+      }
+    ]
+  }
+}

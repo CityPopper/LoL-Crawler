@@ -1,0 +1,68 @@
+{
+  "consumer": {
+    "name": "lol-pipeline-analyzer"
+  },
+  "provider": {
+    "name": "lol-pipeline-parser"
+  },
+  "messages": [
+    {
+      "description": "a PUUID whose stats need updating",
+      "providerStates": [
+        {
+          "name": "a match has been parsed and participant data written to Redis"
+        }
+      ],
+      "contents": {
+        "id": "42345678-1234-1234-1234-123456789012",
+        "source_stream": "stream:analyze",
+        "type": "analyze",
+        "payload": {
+          "puuid": "oLmiXzfMHOxnVbdIr2_GsIcBnCqeB4p-example-puuid-0001"
+        },
+        "attempts": 0,
+        "max_attempts": 5,
+        "enqueued_at": "2024-01-01T00:00:00+00:00"
+      },
+      "matchingRules": {
+        "body": {
+          "$.id": {
+            "matchers": [
+              { "match": "regex", "regex": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+            ]
+          },
+          "$.source_stream": {
+            "matchers": [ { "match": "equality" } ]
+          },
+          "$.type": {
+            "matchers": [ { "match": "equality" } ]
+          },
+          "$.payload.puuid": {
+            "matchers": [ { "match": "type" } ]
+          },
+          "$.attempts": {
+            "matchers": [ { "match": "integer" } ]
+          },
+          "$.max_attempts": {
+            "matchers": [ { "match": "integer" } ]
+          },
+          "$.enqueued_at": {
+            "matchers": [
+              { "match": "regex", "regex": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*$" }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "contentType": "application/json"
+      }
+    }
+  ],
+  "metadata": {
+    "pactSpecification": {
+      "version": "3.0.0"
+    },
+    "schemaRef": "../../lol-pipeline-common/contracts/schemas/envelope.json",
+    "payloadSchemaRef": "../../lol-pipeline-common/contracts/schemas/payloads/analyze_payload.json"
+  }
+}

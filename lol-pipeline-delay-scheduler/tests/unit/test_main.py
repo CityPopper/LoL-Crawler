@@ -1,0 +1,172 @@
+"""Unit tests for lol_delay_scheduler.main — Phase 05 ACs 05-11 through 05-17."""
+
+from __future__ import annotations
+
+import json
+import logging
+import time
+
+import fakeredis.aioredis
+import pytest
+
+from lol_pipeline.models import MessageEnvelope
+from lol_delay_scheduler.main import _tick
+
+_DELAYED_KEY = "delayed:messages"
+
+
+@pytest.fixture
+async def r():
+    redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    yield redis
+    await redis.aclose()
+
+
+@pytest.fixture
+def log():
+    return logging.getLogger("test-delay-scheduler")
+
+
+def _delayed_envelope(stream="stream:match_id", match_id="NA1_123"):
+    return MessageEnvelope(
+        source_stream=stream,
+        type=stream.removeprefix("stream:"),
+        payload={"match_id": match_id, "region": "na1"},
+        max_attempts=5,
+    )
+
+
+async def _add_delayed(r, envelope, score_ms):
+    member = json.dumps(envelope.to_redis_fields())
+    await r.zadd(_DELAYED_KEY, {member: score_ms})
+
+
+class TestDelaySchedulerEmpty:
+    @pytest.mark.asyncio
+    async def test_empty_no_error(self, r, log):
+        """AC-05-11: empty delayed:messages → no XADD; no error."""
+        await _tick(r, log)
+        # No streams should have been created
+        # Just verify no exception was raised
+
+
+class TestDelaySchedulerTiming:
+    @pytest.mark.asyncio
+    async def test_future_message_not_moved(self, r, log):
+        """AC-05-12: score=now+5000 → not moved; still in delayed:messages."""
+        env = _delayed_envelope()
+        future_ms = int(time.time() * 1000) + 5000
+        await _add_delayed(r, env, future_ms)
+
+        await _tick(r, log)
+
+        assert await r.zcard(_DELAYED_KEY) == 1
+        assert await r.xlen("stream:match_id") == 0
+
+    @pytest.mark.asyncio
+    async def test_past_message_moved(self, r, log):
+        """AC-05-13: score=now-1 → moved to target stream; removed from delayed:messages."""
+        env = _delayed_envelope()
+        past_ms = int(time.time() * 1000) - 1
+        await _add_delayed(r, env, past_ms)
+
+        await _tick(r, log)
+
+        assert await r.zcard(_DELAYED_KEY) == 0
+        assert await r.xlen("stream:match_id") == 1
+
+    @pytest.mark.asyncio
+    async def test_boundary_score_moved(self, r, log):
+        """AC-05-14: score=now exactly → moved (boundary is inclusive ≤)."""
+        env = _delayed_envelope()
+        now_ms = int(time.time() * 1000)
+        await _add_delayed(r, env, now_ms)
+
+        await _tick(r, log)
+
+        assert await r.zcard(_DELAYED_KEY) == 0
+        assert await r.xlen("stream:match_id") == 1
+
+
+class TestDelaySchedulerBatch:
+    @pytest.mark.asyncio
+    async def test_all_past_due_moved(self, r, log):
+        """AC-05-15a: 3 past-due messages → all moved; delayed:messages empty."""
+        now_ms = int(time.time() * 1000)
+        for i in range(3):
+            env = _delayed_envelope(match_id=f"NA1_{i}")
+            await _add_delayed(r, env, now_ms - 1000 - i)
+
+        await _tick(r, log)
+
+        assert await r.zcard(_DELAYED_KEY) == 0
+        assert await r.xlen("stream:match_id") == 3
+
+    @pytest.mark.asyncio
+    async def test_mixed_past_and_future(self, r, log):
+        """AC-05-15b: 2 past-due + 1 future → only 2 moved."""
+        now_ms = int(time.time() * 1000)
+        for i in range(2):
+            env = _delayed_envelope(match_id=f"NA1_past_{i}")
+            await _add_delayed(r, env, now_ms - 1000)
+        env_future = _delayed_envelope(match_id="NA1_future")
+        await _add_delayed(r, env_future, now_ms + 5000)
+
+        await _tick(r, log)
+
+        assert await r.zcard(_DELAYED_KEY) == 1
+        assert await r.xlen("stream:match_id") == 2
+
+
+class TestDelaySchedulerDispatch:
+    @pytest.mark.asyncio
+    async def test_dispatched_envelope_correct(self, r, log):
+        """AC-05-16: dispatched envelope appears in target stream with correct fields."""
+        env = _delayed_envelope()
+        past_ms = int(time.time() * 1000) - 1
+        await _add_delayed(r, env, past_ms)
+
+        await _tick(r, log)
+
+        entries = await r.xrange("stream:match_id")
+        assert len(entries) == 1
+        fields = entries[0][1]
+        restored = MessageEnvelope.from_redis_fields(fields)
+        assert restored.payload["match_id"] == "NA1_123"
+        assert restored.source_stream == "stream:match_id"
+
+    @pytest.mark.asyncio
+    async def test_system_halted_does_not_block(self, r, log):
+        """AC-05-17: system:halted → messages still move (no halt check)."""
+        await r.set("system:halted", "1")
+        env = _delayed_envelope()
+        past_ms = int(time.time() * 1000) - 1
+        await _add_delayed(r, env, past_ms)
+
+        await _tick(r, log)
+
+        assert await r.zcard(_DELAYED_KEY) == 0
+        assert await r.xlen("stream:match_id") == 1
+
+    @pytest.mark.asyncio
+    async def test_malformed_member_removed(self, r, log):
+        """Invalid JSON in delayed:messages → logged; no crash; member removed."""
+        past_ms = int(time.time() * 1000) - 1
+        await r.zadd(_DELAYED_KEY, {"not-valid-json": past_ms})
+
+        await _tick(r, log)
+
+        # Corrupted member must be removed to prevent infinite retry spam
+        assert await r.zcard(_DELAYED_KEY) == 0
+
+    @pytest.mark.asyncio
+    async def test_dispatches_to_correct_stream(self, r, log):
+        """Messages go to the stream specified in source_stream."""
+        env = _delayed_envelope(stream="stream:parse", match_id="NA1_456")
+        past_ms = int(time.time() * 1000) - 1
+        await _add_delayed(r, env, past_ms)
+
+        await _tick(r, log)
+
+        assert await r.xlen("stream:parse") == 1
+        assert await r.xlen("stream:match_id") == 0

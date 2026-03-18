@@ -1,0 +1,100 @@
+{
+  "metadata": {
+    "matchId": "NA1_9999999999",
+    "participants": [
+      "test-puuid-0001", "test-puuid-0002", "test-puuid-0003", "test-puuid-0004", "test-puuid-0005",
+      "test-puuid-0006", "test-puuid-0007", "test-puuid-0008", "test-puuid-0009", "test-puuid-0010"
+    ]
+  },
+  "info": {
+    "gameStartTimestamp": 1700300000000,
+    "gameDuration": 4200,
+    "gameMode": "CLASSIC",
+    "gameType": "MATCHED_GAME",
+    "gameVersion": "13.24.1",
+    "queueId": 420,
+    "platformId": "NA1",
+    "participants": [
+      {
+        "puuid": "test-puuid-0001", "championId": 1, "championName": "Annie",
+        "teamId": 100, "teamPosition": "MID", "role": "SOLO",
+        "win": true, "kills": 45, "deaths": 12, "assists": 30,
+        "goldEarned": 99999, "totalDamageDealtToChampions": 150000,
+        "totalMinionsKilled": 500, "visionScore": 100,
+        "item0": 3089, "item1": 3135, "item2": 3157, "item3": 3020, "item4": 3040, "item5": 3102, "item6": 3364
+      },
+      {
+        "puuid": "test-puuid-0002", "championId": 222, "championName": "Jinx",
+        "teamId": 100, "teamPosition": "BOTTOM", "role": "CARRY",
+        "win": true, "kills": 50, "deaths": 8, "assists": 25,
+        "goldEarned": 99999, "totalDamageDealtToChampions": 180000,
+        "totalMinionsKilled": 550, "visionScore": 60,
+        "item0": 3031, "item1": 3094, "item2": 3006, "item3": 3036, "item4": 3072, "item5": 3085, "item6": 3363
+      },
+      {
+        "puuid": "test-puuid-0003", "championId": 412, "championName": "Thresh",
+        "teamId": 100, "teamPosition": "UTILITY", "role": "SUPPORT",
+        "win": true, "kills": 5, "deaths": 15, "assists": 55,
+        "goldEarned": 45000, "totalDamageDealtToChampions": 25000,
+        "totalMinionsKilled": 50, "visionScore": 200,
+        "item0": 3190, "item1": 3109, "item2": 3107, "item3": 3222, "item4": 3050, "item5": 3504, "item6": 3364
+      },
+      {
+        "puuid": "test-puuid-0004", "championId": 64, "championName": "LeeSin",
+        "teamId": 100, "teamPosition": "JUNGLE", "role": "NONE",
+        "win": true, "kills": 20, "deaths": 18, "assists": 40,
+        "goldEarned": 55000, "totalDamageDealtToChampions": 80000,
+        "totalMinionsKilled": 120, "visionScore": 90,
+        "item0": 6631, "item1": 3071, "item2": 3111, "item3": 3053, "item4": 3742, "item5": 3193, "item6": 3364
+      },
+      {
+        "puuid": "test-puuid-0005", "championId": 86, "championName": "Garen",
+        "teamId": 100, "teamPosition": "TOP", "role": "SOLO",
+        "win": true, "kills": 30, "deaths": 10, "assists": 15,
+        "goldEarned": 70000, "totalDamageDealtToChampions": 120000,
+        "totalMinionsKilled": 450, "visionScore": 50,
+        "item0": 3078, "item1": 3742, "item2": 3053, "item3": 3193, "item4": 3071, "item5": 3143, "item6": 3364
+      },
+      {
+        "puuid": "test-puuid-0006", "championId": 238, "championName": "Zed",
+        "teamId": 200, "teamPosition": "MID", "role": "SOLO",
+        "win": false, "kills": 35, "deaths": 20, "assists": 15,
+        "goldEarned": 65000, "totalDamageDealtToChampions": 130000,
+        "totalMinionsKilled": 400, "visionScore": 40,
+        "item0": 6693, "item1": 3142, "item2": 3814, "item3": 3179, "item4": 3036, "item5": 3072, "item6": 3364
+      },
+      {
+        "puuid": "test-puuid-0007", "championId": 51, "championName": "Caitlyn",
+        "teamId": 200, "teamPosition": "BOTTOM", "role": "CARRY",
+        "win": false, "kills": 25, "deaths": 22, "assists": 20,
+        "goldEarned": 60000, "totalDamageDealtToChampions": 110000,
+        "totalMinionsKilled": 480, "visionScore": 55,
+        "item0": 3031, "item1": 3094, "item2": 3006, "item3": 3036, "item4": 3072, "item5": 3085, "item6": 3363
+      },
+      {
+        "puuid": "test-puuid-0008", "championId": 40, "championName": "Janna",
+        "teamId": 200, "teamPosition": "UTILITY", "role": "SUPPORT",
+        "win": false, "kills": 3, "deaths": 25, "assists": 45,
+        "goldEarned": 35000, "totalDamageDealtToChampions": 15000,
+        "totalMinionsKilled": 30, "visionScore": 180,
+        "item0": 3504, "item1": 3107, "item2": 3190, "item3": 3222, "item4": 3050, "item5": 3109, "item6": 3364
+      },
+      {
+        "puuid": "test-puuid-0009", "championId": 113, "championName": "Sejuani",
+        "teamId": 200, "teamPosition": "JUNGLE", "role": "NONE",
+        "win": false, "kills": 10, "deaths": 28, "assists": 30,
+        "goldEarned": 40000, "totalDamageDealtToChampions": 50000,
+        "totalMinionsKilled": 100, "visionScore": 70,
+        "item0": 6631, "item1": 3075, "item2": 3143, "item3": 3065, "item4": 3193, "item5": 3053, "item6": 3364
+      },
+      {
+        "puuid": "test-puuid-0010", "championId": 58, "championName": "Renekton",
+        "teamId": 200, "teamPosition": "TOP", "role": "SOLO",
+        "win": false, "kills": 18, "deaths": 15, "assists": 10,
+        "goldEarned": 55000, "totalDamageDealtToChampions": 95000,
+        "totalMinionsKilled": 380, "visionScore": 35,
+        "item0": 6631, "item1": 3071, "item2": 3053, "item3": 3193, "item4": 3742, "item5": 3143, "item6": 3364
+      }
+    ]
+  }
+}

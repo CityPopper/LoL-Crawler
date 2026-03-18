@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lol-pipeline/contracts/schemas/payloads/analyze_payload.json",
+  "title": "AnalyzePayload",
+  "description": "Payload for stream:analyze messages. Produced by Parser (one per unique PUUID per match); consumed by Analyzer. Participant data is already in Redis before this message is published.",
+  "type": "object",
+  "required": ["puuid"],
+  "additionalProperties": false,
+  "properties": {
+    "puuid": {
+      "type": "string",
+      "minLength": 1,
+      "description": "PUUID of the player whose stats need recalculation"
+    }
+  }
+}

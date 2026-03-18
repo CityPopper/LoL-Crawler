@@ -1,0 +1,124 @@
+{
+  "consumer": {
+    "name": "lol-pipeline-delay-scheduler"
+  },
+  "provider": {
+    "name": "lol-pipeline-common"
+  },
+  "messages": [
+    {
+      "description": "a delayed match_id message ready to be re-published",
+      "providerStates": [
+        {
+          "name": "nack_to_dlq or requeue_delayed has written a serialized envelope to delayed:messages"
+        }
+      ],
+      "contents": {
+        "id": "62345678-1234-1234-1234-123456789012",
+        "source_stream": "stream:match_id",
+        "type": "match_id",
+        "payload": {
+          "match_id": "NA1_4567890123",
+          "puuid": "oLmiXzfMHOxnVbdIr2_GsIcBnCqeB4p-example-puuid-0001",
+          "region": "na1"
+        },
+        "attempts": 1,
+        "max_attempts": 5,
+        "enqueued_at": "2024-01-01T00:00:00+00:00"
+      },
+      "matchingRules": {
+        "body": {
+          "$.id": {
+            "matchers": [
+              { "match": "regex", "regex": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+            ]
+          },
+          "$.source_stream": {
+            "matchers": [
+              {
+                "match": "regex",
+                "regex": "^stream:(puuid|match_id|parse|analyze)$"
+              }
+            ]
+          },
+          "$.type": {
+            "matchers": [
+              {
+                "match": "regex",
+                "regex": "^(puuid|match_id|parse|analyze)$"
+              }
+            ]
+          },
+          "$.payload": { "matchers": [ { "match": "type" } ] },
+          "$.attempts": { "matchers": [ { "match": "integer" } ] },
+          "$.max_attempts": { "matchers": [ { "match": "integer" } ] },
+          "$.enqueued_at": {
+            "matchers": [
+              { "match": "regex", "regex": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*$" }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "contentType": "application/json",
+        "note": "Delay Scheduler only cares that source_stream is a valid target stream and the envelope is well-formed. It does not inspect payload contents."
+      }
+    },
+    {
+      "description": "a delayed parse message ready to be re-published",
+      "providerStates": [
+        {
+          "name": "nack_to_dlq has written a serialized parse envelope to delayed:messages"
+        }
+      ],
+      "contents": {
+        "id": "62345678-1234-1234-1234-123456789013",
+        "source_stream": "stream:parse",
+        "type": "parse",
+        "payload": {
+          "match_id": "EUW1_7890123456",
+          "region": "euw1"
+        },
+        "attempts": 2,
+        "max_attempts": 5,
+        "enqueued_at": "2024-01-01T00:00:00+00:00"
+      },
+      "matchingRules": {
+        "body": {
+          "$.id": {
+            "matchers": [
+              { "match": "regex", "regex": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+            ]
+          },
+          "$.source_stream": {
+            "matchers": [
+              { "match": "regex", "regex": "^stream:(puuid|match_id|parse|analyze)$" }
+            ]
+          },
+          "$.type": {
+            "matchers": [
+              { "match": "regex", "regex": "^(puuid|match_id|parse|analyze)$" }
+            ]
+          },
+          "$.payload": { "matchers": [ { "match": "type" } ] },
+          "$.attempts": { "matchers": [ { "match": "integer" } ] },
+          "$.max_attempts": { "matchers": [ { "match": "integer" } ] },
+          "$.enqueued_at": {
+            "matchers": [
+              { "match": "regex", "regex": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*$" }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "contentType": "application/json"
+      }
+    }
+  ],
+  "metadata": {
+    "pactSpecification": {
+      "version": "3.0.0"
+    },
+    "schemaRef": "../../lol-pipeline-common/contracts/schemas/envelope.json"
+  }
+}

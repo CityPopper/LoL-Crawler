@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Edit",
+      "Read",
+      "Write",
+      "Create",
+      "Update",
+      "WebSearch",
+      "Bash(mkdir:*)"
+    ]
+  }
+}

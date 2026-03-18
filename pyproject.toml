@@ -1,0 +1,11 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "e2e: end-to-end tests (require running stack + valid API key)",
+    "slow: long-running tests (may take several minutes)",
+    "integration: integration tests (require Docker for testcontainers)",
+]

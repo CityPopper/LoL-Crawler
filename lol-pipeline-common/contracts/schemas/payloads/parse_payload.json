@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lol-pipeline/contracts/schemas/payloads/parse_payload.json",
+  "title": "ParsePayload",
+  "description": "Payload for stream:parse messages. Produced by Fetcher; consumed by Parser. The raw blob is already in RawStore before this message is published.",
+  "type": "object",
+  "required": ["match_id", "region"],
+  "additionalProperties": false,
+  "properties": {
+    "match_id": {
+      "type": "string",
+      "pattern": "^[A-Z0-9]+_[0-9]+$",
+      "description": "Riot match ID — raw blob at raw:{match_id} is guaranteed to exist in RawStore"
+    },
+    "region": {
+      "type": "string",
+      "minLength": 2,
+      "description": "Platform routing region (e.g. na1, kr, euw1)"
+    }
+  }
+}

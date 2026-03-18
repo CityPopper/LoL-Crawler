@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lol-pipeline/contracts/schemas/payloads/match_id_payload.json",
+  "title": "MatchIdPayload",
+  "description": "Payload for stream:match_id messages. Produced by Crawler; consumed by Fetcher.",
+  "type": "object",
+  "required": ["match_id", "puuid", "region"],
+  "additionalProperties": false,
+  "properties": {
+    "match_id": {
+      "type": "string",
+      "pattern": "^[A-Z0-9]+_[0-9]+$",
+      "description": "Riot match ID (e.g. NA1_1234567890)"
+    },
+    "puuid": {
+      "type": "string",
+      "minLength": 1,
+      "description": "PUUID of the player whose crawl discovered this match"
+    },
+    "region": {
+      "type": "string",
+      "minLength": 2,
+      "description": "Platform routing region (e.g. na1, kr, euw1)"
+    }
+  }
+}

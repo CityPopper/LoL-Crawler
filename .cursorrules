@@ -1,0 +1,54 @@
+# Cursor Rules — Model Routing & Workflow
+
+## Model Selection Guide
+
+Use the cheapest model that can handle the task correctly:
+
+### Haiku (fast, cheap) — use for:
+- Lint fixes, formatting, import sorting
+- Simple refactors (rename, extract variable)
+- Generating test boilerplate from existing patterns
+- Docstring generation
+- Git commit message drafting
+
+### Sonnet (balanced) — use for:
+- Writing unit tests (TDD red/green)
+- Implementing functions from specs
+- Bug fixes with clear error messages
+- Code review of small changes
+- Updating docs
+
+### Opus (thorough, expensive) — use for:
+- Architecture decisions
+- Complex multi-file refactors
+- Debugging subtle issues (race conditions, async bugs)
+- Writing integration tests
+- Contract test design
+
+## Project Rules
+
+- **TDD is mandatory**: Write failing test → implement → refactor. Never skip.
+- **Service isolation**: Never import across service packages.
+- **Lint config**: See `pyproject.toml` in each service. All services use identical ruff/mypy config.
+- **Config source of truth**: `.env.example` for env vars, `pyproject.toml` for tool config.
+- **Pact contracts**: Schemas in `lol-pipeline-common/contracts/schemas/` are canonical.
+- **Redis quirks**: `Redis` unparameterized (not `Redis[str]`), `hmget(key, [fields])` list form required.
+- **LCU data is precious**: Never delete `lol-pipeline-lcu/lcu-data/*.jsonl`.
+
+## Pre-commit Hooks
+
+Installed via `pre-commit install`. Runs: ruff check, ruff format, mypy, unit tests.
+If a hook fails, fix the issue before committing.
+
+## Testing
+
+```bash
+# Single service
+cd lol-pipeline-{svc} && pytest tests/unit -v
+
+# All services
+for dir in lol-pipeline-*/; do [ -d "$dir/tests/unit" ] && (cd "$dir" && pytest tests/unit -q); done
+
+# Contract tests
+for dir in lol-pipeline-*/; do [ -d "$dir/tests/contract" ] && (cd "$dir" && pytest tests/contract -v); done
+```

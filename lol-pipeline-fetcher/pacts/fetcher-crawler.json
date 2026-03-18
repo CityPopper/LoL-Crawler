@@ -1,0 +1,78 @@
+{
+  "consumer": {
+    "name": "lol-pipeline-fetcher"
+  },
+  "provider": {
+    "name": "lol-pipeline-crawler"
+  },
+  "messages": [
+    {
+      "description": "a match ID ready for fetching",
+      "providerStates": [
+        {
+          "name": "a player's match history has been crawled and a new match ID was found"
+        }
+      ],
+      "contents": {
+        "id": "22345678-1234-1234-1234-123456789012",
+        "source_stream": "stream:match_id",
+        "type": "match_id",
+        "payload": {
+          "match_id": "NA1_4567890123",
+          "puuid": "oLmiXzfMHOxnVbdIr2_GsIcBnCqeB4p-example-puuid-0001",
+          "region": "na1"
+        },
+        "attempts": 0,
+        "max_attempts": 5,
+        "enqueued_at": "2024-01-01T00:00:00+00:00"
+      },
+      "matchingRules": {
+        "body": {
+          "$.id": {
+            "matchers": [
+              { "match": "regex", "regex": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+            ]
+          },
+          "$.source_stream": {
+            "matchers": [ { "match": "equality" } ]
+          },
+          "$.type": {
+            "matchers": [ { "match": "equality" } ]
+          },
+          "$.payload.match_id": {
+            "matchers": [
+              { "match": "regex", "regex": "^[A-Z0-9]+_[0-9]+$" }
+            ]
+          },
+          "$.payload.puuid": {
+            "matchers": [ { "match": "type" } ]
+          },
+          "$.payload.region": {
+            "matchers": [ { "match": "type" } ]
+          },
+          "$.attempts": {
+            "matchers": [ { "match": "integer" } ]
+          },
+          "$.max_attempts": {
+            "matchers": [ { "match": "integer" } ]
+          },
+          "$.enqueued_at": {
+            "matchers": [
+              { "match": "regex", "regex": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*$" }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "contentType": "application/json"
+      }
+    }
+  ],
+  "metadata": {
+    "pactSpecification": {
+      "version": "3.0.0"
+    },
+    "schemaRef": "../../lol-pipeline-common/contracts/schemas/envelope.json",
+    "payloadSchemaRef": "../../lol-pipeline-common/contracts/schemas/payloads/match_id_payload.json"
+  }
+}
