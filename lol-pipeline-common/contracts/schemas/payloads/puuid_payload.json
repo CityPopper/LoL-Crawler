@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lol-pipeline/contracts/schemas/payloads/puuid_payload.json",
+  "title": "PuuidPayload",
+  "description": "Payload for stream:puuid messages. Produced by Seed; consumed by Crawler.",
+  "type": "object",
+  "required": ["puuid", "game_name", "tag_line", "region"],
+  "additionalProperties": false,
+  "properties": {
+    "puuid": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Riot PUUID (78-char hex string)"
+    },
+    "game_name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Riot ID game name (before the #)"
+    },
+    "tag_line": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Riot ID tag line (after the #)"
+    },
+    "region": {
+      "type": "string",
+      "minLength": 2,
+      "description": "Platform routing region (e.g. na1, kr, euw1)"
+    }
+  }
+}

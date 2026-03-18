@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lol-pipeline/contracts/schemas/envelope.json",
+  "title": "MessageEnvelope",
+  "description": "Standard envelope wrapping all inter-service Redis Stream messages. All fields are present after MessageEnvelope.from_redis_fields() deserialization.",
+  "type": "object",
+  "required": ["id", "source_stream", "type", "payload", "attempts", "max_attempts", "enqueued_at"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "UUID v4 — unique message identity"
+    },
+    "source_stream": {
+      "type": "string",
+      "enum": ["stream:puuid", "stream:match_id", "stream:parse", "stream:analyze", "stream:dlq"],
+      "description": "Redis Stream this message originated from"
+    },
+    "type": {
+      "type": "string",
+      "enum": ["puuid", "match_id", "parse", "analyze", "dlq"],
+      "description": "Message type discriminator"
+    },
+    "payload": {
+      "type": "object",
+      "description": "Deserialized payload object — see payloads/ for per-type schemas"
+    },
+    "attempts": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Delivery attempt count, starts at 0"
+    },
+    "max_attempts": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Maximum delivery attempts before routing to stream:dlq"
+    },
+    "enqueued_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC timestamp of first publish"
+    }
+  }
+}

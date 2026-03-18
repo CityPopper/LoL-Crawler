@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lol-pipeline/contracts/schemas/dlq_envelope.json",
+  "title": "DLQEnvelope",
+  "description": "Envelope for messages on stream:dlq. Extends MessageEnvelope with failure context. Produced by nack_to_dlq() in lol-pipeline-common/streams.py.",
+  "type": "object",
+  "required": [
+    "id", "source_stream", "type", "payload", "attempts", "max_attempts", "enqueued_at",
+    "failure_reason", "failure_code", "failed_at", "failed_by",
+    "dlq_attempts", "retry_after_ms", "original_stream", "original_message_id"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "id":                 { "$ref": "envelope.json#/properties/id" },
+    "source_stream":      { "const": "stream:dlq" },
+    "type":               { "const": "dlq" },
+    "payload":            { "$ref": "envelope.json#/properties/payload" },
+    "attempts":           { "$ref": "envelope.json#/properties/attempts" },
+    "max_attempts":       { "$ref": "envelope.json#/properties/max_attempts" },
+    "enqueued_at":        { "$ref": "envelope.json#/properties/enqueued_at" },
+    "failure_reason": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable description of what failed"
+    },
+    "failure_code": {
+      "type": "string",
+      "enum": ["http_429", "http_5xx", "http_404", "http_403", "parse_error", "unknown"],
+      "description": "Machine-readable failure classification"
+    },
+    "failed_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC timestamp of failure"
+    },
+    "failed_by": {
+      "type": "string",
+      "enum": ["seed", "crawler", "fetcher", "parser", "analyzer", "recovery", "delay-scheduler"],
+      "description": "Service name that produced this DLQ entry"
+    },
+    "dlq_attempts": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of recovery attempts so far, starts at 0"
+    },
+    "retry_after_ms": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "http_429 only: ms to delay before retry (Retry-After + 1s buffer). Null for all other codes."
+    },
+    "original_stream": {
+      "type": "string",
+      "description": "The stream the message first entered the pipeline on"
+    },
+    "original_message_id": {
+      "type": "string",
+      "description": "Redis Stream entry ID of the original message, for audit and replay"
+    }
+  }
+}

@@ -1,0 +1,269 @@
+{
+  "consumer": {
+    "name": "lol-pipeline-recovery"
+  },
+  "provider": {
+    "name": "lol-pipeline-common"
+  },
+  "messages": [
+    {
+      "description": "a rate-limited message awaiting retry",
+      "providerStates": [
+        {
+          "name": "a service received HTTP 429 from the Riot API and called nack_to_dlq"
+        }
+      ],
+      "contents": {
+        "id": "52345678-1234-1234-1234-123456789012",
+        "source_stream": "stream:dlq",
+        "type": "dlq",
+        "payload": {
+          "match_id": "NA1_4567890123",
+          "region": "na1"
+        },
+        "attempts": 5,
+        "max_attempts": 5,
+        "enqueued_at": "2024-01-01T00:00:00+00:00",
+        "failure_reason": "Riot API rate limit exceeded",
+        "failure_code": "http_429",
+        "failed_at": "2024-01-01T00:01:00+00:00",
+        "failed_by": "fetcher",
+        "dlq_attempts": 0,
+        "retry_after_ms": 61000,
+        "original_stream": "stream:match_id",
+        "original_message_id": "1704067200000-0"
+      },
+      "matchingRules": {
+        "body": {
+          "$.id": {
+            "matchers": [
+              { "match": "regex", "regex": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+            ]
+          },
+          "$.source_stream": { "matchers": [ { "match": "equality" } ] },
+          "$.type": { "matchers": [ { "match": "equality" } ] },
+          "$.payload": { "matchers": [ { "match": "type" } ] },
+          "$.attempts": { "matchers": [ { "match": "integer" } ] },
+          "$.max_attempts": { "matchers": [ { "match": "integer" } ] },
+          "$.enqueued_at": {
+            "matchers": [ { "match": "regex", "regex": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*$" } ]
+          },
+          "$.failure_reason": { "matchers": [ { "match": "type" } ] },
+          "$.failure_code": { "matchers": [ { "match": "equality" } ] },
+          "$.failed_at": {
+            "matchers": [ { "match": "regex", "regex": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*$" } ]
+          },
+          "$.failed_by": { "matchers": [ { "match": "type" } ] },
+          "$.dlq_attempts": { "matchers": [ { "match": "integer" } ] },
+          "$.retry_after_ms": { "matchers": [ { "match": "integer" } ] },
+          "$.original_stream": { "matchers": [ { "match": "type" } ] },
+          "$.original_message_id": { "matchers": [ { "match": "type" } ] }
+        }
+      },
+      "metadata": { "contentType": "application/json" }
+    },
+    {
+      "description": "a server-error message awaiting retry",
+      "providerStates": [
+        {
+          "name": "a service received HTTP 5xx from the Riot API and called nack_to_dlq"
+        }
+      ],
+      "contents": {
+        "id": "52345678-1234-1234-1234-123456789013",
+        "source_stream": "stream:dlq",
+        "type": "dlq",
+        "payload": {
+          "match_id": "NA1_4567890124",
+          "region": "na1"
+        },
+        "attempts": 5,
+        "max_attempts": 5,
+        "enqueued_at": "2024-01-01T00:00:00+00:00",
+        "failure_reason": "Riot API server error: 500",
+        "failure_code": "http_5xx",
+        "failed_at": "2024-01-01T00:01:00+00:00",
+        "failed_by": "fetcher",
+        "dlq_attempts": 0,
+        "retry_after_ms": null,
+        "original_stream": "stream:match_id",
+        "original_message_id": "1704067200000-1"
+      },
+      "matchingRules": {
+        "body": {
+          "$.id": {
+            "matchers": [
+              { "match": "regex", "regex": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+            ]
+          },
+          "$.source_stream": { "matchers": [ { "match": "equality" } ] },
+          "$.type": { "matchers": [ { "match": "equality" } ] },
+          "$.payload": { "matchers": [ { "match": "type" } ] },
+          "$.attempts": { "matchers": [ { "match": "integer" } ] },
+          "$.max_attempts": { "matchers": [ { "match": "integer" } ] },
+          "$.enqueued_at": {
+            "matchers": [ { "match": "regex", "regex": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*$" } ]
+          },
+          "$.failure_reason": { "matchers": [ { "match": "type" } ] },
+          "$.failure_code": { "matchers": [ { "match": "equality" } ] },
+          "$.failed_at": {
+            "matchers": [ { "match": "regex", "regex": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*$" } ]
+          },
+          "$.failed_by": { "matchers": [ { "match": "type" } ] },
+          "$.dlq_attempts": { "matchers": [ { "match": "integer" } ] },
+          "$.retry_after_ms": { "matchers": [ { "match": "null" } ] },
+          "$.original_stream": { "matchers": [ { "match": "type" } ] },
+          "$.original_message_id": { "matchers": [ { "match": "type" } ] }
+        }
+      },
+      "metadata": { "contentType": "application/json" }
+    },
+    {
+      "description": "a not-found message to be discarded",
+      "providerStates": [
+        {
+          "name": "a service received HTTP 404 from the Riot API and called nack_to_dlq"
+        }
+      ],
+      "contents": {
+        "id": "52345678-1234-1234-1234-123456789014",
+        "source_stream": "stream:dlq",
+        "type": "dlq",
+        "payload": {
+          "match_id": "NA1_0000000000",
+          "region": "na1"
+        },
+        "attempts": 5,
+        "max_attempts": 5,
+        "enqueued_at": "2024-01-01T00:00:00+00:00",
+        "failure_reason": "Match not found: HTTP 404",
+        "failure_code": "http_404",
+        "failed_at": "2024-01-01T00:01:00+00:00",
+        "failed_by": "fetcher",
+        "dlq_attempts": 0,
+        "retry_after_ms": null,
+        "original_stream": "stream:match_id",
+        "original_message_id": "1704067200000-2"
+      },
+      "matchingRules": {
+        "body": {
+          "$.id": {
+            "matchers": [
+              { "match": "regex", "regex": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+            ]
+          },
+          "$.source_stream": { "matchers": [ { "match": "equality" } ] },
+          "$.type": { "matchers": [ { "match": "equality" } ] },
+          "$.payload": { "matchers": [ { "match": "type" } ] },
+          "$.failure_code": { "matchers": [ { "match": "equality" } ] },
+          "$.failed_by": { "matchers": [ { "match": "type" } ] },
+          "$.dlq_attempts": { "matchers": [ { "match": "integer" } ] },
+          "$.retry_after_ms": { "matchers": [ { "match": "null" } ] },
+          "$.original_stream": { "matchers": [ { "match": "type" } ] },
+          "$.original_message_id": { "matchers": [ { "match": "type" } ] }
+        }
+      },
+      "metadata": { "contentType": "application/json" }
+    },
+    {
+      "description": "a parse-error message to be logged and held",
+      "providerStates": [
+        {
+          "name": "a service failed to parse a raw blob and called nack_to_dlq"
+        }
+      ],
+      "contents": {
+        "id": "52345678-1234-1234-1234-123456789015",
+        "source_stream": "stream:dlq",
+        "type": "dlq",
+        "payload": {
+          "match_id": "NA1_4567890125",
+          "region": "na1"
+        },
+        "attempts": 5,
+        "max_attempts": 5,
+        "enqueued_at": "2024-01-01T00:00:00+00:00",
+        "failure_reason": "Missing required field: info.gameStartTimestamp",
+        "failure_code": "parse_error",
+        "failed_at": "2024-01-01T00:01:00+00:00",
+        "failed_by": "parser",
+        "dlq_attempts": 0,
+        "retry_after_ms": null,
+        "original_stream": "stream:parse",
+        "original_message_id": "1704067200000-3"
+      },
+      "matchingRules": {
+        "body": {
+          "$.id": {
+            "matchers": [
+              { "match": "regex", "regex": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+            ]
+          },
+          "$.source_stream": { "matchers": [ { "match": "equality" } ] },
+          "$.type": { "matchers": [ { "match": "equality" } ] },
+          "$.payload": { "matchers": [ { "match": "type" } ] },
+          "$.failure_code": { "matchers": [ { "match": "equality" } ] },
+          "$.failed_by": { "matchers": [ { "match": "type" } ] },
+          "$.dlq_attempts": { "matchers": [ { "match": "integer" } ] },
+          "$.retry_after_ms": { "matchers": [ { "match": "null" } ] },
+          "$.original_stream": { "matchers": [ { "match": "type" } ] },
+          "$.original_message_id": { "matchers": [ { "match": "type" } ] }
+        }
+      },
+      "metadata": { "contentType": "application/json" }
+    },
+    {
+      "description": "an auth-failure message triggering system halt",
+      "providerStates": [
+        {
+          "name": "a service received HTTP 403 from the Riot API and called nack_to_dlq"
+        }
+      ],
+      "contents": {
+        "id": "52345678-1234-1234-1234-123456789016",
+        "source_stream": "stream:dlq",
+        "type": "dlq",
+        "payload": {
+          "match_id": "NA1_4567890126",
+          "region": "na1"
+        },
+        "attempts": 1,
+        "max_attempts": 5,
+        "enqueued_at": "2024-01-01T00:00:00+00:00",
+        "failure_reason": "Riot API key invalid or expired: HTTP 403",
+        "failure_code": "http_403",
+        "failed_at": "2024-01-01T00:01:00+00:00",
+        "failed_by": "fetcher",
+        "dlq_attempts": 0,
+        "retry_after_ms": null,
+        "original_stream": "stream:match_id",
+        "original_message_id": "1704067200000-4"
+      },
+      "matchingRules": {
+        "body": {
+          "$.id": {
+            "matchers": [
+              { "match": "regex", "regex": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+            ]
+          },
+          "$.source_stream": { "matchers": [ { "match": "equality" } ] },
+          "$.type": { "matchers": [ { "match": "equality" } ] },
+          "$.payload": { "matchers": [ { "match": "type" } ] },
+          "$.failure_code": { "matchers": [ { "match": "equality" } ] },
+          "$.failed_by": { "matchers": [ { "match": "type" } ] },
+          "$.dlq_attempts": { "matchers": [ { "match": "integer" } ] },
+          "$.retry_after_ms": { "matchers": [ { "match": "null" } ] },
+          "$.original_stream": { "matchers": [ { "match": "type" } ] },
+          "$.original_message_id": { "matchers": [ { "match": "type" } ] }
+        }
+      },
+      "metadata": { "contentType": "application/json" }
+    }
+  ],
+  "metadata": {
+    "pactSpecification": {
+      "version": "3.0.0"
+    },
+    "schemaRef": "../../lol-pipeline-common/contracts/schemas/dlq_envelope.json"
+  }
+}

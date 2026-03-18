@@ -1,0 +1,207 @@
+"""Unit tests for lol_recovery.main — Phase 05 ACs 05-01 through 05-11b."""
+
+from __future__ import annotations
+
+import json
+import logging
+
+import fakeredis.aioredis
+import pytest
+
+from lol_pipeline.config import Config
+from lol_pipeline.models import DLQEnvelope, MessageEnvelope
+from lol_recovery.main import _archive, _process, _requeue_delayed
+
+_DLQ_STREAM = "stream:dlq"
+_ARCHIVE_STREAM = "stream:dlq:archive"
+_DELAYED_KEY = "delayed:messages"
+_GROUP = "recovery"
+
+
+@pytest.fixture
+async def r():
+    redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    yield redis
+    await redis.aclose()
+
+
+@pytest.fixture
+def cfg(monkeypatch):
+    monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost")
+    return Config(_env_file=None)  # type: ignore[call-arg]
+
+
+@pytest.fixture
+def log():
+    return logging.getLogger("test-recovery")
+
+
+def _make_dlq(
+    failure_code="http_429",
+    dlq_attempts=0,
+    match_id="NA1_123",
+    original_stream="stream:match_id",
+    retry_after_ms=None,
+):
+    return DLQEnvelope(
+        source_stream="stream:dlq",
+        type="dlq",
+        payload={"match_id": match_id, "region": "na1"},
+        attempts=3,
+        max_attempts=5,
+        failure_code=failure_code,
+        failure_reason="test reason",
+        failed_by="fetcher",
+        original_stream=original_stream,
+        original_message_id="1234-0",
+        dlq_attempts=dlq_attempts,
+        retry_after_ms=retry_after_ms,
+    )
+
+
+async def _setup_dlq_msg(r, dlq):
+    """Add a DLQ entry to stream:dlq and return msg_id."""
+    msg_id = await r.xadd(_DLQ_STREAM, dlq.to_redis_fields())
+    # Create group and read to put in PEL
+    try:
+        await r.xgroup_create(_DLQ_STREAM, _GROUP, id="0", mkstream=True)
+    except Exception:
+        pass
+    await r.xreadgroup(_GROUP, "test-consumer", {_DLQ_STREAM: ">"}, count=1)
+    return msg_id
+
+
+class TestRecoveryRequeue:
+    @pytest.mark.asyncio
+    async def test_http_429_requeued_with_incremented_dlq_attempts(self, r, cfg, log):
+        """AC-05-01: http_429, dlq_attempts=0 → delayed:messages with dlq_attempts=1."""
+        dlq = _make_dlq(failure_code="http_429", dlq_attempts=0, retry_after_ms=5000)
+        msg_id = await _setup_dlq_msg(r, dlq)
+
+        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+
+        members = await r.zrange(_DELAYED_KEY, 0, -1)
+        assert len(members) == 1
+        fields = json.loads(members[0])
+        env = MessageEnvelope.from_redis_fields(fields)
+        assert env.dlq_attempts == 1
+        assert env.source_stream == "stream:match_id"
+
+    @pytest.mark.asyncio
+    async def test_http_5xx_requeued(self, r, cfg, log):
+        """AC-05-03: http_5xx, dlq_attempts=0 → requeued with backoff."""
+        dlq = _make_dlq(failure_code="http_5xx", dlq_attempts=0)
+        msg_id = await _setup_dlq_msg(r, dlq)
+
+        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+
+        members = await r.zrange(_DELAYED_KEY, 0, -1)
+        assert len(members) == 1
+
+    @pytest.mark.asyncio
+    async def test_http_5xx_higher_attempts_longer_delay(self, r, cfg, log):
+        """AC-05-04: http_5xx, dlq_attempts=1 → delay longer than dlq_attempts=0."""
+        dlq0 = _make_dlq(failure_code="http_5xx", dlq_attempts=0)
+        msg_id0 = await _setup_dlq_msg(r, dlq0)
+        await _process(r, cfg, "test-consumer", msg_id0, dlq0, log)
+        members0 = await r.zrange(_DELAYED_KEY, 0, -1, withscores=True)
+        score0 = members0[0][1]
+
+        # Clear for second test
+        await r.delete(_DELAYED_KEY)
+        dlq1 = _make_dlq(failure_code="http_5xx", dlq_attempts=1)
+        msg_id1 = await _setup_dlq_msg(r, dlq1)
+        await _process(r, cfg, "test-consumer", msg_id1, dlq1, log)
+        members1 = await r.zrange(_DELAYED_KEY, 0, -1, withscores=True)
+        score1 = members1[0][1]
+
+        # Higher dlq_attempts should have a higher score (later execution)
+        assert score1 > score0
+
+
+class TestRecoveryArchive:
+    @pytest.mark.asyncio
+    async def test_max_dlq_attempts_archived(self, r, cfg, log):
+        """AC-05-02: http_429 at DLQ_MAX_ATTEMPTS → archived; match.status='failed'."""
+        dlq = _make_dlq(failure_code="http_429", dlq_attempts=cfg.dlq_max_attempts)
+        msg_id = await _setup_dlq_msg(r, dlq)
+
+        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+
+        assert await r.xlen(_ARCHIVE_STREAM) == 1
+        assert await r.hget("match:NA1_123", "status") == "failed"
+        assert await r.sismember("match:status:failed", "NA1_123")
+        assert await r.zcard(_DELAYED_KEY) == 0
+
+
+class TestRecoveryDiscard:
+    @pytest.mark.asyncio
+    async def test_http_404_discarded(self, r, cfg, log):
+        """AC-05-05: http_404 → ACK'd, discarded; no ZADD; no archive."""
+        dlq = _make_dlq(failure_code="http_404")
+        msg_id = await _setup_dlq_msg(r, dlq)
+
+        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+
+        assert await r.zcard(_DELAYED_KEY) == 0
+        assert await r.xlen(_ARCHIVE_STREAM) == 0
+
+    @pytest.mark.asyncio
+    async def test_parse_error_archived(self, r, cfg, log):
+        """AC-05-06: parse_error → ACK'd; archived for operator review."""
+        dlq = _make_dlq(failure_code="parse_error")
+        msg_id = await _setup_dlq_msg(r, dlq)
+
+        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+
+        assert await r.xlen(_ARCHIVE_STREAM) == 1
+        assert await r.zcard(_DELAYED_KEY) == 0
+
+    @pytest.mark.asyncio
+    async def test_unknown_failure_code_archived_at_error_level(self, r, cfg, log, caplog):
+        """AC-05-09: unknown failure_code → ACK'd; archived; logged at ERROR."""
+        dlq = _make_dlq(failure_code="something_weird")
+        msg_id = await _setup_dlq_msg(r, dlq)
+
+        with caplog.at_level(logging.ERROR, logger="test-recovery"):
+            await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+
+        assert await r.xlen(_ARCHIVE_STREAM) == 1
+        assert any("unknown failure_code" in rec.message for rec in caplog.records)
+
+
+class TestRecoveryHalted:
+    @pytest.mark.asyncio
+    async def test_http_403_sets_halted_and_archives(self, r, cfg, log):
+        """AC-05-07: http_403 → system:halted='1'; archived; ACK'd."""
+        dlq = _make_dlq(failure_code="http_403")
+        msg_id = await _setup_dlq_msg(r, dlq)
+
+        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+
+        assert await r.get("system:halted") == "1"
+        assert await r.xlen(_ARCHIVE_STREAM) == 1
+
+    @pytest.mark.asyncio
+    async def test_halted_leaves_5xx_unacked(self, r, cfg, log):
+        """AC-05-11b: system:halted + http_5xx → leaves in PEL (no requeue)."""
+        await r.set("system:halted", "1")
+        dlq = _make_dlq(failure_code="http_5xx")
+        msg_id = await _setup_dlq_msg(r, dlq)
+
+        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+
+        assert await r.zcard(_DELAYED_KEY) == 0
+        assert await r.xlen(_ARCHIVE_STREAM) == 0
+
+    @pytest.mark.asyncio
+    async def test_halted_still_processes_403(self, r, cfg, log):
+        """AC-05-11b: system:halted but http_403 → still processed (always handle 403)."""
+        await r.set("system:halted", "1")
+        dlq = _make_dlq(failure_code="http_403")
+        msg_id = await _setup_dlq_msg(r, dlq)
+
+        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+
+        assert await r.xlen(_ARCHIVE_STREAM) == 1

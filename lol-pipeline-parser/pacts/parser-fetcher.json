@@ -1,0 +1,74 @@
+{
+  "consumer": {
+    "name": "lol-pipeline-parser"
+  },
+  "provider": {
+    "name": "lol-pipeline-fetcher"
+  },
+  "messages": [
+    {
+      "description": "a match ID with raw blob ready for parsing",
+      "providerStates": [
+        {
+          "name": "a match has been fetched and its raw JSON blob exists in RawStore"
+        }
+      ],
+      "contents": {
+        "id": "32345678-1234-1234-1234-123456789012",
+        "source_stream": "stream:parse",
+        "type": "parse",
+        "payload": {
+          "match_id": "NA1_4567890123",
+          "region": "na1"
+        },
+        "attempts": 0,
+        "max_attempts": 5,
+        "enqueued_at": "2024-01-01T00:00:00+00:00"
+      },
+      "matchingRules": {
+        "body": {
+          "$.id": {
+            "matchers": [
+              { "match": "regex", "regex": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+            ]
+          },
+          "$.source_stream": {
+            "matchers": [ { "match": "equality" } ]
+          },
+          "$.type": {
+            "matchers": [ { "match": "equality" } ]
+          },
+          "$.payload.match_id": {
+            "matchers": [
+              { "match": "regex", "regex": "^[A-Z0-9]+_[0-9]+$" }
+            ]
+          },
+          "$.payload.region": {
+            "matchers": [ { "match": "type" } ]
+          },
+          "$.attempts": {
+            "matchers": [ { "match": "integer" } ]
+          },
+          "$.max_attempts": {
+            "matchers": [ { "match": "integer" } ]
+          },
+          "$.enqueued_at": {
+            "matchers": [
+              { "match": "regex", "regex": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*$" }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "contentType": "application/json"
+      }
+    }
+  ],
+  "metadata": {
+    "pactSpecification": {
+      "version": "3.0.0"
+    },
+    "schemaRef": "../../lol-pipeline-common/contracts/schemas/envelope.json",
+    "payloadSchemaRef": "../../lol-pipeline-common/contracts/schemas/payloads/parse_payload.json"
+  }
+}
