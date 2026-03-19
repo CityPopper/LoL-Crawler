@@ -386,6 +386,31 @@ class TestRateLimitErrorDetails:
             await client.close()
 
 
+class TestRiotClientUrlEncoding:
+    """SEC-2: game_name/tag_line must be URL-encoded in API URLs."""
+
+    @pytest.mark.asyncio
+    async def test_special_chars_in_riot_id_are_url_encoded(self) -> None:
+        """Names with spaces/unicode/special chars must be percent-encoded."""
+        with respx.mock:
+            # The encoded URL that should be called
+            route = respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/"
+                "by-riot-id/Hello%20World/Tag%23Line"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": "test-puuid", "gameName": "Hello World", "tagLine": "Tag#Line"},
+                )
+            )
+            client = RiotClient("RGAPI-test")
+            result = await client.get_account_by_riot_id("Hello World", "Tag#Line", "na1")
+            await client.close()
+
+        assert result["puuid"] == "test-puuid"
+        assert route.called
+
+
 class TestRiotClientMalformedResponse:
     @pytest.mark.asyncio
     async def test_malformed_json_response__raises(self) -> None:

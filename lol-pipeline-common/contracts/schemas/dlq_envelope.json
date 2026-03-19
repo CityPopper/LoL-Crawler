@@ -25,7 +25,7 @@
     },
     "failure_code": {
       "type": "string",
-      "enum": ["http_429", "http_5xx", "http_404", "http_403", "parse_error", "unknown"],
+      "enum": ["http_429", "http_5xx", "http_404", "http_403", "parse_error", "handler_crash", "unknown"],
       "description": "Machine-readable failure classification"
     },
     "failed_at": {
@@ -35,7 +35,7 @@
     },
     "failed_by": {
       "type": "string",
-      "enum": ["seed", "crawler", "fetcher", "parser", "analyzer", "recovery", "delay-scheduler"],
+      "enum": ["seed", "crawler", "fetcher", "parser", "analyzer", "recovery", "delay-scheduler", "run_consumer"],
       "description": "Service name that produced this DLQ entry"
     },
     "dlq_attempts": {

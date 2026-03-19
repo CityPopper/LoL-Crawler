@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import signal
 import time
 from typing import Any
 
@@ -17,6 +18,7 @@ from redis.exceptions import RedisError
 
 _DELAYED_KEY = "delayed:messages"
 
+_shutdown = False
 
 _BATCH_SIZE = 100
 
@@ -61,8 +63,17 @@ async def _tick(r: aioredis.Redis, log: logging.Logger) -> None:
             return
 
 
+def _handle_sigterm(_signum: int, _frame: Any) -> None:
+    global _shutdown  # noqa: PLW0603
+    _shutdown = True
+
+
 async def main() -> None:
     """Delay Scheduler loop — polls delayed:messages every DELAY_SCHEDULER_INTERVAL_MS."""
+    global _shutdown  # noqa: PLW0603
+    _shutdown = False
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+
     log = get_logger("delay-scheduler")
     cfg = Config()
     r = get_redis(cfg.redis_url)
@@ -70,8 +81,9 @@ async def main() -> None:
     interval_s = cfg.delay_scheduler_interval_ms / 1000
     log.info("delay-scheduler started", extra={"interval_ms": cfg.delay_scheduler_interval_ms})
     try:
-        while True:
+        while not _shutdown:
             await _tick(r, log)
             await asyncio.sleep(interval_s)
+        log.info("SIGTERM received — shutting down gracefully")
     finally:
         await r.aclose()

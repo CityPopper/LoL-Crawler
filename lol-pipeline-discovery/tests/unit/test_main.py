@@ -228,8 +228,8 @@ class TestDiscoveryTier3EdgeCases:
     """Tier 3 — Discovery edge case tests."""
 
     @pytest.mark.asyncio
-    async def test_promote_auth_error_treated_as_transient(self, r, cfg, log):
-        """AuthError (403) during name resolution is caught as RiotAPIError — left in queue."""
+    async def test_promote_auth_error_sets_halted_and_breaks(self, r, cfg, log):
+        """SEC-5: AuthError (403) during name resolution sets system:halted and stops."""
         await r.zadd("discover:players", {"puuid-auth:na1": 1700000000000.0})
 
         with respx.mock:
@@ -241,7 +241,9 @@ class TestDiscoveryTier3EdgeCases:
             await riot.close()
 
         assert promoted == 0
-        # Player should still be in queue (transient error handling)
+        # system:halted must be set
+        assert await r.get("system:halted") == "1"
+        # Player should still be in queue (not removed — just halted)
         assert await r.zcard("discover:players") == 1
 
     @pytest.mark.asyncio
@@ -266,6 +268,77 @@ class TestDiscoveryTier3EdgeCases:
         )
         # Stream exists, no groups → idle
         assert await _is_idle(r) is True
+
+
+class TestPromoteBatchOrdering:
+    """CQ-12: publish() must happen before hset(seeded_at) in _promote_batch."""
+
+    @pytest.mark.asyncio
+    async def test_publish_before_hset_seeded_at(self, r, cfg, log):
+        """Discovery writes to stream:puuid BEFORE marking seeded_at in player hash."""
+        call_order: list[str] = []
+
+        await r.hset(
+            "player:puuid-order",
+            mapping={"game_name": "OrderTest", "tag_line": "001"},
+        )
+        await r.zadd("discover:players", {"puuid-order:na1": 1700000000000.0})
+
+        original_hset = r.hset
+
+        async def tracking_hset(key, *args, **kwargs):
+            mapping = kwargs.get("mapping", {})
+            if isinstance(mapping, dict) and "seeded_at" in mapping:
+                call_order.append("hset_seeded_at")
+            return await original_hset(key, *args, **kwargs)
+
+        r.hset = tracking_hset
+
+        original_xadd = r.xadd
+
+        async def tracking_xadd(stream, *args, **kwargs):
+            if stream == "stream:puuid":
+                call_order.append("publish")
+            return await original_xadd(stream, *args, **kwargs)
+
+        r.xadd = tracking_xadd
+
+        riot = RiotClient("RGAPI-test")
+        promoted = await _promote_batch(r, cfg, log, riot)
+        await riot.close()
+
+        assert promoted == 1
+        assert call_order == ["publish", "hset_seeded_at"]
+
+
+class TestGracefulShutdown:
+    """CQ-13: Discovery checks _shutdown flag in main loop."""
+
+    @pytest.mark.asyncio
+    async def test_sigterm_stops_main_loop(self, monkeypatch):
+        """Setting _shutdown=True causes main() to exit cleanly."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_r = AsyncMock()
+
+        import lol_discovery.main as mod
+
+        async def fake_is_idle(*args):
+            mod._shutdown = True  # simulate SIGTERM handler
+            return False
+
+        with (
+            patch("lol_discovery.main.Config") as mock_cfg,
+            patch("lol_discovery.main.get_redis", return_value=mock_r),
+            patch("lol_discovery.main.RiotClient") as mock_riot,
+            patch("lol_discovery.main._is_idle", side_effect=fake_is_idle),
+            patch("lol_discovery.main.asyncio.sleep", new_callable=AsyncMock),
+            patch("lol_discovery.main.signal.signal"),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            mock_riot.return_value = AsyncMock()
+            await main()  # should exit cleanly, not loop forever
+        mock_r.aclose.assert_called_once()
 
 
 class TestMainEntryPoint:

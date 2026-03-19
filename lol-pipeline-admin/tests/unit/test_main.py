@@ -423,3 +423,18 @@ class TestMainEntryPoint:
         args = mock_dispatch.call_args[0][3]
         assert args.command == "reseed"
         assert args.riot_id == "Faker#KR1"
+
+
+class TestUserFacingErrorsUsePrint:
+    """CQ-2: user-facing errors should go to stderr via print(), not JSON logger."""
+
+    @pytest.mark.asyncio
+    async def test_resolve_puuid_invalid_riot_id__prints_to_stderr(self, r, capsys):
+        """Invalid Riot ID → prints error to stderr, not log.error."""
+        riot = RiotClient("RGAPI-test")
+        result = await _resolve_puuid(riot, "NoHash", "na1", r)
+        await riot.close()
+        assert result is None
+        captured = capsys.readouterr()
+        assert "invalid Riot ID" in captured.err
+        assert "NoHash" in captured.err

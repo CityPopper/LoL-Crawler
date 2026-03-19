@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -15,7 +16,7 @@ from lol_pipeline.config import Config
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import DLQEnvelope, MessageEnvelope
 from lol_pipeline.redis_client import get_redis
-from redis.exceptions import ResponseError
+from redis.exceptions import RedisError, ResponseError
 
 _IN_STREAM = "stream:dlq"
 _ARCHIVE_STREAM = "stream:dlq:archive"
@@ -31,35 +32,55 @@ async def _ensure_group(r: aioredis.Redis) -> None:
         await r.xgroup_create(_IN_STREAM, _GROUP, id="0", mkstream=True)
 
 
+def _deserialize_dlq_entries(
+    raw_entries: list[Any],
+    log: logging.Logger,
+) -> tuple[list[tuple[str, DLQEnvelope]], list[str]]:
+    """Deserialize raw xreadgroup entries. Returns (valid, corrupt_msg_ids)."""
+    result: list[tuple[str, DLQEnvelope]] = []
+    corrupt: list[str] = []
+    for _, entries in (raw_entries or []):
+        for msg_id, fields in entries:
+            try:
+                env = DLQEnvelope.from_redis_fields(fields)
+                result.append((msg_id, env))
+            except (KeyError, json.JSONDecodeError, ValueError, TypeError) as exc:
+                log.warning(
+                    "corrupt DLQ entry — acking and skipping",
+                    extra={"msg_id": msg_id, "error": str(exc)},
+                )
+                corrupt.append(msg_id)
+    return result, corrupt
+
+
 async def _consume_dlq(
     r: aioredis.Redis,
     consumer: str,
     count: int = 10,
     block: int = 5000,
+    log: logging.Logger | None = None,
 ) -> list[tuple[str, DLQEnvelope]]:
     """Read DLQ entries as DLQEnvelopes, draining own PEL first."""
+    _logger = log or logging.getLogger("recovery")
     await _ensure_group(r)
 
     # Drain own PEL first (stranded entries from crash/halt).
     # Note: Redis 7 returns [["stream", []]] (truthy!) when PEL is empty, so we
     # must check actual message count rather than the truthiness of the outer list.
     pending: list[Any] = await r.xreadgroup(_GROUP, consumer, {_IN_STREAM: "0"}, count=count)
-    pel_messages: list[tuple[str, DLQEnvelope]] = [
-        (msg_id, DLQEnvelope.from_redis_fields(fields))
-        for _, entries in (pending or [])
-        for msg_id, fields in entries
-    ]
+    pel_messages, corrupt_ids = _deserialize_dlq_entries(pending, _logger)
+    for cid in corrupt_ids:
+        await r.xack(_IN_STREAM, _GROUP, cid)
     if pel_messages:
         return pel_messages
 
     raw: list[Any] = await r.xreadgroup(
         _GROUP, consumer, {_IN_STREAM: ">"}, count=count, block=block
     )
-    return [
-        (msg_id, DLQEnvelope.from_redis_fields(fields))
-        for _, entries in (raw or [])
-        for msg_id, fields in entries
-    ]
+    valid, corrupt_ids = _deserialize_dlq_entries(raw, _logger)
+    for cid in corrupt_ids:
+        await r.xack(_IN_STREAM, _GROUP, cid)
+    return valid
 
 
 async def _archive(
@@ -216,7 +237,11 @@ async def main() -> None:
     log.info("recovery started", extra={"consumer": consumer})
     try:
         while True:
-            for msg_id, dlq in await _consume_dlq(r, consumer):
-                await _process(r, cfg, consumer, msg_id, dlq, log)
+            try:
+                for msg_id, dlq in await _consume_dlq(r, consumer):
+                    await _process(r, cfg, consumer, msg_id, dlq, log)
+            except (RedisError, OSError):
+                log.exception("consume error — retrying in 1s")
+                await asyncio.sleep(1)
     finally:
         await r.aclose()

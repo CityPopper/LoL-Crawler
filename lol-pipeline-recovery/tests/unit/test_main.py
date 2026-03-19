@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from unittest.mock import AsyncMock, patch
@@ -10,6 +11,7 @@ import fakeredis.aioredis
 import pytest
 from lol_pipeline.config import Config
 from lol_pipeline.models import DLQEnvelope, MessageEnvelope
+from redis.exceptions import RedisError
 
 from lol_recovery.main import _backoff_ms, _process, main
 
@@ -330,6 +332,38 @@ class TestRecoveryRetryAfterEdgeCases:
 
         with pytest.raises(ConnectionError, match="redis write error"):
             await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+
+
+class TestMainLoopRetry:
+    """CQ-9: Recovery main loop retries on RedisError/OSError."""
+
+    @pytest.mark.asyncio
+    async def test_main__redis_error_retries_with_sleep(self, monkeypatch):
+        """RedisError in consume loop → log + sleep 1s + retry, not crash."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_r = AsyncMock()
+        call_count = 0
+
+        async def fake_consume_dlq(*args):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RedisError("connection lost")
+            raise KeyboardInterrupt
+
+        with (
+            patch("lol_recovery.main.Config") as mock_cfg,
+            patch("lol_recovery.main.get_redis", return_value=mock_r),
+            patch("lol_recovery.main._consume_dlq", side_effect=fake_consume_dlq),
+            patch("lol_recovery.main.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            with pytest.raises(KeyboardInterrupt):
+                await main()
+        # Sleep(1) called after RedisError, before retry
+        mock_sleep.assert_called_once_with(1)
+        assert call_count == 2
 
 
 class TestMainEntryPoint:

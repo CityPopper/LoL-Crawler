@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import signal
 from collections.abc import Awaitable, Callable
 
 import redis.asyncio as aioredis
@@ -81,9 +82,25 @@ async def run_consumer(
     message to handler.  Caller is responsible for closing r and any other
     resources in a try/finally block.
     """
+    shutdown = False
+
+    def _sigterm_handler() -> None:
+        nonlocal shutdown
+        shutdown = True
+        log.info("SIGTERM received — shutting down gracefully")
+
+    loop = asyncio.get_event_loop()
+    try:
+        loop.add_signal_handler(signal.SIGTERM, _sigterm_handler)
+    except (NotImplementedError, OSError):
+        pass  # Windows or non-main thread — skip signal handler
+
     idle_polls = 0
     handler_failures: dict[str, int] = {}
     while True:
+        if shutdown:
+            log.info("shutdown flag set — exiting")
+            break
         if await r.get("system:halted"):
             log.critical("system halted — exiting")
             break

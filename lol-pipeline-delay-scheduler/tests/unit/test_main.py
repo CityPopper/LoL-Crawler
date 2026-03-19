@@ -270,6 +270,33 @@ class TestDelaySchedulerRedisErrors:
         assert await r.zcard(_DELAYED_KEY) == 1
 
 
+class TestGracefulShutdown:
+    """CQ-13: Delay scheduler checks _shutdown flag in main loop."""
+
+    @pytest.mark.asyncio
+    async def test_sigterm_stops_main_loop(self, monkeypatch):
+        """Setting _shutdown=True causes main() to exit cleanly."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_r = AsyncMock()
+
+        import lol_delay_scheduler.main as mod
+
+        async def fake_tick(*args):
+            mod._shutdown = True  # simulate SIGTERM handler
+
+        with (
+            patch("lol_delay_scheduler.main.Config") as mock_cfg,
+            patch("lol_delay_scheduler.main.get_redis", return_value=mock_r),
+            patch("lol_delay_scheduler.main._tick", side_effect=fake_tick),
+            patch("lol_delay_scheduler.main.asyncio.sleep", new_callable=AsyncMock),
+            patch("lol_delay_scheduler.main.signal.signal"),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            await main()  # should exit cleanly, not loop forever
+        mock_r.aclose.assert_called_once()
+
+
 class TestMainEntryPoint:
     """Tests for main() bootstrap and teardown."""
 

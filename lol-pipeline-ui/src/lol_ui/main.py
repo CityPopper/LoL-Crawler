@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
+import heapq
 import html
 import json
 import os
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -30,6 +33,7 @@ from lol_pipeline.riot_api import (
 from lol_pipeline.streams import publish
 
 _STREAM_PUUID = "stream:puuid"
+_PUUID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
 _log = get_logger("ui")
 
 
@@ -206,7 +210,7 @@ def _match_history_section(puuid: str, region: str, riot_id: str) -> str:
         f"&amp;region={safe_region}&amp;riot_id={safe_id}&amp;page=0"
     )
     onclick = f"loadMatches(this, '{safe_puuid}', '{safe_region}', '{safe_id}', 0); return false;"
-    err_msg = "container.innerHTML = '<p class=\"error\">Failed to load: ' + e + '</p>';"
+    err_msg = "container.innerHTML = '<p class=\"error\">Failed to load: ' + (e.message || e) + '</p>';"
     return f"""
 <h3>Match History</h3>
 <div id="match-history-container">
@@ -327,16 +331,6 @@ async def show_stats(request: Request) -> HTMLResponse:
                     "warning",
                 )
             )
-        now_iso = datetime.now(tz=UTC).isoformat()
-        await r.hset(
-            f"player:{puuid}",
-            mapping={
-                "game_name": game_name,
-                "tag_line": tag_line,
-                "region": region,
-                "seeded_at": now_iso,
-            },
-        )
         envelope = MessageEnvelope(
             source_stream=_STREAM_PUUID,
             type="puuid",
@@ -349,6 +343,16 @@ async def show_stats(request: Request) -> HTMLResponse:
             max_attempts=cfg.max_attempts,
         )
         await publish(r, _STREAM_PUUID, envelope)
+        now_iso = datetime.now(tz=UTC).isoformat()
+        await r.hset(
+            f"player:{puuid}",
+            mapping={
+                "game_name": game_name,
+                "tag_line": tag_line,
+                "region": region,
+                "seeded_at": now_iso,
+            },
+        )
         _log.info("auto-seeded via stats lookup", extra={"puuid": puuid})
         return HTMLResponse(
             _stats_form(
@@ -550,6 +554,9 @@ async def stats_matches(request: Request) -> HTMLResponse:
     if not puuid:
         return HTMLResponse("<p class='error'>Missing puuid</p>")
 
+    if not _PUUID_RE.match(puuid):
+        return HTMLResponse("<p class='error'>Invalid PUUID format</p>", status_code=400)
+
     r = request.app.state.r
     start = page * _MATCH_PAGE_SIZE
     stop = start + _MATCH_PAGE_SIZE  # fetch one extra to detect more pages
@@ -712,20 +719,31 @@ def _render_log_lines(raw_lines: list[str]) -> str:
 
 
 def _merged_log_lines(log_dir: Path, n: int) -> list[str]:
-    """Read last n lines from ALL log files, merge by timestamp, return newest n."""
+    """Read last n lines from ALL log files, merge by timestamp, return newest n.
+
+    Each per-file tail is already sorted (log files are append-only), so we
+    use ``heapq.merge`` on the pre-sorted iterables instead of a full sort.
+    We then take the last *n* items with ``collections.deque(maxlen=n)``
+    to bound memory when the merged stream is large.
+    """
     log_files = list(log_dir.glob("*.log"))
     per_file = max(n // len(log_files) + 1, 10) if log_files else 0
-    all_lines: list[tuple[str, str]] = []
-    for f in log_files:
+
+    def _keyed(f: Path) -> list[tuple[str, str]]:
+        result: list[tuple[str, str]] = []
         for line in _tail_file(f, per_file):
             try:
                 d = json.loads(line)
                 ts = str(d.get("timestamp", ""))
             except (json.JSONDecodeError, TypeError):
                 ts = ""
-            all_lines.append((ts, line))
-    all_lines.sort(key=lambda x: x[0])
-    return [line for _, line in all_lines[-n:]]
+            result.append((ts, line))
+        return result
+
+    per_file_iters = [_keyed(f) for f in log_files]
+    merged = heapq.merge(*per_file_iters, key=lambda x: x[0])
+    tail: collections.deque[tuple[str, str]] = collections.deque(merged, maxlen=n)
+    return [line for _, line in tail]
 
 
 @app.get("/logs/fragment", response_class=HTMLResponse)
