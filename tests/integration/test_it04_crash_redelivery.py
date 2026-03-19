@@ -50,8 +50,13 @@ async def test_crash_redelivery(
 
     # Consumer c2 picks up via XAUTOCLAIM (autoclaim_min_idle_ms=2000)
     msgs = await consume(
-        r, "stream:parse", "parsers", "c2",
-        count=1, block=500, autoclaim_min_idle_ms=2000,
+        r,
+        "stream:parse",
+        "parsers",
+        "c2",
+        count=1,
+        block=500,
+        autoclaim_min_idle_ms=2000,
     )
     assert len(msgs) == 1, "message should be autoclaimed by c2"
 

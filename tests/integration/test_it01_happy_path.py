@@ -34,12 +34,12 @@ async def test_happy_path(
         respx.get(url__regex=r".*/riot/account/v1/accounts/by-riot-id/.*").mock(
             return_value=httpx.Response(200, json=account_data)
         )
-        respx.get(
-            url__regex=rf".*/lol/match/v5/matches/by-puuid/{PUUID}/ids.*"
-        ).mock(return_value=httpx.Response(200, json=[MATCH_ID]))
-        respx.get(
-            url__regex=rf".*/lol/match/v5/matches/{MATCH_ID}$"
-        ).mock(return_value=httpx.Response(200, json=match_normal))
+        respx.get(url__regex=rf".*/lol/match/v5/matches/by-puuid/{PUUID}/ids.*").mock(
+            return_value=httpx.Response(200, json=[MATCH_ID])
+        )
+        respx.get(url__regex=rf".*/lol/match/v5/matches/{MATCH_ID}$").mock(
+            return_value=httpx.Response(200, json=match_normal)
+        )
 
         riot = RiotClient("test-api-key", r=r)
         try:

@@ -124,7 +124,9 @@ def compress_old_bundles(data_dir: Path) -> list[str]:
             orig_kb = len(raw) / 1024
             comp_kb = zst_path.stat().st_size / 1024
             ratio = orig_kb / comp_kb if comp_kb > 0 else 0
-            print(f"  compressed {bundle.name} → {zst_path.name} ({orig_kb:.0f}KB → {comp_kb:.0f}KB, {ratio:.1f}x)")
+            print(
+                f"  compressed {bundle.name} → {zst_path.name} ({orig_kb:.0f}KB → {comp_kb:.0f}KB, {ratio:.1f}x)"
+            )
             bundle.unlink()
             compressed.append(str(zst_path))
 
@@ -132,7 +134,9 @@ def compress_old_bundles(data_dir: Path) -> list[str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Consolidate match data into JSONL+zstd bundles")
+    parser = argparse.ArgumentParser(
+        description="Consolidate match data into JSONL+zstd bundles"
+    )
     parser.add_argument(
         "--data-dir",
         default="lol-pipeline-fetcher/match-data",

@@ -462,9 +462,7 @@ class TestCrawlEdgeCases:
 
         with respx.mock:
             # Empty puuid produces a URL with empty path segment
-            respx.get(url__regex=r".*/ids\?.*").mock(
-                return_value=httpx.Response(200, json=[])
-            )
+            respx.get(url__regex=r".*/ids\?.*").mock(return_value=httpx.Response(200, json=[]))
             riot = RiotClient("RGAPI-test")
             await _crawl_player(r, riot, cfg, msg_id, env, log)
             await riot.close()

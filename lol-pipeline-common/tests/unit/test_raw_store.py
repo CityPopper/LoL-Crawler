@@ -190,7 +190,7 @@ class TestRawStoreBundleSearchEdgeCases:
         """Malformed lines in JSONL bundle are skipped without error."""
         platform_dir = tmp_path / "NA1"
         platform_dir.mkdir()
-        content = "CORRUPT LINE WITHOUT TAB\nNA1_800\t{\"found\": true}\n"
+        content = 'CORRUPT LINE WITHOUT TAB\nNA1_800\t{"found": true}\n'
         (platform_dir / "2024-01.jsonl").write_text(content)
 
         store = RawStore(r, data_dir=str(tmp_path))
@@ -210,7 +210,7 @@ class TestRawStoreBundleSearchEdgeCases:
             result = await store.get("NA1_999")
             # If it returns None, that's fine
             assert result is None
-        except Exception:
+        except Exception:  # noqa: S110
             # If it raises, that's also acceptable — documents current behavior
             pass
 
@@ -221,7 +221,7 @@ class TestRawStoreBundleStreaming:
     def test_search_bundle_file_uses_open_not_read_text(self, tmp_path):
         """_search_bundle_file uses open() for line-by-line iteration."""
         bundle = tmp_path / "test.jsonl"
-        bundle.write_text("NA1_STREAM\t{\"streamed\": true}\nNA1_OTHER\t{\"other\": 1}\n")
+        bundle.write_text('NA1_STREAM\t{"streamed": true}\nNA1_OTHER\t{"other": 1}\n')
 
         # Verify the function works correctly with streaming
         result = RawStore._search_bundle_file(bundle, "NA1_STREAM")
@@ -246,7 +246,7 @@ class TestCompressedBundleNoUnreachableCode:
         """Compressed bundle search returns None for missing match (no dead code)."""
         platform_dir = tmp_path / "NA1"
         platform_dir.mkdir()
-        content = "NA1_OTHER\t{\"other\": true}\n"
+        content = 'NA1_OTHER\t{"other": true}\n'
         cctx = zstd.ZstdCompressor()
         compressed = cctx.compress(content.encode())
         bundle = platform_dir / "2024-01.jsonl.zst"

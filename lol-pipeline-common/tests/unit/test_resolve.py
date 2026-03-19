@@ -8,9 +8,9 @@ import fakeredis.aioredis
 import httpx
 import pytest
 import respx
-from lol_pipeline.riot_api import RiotClient
 
 from lol_pipeline.resolve import resolve_puuid
+from lol_pipeline.riot_api import RiotClient
 
 
 @pytest.fixture
@@ -52,8 +52,7 @@ class TestResolvePuuidApi:
         """No cache → resolves via API and writes cache with TTL."""
         with respx.mock:
             respx.get(
-                "https://americas.api.riotgames.com/riot/account/v1/"
-                "accounts/by-riot-id/Player/NA1"
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Player/NA1"
             ).mock(return_value=_account_response())
             riot = RiotClient("RGAPI-test")
             result = await resolve_puuid(r, riot, "Player", "NA1", "na1", log)
@@ -70,8 +69,7 @@ class TestResolvePuuidErrors:
         """NotFoundError → returns None, no system halt."""
         with respx.mock:
             respx.get(
-                "https://americas.api.riotgames.com/riot/account/v1/"
-                "accounts/by-riot-id/Nobody/NA1"
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Nobody/NA1"
             ).mock(return_value=httpx.Response(404))
             riot = RiotClient("RGAPI-test")
             result = await resolve_puuid(r, riot, "Nobody", "NA1", "na1", log)
@@ -84,8 +82,7 @@ class TestResolvePuuidErrors:
         """AuthError → sets system:halted, returns None."""
         with respx.mock:
             respx.get(
-                "https://americas.api.riotgames.com/riot/account/v1/"
-                "accounts/by-riot-id/Player/NA1"
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Player/NA1"
             ).mock(return_value=httpx.Response(403))
             riot = RiotClient("RGAPI-test")
             result = await resolve_puuid(r, riot, "Player", "NA1", "na1", log)
@@ -98,8 +95,7 @@ class TestResolvePuuidErrors:
         """RateLimitError → returns None, no halt."""
         with respx.mock:
             respx.get(
-                "https://americas.api.riotgames.com/riot/account/v1/"
-                "accounts/by-riot-id/Player/NA1"
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Player/NA1"
             ).mock(return_value=httpx.Response(429))
             riot = RiotClient("RGAPI-test")
             result = await resolve_puuid(r, riot, "Player", "NA1", "na1", log)
@@ -112,8 +108,7 @@ class TestResolvePuuidErrors:
         """ServerError → returns None, no halt."""
         with respx.mock:
             respx.get(
-                "https://americas.api.riotgames.com/riot/account/v1/"
-                "accounts/by-riot-id/Player/NA1"
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Player/NA1"
             ).mock(return_value=httpx.Response(503))
             riot = RiotClient("RGAPI-test")
             result = await resolve_puuid(r, riot, "Player", "NA1", "na1", log)

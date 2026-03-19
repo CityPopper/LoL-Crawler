@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 import redis.asyncio as aioredis
+
 from lol_pipeline.helpers import name_cache_key
 from lol_pipeline.riot_api import (
     AuthError,

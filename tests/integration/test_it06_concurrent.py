@@ -30,9 +30,7 @@ async def _parser_loop(
     processed = 0
     idle = 0
     while idle < 3:
-        msgs = await consume(
-            r, "stream:parse", "parsers", consumer, count=5, block=500
-        )
+        msgs = await consume(r, "stream:parse", "parsers", consumer, count=5, block=500)
         if not msgs:
             idle += 1
             continue

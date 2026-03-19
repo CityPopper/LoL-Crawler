@@ -277,7 +277,11 @@ class TestSeedEdgeCases:
             # RiotClient maps unknown regions to "americas" by default
             respx.get(
                 "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Test/NA1"
-            ).mock(return_value=_account_response(puuid="test-puuid-unk", game_name="Test", tag_line="NA1"))
+            ).mock(
+                return_value=_account_response(
+                    puuid="test-puuid-unk", game_name="Test", tag_line="NA1"
+                )
+            )
 
             riot = RiotClient("RGAPI-test")
             result = await seed(r, riot, cfg, "Test", "NA1", "unknown_region", log)

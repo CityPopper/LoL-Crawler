@@ -1,4 +1,5 @@
 """Unit tests for lol_pipeline.priority — atomic Lua scripts for priority management."""
+
 from __future__ import annotations
 
 import fakeredis.aioredis

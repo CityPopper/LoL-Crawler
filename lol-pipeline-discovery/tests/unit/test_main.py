@@ -11,7 +11,6 @@ import pytest
 import respx
 from lol_pipeline.config import Config
 from lol_pipeline.riot_api import RiotClient
-
 from redis.exceptions import RedisError
 
 from lol_discovery.main import _is_idle, _parse_member, _promote_batch, _resolve_names, main

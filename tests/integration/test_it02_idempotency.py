@@ -57,12 +57,12 @@ async def test_idempotency(
         respx.get(url__regex=r".*/riot/account/v1/accounts/by-riot-id/.*").mock(
             return_value=httpx.Response(200, json=account_data)
         )
-        respx.get(
-            url__regex=rf".*/lol/match/v5/matches/by-puuid/{PUUID}/ids.*"
-        ).mock(return_value=httpx.Response(200, json=[MATCH_ID]))
-        respx.get(
-            url__regex=rf".*/lol/match/v5/matches/{MATCH_ID}$"
-        ).mock(return_value=httpx.Response(200, json=match_normal))
+        respx.get(url__regex=rf".*/lol/match/v5/matches/by-puuid/{PUUID}/ids.*").mock(
+            return_value=httpx.Response(200, json=[MATCH_ID])
+        )
+        respx.get(url__regex=rf".*/lol/match/v5/matches/{MATCH_ID}$").mock(
+            return_value=httpx.Response(200, json=match_normal)
+        )
 
         riot = RiotClient("test-api-key", r=r)
         try:
@@ -83,5 +83,7 @@ async def test_idempotency(
             await riot.close()
 
     # Stats and match count unchanged
-    assert int(await r.hget(f"player:stats:{PUUID}", "total_games")) == games_after_first
+    assert (
+        int(await r.hget(f"player:stats:{PUUID}", "total_games")) == games_after_first
+    )
     assert await r.zcard(f"player:matches:{PUUID}") == matches_after_first

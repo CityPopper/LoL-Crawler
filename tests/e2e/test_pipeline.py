@@ -73,12 +73,22 @@ async def test_seed_publishes_to_stream() -> None:
         now_iso = datetime.now(tz=UTC).isoformat()
         await r.hset(  # type: ignore[misc]
             f"player:{puuid}",
-            mapping={"game_name": _GAME_NAME, "tag_line": _TAG_LINE, "region": _REGION, "seeded_at": now_iso},
+            mapping={
+                "game_name": _GAME_NAME,
+                "tag_line": _TAG_LINE,
+                "region": _REGION,
+                "seeded_at": now_iso,
+            },
         )
         envelope = MessageEnvelope(
             source_stream="stream:puuid",
             type="puuid",
-            payload={"puuid": puuid, "game_name": _GAME_NAME, "tag_line": _TAG_LINE, "region": _REGION},
+            payload={
+                "puuid": puuid,
+                "game_name": _GAME_NAME,
+                "tag_line": _TAG_LINE,
+                "region": _REGION,
+            },
             max_attempts=cfg.max_attempts,
         )
         await publish(r, "stream:puuid", envelope)
@@ -111,7 +121,12 @@ async def test_full_pipeline_produces_stats() -> None:
         envelope = MessageEnvelope(
             source_stream="stream:puuid",
             type="puuid",
-            payload={"puuid": puuid, "game_name": _GAME_NAME, "tag_line": _TAG_LINE, "region": _REGION},
+            payload={
+                "puuid": puuid,
+                "game_name": _GAME_NAME,
+                "tag_line": _TAG_LINE,
+                "region": _REGION,
+            },
             max_attempts=cfg.max_attempts,
         )
         await publish(r, "stream:puuid", envelope)

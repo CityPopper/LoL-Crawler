@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 
 import httpx
 import pytest
@@ -48,12 +47,12 @@ async def test_429_recovery(
         respx.get(url__regex=r".*/riot/account/v1/accounts/by-riot-id/.*").mock(
             return_value=httpx.Response(200, json=account_data)
         )
-        respx.get(
-            url__regex=rf".*/lol/match/v5/matches/by-puuid/{PUUID}/ids.*"
-        ).mock(return_value=httpx.Response(200, json=[MATCH_ID]))
-        respx.get(
-            url__regex=rf".*/lol/match/v5/matches/{MATCH_ID}$"
-        ).mock(side_effect=match_side_effect)
+        respx.get(url__regex=rf".*/lol/match/v5/matches/by-puuid/{PUUID}/ids.*").mock(
+            return_value=httpx.Response(200, json=[MATCH_ID])
+        )
+        respx.get(url__regex=rf".*/lol/match/v5/matches/{MATCH_ID}$").mock(
+            side_effect=match_side_effect
+        )
 
         riot = RiotClient("test-api-key", r=r)
         try:

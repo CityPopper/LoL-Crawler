@@ -309,7 +309,7 @@ class TestEmptyState:
         assert 'class="empty-state"' in result
 
     def test_raw_html_in_body(self):
-        result = _empty_state("Title", 'Run <code>just seed</code>')
+        result = _empty_state("Title", "Run <code>just seed</code>")
         assert "<code>just seed</code>" in result
 
 
@@ -580,13 +580,13 @@ class TestParseLogLine:
         assert "extra_key=val" in extra
 
     def test_non_json_line(self):
-        ts, level, logger, msg, extra = _parse_log_line("plain text line")
+        _ts, level, _logger, msg, _extra = _parse_log_line("plain text line")
         assert level == "INFO"
         assert msg == "plain text line"
 
     def test_missing_fields_use_defaults(self):
         line = json.dumps({"message": "hello"})
-        ts, level, logger, msg, extra = _parse_log_line(line)
+        ts, level, _logger, msg, _extra = _parse_log_line(line)
         assert level == "INFO"
         assert msg == "hello"
         assert ts == ""
@@ -720,11 +720,23 @@ class TestStatsMatchesPipeline:
         await r.hset("match:NA1_2", mapping={"game_start": "2000", "game_mode": "ARAM"})
         await r.hset(
             "participant:NA1_1:testpuuid",
-            mapping={"win": "1", "champion_name": "Zed", "kills": "5", "deaths": "2", "assists": "3"},
+            mapping={
+                "win": "1",
+                "champion_name": "Zed",
+                "kills": "5",
+                "deaths": "2",
+                "assists": "3",
+            },
         )
         await r.hset(
             "participant:NA1_2:testpuuid",
-            mapping={"win": "0", "champion_name": "Ahri", "kills": "1", "deaths": "4", "assists": "2"},
+            mapping={
+                "win": "0",
+                "champion_name": "Ahri",
+                "kills": "1",
+                "deaths": "4",
+                "assists": "2",
+            },
         )
 
         # Track direct hgetall calls on r (not pipeline)
@@ -795,7 +807,7 @@ class TestAutoSeedPriority:
         request.app.state.riot = FakeRiot()
         request.app.state.lcu = {}
 
-        resp = await show_stats(request)
+        await show_stats(request)
 
         # Check envelope in stream has priority=high
         entries = await r.xrange("stream:puuid")
@@ -890,9 +902,16 @@ class TestStatsOrder:
     def test_stats_order__contains_all_core_stats(self):
         """All expected stat keys are present in the order list."""
         expected = [
-            "total_games", "total_wins", "win_rate",
-            "total_kills", "total_deaths", "total_assists",
-            "kda", "avg_kills", "avg_deaths", "avg_assists",
+            "total_games",
+            "total_wins",
+            "win_rate",
+            "total_kills",
+            "total_deaths",
+            "total_assists",
+            "kda",
+            "avg_kills",
+            "avg_deaths",
+            "avg_assists",
         ]
         for key in expected:
             assert key in _STATS_ORDER, f"{key} missing from _STATS_ORDER"
@@ -1375,9 +1394,7 @@ class TestNameCacheTTLInUI:
         # Verify set was called with cache TTL
         from lol_pipeline.resolve import _CACHE_TTL_S
 
-        mock_r.set.assert_any_call(
-            "player:name:test#na1", "test-puuid-ttl", ex=_CACHE_TTL_S
-        )
+        mock_r.set.assert_any_call("player:name:test#na1", "test-puuid-ttl", ex=_CACHE_TTL_S)
 
 
 class TestRegionPreservation:
@@ -1898,5 +1915,5 @@ class TestUiEntryPoint:
             importlib.import_module("lol_ui.__main__")
         mock_uvicorn.assert_called_once()
         call_args = mock_uvicorn.call_args
-        assert call_args[1]["host"] == "0.0.0.0"
+        assert call_args[1]["host"] == "0.0.0.0"  # noqa: S104
         assert call_args[1]["port"] == 8080
