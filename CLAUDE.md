@@ -17,7 +17,7 @@ See `ARCHITECTURE.md` for doc index. See `docs/standards/01-coding-standards.md`
 
 ## Pending Work
 
-GitHub CI fix: `ruff format` failing on multiple services. Run `ruff format` across all service src/ dirs to fix formatting. Push to branch, verify CI passes, merge to main.
+None — waiting for CI to pass on fix/ci-lint-tests-336 branch, then merge to main.
 
 ## Gotchas
 

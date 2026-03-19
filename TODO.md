@@ -307,43 +307,8 @@ Every service assumes Redis calls succeed. Add error-path tests:
 Target: **192 → ~320 unit tests** (current → with all tiers complete).
 
 
-## Bugs
-Probably need some dependency ordering or something similar? Try to verify you can reproduce this error, write a test for it, then fix and verify.
-```
-wopr@WOPR3090:/mnt/c/Users/WOPR/Desktop/Scraper$ just lcu
-WSL detected — running LCU collector via Docker (required to reach Windows localhost)...
-Container scraper-lcu-run-e8fbd535cd7d Creating 
-Container scraper-lcu-run-e8fbd535cd7d Created 
-Traceback (most recent call last):
-  File "/usr/local/lib/python3.12/site-packages/lol_lcu/lcu_client.py", line 61, in _get
-    resp.raise_for_status()
-  File "/usr/local/lib/python3.12/site-packages/requests/models.py", line 1026, in raise_for_status
-    raise HTTPError(http_error_msg, response=self)
-requests.exceptions.HTTPError: 403 Client Error: Forbidden for url: https://host.docker.internal:59591/lol-summoner/v1/current-summoner
-
-The above exception was the direct cause of the following exception:
-
-Traceback (most recent call last):
-  File "<frozen runpy>", line 198, in _run_module_as_main
-  File "<frozen runpy>", line 88, in _run_code
-  File "/usr/local/lib/python3.12/site-packages/lol_lcu/__main__.py", line 29, in <module>
-    main()
-  File "/usr/local/lib/python3.12/site-packages/lol_lcu/__main__.py", line 25, in main
-    run(data_dir=args.data_dir, poll_interval_minutes=args.poll_interval)
-  File "/usr/local/lib/python3.12/site-packages/lol_lcu/main.py", line 134, in run
-    collect_once(client, data_dir)
-  File "/usr/local/lib/python3.12/site-packages/lol_lcu/main.py", line 64, in collect_once
-    summoner = client.current_summoner()
-               ^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.12/site-packages/lol_lcu/lcu_client.py", line 70, in current_summoner
-    return self._get("/lol-summoner/v1/current-summoner")  # type: ignore[no-any-return]
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.12/site-packages/lol_lcu/lcu_client.py", line 64, in _get
-    raise LcuNotRunningError(
-lol_lcu.lcu_client.LcuNotRunningError: LCU API request failed (https://host.docker.internal:59591, LCU_HOST=host.docker.internal): 403 Client Error: Forbidden for url: https://host.docker.internal:59591/lol-summoner/v1/current-summoner
-
-error: Recipe `lcu` failed with exit code 1
-```
+## ~~Bugs~~ — FIXED
+~~LCU 403 raising LcuNotRunningError instead of LcuAuthError.~~ Fixed: `_get()` now checks `resp.status_code in (401, 403)` before the general HTTPError handler. `_collect_with_auth_retry` retries up to 3x with 2s delay. 5 tests cover this.
 
 ## Startup tests
 Add tests to ensure that all services are able to start properly, and if they have dependencies they wait, etc etc.
