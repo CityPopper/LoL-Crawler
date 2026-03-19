@@ -141,8 +141,11 @@ async def cmd_dlq_replay(r: aioredis.Redis, cfg: Config, args: argparse.Namespac
     for entry_id, dlq in targets:
         envelope = _make_replay_envelope(dlq, cfg.max_attempts)
         await r.xadd(
-            dlq.original_stream, envelope.to_redis_fields(), maxlen=10_000, approximate=True
-        )  # type: ignore[arg-type]
+            dlq.original_stream,
+            envelope.to_redis_fields(),  # type: ignore[arg-type]
+            maxlen=10_000,
+            approximate=True,
+        )
         await r.xdel(_STREAM_DLQ, entry_id)
         print(f"replayed {entry_id} → {dlq.original_stream}")
     return 0
@@ -231,8 +234,11 @@ async def cmd_reseed(
         max_attempts=cfg.max_attempts,
     )
     entry_id = await r.xadd(
-        _STREAM_PUUID, envelope.to_redis_fields(), maxlen=10_000, approximate=True
-    )  # type: ignore[arg-type]
+        _STREAM_PUUID,
+        envelope.to_redis_fields(),  # type: ignore[arg-type]
+        maxlen=10_000,
+        approximate=True,
+    )
     print(f"reseeded {args.riot_id} → {_STREAM_PUUID} ({entry_id})")
     return 0
 
