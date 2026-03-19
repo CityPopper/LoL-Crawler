@@ -230,7 +230,7 @@ async def _process(
 async def main() -> None:
     """Recovery worker loop — continues even when system:halted."""
     log = get_logger("recovery")
-    cfg = Config()  # type: ignore[call-arg]  # pydantic-settings reads env
+    cfg = Config()
     r = get_redis(cfg.redis_url)
     consumer = f"{socket.gethostname()}-{os.getpid()}"
 

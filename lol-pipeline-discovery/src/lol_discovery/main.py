@@ -49,7 +49,7 @@ async def _is_idle(r: aioredis.Redis) -> bool:
     if count > 0:
         return False
     try:
-        groups: list[Any] = await r.xinfo_groups(_STREAM_PUUID)  # type: ignore[misc]
+        groups: list[Any] = await r.xinfo_groups(_STREAM_PUUID)
     except ResponseError:
         return True  # stream or group does not exist yet — nothing to process
     if not groups:
@@ -69,8 +69,8 @@ async def _resolve_names(
     Returns None when the player permanently cannot be resolved (404).
     Raises RiotAPIError on transient failures so the caller can retry.
     """
-    game_name: str | None = await r.hget(f"player:{puuid}", "game_name")
-    tag_line: str | None = await r.hget(f"player:{puuid}", "tag_line")
+    game_name: str | None = await r.hget(f"player:{puuid}", "game_name")  # type: ignore[misc]
+    tag_line: str | None = await r.hget(f"player:{puuid}", "tag_line")  # type: ignore[misc]
     if game_name and tag_line:
         return game_name, tag_line
 
@@ -101,7 +101,7 @@ async def _promote_batch(
         puuid, region = _parse_member(str(member))
 
         # Skip if player was seeded after being added to discover:players
-        seeded: bool = await r.hexists(f"player:{puuid}", "seeded_at")
+        seeded: bool = await r.hexists(f"player:{puuid}", "seeded_at")  # type: ignore[misc]
         if seeded:
             await r.zrem(_DISCOVER_KEY, member)
             continue
@@ -162,7 +162,7 @@ async def main() -> None:
     signal.signal(signal.SIGTERM, _handle_sigterm)
 
     log = get_logger("discovery")
-    cfg = Config()  # type: ignore[call-arg]  # pydantic-settings reads env
+    cfg = Config()
     r = get_redis(cfg.redis_url)
     riot = RiotClient(cfg.riot_api_key, r=r)
 

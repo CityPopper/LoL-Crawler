@@ -201,7 +201,7 @@ async def main(argv: list[str]) -> int:
 
     game_name, tag_line = riot_id.split("#", 1)
 
-    cfg = Config()  # type: ignore[call-arg]  # pydantic-settings reads env
+    cfg = Config()
     r = get_redis(cfg.redis_url)
     riot = RiotClient(cfg.riot_api_key, r=r)
 

@@ -83,7 +83,7 @@ async def _lcu_reload_loop(app: FastAPI, data_dir: str, interval_minutes: int) -
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-    cfg = Config()  # type: ignore[call-arg]  # pydantic-settings reads env
+    cfg = Config()
     app.state.cfg = cfg
     app.state.r = get_redis(cfg.redis_url)
     app.state.riot = RiotClient(cfg.riot_api_key, r=app.state.r)
