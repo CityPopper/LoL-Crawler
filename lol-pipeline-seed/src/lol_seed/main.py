@@ -90,8 +90,9 @@ async def _within_cooldown(
     fields: list[str | None] = await r.hmget(  # type: ignore[misc]
         f"player:{puuid}", ["seeded_at", "last_crawled_at"]
     )
-    seeded_epoch = _parse_epoch(fields[0])
-    crawled_epoch = _parse_epoch(fields[1])
+    seeded_at_str, crawled_at_str = fields[0], fields[1]
+    seeded_epoch = _parse_epoch(seeded_at_str)
+    crawled_epoch = _parse_epoch(crawled_at_str)
 
     trigger = "seeded_at" if seeded_epoch >= crawled_epoch else "last_crawled_at"
     last_activity = max(seeded_epoch, crawled_epoch)

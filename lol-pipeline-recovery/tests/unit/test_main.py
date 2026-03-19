@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
+from unittest.mock import AsyncMock, patch
 
 import fakeredis.aioredis
 import pytest
-
 from lol_pipeline.config import Config
 from lol_pipeline.models import DLQEnvelope, MessageEnvelope
-from lol_recovery.main import _archive, _backoff_ms, _consume_dlq, _process, _requeue_delayed
+
+from lol_recovery.main import _backoff_ms, _process, main
 
 _DLQ_STREAM = "stream:dlq"
 _ARCHIVE_STREAM = "stream:dlq:archive"
@@ -209,20 +210,16 @@ class TestRecoveryHalted:
 
 class TestBackoffMs:
     def test_attempt_0(self):
-        from lol_recovery.main import _backoff_ms
         assert _backoff_ms(0) == 5_000
 
     def test_attempt_1(self):
-        from lol_recovery.main import _backoff_ms
         assert _backoff_ms(1) == 15_000
 
     def test_attempt_3(self):
-        from lol_recovery.main import _backoff_ms
         assert _backoff_ms(3) == 300_000
 
     def test_attempt_beyond_array_clamps(self):
         """Attempts beyond backoff array length clamp to max value."""
-        from lol_recovery.main import _backoff_ms
         assert _backoff_ms(10) == 300_000
         assert _backoff_ms(100) == 300_000
 
@@ -239,6 +236,7 @@ class TestRecoveryEdgeCases:
         assert len(members) == 1
         # Score should be now + 31000, not now + 5000 (backoff)
         import time
+
         now_ms = int(time.time() * 1000)
         score = members[0][1]
         # Score should be close to now + 31000 (within 2s tolerance)
@@ -254,6 +252,7 @@ class TestRecoveryEdgeCases:
         members = await r.zrange(_DELAYED_KEY, 0, -1, withscores=True)
         assert len(members) == 1
         import time
+
         now_ms = int(time.time() * 1000)
         score = members[0][1]
         # dlq_attempts=2 → backoff=60000
@@ -277,3 +276,100 @@ class TestRecoveryEdgeCases:
         await _process(r, cfg, "test-consumer", msg_id, dlq, log)
 
         assert await r.xlen(_ARCHIVE_STREAM) == 1
+
+
+class TestRecoveryRetryAfterEdgeCases:
+    """Tier 3 — Recovery edge cases for retry_after_ms."""
+
+    @pytest.mark.asyncio
+    async def test_retry_after_zero_uses_backoff(self, r, cfg, log):
+        """retry_after_ms=0 is falsy in Python → should fall through to backoff."""
+        dlq = _make_dlq(failure_code="http_429", dlq_attempts=0, retry_after_ms=0)
+        msg_id = await _setup_dlq_msg(r, dlq)
+        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+
+        members = await r.zrange(_DELAYED_KEY, 0, -1, withscores=True)
+        assert len(members) == 1
+        import time
+
+        now_ms = int(time.time() * 1000)
+        score = members[0][1]
+        # Should use backoff (5000ms for attempt 0), not 0
+        assert abs(score - (now_ms + 5000)) < 2000
+
+    @pytest.mark.asyncio
+    async def test_retry_after_negative_uses_value(self, r, cfg, log):
+        """retry_after_ms=-1 is truthy → code uses it as delay (current behavior)."""
+        dlq = _make_dlq(failure_code="http_429", dlq_attempts=0, retry_after_ms=-1)
+        msg_id = await _setup_dlq_msg(r, dlq)
+        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+
+        members = await r.zrange(_DELAYED_KEY, 0, -1, withscores=True)
+        assert len(members) == 1
+        import time
+
+        now_ms = int(time.time() * 1000)
+        score = members[0][1]
+        # -1 is truthy so it's used as the delay: now + (-1)
+        assert abs(score - (now_ms + (-1))) < 2000
+
+    @pytest.mark.asyncio
+    async def test_archive_xadd_failure_does_not_crash(self, r, cfg, log):
+        """If XADD to archive stream fails, _process still completes."""
+        dlq = _make_dlq(failure_code="parse_error")
+        msg_id = await _setup_dlq_msg(r, dlq)
+
+        original_xadd = r.xadd
+
+        async def failing_xadd(stream, *args, **kwargs):
+            if stream == "stream:dlq:archive":
+                raise ConnectionError("redis write error")
+            return await original_xadd(stream, *args, **kwargs)
+
+        r.xadd = failing_xadd
+
+        with pytest.raises(ConnectionError, match="redis write error"):
+            await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+
+
+class TestMainEntryPoint:
+    """Tests for main() bootstrap and teardown."""
+
+    @pytest.mark.asyncio
+    async def test_main__creates_redis_and_starts_loop(self, monkeypatch):
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_r = AsyncMock()
+        call_count = 0
+
+        async def fake_consume_dlq(*args):
+            nonlocal call_count
+            call_count += 1
+            if call_count > 1:
+                raise KeyboardInterrupt
+            return []
+
+        with (
+            patch("lol_recovery.main.Config") as mock_cfg,
+            patch("lol_recovery.main.get_redis", return_value=mock_r),
+            patch("lol_recovery.main._consume_dlq", side_effect=fake_consume_dlq),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            with pytest.raises(KeyboardInterrupt):
+                await main()
+        mock_r.aclose.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_main__keyboard_interrupt__closes_redis(self, monkeypatch):
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_r = AsyncMock()
+        with (
+            patch("lol_recovery.main.Config") as mock_cfg,
+            patch("lol_recovery.main.get_redis", return_value=mock_r),
+            patch("lol_recovery.main._consume_dlq", side_effect=KeyboardInterrupt),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            with pytest.raises(KeyboardInterrupt):
+                await main()
+        mock_r.aclose.assert_called_once()

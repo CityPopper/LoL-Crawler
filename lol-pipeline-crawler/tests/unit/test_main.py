@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import logging
+from unittest.mock import AsyncMock, patch
 
 import fakeredis.aioredis
 import httpx
 import pytest
 import respx
-
 from lol_pipeline.config import Config
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.riot_api import RiotClient
 from lol_pipeline.streams import consume, publish
-from lol_crawler.main import _crawl_player
+
+from lol_crawler.main import _crawl_player, main
 
 _STREAM_IN = "stream:puuid"
 _STREAM_OUT = "stream:match_id"
@@ -21,6 +22,7 @@ _GROUP = "crawlers"
 
 try:
     import lupa  # noqa: F401
+
     _LUPA_AVAILABLE = True
 except ImportError:
     _LUPA_AVAILABLE = False
@@ -81,9 +83,7 @@ class TestCrawlZeroMatches:
         msg_id = await _setup_message(r, env)
 
         with respx.mock:
-            respx.get(_match_ids_url()).mock(
-                return_value=httpx.Response(200, json=[])
-            )
+            respx.get(_match_ids_url()).mock(return_value=httpx.Response(200, json=[]))
             riot = RiotClient("RGAPI-test")
             await _crawl_player(r, riot, cfg, msg_id, env, log)
             await riot.close()
@@ -101,12 +101,8 @@ class TestCrawlPagination:
         page1 = [f"NA1_{i}" for i in range(100)]
 
         with respx.mock:
-            respx.get(_match_ids_url(start=0)).mock(
-                return_value=httpx.Response(200, json=page1)
-            )
-            respx.get(_match_ids_url(start=100)).mock(
-                return_value=httpx.Response(200, json=[])
-            )
+            respx.get(_match_ids_url(start=0)).mock(return_value=httpx.Response(200, json=page1))
+            respx.get(_match_ids_url(start=100)).mock(return_value=httpx.Response(200, json=[]))
             riot = RiotClient("RGAPI-test")
             await _crawl_player(r, riot, cfg, msg_id, env, log)
             await riot.close()
@@ -123,15 +119,9 @@ class TestCrawlPagination:
         page3 = [f"NA1_{i}" for i in range(200, 250)]
 
         with respx.mock:
-            respx.get(_match_ids_url(start=0)).mock(
-                return_value=httpx.Response(200, json=page1)
-            )
-            respx.get(_match_ids_url(start=100)).mock(
-                return_value=httpx.Response(200, json=page2)
-            )
-            respx.get(_match_ids_url(start=200)).mock(
-                return_value=httpx.Response(200, json=page3)
-            )
+            respx.get(_match_ids_url(start=0)).mock(return_value=httpx.Response(200, json=page1))
+            respx.get(_match_ids_url(start=100)).mock(return_value=httpx.Response(200, json=page2))
+            respx.get(_match_ids_url(start=200)).mock(return_value=httpx.Response(200, json=page3))
             riot = RiotClient("RGAPI-test")
             await _crawl_player(r, riot, cfg, msg_id, env, log)
             await riot.close()
@@ -148,7 +138,7 @@ class TestCrawlDedup:
         known_ids = [f"NA1_{i}" for i in range(100)]
         # Pre-populate known matches
         for mid in known_ids:
-            await r.zadd(f"player:matches:test-puuid-0001", {mid: 1000.0})
+            await r.zadd("player:matches:test-puuid-0001", {mid: 1000.0})
 
         with respx.mock:
             respx.get(_match_ids_url(start=0)).mock(
@@ -169,16 +159,12 @@ class TestCrawlDedup:
         new_ids = [f"NA1_{i}" for i in range(60, 100)]
         page = known_ids + new_ids
         for mid in known_ids:
-            await r.zadd(f"player:matches:test-puuid-0001", {mid: 1000.0})
+            await r.zadd("player:matches:test-puuid-0001", {mid: 1000.0})
 
         with respx.mock:
-            respx.get(_match_ids_url(start=0)).mock(
-                return_value=httpx.Response(200, json=page)
-            )
+            respx.get(_match_ids_url(start=0)).mock(return_value=httpx.Response(200, json=page))
             # Page was full (100) but had new ids, so crawler continues
-            respx.get(_match_ids_url(start=100)).mock(
-                return_value=httpx.Response(200, json=[])
-            )
+            respx.get(_match_ids_url(start=100)).mock(return_value=httpx.Response(200, json=[]))
             riot = RiotClient("RGAPI-test")
             await _crawl_player(r, riot, cfg, msg_id, env, log)
             await riot.close()
@@ -339,12 +325,8 @@ class TestCrawlFailureMidPage:
         page1 = [f"NA1_{i}" for i in range(100)]
 
         with respx.mock:
-            respx.get(_match_ids_url(start=0)).mock(
-                return_value=httpx.Response(200, json=page1)
-            )
-            respx.get(_match_ids_url(start=100)).mock(
-                return_value=httpx.Response(403)
-            )
+            respx.get(_match_ids_url(start=0)).mock(return_value=httpx.Response(200, json=page1))
+            respx.get(_match_ids_url(start=100)).mock(return_value=httpx.Response(403))
             riot = RiotClient("RGAPI-test")
             await _crawl_player(r, riot, cfg, msg_id, env, log)
             await riot.close()
@@ -360,9 +342,7 @@ class TestCrawlErrors:
         msg_id = await _setup_message(r, env)
 
         with respx.mock:
-            respx.get(_match_ids_url(start=0)).mock(
-                return_value=httpx.Response(403)
-            )
+            respx.get(_match_ids_url(start=0)).mock(return_value=httpx.Response(403))
             riot = RiotClient("RGAPI-test")
             await _crawl_player(r, riot, cfg, msg_id, env, log)
             await riot.close()
@@ -421,3 +401,91 @@ class TestCrawlErrors:
             await riot.close()
 
         assert await r.xlen(_STREAM_OUT) == 0
+
+
+class TestCrawlEdgeCases:
+    """Tier 3 — Crawler edge case tests."""
+
+    @pytest.mark.asyncio
+    async def test_429_without_retry_after_uses_default(self, r, cfg, log):
+        """429 without Retry-After header uses default retry_after_ms (None → backoff)."""
+        env = _puuid_envelope()
+        msg_id = await _setup_message(r, env)
+
+        with respx.mock:
+            respx.get(_match_ids_url(start=0)).mock(
+                return_value=httpx.Response(429)  # no Retry-After header
+            )
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        assert await r.xlen("stream:dlq") == 1
+        entries = await r.xrange("stream:dlq")
+        assert entries[0][1]["failure_code"] == "http_429"
+        # retry_after_ms should be present (default from RiotClient)
+        assert await r.hget("player:test-puuid-0001", "last_crawled_at") is None
+
+    @pytest.mark.asyncio
+    async def test_empty_puuid_in_payload_still_attempts_api(self, r, cfg, log):
+        """Empty puuid string in payload still attempts API call (no pre-validation)."""
+        env = MessageEnvelope(
+            source_stream=_STREAM_IN,
+            type="puuid",
+            payload={"puuid": "", "region": "na1", "game_name": "", "tag_line": ""},
+            max_attempts=5,
+        )
+        msg_id = await _setup_message(r, env)
+
+        with respx.mock:
+            # Empty puuid produces a URL with empty path segment
+            respx.get(url__regex=r".*/ids\?.*").mock(
+                return_value=httpx.Response(200, json=[])
+            )
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        # Should complete without error (empty matches = no output)
+        assert await r.xlen(_STREAM_OUT) == 0
+
+
+class TestMainEntryPoint:
+    """Tests for main() bootstrap and teardown."""
+
+    @pytest.mark.asyncio
+    async def test_main__creates_redis_and_starts_consumer(self, monkeypatch):
+        """main() creates Config, Redis, RiotClient, then calls run_consumer."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_r = AsyncMock()
+        mock_consumer = AsyncMock()
+        with (
+            patch("lol_crawler.main.Config") as mock_cfg,
+            patch("lol_crawler.main.get_redis", return_value=mock_r),
+            patch("lol_crawler.main.RiotClient") as mock_riot,
+            patch("lol_crawler.main.run_consumer", mock_consumer),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            mock_riot.return_value = AsyncMock()
+            await main()
+        mock_consumer.assert_called_once()
+        mock_r.aclose.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_main__keyboard_interrupt__closes_redis(self, monkeypatch):
+        """KeyboardInterrupt during run_consumer → redis.aclose() still called."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_r = AsyncMock()
+        with (
+            patch("lol_crawler.main.Config") as mock_cfg,
+            patch("lol_crawler.main.get_redis", return_value=mock_r),
+            patch("lol_crawler.main.RiotClient") as mock_riot,
+            patch("lol_crawler.main.run_consumer", side_effect=KeyboardInterrupt),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            mock_riot.return_value = AsyncMock()
+            with pytest.raises(KeyboardInterrupt):
+                await main()
+        mock_r.aclose.assert_called_once()

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import fakeredis.aioredis
 import pytest
+from redis.exceptions import RedisError
 
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.streams import ack, consume, nack_to_dlq, publish
@@ -18,7 +21,11 @@ async def r():
 
 def _env(stream: str = "stream:test", **kwargs) -> MessageEnvelope:
     return MessageEnvelope(
-        source_stream=stream, type="test", payload={"k": "v"}, max_attempts=5, **kwargs,
+        source_stream=stream,
+        type="test",
+        payload={"k": "v"},
+        max_attempts=5,
+        **kwargs,
     )
 
 
@@ -84,7 +91,8 @@ class TestNackToDlq:
     async def test_nack_writes_to_dlq_stream(self, r):
         env = _env()
         await nack_to_dlq(
-            r, env,
+            r,
+            env,
             failure_code="http_429",
             failed_by="fetcher",
             original_message_id="123-0",
@@ -96,11 +104,14 @@ class TestNackToDlq:
     @pytest.mark.asyncio
     async def test_nack_preserves_envelope_fields(self, r):
         env = MessageEnvelope(
-            source_stream="stream:test", type="test",
-            payload={"match_id": "NA1_999"}, max_attempts=5,
+            source_stream="stream:test",
+            type="test",
+            payload={"match_id": "NA1_999"},
+            max_attempts=5,
         )
         await nack_to_dlq(
-            r, env,
+            r,
+            env,
             failure_code="http_5xx",
             failed_by="fetcher",
             original_message_id="456-0",
@@ -120,6 +131,7 @@ class TestEnsureGroup:
     async def test_creates_group_and_stream(self, r):
         """_ensure_group creates both stream and group if neither exist."""
         from lol_pipeline.streams import _ensure_group
+
         await _ensure_group(r, "stream:new", "new-group")
         # Should be able to consume from it now
         msgs = await consume(r, "stream:new", "new-group", "c", block=0)
@@ -129,5 +141,57 @@ class TestEnsureGroup:
     async def test_idempotent_group_creation(self, r):
         """Calling _ensure_group twice does not raise."""
         from lol_pipeline.streams import _ensure_group
+
         await _ensure_group(r, "stream:test", "g")
         await _ensure_group(r, "stream:test", "g")  # no error
+
+
+class TestPublishErrors:
+    @pytest.mark.asyncio
+    async def test_publish__xadd_raises__propagates(self):
+        """XADD failure (e.g. connection lost) propagates to caller."""
+        mock_r = AsyncMock()
+        mock_r.xadd.side_effect = RedisError("connection lost")
+        env = _env()
+        with pytest.raises(RedisError):
+            await publish(mock_r, "stream:test", env)
+
+
+class TestConsumeErrors:
+    @pytest.mark.asyncio
+    async def test_consume__xreadgroup_raises__propagates(self):
+        """XREADGROUP failure propagates to caller."""
+        mock_r = AsyncMock()
+        mock_r.xreadgroup.side_effect = RedisError("connection lost")
+        with pytest.raises(RedisError):
+            await consume(mock_r, "stream:test", "g", "c", block=0)
+
+    @pytest.mark.asyncio
+    async def test_consume__xautoclaim_raises__propagates(self):
+        """XAUTOCLAIM failure propagates to caller."""
+        mock_r = AsyncMock()
+        mock_r.xreadgroup.return_value = [["stream:test", []]]
+        mock_r.xautoclaim.side_effect = RedisError("connection lost")
+        with pytest.raises(RedisError):
+            await consume(mock_r, "stream:test", "g", "c", block=0, autoclaim_min_idle_ms=5000)
+
+
+class TestAckEdgeCases:
+    @pytest.mark.asyncio
+    async def test_ack__nonexistent_message__no_error(self, r):
+        """ACKing a non-existent message ID does not raise."""
+        from lol_pipeline.streams import _ensure_group
+
+        await _ensure_group(r, "stream:test", "g")
+        await ack(r, "stream:test", "g", "999999-0")
+
+
+class TestNackToDlqErrors:
+    @pytest.mark.asyncio
+    async def test_nack_to_dlq__xadd_raises__propagates(self):
+        """If DLQ XADD fails, the error propagates."""
+        mock_r = AsyncMock()
+        mock_r.xadd.side_effect = RedisError("connection lost")
+        env = _env()
+        with pytest.raises(RedisError):
+            await nack_to_dlq(mock_r, env, "http_429", "fetcher", "123-0")

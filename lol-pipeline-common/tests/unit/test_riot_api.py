@@ -2,21 +2,22 @@
 
 from __future__ import annotations
 
+import json
+
 import fakeredis.aioredis
 import httpx
 import pytest
 import respx
 
 from lol_pipeline.riot_api import (
+    PLATFORM_TO_REGION,
     AuthError,
     NotFoundError,
     RateLimitError,
     RiotClient,
     ServerError,
-    PLATFORM_TO_REGION,
     _parse_app_rate_limit,
 )
-
 
 # ---------------------------------------------------------------------------
 # _parse_app_rate_limit
@@ -97,9 +98,7 @@ class TestRiotClientRateLimitStorage:
         return fakeredis.aioredis.FakeRedis(decode_responses=True)
 
     @pytest.mark.asyncio
-    async def test_stores_limits_on_200(
-        self, fake_redis: fakeredis.aioredis.FakeRedis
-    ) -> None:
+    async def test_stores_limits_on_200(self, fake_redis: fakeredis.aioredis.FakeRedis) -> None:
         # Input:  200 response with "X-App-Rate-Limit: 20:1,100:120" header
         #         RiotClient constructed with r=<redis>
         # Output: ratelimit:limits:short == "20"
@@ -147,9 +146,7 @@ class TestRiotClientRateLimitStorage:
         await fake_redis.aclose()
 
     @pytest.mark.asyncio
-    async def test_no_write_on_non_200(
-        self, fake_redis: fakeredis.aioredis.FakeRedis
-    ) -> None:
+    async def test_no_write_on_non_200(self, fake_redis: fakeredis.aioredis.FakeRedis) -> None:
         # Input:  404 response (raises NotFoundError)
         #         RiotClient constructed with r=<redis>
         # Output: ratelimit:limits:* keys are NOT set
@@ -387,3 +384,41 @@ class TestRateLimitErrorDetails:
             with pytest.raises(ServerError):
                 await client.get_account_by_riot_id("X", "Y", "na1")
             await client.close()
+
+
+class TestRiotClientMalformedResponse:
+    @pytest.mark.asyncio
+    async def test_malformed_json_response__raises(self) -> None:
+        """HTTP 200 with non-JSON body raises JSONDecodeError."""
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/X/Y"
+            ).mock(return_value=httpx.Response(200, text="<html>not json</html>"))
+            client = RiotClient("RGAPI-test")
+            with pytest.raises(json.JSONDecodeError):
+                await client.get_account_by_riot_id("X", "Y", "na1")
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_empty_response_body__raises(self) -> None:
+        """HTTP 200 with empty body raises JSONDecodeError."""
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/X/Y"
+            ).mock(return_value=httpx.Response(200, text=""))
+            client = RiotClient("RGAPI-test")
+            with pytest.raises(json.JSONDecodeError):
+                await client.get_account_by_riot_id("X", "Y", "na1")
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_missing_puuid_in_response__returns_dict_without_key(self) -> None:
+        """API returns 200 but no 'puuid' field — dict returned as-is (no validation)."""
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/X/Y"
+            ).mock(return_value=httpx.Response(200, json={"gameName": "X", "tagLine": "Y"}))
+            client = RiotClient("RGAPI-test")
+            result = await client.get_account_by_riot_id("X", "Y", "na1")
+            await client.close()
+        assert "puuid" not in result

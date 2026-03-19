@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import logging
+from unittest.mock import AsyncMock, patch
 
 import fakeredis.aioredis
 import httpx
 import pytest
 import respx
-
 from lol_pipeline.config import Config
 from lol_pipeline.riot_api import RiotClient
-from lol_discovery.main import _is_idle, _parse_member, _promote_batch, _resolve_names
+
+from lol_discovery.main import _is_idle, _parse_member, _promote_batch, main
 
 
 @pytest.fixture
@@ -38,9 +39,13 @@ class TestPromoteBatchNames:
     async def test_uses_backfilled_names_when_available(self, r, cfg, log):
         """When parser has backfilled game_name/tag_line, discovery should use them."""
         # Backfill: parser set game_name/tag_line but no seeded_at
-        await r.hset("player:puuid-abc", mapping={
-            "game_name": "TestPlayer", "tag_line": "NA1",
-        })
+        await r.hset(
+            "player:puuid-abc",
+            mapping={
+                "game_name": "TestPlayer",
+                "tag_line": "NA1",
+            },
+        )
         await r.zadd("discover:players", {"puuid-abc:na1": 1700000000000.0})
 
         riot = RiotClient("RGAPI-test")
@@ -116,10 +121,15 @@ class TestPromoteBatchNames:
     @pytest.mark.asyncio
     async def test_skips_already_seeded_player(self, r, cfg, log):
         """Players seeded after being added to discover:players should be skipped."""
-        await r.hset("player:puuid-seeded", mapping={
-            "game_name": "Already", "tag_line": "Here",
-            "region": "na1", "seeded_at": "2024-01-01T00:00:00+00:00",
-        })
+        await r.hset(
+            "player:puuid-seeded",
+            mapping={
+                "game_name": "Already",
+                "tag_line": "Here",
+                "region": "na1",
+                "seeded_at": "2024-01-01T00:00:00+00:00",
+            },
+        )
         await r.zadd("discover:players", {"puuid-seeded:na1": 1700000000000.0})
 
         riot = RiotClient("RGAPI-test")
@@ -147,6 +157,12 @@ class TestParseMember:
         assert puuid == "some:complex:puuid"
         assert region == "euw1"
 
+    def test_empty_puuid_falls_back(self):
+        """':region' with empty puuid treats whole string as puuid with default region."""
+        puuid, region = _parse_member(":na1")
+        assert puuid == ":na1"
+        assert region == "na1"
+
 
 class TestIsIdle:
     @pytest.mark.asyncio
@@ -157,10 +173,19 @@ class TestIsIdle:
     @pytest.mark.asyncio
     async def test_no_groups_returns_true(self, r):
         """Stream exists but no consumer groups — idle."""
-        await r.xadd("stream:puuid", {"id": "test", "source_stream": "stream:puuid",
-                                       "type": "puuid", "payload": "{}", "attempts": "0",
-                                       "max_attempts": "5", "enqueued_at": "2024-01-01",
-                                       "dlq_attempts": "0"})
+        await r.xadd(
+            "stream:puuid",
+            {
+                "id": "test",
+                "source_stream": "stream:puuid",
+                "type": "puuid",
+                "payload": "{}",
+                "attempts": "0",
+                "max_attempts": "5",
+                "enqueued_at": "2024-01-01",
+                "dlq_attempts": "0",
+            },
+        )
         assert await _is_idle(r) is True
 
     @pytest.mark.asyncio
@@ -168,8 +193,10 @@ class TestIsIdle:
         """When group has pending (unACKed) messages, not idle."""
         from lol_pipeline.models import MessageEnvelope
         from lol_pipeline.streams import consume, publish
-        env = MessageEnvelope(source_stream="stream:puuid", type="puuid",
-                             payload={"puuid": "test"}, max_attempts=5)
+
+        env = MessageEnvelope(
+            source_stream="stream:puuid", type="puuid", payload={"puuid": "test"}, max_attempts=5
+        )
         await publish(r, "stream:puuid", env)
         await consume(r, "stream:puuid", "crawlers", "c1", block=0)
         # Message delivered but not ACKed
@@ -195,3 +222,96 @@ class TestPromoteBatchEdgeCases:
         await riot.close()
         # Player should still be in queue
         assert await r.zcard("discover:players") == 1
+
+
+class TestDiscoveryTier3EdgeCases:
+    """Tier 3 — Discovery edge case tests."""
+
+    @pytest.mark.asyncio
+    async def test_promote_auth_error_treated_as_transient(self, r, cfg, log):
+        """AuthError (403) during name resolution is caught as RiotAPIError — left in queue."""
+        await r.zadd("discover:players", {"puuid-auth:na1": 1700000000000.0})
+
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-puuid/puuid-auth"
+            ).mock(return_value=httpx.Response(403))
+            riot = RiotClient("RGAPI-test")
+            promoted = await _promote_batch(r, cfg, log, riot)
+            await riot.close()
+
+        assert promoted == 0
+        # Player should still be in queue (transient error handling)
+        assert await r.zcard("discover:players") == 1
+
+    @pytest.mark.asyncio
+    async def test_is_idle_redis_error_returns_true(self, r):
+        """ResponseError from XINFO GROUPS returns True (stream doesn't exist)."""
+        # Stream doesn't exist yet — ResponseError → returns True
+        assert await _is_idle(r) is True
+
+        # Verify with a real stream that has no groups
+        await r.xadd(
+            "stream:puuid",
+            {
+                "id": "test",
+                "source_stream": "stream:puuid",
+                "type": "puuid",
+                "payload": "{}",
+                "attempts": "0",
+                "max_attempts": "5",
+                "enqueued_at": "2024-01-01",
+                "dlq_attempts": "0",
+            },
+        )
+        # Stream exists, no groups → idle
+        assert await _is_idle(r) is True
+
+
+class TestMainEntryPoint:
+    """Tests for main() bootstrap and teardown."""
+
+    @pytest.mark.asyncio
+    async def test_main__creates_redis_and_starts_loop(self, monkeypatch):
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_r = AsyncMock()
+        call_count = 0
+
+        async def fake_is_idle(*args):
+            nonlocal call_count
+            call_count += 1
+            if call_count > 1:
+                raise KeyboardInterrupt
+            return False
+
+        with (
+            patch("lol_discovery.main.Config") as mock_cfg,
+            patch("lol_discovery.main.get_redis", return_value=mock_r),
+            patch("lol_discovery.main.RiotClient") as mock_riot,
+            patch("lol_discovery.main._is_idle", side_effect=fake_is_idle),
+            patch("lol_discovery.main.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            mock_riot.return_value = AsyncMock()
+            with pytest.raises(KeyboardInterrupt):
+                await main()
+        mock_r.aclose.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_main__keyboard_interrupt__closes_redis(self, monkeypatch):
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_r = AsyncMock()
+        with (
+            patch("lol_discovery.main.Config") as mock_cfg,
+            patch("lol_discovery.main.get_redis", return_value=mock_r),
+            patch("lol_discovery.main.RiotClient") as mock_riot,
+            patch("lol_discovery.main._is_idle", side_effect=KeyboardInterrupt),
+            patch("lol_discovery.main.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            mock_riot.return_value = AsyncMock()
+            with pytest.raises(KeyboardInterrupt):
+                await main()
+        mock_r.aclose.assert_called_once()

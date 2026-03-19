@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from unittest.mock import AsyncMock, patch
 
 import fakeredis.aioredis
 import httpx
@@ -24,6 +25,7 @@ from lol_admin.main import (
     cmd_reseed,
     cmd_stats,
     cmd_system_resume,
+    main,
 )
 
 _DLQ_STREAM = "stream:dlq"
@@ -153,7 +155,9 @@ class TestReseed:
     async def test_reseed(self, r, cfg):
         """AC-06-08: reseed → clears cooldown; publishes to stream:puuid."""
         puuid = "test-puuid-0001"
-        await r.hset(f"player:{puuid}", mapping={"seeded_at": "2024-01-01", "last_crawled_at": "2024-01-01"})
+        await r.hset(
+            f"player:{puuid}", mapping={"seeded_at": "2024-01-01", "last_crawled_at": "2024-01-01"}
+        )
 
         with respx.mock:
             respx.get(
@@ -240,13 +244,17 @@ class TestDispatch:
     async def test_stats_dispatches(self, r, cfg):
         """stats command dispatches to cmd_stats."""
         import argparse
+
         await r.hset("player:stats:p", mapping={"total_games": "5", "win_rate": "0.5000"})
         with respx.mock:
             respx.get(
                 "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Test/NA1"
-            ).mock(return_value=httpx.Response(
-                200, json={"puuid": "p", "gameName": "Test", "tagLine": "NA1"},
-            ))
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": "p", "gameName": "Test", "tagLine": "NA1"},
+                )
+            )
             riot = RiotClient("RGAPI-test")
             args = argparse.Namespace(command="stats", riot_id="Test#NA1", region="na1")
             result = await _dispatch(r, riot, cfg, args)
@@ -257,6 +265,7 @@ class TestDispatch:
     async def test_system_resume_dispatches(self, r, cfg):
         """system-resume command dispatches correctly."""
         import argparse
+
         riot = RiotClient("RGAPI-test")
         args = argparse.Namespace(command="system-resume")
         result = await _dispatch(r, riot, cfg, args)
@@ -267,6 +276,7 @@ class TestDispatch:
     async def test_unknown_command_raises(self, r, cfg):
         """Unknown command raises AssertionError."""
         import argparse
+
         riot = RiotClient("RGAPI-test")
         args = argparse.Namespace(command="nonexistent")
         with pytest.raises(AssertionError, match="unreachable"):
@@ -281,12 +291,114 @@ class TestResolvePuuidApi:
         with respx.mock:
             respx.get(
                 "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Test/NA1"
-            ).mock(return_value=httpx.Response(
-                200, json={"puuid": "resolved-puuid", "gameName": "Test", "tagLine": "NA1"},
-            ))
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": "resolved-puuid", "gameName": "Test", "tagLine": "NA1"},
+                )
+            )
             riot = RiotClient("RGAPI-test")
             result = await _resolve_puuid(riot, "Test#NA1", "na1", r)
             await riot.close()
         assert result == "resolved-puuid"
         # Should be cached now
         assert await r.get("player:name:test#na1") == "resolved-puuid"
+
+
+class TestMainEntryPoint:
+    """Tests for main() CLI parsing and dispatch."""
+
+    @pytest.mark.asyncio
+    async def test_main__stats_command__dispatches(self, monkeypatch):
+        """main(['admin', 'stats', 'Faker#KR1']) → calls _dispatch with command='stats'."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_dispatch = AsyncMock(return_value=0)
+        with (
+            patch("lol_admin.main._dispatch", mock_dispatch),
+            patch("lol_admin.main.get_redis") as mock_redis,
+            patch("lol_admin.main.RiotClient") as mock_riot,
+        ):
+            mock_redis.return_value = AsyncMock()
+            mock_riot.return_value = AsyncMock()
+            result = await main(["admin", "stats", "Faker#KR1"])
+        assert result == 0
+        args = mock_dispatch.call_args[0][3]
+        assert args.command == "stats"
+        assert args.riot_id == "Faker#KR1"
+
+    @pytest.mark.asyncio
+    async def test_main__system_resume__dispatches(self, monkeypatch):
+        """main(['admin', 'system-resume']) → command='system-resume'."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_dispatch = AsyncMock(return_value=0)
+        with (
+            patch("lol_admin.main._dispatch", mock_dispatch),
+            patch("lol_admin.main.get_redis") as mock_redis,
+            patch("lol_admin.main.RiotClient") as mock_riot,
+        ):
+            mock_redis.return_value = AsyncMock()
+            mock_riot.return_value = AsyncMock()
+            result = await main(["admin", "system-resume"])
+        assert result == 0
+        args = mock_dispatch.call_args[0][3]
+        assert args.command == "system-resume"
+
+    @pytest.mark.asyncio
+    async def test_main__dlq_list__dispatches(self, monkeypatch):
+        """main(['admin', 'dlq', 'list']) → command='dlq', dlq_command='list'."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_dispatch = AsyncMock(return_value=0)
+        with (
+            patch("lol_admin.main._dispatch", mock_dispatch),
+            patch("lol_admin.main.get_redis") as mock_redis,
+            patch("lol_admin.main.RiotClient") as mock_riot,
+        ):
+            mock_redis.return_value = AsyncMock()
+            mock_riot.return_value = AsyncMock()
+            result = await main(["admin", "dlq", "list"])
+        assert result == 0
+        args = mock_dispatch.call_args[0][3]
+        assert args.command == "dlq"
+        assert args.dlq_command == "list"
+
+    @pytest.mark.asyncio
+    async def test_main__dlq_replay_all__dispatches(self, monkeypatch):
+        """main(['admin', 'dlq', 'replay', '--all']) → dlq_command='replay', all=True."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_dispatch = AsyncMock(return_value=0)
+        with (
+            patch("lol_admin.main._dispatch", mock_dispatch),
+            patch("lol_admin.main.get_redis") as mock_redis,
+            patch("lol_admin.main.RiotClient") as mock_riot,
+        ):
+            mock_redis.return_value = AsyncMock()
+            mock_riot.return_value = AsyncMock()
+            result = await main(["admin", "dlq", "replay", "--all"])
+        assert result == 0
+        args = mock_dispatch.call_args[0][3]
+        assert args.command == "dlq"
+        assert args.dlq_command == "replay"
+        assert args.all is True
+
+    @pytest.mark.asyncio
+    async def test_main__reseed__dispatches(self, monkeypatch):
+        """main(['admin', 'reseed', 'Faker#KR1']) → command='reseed'."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_dispatch = AsyncMock(return_value=0)
+        with (
+            patch("lol_admin.main._dispatch", mock_dispatch),
+            patch("lol_admin.main.get_redis") as mock_redis,
+            patch("lol_admin.main.RiotClient") as mock_riot,
+        ):
+            mock_redis.return_value = AsyncMock()
+            mock_riot.return_value = AsyncMock()
+            result = await main(["admin", "reseed", "Faker#KR1"])
+        assert result == 0
+        args = mock_dispatch.call_args[0][3]
+        assert args.command == "reseed"
+        assert args.riot_id == "Faker#KR1"

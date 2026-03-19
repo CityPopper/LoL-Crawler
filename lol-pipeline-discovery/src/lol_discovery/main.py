@@ -25,7 +25,10 @@ def _parse_member(member: str) -> tuple[str, str]:
     idx = member.rfind(":")
     if idx == -1:
         return member, "na1"
-    return member[:idx], member[idx + 1 :]
+    puuid, region = member[:idx], member[idx + 1 :]
+    if not puuid:
+        return member, "na1"
+    return puuid, region
 
 
 async def _is_idle(r: aioredis.Redis) -> bool:

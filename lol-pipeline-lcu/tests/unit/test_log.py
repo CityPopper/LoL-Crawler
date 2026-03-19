@@ -20,6 +20,7 @@ class TestLogger:
         logger.handlers.clear()
         handler = logging.StreamHandler()
         from lol_lcu.log import JsonFormatter
+
         handler.setFormatter(JsonFormatter())
         logger.addHandler(handler)
         logger.info("hello world")
