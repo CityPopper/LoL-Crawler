@@ -18,8 +18,6 @@ from redis.exceptions import RedisError
 
 _DELAYED_KEY = "delayed:messages"
 
-_shutdown = False
-
 _BATCH_SIZE = 100
 
 
@@ -47,7 +45,13 @@ async def _tick(r: aioredis.Redis, log: logging.Logger) -> None:
                 dispatched += 1
                 continue
             try:
-                await r.xadd(env.source_stream, env.to_redis_fields())  # type: ignore[arg-type]
+                # NOTE: XADD-then-ZREM is intentionally non-atomic (at-least-once).
+                # If the process crashes between XADD and ZREM, the message is
+                # duplicated (delivered to the stream but remains in the ZSET for
+                # re-delivery on restart). This is acceptable because all downstream
+                # consumers are idempotent. A Lua script could make this atomic but
+                # adds complexity for marginal benefit.
+                await r.xadd(env.source_stream, env.to_redis_fields(), maxlen=10_000, approximate=True)  # type: ignore[arg-type]
                 await r.zrem(_DELAYED_KEY, member)
                 dispatched += 1
                 log.info(
@@ -63,26 +67,30 @@ async def _tick(r: aioredis.Redis, log: logging.Logger) -> None:
             return
 
 
-def _handle_sigterm(_signum: int, _frame: Any) -> None:
-    global _shutdown
-    _shutdown = True
-
-
 async def main() -> None:
     """Delay Scheduler loop — polls delayed:messages every DELAY_SCHEDULER_INTERVAL_MS."""
-    global _shutdown
-    _shutdown = False
-    signal.signal(signal.SIGTERM, _handle_sigterm)
+    shutdown_event = asyncio.Event()
 
     log = get_logger("delay-scheduler")
     cfg = Config()
     r = get_redis(cfg.redis_url)
 
+    import contextlib
+
+    loop = asyncio.get_event_loop()
+    with contextlib.suppress(NotImplementedError, OSError):
+        loop.add_signal_handler(signal.SIGTERM, shutdown_event.set)
+
     interval_s = cfg.delay_scheduler_interval_ms / 1000
     log.info("delay-scheduler started", extra={"interval_ms": cfg.delay_scheduler_interval_ms})
     try:
-        while not _shutdown:
-            await _tick(r, log)
+        while not shutdown_event.is_set():
+            try:
+                await _tick(r, log)
+            except (RedisError, OSError):
+                log.exception("Redis error — retrying in 1s")
+                await asyncio.sleep(1)
+                continue
             await asyncio.sleep(interval_s)
         log.info("SIGTERM received — shutting down gracefully")
     finally:

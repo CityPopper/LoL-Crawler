@@ -76,6 +76,37 @@ class TestClearPriority:
         assert count == 0  # no underflow below 0
 
 
+class TestSetPriorityIdempotency:
+    @pytest.mark.asyncio
+    async def test_set_priority__same_puuid_twice__increments_counter_once(self, r):
+        """Calling set_priority twice for the same PUUID only increments counter once."""
+        count1 = await set_priority(r, "puuid-dup")
+        assert count1 == 1
+
+        count2 = await set_priority(r, "puuid-dup")
+        assert count2 == 1  # still 1, not 2
+
+    @pytest.mark.asyncio
+    async def test_set_priority__same_puuid_twice_then_clear__counter_returns_to_zero(self, r):
+        """After duplicate set + clear, counter must be 0 (no drift)."""
+        await set_priority(r, "puuid-dup")
+        await set_priority(r, "puuid-dup")
+        count = await clear_priority(r, "puuid-dup")
+        assert count == 0  # no permanent drift
+
+    @pytest.mark.asyncio
+    async def test_set_priority__different_puuids__increments_counter_for_each(self, r):
+        """set_priority for distinct PUUIDs increments the counter once per PUUID."""
+        count1 = await set_priority(r, "puuid-a")
+        assert count1 == 1
+
+        count2 = await set_priority(r, "puuid-b")
+        assert count2 == 2
+
+        count3 = await set_priority(r, "puuid-c")
+        assert count3 == 3
+
+
 class TestPriorityCount:
     @pytest.mark.asyncio
     async def test_priority_count__returns_zero_when_unset(self, r):

@@ -213,6 +213,88 @@ class TestRunConsumer:
                 mock_sleep.assert_called_with(1)
 
     @pytest.mark.asyncio
+    async def test_redis_error_in_dispatch_loop_does_not_crash(self, r, log):
+        """C3: RedisError during nack_to_dlq in dispatch loop does not crash run_consumer."""
+        from redis.exceptions import RedisError
+
+        env = MessageEnvelope(
+            source_stream=_STREAM,
+            type="test",
+            payload={"key": "val"},
+            max_attempts=5,
+        )
+        await publish(r, _STREAM, env)
+
+        # _handle_with_retry raises RedisError (from nack_to_dlq or ack internally)
+        dispatch_calls = 0
+
+        async def failing_handle(*args, **kwargs):
+            nonlocal dispatch_calls
+            dispatch_calls += 1
+            raise RedisError("connection lost during nack")
+
+        consume_count = 0
+        original_consume = consume
+
+        async def counting_consume(*args, **kwargs):
+            nonlocal consume_count
+            consume_count += 1
+            if consume_count > 1:
+                await r.set("system:halted", "1")
+                return []
+            return await original_consume(*args, **kwargs)
+
+        with (
+            patch("lol_pipeline.service._handle_with_retry", side_effect=failing_handle),
+            patch("lol_pipeline.service.consume", side_effect=counting_consume),
+            patch("asyncio.sleep", new_callable=AsyncMock),
+        ):
+            await run_consumer(r, _STREAM, _GROUP, "c", handler=AsyncMock(), log=log)
+
+        # Key assertion: run_consumer completed without raising
+        assert dispatch_calls == 1
+
+    @pytest.mark.asyncio
+    async def test_oserror_in_dispatch_loop_does_not_crash(self, r, log):
+        """C3: OSError during ack in dispatch loop does not crash run_consumer."""
+        env = MessageEnvelope(
+            source_stream=_STREAM,
+            type="test",
+            payload={"key": "val"},
+            max_attempts=5,
+        )
+        await publish(r, _STREAM, env)
+
+        # _handle_with_retry raises OSError (simulates connection reset)
+        dispatch_calls = 0
+
+        async def failing_handle(*args, **kwargs):
+            nonlocal dispatch_calls
+            dispatch_calls += 1
+            raise OSError("connection reset")
+
+        consume_count = 0
+        original_consume = consume
+
+        async def counting_consume(*args, **kwargs):
+            nonlocal consume_count
+            consume_count += 1
+            if consume_count > 1:
+                await r.set("system:halted", "1")
+                return []
+            return await original_consume(*args, **kwargs)
+
+        with (
+            patch("lol_pipeline.service._handle_with_retry", side_effect=failing_handle),
+            patch("lol_pipeline.service.consume", side_effect=counting_consume),
+            patch("asyncio.sleep", new_callable=AsyncMock),
+        ):
+            await run_consumer(r, _STREAM, _GROUP, "c", handler=AsyncMock(), log=log)
+
+        # Key assertion: run_consumer completed without raising
+        assert dispatch_calls == 1
+
+    @pytest.mark.asyncio
     async def test_sigterm_sets_shutdown_flag(self, r, log):
         """CQ-7: SIGTERM handler sets shutdown flag, loop exits cleanly."""
         import signal

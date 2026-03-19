@@ -380,6 +380,43 @@ class TestRecoveryRetryAfterEdgeCases:
             await _process(r, cfg, "test-consumer", msg_id, dlq, log)
 
 
+class TestGracefulShutdown:
+    """Recovery uses asyncio.Event for SIGTERM shutdown."""
+
+    @pytest.mark.asyncio
+    async def test_sigterm_stops_main_loop(self, monkeypatch):
+        """Triggering the shutdown event causes main() to exit cleanly."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_r = AsyncMock()
+
+        captured_callbacks: list[object] = []
+
+        async def fake_consume_dlq(*args, **kwargs):
+            if captured_callbacks:
+                cb = captured_callbacks[0]
+                if callable(cb):
+                    cb()  # sets the shutdown_event
+            return []
+
+        def spy_add_signal_handler(sig, callback, *args):
+            captured_callbacks.append(callback)
+
+        mock_loop = AsyncMock()
+        mock_loop.add_signal_handler.side_effect = spy_add_signal_handler
+
+        with (
+            patch("lol_recovery.main.Config") as mock_cfg,
+            patch("lol_recovery.main.get_redis", return_value=mock_r),
+            patch("lol_recovery.main._consume_dlq", side_effect=fake_consume_dlq),
+            patch("lol_recovery.main.asyncio.sleep", new_callable=AsyncMock),
+            patch("lol_recovery.main.asyncio.get_event_loop", return_value=mock_loop),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            await main()  # should exit cleanly, not loop forever
+        mock_r.aclose.assert_called_once()
+
+
 class TestMainLoopRetry:
     """CQ-9: Recovery main loop retries on RedisError/OSError."""
 
@@ -391,18 +428,22 @@ class TestMainLoopRetry:
         mock_r = AsyncMock()
         call_count = 0
 
-        async def fake_consume_dlq(*args):
+        async def fake_consume_dlq(*args, **kwargs):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
                 raise RedisError("connection lost")
             raise KeyboardInterrupt
 
+        mock_loop = AsyncMock()
+        mock_loop.add_signal_handler.return_value = None
+
         with (
             patch("lol_recovery.main.Config") as mock_cfg,
             patch("lol_recovery.main.get_redis", return_value=mock_r),
             patch("lol_recovery.main._consume_dlq", side_effect=fake_consume_dlq),
             patch("lol_recovery.main.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+            patch("lol_recovery.main.asyncio.get_event_loop", return_value=mock_loop),
         ):
             mock_cfg.return_value = Config(_env_file=None)
             with pytest.raises(KeyboardInterrupt):
@@ -422,17 +463,21 @@ class TestMainEntryPoint:
         mock_r = AsyncMock()
         call_count = 0
 
-        async def fake_consume_dlq(*args):
+        async def fake_consume_dlq(*args, **kwargs):
             nonlocal call_count
             call_count += 1
             if call_count > 1:
                 raise KeyboardInterrupt
             return []
 
+        mock_loop = AsyncMock()
+        mock_loop.add_signal_handler.return_value = None
+
         with (
             patch("lol_recovery.main.Config") as mock_cfg,
             patch("lol_recovery.main.get_redis", return_value=mock_r),
             patch("lol_recovery.main._consume_dlq", side_effect=fake_consume_dlq),
+            patch("lol_recovery.main.asyncio.get_event_loop", return_value=mock_loop),
         ):
             mock_cfg.return_value = Config(_env_file=None)
             with pytest.raises(KeyboardInterrupt):
@@ -444,10 +489,15 @@ class TestMainEntryPoint:
         monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
         monkeypatch.setenv("REDIS_URL", "redis://localhost")
         mock_r = AsyncMock()
+
+        mock_loop = AsyncMock()
+        mock_loop.add_signal_handler.return_value = None
+
         with (
             patch("lol_recovery.main.Config") as mock_cfg,
             patch("lol_recovery.main.get_redis", return_value=mock_r),
             patch("lol_recovery.main._consume_dlq", side_effect=KeyboardInterrupt),
+            patch("lol_recovery.main.asyncio.get_event_loop", return_value=mock_loop),
         ):
             mock_cfg.return_value = Config(_env_file=None)
             with pytest.raises(KeyboardInterrupt):

@@ -422,6 +422,121 @@ class TestAnalyzerTier3EdgeCases:
             await _analyze_player(r, cfg, "w1", msg_id, env, log)
 
 
+class TestAnalyzerAtomicCursorAdvancement:
+    """Stats HINCRBY + cursor SET + lock PEXPIRE must be in the same MULTI/EXEC."""
+
+    @pytest.mark.asyncio
+    async def test_cursor_set_inside_stats_pipeline(self, r, cfg, log):
+        """Cursor SET is in the same MULTI/EXEC as HINCRBY — no separate round-trip."""
+        puuid = "test-puuid-0001"
+        await _add_participant(r, "NA1_1", puuid, 1000, kills=5, deaths=1, assists=3)
+        env = _analyze_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        # Track direct SET calls on the redis client (not on a pipeline)
+        direct_set_calls: list[str] = []
+        original_set = r.set
+
+        async def tracking_set(key, *args, **kwargs):
+            direct_set_calls.append(key)
+            return await original_set(key, *args, **kwargs)
+
+        r.set = tracking_set
+
+        await _analyze_player(r, cfg, "my-worker", msg_id, env, log)
+
+        # The cursor SET should NOT appear as a direct call on r —
+        # it should be inside the pipeline transaction.
+        cursor_calls = [k for k in direct_set_calls if "player:stats:cursor" in k]
+        assert cursor_calls == [], (
+            f"Cursor SET was called directly on r (non-atomic): {cursor_calls}. "
+            "It must be inside the MULTI/EXEC pipeline with HINCRBY."
+        )
+        # But cursor should still be advanced correctly
+        cursor = await r.get(f"player:stats:cursor:{puuid}")
+        assert cursor == "1000.0"
+        assert await r.hget(f"player:stats:{puuid}", "total_games") == "1"
+
+    @pytest.mark.asyncio
+    async def test_lock_pexpire_inside_stats_pipeline(self, r, cfg, log):
+        """Lock PEXPIRE is in the same MULTI/EXEC — no separate round-trip."""
+        puuid = "test-puuid-0001"
+        await _add_participant(r, "NA1_1", puuid, 1000)
+        env = _analyze_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        direct_pexpire_calls: list[str] = []
+        original_pexpire = r.pexpire
+
+        async def tracking_pexpire(key, *args, **kwargs):
+            direct_pexpire_calls.append(key)
+            return await original_pexpire(key, *args, **kwargs)
+
+        r.pexpire = tracking_pexpire
+
+        await _analyze_player(r, cfg, "my-worker", msg_id, env, log)
+
+        lock_pexpire_calls = [k for k in direct_pexpire_calls if "player:stats:lock" in k]
+        assert lock_pexpire_calls == [], (
+            f"PEXPIRE was called directly on r: {lock_pexpire_calls}. "
+            "It must be inside the MULTI/EXEC pipeline."
+        )
+        # Lock should still have been released after processing
+        assert await r.exists(f"player:stats:lock:{puuid}") == 0
+
+    @pytest.mark.asyncio
+    async def test_cursor_advances_per_match_atomically(self, r, cfg, log):
+        """With multiple matches, cursor advances after each match's atomic pipeline."""
+        puuid = "test-puuid-0001"
+        await _add_participant(r, "NA1_1", puuid, 1000, kills=2, deaths=1, assists=1)
+        await _add_participant(r, "NA1_2", puuid, 2000, kills=3, deaths=0, assists=2)
+        await _add_participant(r, "NA1_3", puuid, 3000, kills=1, deaths=1, assists=4)
+        env = _analyze_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        await _analyze_player(r, cfg, "my-worker", msg_id, env, log)
+
+        # Cursor should be at the highest score
+        cursor = await r.get(f"player:stats:cursor:{puuid}")
+        assert float(cursor) == 3000.0
+        # All three matches should be counted
+        assert await r.hget(f"player:stats:{puuid}", "total_games") == "3"
+        assert await r.hget(f"player:stats:{puuid}", "total_kills") == "6"
+
+    @pytest.mark.asyncio
+    async def test_source_has_cursor_and_pexpire_in_pipeline_block(self, r, cfg, log):
+        """Source inspection: cursor SET and lock PEXPIRE are inside the pipe block."""
+        import inspect
+        import textwrap
+
+        source = inspect.getsource(_analyze_player)
+        # Find the transaction pipeline block
+        lines = source.splitlines()
+        in_pipe_block = False
+        pipe_indent = 0
+        pipe_contents: list[str] = []
+        for line in lines:
+            stripped = line.lstrip()
+            if "r.pipeline(transaction=True)" in line:
+                in_pipe_block = True
+                pipe_indent = len(line) - len(stripped)
+                continue
+            if in_pipe_block:
+                current_indent = len(line) - len(stripped) if stripped else pipe_indent + 1
+                if current_indent > pipe_indent or not stripped:
+                    pipe_contents.append(stripped)
+                else:
+                    in_pipe_block = False
+
+        pipe_block = "\n".join(pipe_contents)
+        assert "pipe.set(" in pipe_block, (
+            "cursor SET must use pipe.set() inside the transaction pipeline"
+        )
+        assert "pipe.pexpire(" in pipe_block, (
+            "lock PEXPIRE must use pipe.pexpire() inside the transaction pipeline"
+        )
+
+
 class TestAnalyzerPipelineContextManager:
     """Fix 4: Stats pipeline uses async context manager for proper cleanup."""
 

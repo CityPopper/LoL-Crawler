@@ -13,7 +13,8 @@ from lol_pipeline.config import Config
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import DLQEnvelope, MessageEnvelope
 from lol_pipeline.redis_client import get_redis
-from lol_pipeline.riot_api import PLATFORM_TO_REGION, NotFoundError, RiotClient
+from lol_pipeline.resolve import resolve_puuid
+from lol_pipeline.riot_api import PLATFORM_TO_REGION, RiotClient
 
 _log = get_logger("admin")
 
@@ -52,10 +53,6 @@ def _region_from_match_id(match_id: str) -> str:
     return prefix if prefix in PLATFORM_TO_REGION else "na1"
 
 
-def _name_cache_key(game_name: str, tag_line: str) -> str:
-    return f"player:name:{game_name.lower()}#{tag_line.lower()}"
-
-
 async def _resolve_puuid(
     riot: RiotClient,
     riot_id: str,
@@ -66,19 +63,16 @@ async def _resolve_puuid(
         print(f"error: invalid Riot ID — expected GameName#TagLine: {riot_id}", file=sys.stderr)
         return None
     game_name, tag_line = riot_id.split("#", 1)
-    if r is not None:
-        cached: str | None = await r.get(_name_cache_key(game_name, tag_line))
-        if cached:
-            return cached
-    try:
-        account = await riot.get_account_by_riot_id(game_name, tag_line, region)
-        puuid = str(account["puuid"])
-        if r is not None:
-            await r.set(_name_cache_key(game_name, tag_line), puuid)
-        return puuid
-    except NotFoundError:
-        print(f"error: player not found: {riot_id}", file=sys.stderr)
-        return None
+    if r is None:
+        from lol_pipeline.riot_api import NotFoundError
+
+        try:
+            account = await riot.get_account_by_riot_id(game_name, tag_line, region)
+            return str(account["puuid"])
+        except NotFoundError:
+            print(f"error: player not found: {riot_id}", file=sys.stderr)
+            return None
+    return await resolve_puuid(r, riot, game_name, tag_line, region, _log)
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +140,7 @@ async def cmd_dlq_replay(r: aioredis.Redis, cfg: Config, args: argparse.Namespac
         return 1
     for entry_id, dlq in targets:
         envelope = _make_replay_envelope(dlq, cfg.max_attempts)
-        await r.xadd(dlq.original_stream, envelope.to_redis_fields())  # type: ignore[arg-type]
+        await r.xadd(dlq.original_stream, envelope.to_redis_fields(), maxlen=10_000, approximate=True)  # type: ignore[arg-type]
         await r.xdel(_STREAM_DLQ, entry_id)
         print(f"replayed {entry_id} → {dlq.original_stream}")
     return 0
@@ -182,7 +176,7 @@ async def cmd_replay_parse(r: aioredis.Redis, cfg: Config, args: argparse.Namesp
             payload={"match_id": match_id, "region": region},
             max_attempts=cfg.max_attempts,
         )
-        await r.xadd(_STREAM_PARSE, envelope.to_redis_fields())  # type: ignore[arg-type]
+        await r.xadd(_STREAM_PARSE, envelope.to_redis_fields(), maxlen=10_000, approximate=True)  # type: ignore[arg-type]
     print(f"replayed {len(match_ids)} entries to {_STREAM_PARSE}")
     return 0
 
@@ -196,7 +190,7 @@ async def cmd_replay_fetch(r: aioredis.Redis, cfg: Config, args: argparse.Namesp
         payload={"match_id": match_id, "region": region},
         max_attempts=cfg.max_attempts,
     )
-    await r.xadd(_STREAM_MATCH_ID, envelope.to_redis_fields())  # type: ignore[arg-type]
+    await r.xadd(_STREAM_MATCH_ID, envelope.to_redis_fields(), maxlen=10_000, approximate=True)  # type: ignore[arg-type]
     print(f"enqueued {match_id} → {_STREAM_MATCH_ID}")
     return 0
 
@@ -234,7 +228,7 @@ async def cmd_reseed(
         },
         max_attempts=cfg.max_attempts,
     )
-    entry_id = await r.xadd(_STREAM_PUUID, envelope.to_redis_fields())  # type: ignore[arg-type]
+    entry_id = await r.xadd(_STREAM_PUUID, envelope.to_redis_fields(), maxlen=10_000, approximate=True)  # type: ignore[arg-type]
     print(f"reseeded {args.riot_id} → {_STREAM_PUUID} ({entry_id})")
     return 0
 

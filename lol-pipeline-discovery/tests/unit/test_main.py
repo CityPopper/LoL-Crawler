@@ -12,7 +12,9 @@ import respx
 from lol_pipeline.config import Config
 from lol_pipeline.riot_api import RiotClient
 
-from lol_discovery.main import _is_idle, _parse_member, _promote_batch, main
+from redis.exceptions import RedisError
+
+from lol_discovery.main import _is_idle, _parse_member, _promote_batch, _resolve_names, main
 
 
 @pytest.fixture
@@ -32,6 +34,39 @@ def cfg(monkeypatch):
 @pytest.fixture
 def log():
     return logging.getLogger("test-discovery")
+
+
+class TestResolveNamesHmget:
+    """Perf: _resolve_names uses HMGET (1 round-trip) instead of 2 HGET calls."""
+
+    @pytest.mark.asyncio
+    async def test_uses_hmget_for_name_resolution(self, r, log):
+        """When both game_name and tag_line exist, HMGET returns both in one call."""
+        await r.hset(
+            "player:puuid-hmget",
+            mapping={"game_name": "HmgetPlayer", "tag_line": "EUW1"},
+        )
+        riot = RiotClient("RGAPI-test")
+        result = await _resolve_names(r, riot, "puuid-hmget", "euw1", log)
+        await riot.close()
+        assert result == ("HmgetPlayer", "EUW1")
+
+    @pytest.mark.asyncio
+    async def test_hmget_returns_none_when_names_missing(self, r, log):
+        """When names not backfilled, HMGET returns [None, None] and falls through to API."""
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-puuid/puuid-noname"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": "puuid-noname", "gameName": "ApiName", "tagLine": "001"},
+                )
+            )
+            riot = RiotClient("RGAPI-test")
+            result = await _resolve_names(r, riot, "puuid-noname", "na1", log)
+            await riot.close()
+        assert result == ("ApiName", "001")
 
 
 class TestPromoteBatchNames:
@@ -327,20 +362,31 @@ class TestPromoteBatchOrdering:
 
 
 class TestGracefulShutdown:
-    """CQ-13: Discovery checks _shutdown flag in main loop."""
+    """CQ-13: Discovery uses asyncio.Event for shutdown."""
 
     @pytest.mark.asyncio
     async def test_sigterm_stops_main_loop(self, monkeypatch):
-        """Setting _shutdown=True causes main() to exit cleanly."""
+        """Triggering the shutdown event causes main() to exit cleanly."""
         monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
         monkeypatch.setenv("REDIS_URL", "redis://localhost")
         mock_r = AsyncMock()
 
-        import lol_discovery.main as mod
+        # Capture the shutdown_event set method via add_signal_handler spy
+        captured_callbacks: list[object] = []
 
         async def fake_is_idle(*args):
-            mod._shutdown = True  # simulate SIGTERM handler
+            # Fire the captured SIGTERM handler on first call
+            if captured_callbacks:
+                cb = captured_callbacks[0]
+                if callable(cb):
+                    cb()  # sets the shutdown_event
             return False
+
+        def spy_add_signal_handler(sig, callback, *args):
+            captured_callbacks.append(callback)
+
+        mock_loop = AsyncMock()
+        mock_loop.add_signal_handler.side_effect = spy_add_signal_handler
 
         with (
             patch("lol_discovery.main.Config") as mock_cfg,
@@ -348,12 +394,54 @@ class TestGracefulShutdown:
             patch("lol_discovery.main.RiotClient") as mock_riot,
             patch("lol_discovery.main._is_idle", side_effect=fake_is_idle),
             patch("lol_discovery.main.asyncio.sleep", new_callable=AsyncMock),
-            patch("lol_discovery.main.signal.signal"),
+            patch("lol_discovery.main.asyncio.get_event_loop", return_value=mock_loop),
         ):
             mock_cfg.return_value = Config(_env_file=None)
             mock_riot.return_value = AsyncMock()
             await main()  # should exit cleanly, not loop forever
         mock_r.aclose.assert_called_once()
+
+
+class TestShutdownEventPattern:
+    """Architecture: discovery uses asyncio.Event instead of module-level global."""
+
+    @pytest.mark.asyncio
+    async def test_no_module_level_shutdown_global(self):
+        """The _shutdown global should no longer exist in the module."""
+        import lol_discovery.main as mod
+
+        assert not hasattr(mod, "_shutdown"), "Module-level _shutdown global should be removed"
+
+    @pytest.mark.asyncio
+    async def test_signal_handler_registered_via_loop(self, monkeypatch):
+        """main() registers SIGTERM via loop.add_signal_handler, not signal.signal."""
+        import signal as sig_mod
+
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_r = AsyncMock()
+
+        registered_signals: list[int] = []
+
+        def spy_add_signal_handler(signum, callback, *args):
+            registered_signals.append(signum)
+            callback()  # immediately set to stop the loop
+
+        mock_loop = AsyncMock()
+        mock_loop.add_signal_handler.side_effect = spy_add_signal_handler
+
+        with (
+            patch("lol_discovery.main.Config") as mock_cfg,
+            patch("lol_discovery.main.get_redis", return_value=mock_r),
+            patch("lol_discovery.main.RiotClient") as mock_riot,
+            patch("lol_discovery.main.asyncio.sleep", new_callable=AsyncMock),
+            patch("lol_discovery.main.asyncio.get_event_loop", return_value=mock_loop),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            mock_riot.return_value = AsyncMock()
+            await main()
+
+        assert sig_mod.SIGTERM in registered_signals
 
 
 class TestMainEntryPoint:
@@ -373,12 +461,16 @@ class TestMainEntryPoint:
                 raise KeyboardInterrupt
             return False
 
+        mock_loop = AsyncMock()
+        mock_loop.add_signal_handler.return_value = None
+
         with (
             patch("lol_discovery.main.Config") as mock_cfg,
             patch("lol_discovery.main.get_redis", return_value=mock_r),
             patch("lol_discovery.main.RiotClient") as mock_riot,
             patch("lol_discovery.main._is_idle", side_effect=fake_is_idle),
             patch("lol_discovery.main.asyncio.sleep", new_callable=AsyncMock),
+            patch("lol_discovery.main.asyncio.get_event_loop", return_value=mock_loop),
         ):
             mock_cfg.return_value = Config(_env_file=None)
             mock_riot.return_value = AsyncMock()
@@ -391,15 +483,95 @@ class TestMainEntryPoint:
         monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
         monkeypatch.setenv("REDIS_URL", "redis://localhost")
         mock_r = AsyncMock()
+
+        mock_loop = AsyncMock()
+        mock_loop.add_signal_handler.return_value = None
+
         with (
             patch("lol_discovery.main.Config") as mock_cfg,
             patch("lol_discovery.main.get_redis", return_value=mock_r),
             patch("lol_discovery.main.RiotClient") as mock_riot,
             patch("lol_discovery.main._is_idle", side_effect=KeyboardInterrupt),
             patch("lol_discovery.main.asyncio.sleep", new_callable=AsyncMock),
+            patch("lol_discovery.main.asyncio.get_event_loop", return_value=mock_loop),
         ):
             mock_cfg.return_value = Config(_env_file=None)
             mock_riot.return_value = AsyncMock()
             with pytest.raises(KeyboardInterrupt):
                 await main()
+        mock_r.aclose.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_main__redis_error__logs_and_retries(self, monkeypatch):
+        """C4: RedisError in main loop is caught, logged, and retried after 1s sleep."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_r = AsyncMock()
+
+        call_count = 0
+
+        async def failing_then_shutdown_is_idle(*args):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RedisError("connection lost")
+            # Second call: trigger shutdown via KeyboardInterrupt
+            raise KeyboardInterrupt
+
+        mock_loop = AsyncMock()
+        mock_loop.add_signal_handler.return_value = None
+
+        with (
+            patch("lol_discovery.main.Config") as mock_cfg,
+            patch("lol_discovery.main.get_redis", return_value=mock_r),
+            patch("lol_discovery.main.RiotClient") as mock_riot,
+            patch("lol_discovery.main._is_idle", side_effect=failing_then_shutdown_is_idle),
+            patch("lol_discovery.main.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+            patch("lol_discovery.main.asyncio.get_event_loop", return_value=mock_loop),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            mock_riot.return_value = AsyncMock()
+            with pytest.raises(KeyboardInterrupt):
+                await main()
+
+        # The error-recovery sleep(1) must have been called
+        mock_sleep.assert_any_call(1)
+        # Loop continued to the second _is_idle call (didn't crash on first)
+        assert call_count == 2
+        mock_r.aclose.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_main__os_error__logs_and_retries(self, monkeypatch):
+        """C4: OSError in main loop is caught and retried, same as RedisError."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_r = AsyncMock()
+
+        call_count = 0
+
+        async def failing_then_shutdown_is_idle(*args):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise OSError("network unreachable")
+            raise KeyboardInterrupt
+
+        mock_loop = AsyncMock()
+        mock_loop.add_signal_handler.return_value = None
+
+        with (
+            patch("lol_discovery.main.Config") as mock_cfg,
+            patch("lol_discovery.main.get_redis", return_value=mock_r),
+            patch("lol_discovery.main.RiotClient") as mock_riot,
+            patch("lol_discovery.main._is_idle", side_effect=failing_then_shutdown_is_idle),
+            patch("lol_discovery.main.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+            patch("lol_discovery.main.asyncio.get_event_loop", return_value=mock_loop),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            mock_riot.return_value = AsyncMock()
+            with pytest.raises(KeyboardInterrupt):
+                await main()
+
+        mock_sleep.assert_any_call(1)
+        assert call_count == 2
         mock_r.aclose.assert_called_once()

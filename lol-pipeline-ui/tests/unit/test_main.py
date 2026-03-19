@@ -23,6 +23,7 @@ from lol_ui.main import (
     _STATS_ORDER,
     _aggregate_by_mode,
     _badge,
+    _badge_html,
     _depth_badge,
     _empty_state,
     _format_stat_value,
@@ -259,12 +260,43 @@ class TestBadge:
         with pytest.raises(ValueError, match="Invalid badge variant"):
             _badge("nonexistent", "text")
 
-    def test_raw_html_preserved(self):
-        result = _badge("success", "&#10003; Verified")
-        assert "&#10003; Verified" in result
+    def test_auto_escapes_html_in_text(self):
+        """SEC: _badge auto-escapes text to prevent XSS."""
+        result = _badge("success", "<script>alert(1)</script>")
+        assert "<script>" not in result
+        assert html.escape("<script>alert(1)</script>") in result
 
     def test_returns_span(self):
         result = _badge("info", "test")
+        assert result.startswith("<span")
+        assert result.endswith("</span>")
+
+    def test_plain_text_preserved(self):
+        result = _badge("info", "OK")
+        assert "OK" in result
+
+    def test_ampersand_escaped(self):
+        result = _badge("info", "A & B")
+        assert "&amp;" in result
+
+
+class TestBadgeHtml:
+    def test_valid_variants(self):
+        for variant in _BADGE_VARIANTS:
+            result = _badge_html(variant, "text")
+            assert f'class="badge badge--{variant}"' in result
+
+    def test_invalid_variant_raises(self):
+        with pytest.raises(ValueError, match="Invalid badge variant"):
+            _badge_html("nonexistent", "text")
+
+    def test_raw_html_preserved(self):
+        """_badge_html preserves raw HTML entities."""
+        result = _badge_html("success", "&#10003; Verified")
+        assert "&#10003; Verified" in result
+
+    def test_returns_span(self):
+        result = _badge_html("info", "test")
         assert result.startswith("<span")
         assert result.endswith("</span>")
 
@@ -1340,9 +1372,11 @@ class TestNameCacheTTLInUI:
 
         await show_stats(request)
 
-        # Verify set was called with ex=86400
+        # Verify set was called with cache TTL
+        from lol_pipeline.resolve import _CACHE_TTL_S
+
         mock_r.set.assert_any_call(
-            "player:name:test#na1", "test-puuid-ttl", ex=86400
+            "player:name:test#na1", "test-puuid-ttl", ex=_CACHE_TTL_S
         )
 
 
@@ -1556,6 +1590,244 @@ class TestDlqBrowser:
         assert "fetcher" in body
         assert "NA1_123" in body
         assert 'class="badge badge--error"' in body
+        await r.aclose()
+
+
+class TestDlqBrowserEdgeCases:
+    """Additional DLQ route edge cases."""
+
+    @pytest.mark.asyncio
+    async def test_show_dlq__truncates_long_payload(self):
+        """Payloads longer than 80 chars are truncated with '...'."""
+        import fakeredis.aioredis
+        from lol_pipeline.models import DLQEnvelope
+
+        from lol_ui.main import show_dlq
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"match_id": "NA1_" + "x" * 200, "region": "na1"},
+            attempts=1,
+            max_attempts=5,
+            failure_code="parse_error",
+            failure_reason="bad data",
+            failed_by="parser",
+            original_stream="stream:parse",
+            original_message_id="orig-1",
+        )
+        await r.xadd("stream:dlq", dlq.to_redis_fields())
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+
+        resp = await show_dlq(request)
+        body = resp.body.decode()
+
+        assert "..." in body
+        assert "parse_error" in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_show_dlq__html_escapes_failure_code(self):
+        """Failure code with HTML is escaped."""
+        import fakeredis.aioredis
+        from lol_pipeline.models import DLQEnvelope
+
+        from lol_ui.main import show_dlq
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"match_id": "NA1_1"},
+            attempts=1,
+            max_attempts=5,
+            failure_code="<script>xss</script>",
+            failure_reason="test",
+            failed_by="test",
+            original_stream="stream:match_id",
+            original_message_id="orig-2",
+        )
+        await r.xadd("stream:dlq", dlq.to_redis_fields())
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+
+        resp = await show_dlq(request)
+        body = resp.body.decode()
+
+        assert "<script>xss</script>" not in body
+        assert html.escape("<script>xss</script>") in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_show_dlq__shows_up_to_50_entries(self):
+        """DLQ page caps at 50 entries."""
+        import fakeredis.aioredis
+        from lol_pipeline.models import DLQEnvelope
+
+        from lol_ui.main import show_dlq
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        for i in range(55):
+            dlq = DLQEnvelope(
+                source_stream="stream:dlq",
+                type="dlq",
+                payload={"match_id": f"NA1_{i}"},
+                attempts=1,
+                max_attempts=5,
+                failure_code="http_429",
+                failure_reason="rate limited",
+                failed_by="fetcher",
+                original_stream="stream:match_id",
+                original_message_id=f"orig-{i}",
+            )
+            await r.xadd("stream:dlq", dlq.to_redis_fields())
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+
+        resp = await show_dlq(request)
+        body = resp.body.decode()
+
+        # Count the number of <tr> rows in the table (minus header)
+        row_count = body.count("<tr><td>")
+        assert row_count == 50
+        await r.aclose()
+
+
+class TestStreamsFragmentHtmlEdgeCases:
+    """Additional _streams_fragment_html edge cases."""
+
+    @pytest.mark.asyncio
+    async def test_streams_fragment__shows_stream_depths(self):
+        """Fragment shows actual stream depths when streams have entries."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import _streams_fragment_html
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        # Add some entries to a stream
+        for i in range(5):
+            await r.xadd("stream:puuid", {"dummy": str(i)})
+
+        result = await _streams_fragment_html(r)
+        assert "<td>5</td>" in result
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_streams_fragment__delayed_messages_count(self):
+        """Fragment shows delayed:messages ZSET count."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import _streams_fragment_html
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.zadd("delayed:messages", {"msg1": 1000.0, "msg2": 2000.0})
+
+        result = await _streams_fragment_html(r)
+        assert "delayed:messages" in result
+        assert "<td>2</td>" in result
+        await r.aclose()
+
+
+class TestStatsMatchesEdgeCases:
+    """Additional /stats/matches route edge cases."""
+
+    @pytest.mark.asyncio
+    async def test_stats_matches__empty_puuid_returns_error(self):
+        """Missing puuid returns error message."""
+        from unittest.mock import MagicMock
+
+        from lol_ui.main import stats_matches
+
+        request = MagicMock()
+        request.query_params = {"puuid": "", "region": "na1", "riot_id": "T#1", "page": "0"}
+        request.app.state.r = MagicMock()
+
+        resp = await stats_matches(request)
+        assert resp.status_code == 200
+        assert "Missing puuid" in resp.body.decode()
+
+    @pytest.mark.asyncio
+    async def test_stats_matches__invalid_puuid_returns_400(self):
+        """Invalid puuid format returns 400."""
+        from unittest.mock import MagicMock
+
+        from lol_ui.main import stats_matches
+
+        request = MagicMock()
+        request.query_params = {
+            "puuid": "../../etc/passwd",
+            "region": "na1",
+            "riot_id": "T#1",
+            "page": "0",
+        }
+        request.app.state.r = MagicMock()
+
+        resp = await stats_matches(request)
+        assert resp.status_code == 400
+        assert "Invalid PUUID" in resp.body.decode()
+
+    @pytest.mark.asyncio
+    async def test_stats_matches__invalid_page_defaults_to_zero(self):
+        """Non-numeric page defaults to 0."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import stats_matches
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.query_params = {
+            "puuid": "validpuuid123",
+            "region": "na1",
+            "riot_id": "T#1",
+            "page": "abc",
+        }
+        request.app.state.r = r
+
+        resp = await stats_matches(request)
+        assert resp.status_code == 200
+        assert "No match history" in resp.body.decode()
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_stats_matches__no_matches_returns_no_history(self):
+        """PUUID with no matches returns 'No match history'."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import stats_matches
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.query_params = {
+            "puuid": "emptyplayer",
+            "region": "na1",
+            "riot_id": "T#1",
+            "page": "0",
+        }
+        request.app.state.r = r
+
+        resp = await stats_matches(request)
+        assert resp.status_code == 200
+        assert "No match history" in resp.body.decode()
         await r.aclose()
 
 

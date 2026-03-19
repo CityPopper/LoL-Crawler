@@ -9,9 +9,11 @@ _COUNTER_KEY = "system:priority_count"
 _TTL_SECONDS = 86400  # 24 hours
 
 _SET_INCR_LUA = """
-redis.call("set", KEYS[1], ARGV[1], "EX", ARGV[2])
-redis.call("incr", KEYS[2])
-return redis.call("get", KEYS[2])
+local created = redis.call("SET", KEYS[1], ARGV[1], "NX", "EX", ARGV[2])
+if created then
+    redis.call("INCR", KEYS[2])
+end
+return redis.call("GET", KEYS[2])
 """
 
 _DEL_DECR_LUA = """

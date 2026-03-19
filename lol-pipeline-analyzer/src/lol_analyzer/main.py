@@ -9,6 +9,7 @@ import uuid
 
 import redis.asyncio as aioredis
 from lol_pipeline.config import Config
+from lol_pipeline.helpers import is_system_halted
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.priority import clear_priority
@@ -54,7 +55,7 @@ async def _analyze_player(  # noqa: C901
     envelope: MessageEnvelope,
     log: logging.Logger,
 ) -> None:
-    if await r.get("system:halted"):
+    if await is_system_halted(r):
         log.critical("system halted — skipping message")
         return
 
@@ -101,11 +102,11 @@ async def _analyze_player(  # noqa: C901
                             pipe.zincrby(f"player:champions:{puuid}", 1, champ)
                         if role := p.get("role"):
                             pipe.zincrby(f"player:roles:{puuid}", 1, role)
+                        # Cursor + lock refresh in same MULTI/EXEC as stats —
+                        # atomic: either all commit or none, preventing double-count on crash.
+                        pipe.set(f"player:stats:cursor:{puuid}", str(score))
+                        pipe.pexpire(lock_key, lock_ttl_ms)
                         await pipe.execute()
-                # Advance cursor per match so a crash mid-loop doesn't cause re-processing
-                await r.set(f"player:stats:cursor:{puuid}", str(score))
-                # Refresh lock TTL to prevent expiry during long processing
-                await r.pexpire(lock_key, lock_ttl_ms)
             log.info("analyzed", extra={"puuid": puuid, "new_matches": len(new_matches)})
         else:
             log.info("no new matches to process", extra={"puuid": puuid})

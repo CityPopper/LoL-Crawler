@@ -16,12 +16,10 @@ from lol_pipeline.priority import priority_count
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.riot_api import AuthError, NotFoundError, RiotAPIError, RiotClient
 from lol_pipeline.streams import publish
-from redis.exceptions import ResponseError
+from redis.exceptions import RedisError, ResponseError
 
 _STREAM_PUUID = "stream:puuid"
 _DISCOVER_KEY = "discover:players"
-
-_shutdown = False
 
 
 def _parse_member(member: str) -> tuple[str, str]:
@@ -69,8 +67,7 @@ async def _resolve_names(
     Returns None when the player permanently cannot be resolved (404).
     Raises RiotAPIError on transient failures so the caller can retry.
     """
-    game_name: str | None = await r.hget(f"player:{puuid}", "game_name")  # type: ignore[misc]
-    tag_line: str | None = await r.hget(f"player:{puuid}", "tag_line")  # type: ignore[misc]
+    game_name, tag_line = await r.hmget(f"player:{puuid}", ["game_name", "tag_line"])
     if game_name and tag_line:
         return game_name, tag_line
 
@@ -150,21 +147,20 @@ async def _promote_batch(
     return promoted
 
 
-def _handle_sigterm(_signum: int, _frame: Any) -> None:
-    global _shutdown
-    _shutdown = True
-
-
 async def main() -> None:
     """Discovery loop — runs only when stream:puuid is idle."""
-    global _shutdown
-    _shutdown = False
-    signal.signal(signal.SIGTERM, _handle_sigterm)
+    shutdown_event = asyncio.Event()
 
     log = get_logger("discovery")
     cfg = Config()
     r = get_redis(cfg.redis_url)
     riot = RiotClient(cfg.riot_api_key, r=r)
+
+    loop = asyncio.get_event_loop()
+    import contextlib
+
+    with contextlib.suppress(NotImplementedError, OSError):
+        loop.add_signal_handler(signal.SIGTERM, shutdown_event.set)
 
     interval_s = cfg.discovery_poll_interval_ms / 1000
     log.info(
@@ -177,21 +173,26 @@ async def main() -> None:
     polls_since_log = 0
     heartbeat_polls = int(60 / interval_s)  # log roughly every 60s
     try:
-        while not _shutdown:
-            idle = await _is_idle(r)
-            if idle:
-                promoted = await _promote_batch(r, cfg, log, riot)
-                if promoted == 0:
+        while not shutdown_event.is_set():
+            try:
+                idle = await _is_idle(r)
+                if idle:
+                    promoted = await _promote_batch(r, cfg, log, riot)
+                    if promoted == 0:
+                        polls_since_log += 1
+                else:
                     polls_since_log += 1
-            else:
-                polls_since_log += 1
-            if polls_since_log >= heartbeat_polls:
-                queue_size: int = await r.zcard(_DISCOVER_KEY)
-                log.debug(
-                    "heartbeat",
-                    extra={"idle": idle, "queue": queue_size},
-                )
-                polls_since_log = 0
+                if polls_since_log >= heartbeat_polls:
+                    queue_size: int = await r.zcard(_DISCOVER_KEY)
+                    log.debug(
+                        "heartbeat",
+                        extra={"idle": idle, "queue": queue_size},
+                    )
+                    polls_since_log = 0
+            except (RedisError, OSError):
+                log.exception("Redis error — retrying in 1s")
+                await asyncio.sleep(1)
+                continue
             await asyncio.sleep(interval_s)
         log.info("SIGTERM received — shutting down gracefully")
     finally:

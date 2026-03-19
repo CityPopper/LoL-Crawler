@@ -59,6 +59,7 @@ logs/
 # Screenshots (for UI review — not committed)
 screenshots/
 
-# Match data — individual JSON files (use `just consolidate` to create JSONL bundles)
+# Match data — large output files don't belong in git
 lol-pipeline-fetcher/match-data/**/*.json
+lol-pipeline-fetcher/match-data/**/*.jsonl
 !lol-pipeline-fetcher/match-data/**/.gitkeep
