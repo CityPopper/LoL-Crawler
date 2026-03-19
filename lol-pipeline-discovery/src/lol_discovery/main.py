@@ -162,7 +162,7 @@ async def main() -> None:
     signal.signal(signal.SIGTERM, _handle_sigterm)
 
     log = get_logger("discovery")
-    cfg = Config()
+    cfg = Config()  # type: ignore[call-arg]  # pydantic-settings reads env
     r = get_redis(cfg.redis_url)
     riot = RiotClient(cfg.riot_api_key, r=r)
 
