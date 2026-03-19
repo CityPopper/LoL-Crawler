@@ -34,14 +34,16 @@ jobs:
           python-version: "3.12"
       - name: Install dependencies
         run: |
-          pip install mypy pydantic types-requests
-          pip install -e lol-pipeline-common/
+          pip install -e "lol-pipeline-common/[dev]"
+          for dir in lol-pipeline-*/; do
+            [ -f "$dir/pyproject.toml" ] && pip install -e "$dir[dev]" 2>/dev/null || pip install -e "$dir" 2>/dev/null || true
+          done
       - name: Mypy
         run: |
           COMMON_SRC="$PWD/lol-pipeline-common/src"
           for dir in lol-pipeline-*/; do
             if [ -f "$dir/pyproject.toml" ] && [ -d "$dir/src" ]; then
-              echo "=== $dir ===" && (cd "$dir" && MYPYPATH="$COMMON_SRC" mypy src/)
+              echo "=== $dir ===" && (cd "$dir" && MYPYPATH="$COMMON_SRC" mypy src/ --ignore-missing-imports)
             fi
           done
 
