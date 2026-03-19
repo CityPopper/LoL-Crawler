@@ -10,8 +10,16 @@ from unittest.mock import patch
 import pytest
 
 from lol_ui.main import (
+    _BADGE_VARIANTS,
+    _CSS,
+    _NAV_ITEMS,
     _PUUID_RE,
+    _STATS_ORDER,
     _aggregate_by_mode,
+    _badge,
+    _depth_badge,
+    _empty_state,
+    _format_stat_value,
     _lcu_stats_section,
     _load_lcu_data,
     _match_history_html,
@@ -100,6 +108,15 @@ class TestLcuStatsSection:
         html_out = _lcu_stats_section(matches)
         assert "UNKNOWN" in html_out
 
+    def test_uses_badge_for_unverified(self):
+        html_out = _lcu_stats_section([{"win": True, "game_mode": "CLASSIC"}])
+        assert "badge badge--warning" in html_out
+        assert "Unverified" in html_out
+
+    def test_tables_wrapped_in_scroll_div(self):
+        html_out = _lcu_stats_section([{"win": True, "game_mode": "CLASSIC"}])
+        assert html_out.count('class="table-scroll"') == 2
+
 
 class TestMatchHistorySection:
     def test_renders_with_safe_values(self):
@@ -114,6 +131,27 @@ class TestMatchHistorySection:
         assert "p<script>" not in html_out
         assert html.escape("p<script>") in html_out
         assert html.escape("r&gn") in html_out
+
+    def test_no_inline_onclick(self):
+        """SEC: match history section must not contain inline onclick handlers."""
+        html_out = _match_history_section("puuid-abc", "na1", "Player#NA1")
+        assert "onclick=" not in html_out
+
+    def test_uses_data_attributes(self):
+        """SEC: match history uses data-* attributes for event delegation."""
+        html_out = _match_history_section("puuid-abc", "na1", "Player#NA1")
+        assert 'data-puuid="puuid-abc"' in html_out
+        assert 'data-region="na1"' in html_out
+        assert 'data-riot-id="Player#NA1"' in html_out
+        assert 'data-page="0"' in html_out
+        assert 'class="load-matches"' in html_out
+
+    def test_event_delegation_script(self):
+        """SEC: match history includes event delegation JS."""
+        html_out = _match_history_section("puuid-abc", "na1", "Player#NA1")
+        assert "document.addEventListener" in html_out
+        assert "closest('.load-matches')" in html_out
+        assert "dataset.puuid" in html_out
 
 
 class TestPage:
@@ -132,6 +170,110 @@ class TestPage:
         assert "/lcu" in result
         assert "/logs" in result
 
+    def test_dark_color_scheme_meta(self):
+        result = _page("X", "")
+        assert '<meta name="color-scheme" content="dark">' in result
+
+    def test_css_uses_custom_properties(self):
+        result = _page("X", "")
+        assert "--color-bg: #1a1a2e" in result
+        assert "--color-surface: #16213e" in result
+        assert "--color-text: #e0e0e0" in result
+
+    def test_nav_active_state__stats(self):
+        result = _page("X", "", path="/stats")
+        assert 'href="/stats" class="active"' in result
+        # Other links should not be active
+        assert 'href="/players" class="active"' not in result
+
+    def test_nav_active_state__players(self):
+        result = _page("X", "", path="/players")
+        assert 'href="/players" class="active"' in result
+        assert 'href="/stats" class="active"' not in result
+
+    def test_nav_no_active_without_path(self):
+        result = _page("X", "")
+        assert 'class="active"' not in result
+
+    def test_nav_active_state__all_routes(self):
+        for href, _label in _NAV_ITEMS:
+            result = _page("X", "", path=href)
+            assert f'href="{href}" class="active"' in result
+
+
+class TestCssConstant:
+    def test_css_contains_design_tokens(self):
+        assert "--color-bg:" in _CSS
+        assert "--color-surface:" in _CSS
+        assert "--font-mono:" in _CSS
+        assert "--space-md:" in _CSS
+        assert "--radius:" in _CSS
+
+    def test_css_contains_component_classes(self):
+        assert ".card" in _CSS
+        assert ".badge" in _CSS
+        assert ".banner" in _CSS
+        assert ".stat" in _CSS
+        assert ".form-inline" in _CSS
+        assert ".table-scroll" in _CSS
+        assert ".empty-state" in _CSS
+
+    def test_css_contains_responsive_breakpoints(self):
+        assert "@media (min-width: 768px)" in _CSS
+        assert "@media (min-width: 1440px)" in _CSS
+
+    def test_css_contains_log_viewer_styles(self):
+        assert ".log-wrap" in _CSS
+        assert ".log-line" in _CSS
+        assert ".log-badge" in _CSS
+        assert ".log-ts" in _CSS
+
+    def test_css_dark_log_colors__no_light_artifacts(self):
+        assert "#ffe0e0" not in _CSS
+        assert "#fff0f0" not in _CSS
+        assert "#fffbe6" not in _CSS
+        assert "#f0f0f0" not in _CSS
+
+    def test_css_accessibility(self):
+        assert ":focus-visible" in _CSS
+        assert "prefers-reduced-motion" in _CSS
+
+    def test_css_mobile_first_form(self):
+        assert "flex-direction: column" in _CSS
+
+
+class TestBadge:
+    def test_valid_variants(self):
+        for variant in _BADGE_VARIANTS:
+            result = _badge(variant, "text")
+            assert f'class="badge badge--{variant}"' in result
+            assert "text" in result
+
+    def test_invalid_variant_raises(self):
+        with pytest.raises(ValueError, match="Invalid badge variant"):
+            _badge("nonexistent", "text")
+
+    def test_raw_html_preserved(self):
+        result = _badge("success", "&#10003; Verified")
+        assert "&#10003; Verified" in result
+
+    def test_returns_span(self):
+        result = _badge("info", "test")
+        assert result.startswith("<span")
+        assert result.endswith("</span>")
+
+
+class TestEmptyState:
+    def test_renders_title_and_body(self):
+        result = _empty_state("No data", "Try again later.")
+        assert "No data" in result
+        assert "Try again later." in result
+        assert 'class="empty-state"' in result
+
+    def test_raw_html_in_body(self):
+        result = _empty_state("Title", 'Run <code>just seed</code>')
+        assert "<code>just seed</code>" in result
+
 
 class TestStatsForm:
     def test_empty_form(self):
@@ -147,6 +289,14 @@ class TestStatsForm:
     def test_with_stats_html(self):
         result = _stats_form(stats_html="<table>data</table>")
         assert "<table>data</table>" in result
+
+    def test_form_has_inline_class(self):
+        result = _stats_form()
+        assert 'class="form-inline"' in result
+
+    def test_stats_nav_active(self):
+        result = _stats_form()
+        assert 'href="/stats" class="active"' in result
 
 
 class TestStatsTable:
@@ -169,6 +319,15 @@ class TestStatsTable:
         result = _stats_table(stats, [], [])
         assert "<script>" not in result
         assert html.escape("<script>xss</script>") in result
+
+    def test_uses_badge_for_verified(self):
+        result = _stats_table({"wins": "10"}, [], [])
+        assert "badge badge--success" in result
+        assert "Verified" in result
+
+    def test_tables_wrapped_in_scroll_div(self):
+        result = _stats_table({"wins": "10"}, [("Zed", 5.0)], [("MID", 3.0)])
+        assert result.count('class="table-scroll"') == 3
 
 
 class TestAggregateByMode:
@@ -214,6 +373,18 @@ class TestMatchHistoryHtml:
         assert "10/2/5" in result
         assert "Win" in result
 
+    def test_win_uses_badge(self):
+        matches = [
+            (
+                "NA1_123",
+                {"game_start": "1700000000000", "game_mode": "CLASSIC"},
+                {"win": "1", "champion_name": "Zed", "kills": "0", "deaths": "0", "assists": "0"},
+            ),
+        ]
+        result = _match_history_html(matches, "puuid", "na1", "P#1", 0, False)
+        assert 'class="badge badge--success"' in result
+        assert "Win" in result
+
     def test_loss_renders_correctly(self):
         matches = [
             (
@@ -226,6 +397,18 @@ class TestMatchHistoryHtml:
         assert "Loss" in result
         assert "Ahri" in result
 
+    def test_loss_uses_badge(self):
+        matches = [
+            (
+                "NA1_456",
+                {"game_start": "1700000000000", "game_mode": "ARAM"},
+                {"win": "0", "champion_name": "Ahri", "kills": "0", "deaths": "0", "assists": "0"},
+            ),
+        ]
+        result = _match_history_html(matches, "puuid", "na1", "P#1", 0, False)
+        assert 'class="badge badge--error"' in result
+        assert "Loss" in result
+
     def test_has_more_shows_load_link(self):
         matches = [
             (
@@ -237,6 +420,21 @@ class TestMatchHistoryHtml:
         result = _match_history_html(matches, "puuid", "na1", "P#1", 0, True)
         assert "Load more" in result
         assert "page 2" in result
+
+    def test_has_more_uses_data_attributes(self):
+        """SEC: load-more link uses data-* attributes, not onclick."""
+        matches = [
+            (
+                "NA1_123",
+                {"game_start": "0", "game_mode": "SR"},
+                {"win": "1", "champion_name": "X", "kills": "0", "deaths": "0", "assists": "0"},
+            ),
+        ]
+        result = _match_history_html(matches, "puuid", "na1", "P#1", 0, True)
+        assert "onclick=" not in result
+        assert 'data-puuid="puuid"' in result
+        assert 'data-region="na1"' in result
+        assert 'class="load-matches"' in result
 
     def test_no_more_hides_load_link(self):
         matches = [
@@ -266,6 +464,17 @@ class TestMatchHistoryHtml:
         result = _match_history_html(matches, "puuid", "na1", "P#1", 0, False)
         assert "<b>XSS</b>" not in result
         assert html.escape("<b>XSS</b>") in result
+
+    def test_table_wrapped_in_scroll_div(self):
+        matches = [
+            (
+                "NA1_1",
+                {"game_start": "0", "game_mode": "SR"},
+                {"win": "1", "champion_name": "X", "kills": "0", "deaths": "0", "assists": "0"},
+            ),
+        ]
+        result = _match_history_html(matches, "puuid", "na1", "P#1", 0, False)
+        assert 'class="table-scroll"' in result
 
 
 class TestTailFile:
