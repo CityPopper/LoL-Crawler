@@ -52,8 +52,11 @@ async def _tick(r: aioredis.Redis, log: logging.Logger) -> None:
                 # consumers are idempotent. A Lua script could make this atomic but
                 # adds complexity for marginal benefit.
                 await r.xadd(
-                    env.source_stream, env.to_redis_fields(), maxlen=10_000, approximate=True
-                )  # type: ignore[arg-type]
+                    env.source_stream,
+                    env.to_redis_fields(),  # type: ignore[arg-type]
+                    maxlen=10_000,
+                    approximate=True,
+                )
                 await r.zrem(_DELAYED_KEY, member)
                 dispatched += 1
                 log.info(
