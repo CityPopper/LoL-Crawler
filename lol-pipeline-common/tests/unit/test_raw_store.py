@@ -239,6 +239,23 @@ class TestRawStoreBundleStreaming:
         assert "read_text" not in source, "read_text() loads entire file into memory"
 
 
+class TestCompressedBundleNoUnreachableCode:
+    """Fix 6: _search_compressed_bundle has no unreachable return after with block."""
+
+    def test_search_compressed_returns_none_when_not_found(self, tmp_path):
+        """Compressed bundle search returns None for missing match (no dead code)."""
+        platform_dir = tmp_path / "NA1"
+        platform_dir.mkdir()
+        content = "NA1_OTHER\t{\"other\": true}\n"
+        cctx = zstd.ZstdCompressor()
+        compressed = cctx.compress(content.encode())
+        bundle = platform_dir / "2024-01.jsonl.zst"
+        bundle.write_bytes(compressed)
+
+        result = RawStore._search_compressed_bundle(bundle, "NA1_MISSING")
+        assert result is None
+
+
 class TestRawStoreBundleEdgeCases:
     @pytest.mark.asyncio
     async def test_search_empty_jsonl_file(self, r, tmp_path):

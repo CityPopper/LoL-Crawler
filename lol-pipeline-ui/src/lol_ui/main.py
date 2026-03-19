@@ -8,6 +8,7 @@ import contextlib
 import heapq
 import html
 import json
+import math
 import os
 import re
 from collections.abc import AsyncIterator
@@ -331,19 +332,25 @@ _STATS_ORDER = [
 _STATS_ORDER_SET = frozenset(_STATS_ORDER)
 
 
-def _format_stat_value(key: str, value: str) -> str:
+def _format_stat_value(key: str, value: str) -> str:  # noqa: PLR0911
     """Format a stat value for display.
 
     win_rate is multiplied by 100 and shown as %. Averages and kda rounded to 2dp.
     """
     if key == "win_rate":
         try:
-            return f"{float(value) * 100:.1f}%"
+            fval = float(value)
+            if not math.isfinite(fval):
+                return "N/A"
+            return f"{fval * 100:.1f}%"
         except ValueError:
             return value
     if key.startswith("avg_") or key == "kda":
         try:
-            return f"{float(value):.2f}"
+            fval = float(value)
+            if not math.isfinite(fval):
+                return "N/A"
+            return f"{fval:.2f}"
         except ValueError:
             return value
     return value
@@ -577,6 +584,8 @@ async def index() -> RedirectResponse:
 async def show_stats(request: Request) -> HTMLResponse:  # noqa: PLR0911, C901
     riot_id = request.query_params.get("riot_id", "")
     region = request.query_params.get("region", "na1")
+    if region not in _REGIONS:
+        region = "na1"
 
     if not riot_id:
         return HTMLResponse(_stats_form(selected_region=region))
@@ -633,7 +642,7 @@ async def show_stats(request: Request) -> HTMLResponse:  # noqa: PLR0911, C901
                 )
             )
         puuid = account["puuid"]
-        await r.set(cache_key, puuid)
+        await r.set(cache_key, puuid, ex=86400)
     stats: dict[str, str] = await r.hgetall(f"player:stats:{puuid}")
 
     lcu_matches: list[dict[str, Any]] = request.app.state.lcu.get(puuid, [])

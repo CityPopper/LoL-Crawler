@@ -427,6 +427,27 @@ class TestSeedPriority:
         assert await r.get("system:priority_count") == "1"
 
 
+class TestSeedNameCacheTTL:
+    """Fix 7: player:name cache key has a 24h TTL."""
+
+    @pytest.mark.asyncio
+    async def test_name_cache_has_ttl(self, r, cfg, log):
+        """After resolving PUUID, player:name cache key has ex=86400 TTL."""
+        with respx.mock:
+            respx.get(
+                "https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Faker/KR1"
+            ).mock(return_value=_account_response())
+
+            riot = RiotClient("RGAPI-test")
+            result = await seed(r, riot, cfg, "Faker", "KR1", "kr", log)
+            await riot.close()
+
+        assert result == 0
+        ttl = await r.ttl("player:name:faker#kr1")
+        # TTL should be close to 86400 (within a few seconds of test execution)
+        assert 86390 <= ttl <= 86400
+
+
 class TestSeedPublishBeforeHset:
     """CQ-5: publish() must happen before hset(seeded_at)."""
 

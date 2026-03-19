@@ -104,7 +104,6 @@ class RawStore:
         with path.open("rb") as fh, dctx.stream_reader(fh) as reader:
             text = io.TextIOWrapper(reader, encoding="utf-8")
             return RawStore._find_in_lines(text, match_id)
-        return None
 
     def _exists_in_bundles(self, match_id: str) -> bool:
         """Check if match_id exists in any JSONL bundle."""
