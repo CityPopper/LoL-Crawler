@@ -21,7 +21,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from lol_pipeline.config import Config
 from lol_pipeline.log import get_logger
-from lol_pipeline.models import MessageEnvelope
+from lol_pipeline.models import DLQEnvelope, MessageEnvelope
 from lol_pipeline.priority import set_priority
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.riot_api import (
@@ -115,6 +115,7 @@ _NAV_ITEMS = [
     ("/stats", "Stats"),
     ("/players", "Players"),
     ("/streams", "Streams"),
+    ("/dlq", "DLQ"),
     ("/lcu", "LCU"),
     ("/logs", "Logs"),
 ]
@@ -304,6 +305,14 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
 }
 """
 
+_FAVICON = (
+    "data:image/svg+xml,"
+    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>"
+    "<rect width='32' height='32' rx='4' fill='%231a1a2e'/>"
+    "<text x='16' y='22' text-anchor='middle' fill='%235a9eff' "
+    "font-size='20'>L</text></svg>"
+)
+
 _BADGE_VARIANTS = frozenset({"success", "error", "warning", "info", "muted"})
 
 _STATS_ORDER = [
@@ -384,6 +393,7 @@ def _page(title: str, body: str, path: str = "") -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>{title} — LoL Pipeline</title>
+  <link rel="icon" href="{_FAVICON}">
   <style>{_CSS}</style>
 </head>
 <body>
@@ -449,15 +459,21 @@ def _stats_table(
 <div class="table-scroll">
 <table><tr><th>Stat</th><th>Value</th></tr>{rows}</table>
 </div>
+<div class="stats-grid">
+<div>
 <h3>Top Champions</h3>
 <div class="table-scroll">
 <table><tr><th>Champion</th><th>Games</th></tr>
 {champ_rows or "<tr><td colspan='2'>No data</td></tr>"}</table>
 </div>
+</div>
+<div>
 <h3>Roles</h3>
 <div class="table-scroll">
 <table><tr><th>Role</th><th>Games</th></tr>
 {role_rows or "<tr><td colspan='2'>No data</td></tr>"}</table>
+</div>
+</div>
 </div>
 """
 
@@ -773,14 +789,36 @@ async def show_players(request: Request) -> HTMLResponse:
     sep2 = "&nbsp;&nbsp;" if has_next else ""
     pagination = f"<p>{prev_link}{sep}{page_indicator}{sep2}{next_link}</p>"
 
+    filter_script = """
+<script>
+(function() {
+  var input = document.getElementById('player-search');
+  if (!input) return;
+  input.addEventListener('input', function() {
+    var filter = input.value.toLowerCase();
+    var rows = document.querySelectorAll('#players-table tbody tr');
+    for (var i = 0; i < rows.length; i++) {
+      var cell = rows[i].cells[0];
+      var text = cell ? cell.textContent.toLowerCase() : '';
+      rows[i].style.display = text.indexOf(filter) !== -1 ? '' : 'none';
+    }
+  });
+})();
+</script>
+"""
+
     body = f"""<h2>Players ({total} total, page {page + 1} of {total_pages})</h2>
+<input id="player-search" placeholder="Filter players..." type="text">
 <div class="table-scroll">
-<table>
-  <tr><th>Riot ID</th><th>Region</th><th>Seeded</th></tr>
+<table id="players-table">
+  <thead><tr><th>Riot ID</th><th>Region</th><th>Seeded</th></tr></thead>
+  <tbody>
   {rows}
+  </tbody>
 </table>
 </div>
 {pagination}
+{filter_script}
 """
     return HTMLResponse(_page("Players", body, path="/players"))
 
@@ -877,6 +915,50 @@ async def show_streams(request: Request) -> HTMLResponse:
 {script}
 """
     return HTMLResponse(_page("Streams", body, path="/streams"))
+
+
+@app.get("/dlq", response_class=HTMLResponse)
+async def show_dlq(request: Request) -> HTMLResponse:
+    """Display dead-letter queue entries."""
+    r = request.app.state.r
+    entries: list[tuple[str, dict[str, str]]] = await r.xrange("stream:dlq", count=50)
+    if not entries:
+        body = "<h2>Dead Letter Queue</h2>" + _empty_state(
+            "DLQ is empty",
+            "No failed messages. The pipeline is healthy.",
+        )
+        return HTMLResponse(_page("Dead Letter Queue", body, path="/dlq"))
+
+    rows = ""
+    for entry_id, fields in entries:
+        dlq = DLQEnvelope.from_redis_fields(fields)
+        safe_id = html.escape(entry_id)
+        fc_badge = _badge("error", html.escape(dlq.failure_code))
+        service = html.escape(dlq.failed_by or "?")
+        attempts = html.escape(str(dlq.dlq_attempts))
+        raw_payload = json.dumps(dlq.payload)
+        truncated = raw_payload[:80]
+        payload_preview = html.escape(truncated)
+        if len(raw_payload) > 80:
+            payload_preview += "..."
+        rows += (
+            f"<tr><td>{safe_id}</td><td>{fc_badge}</td>"
+            f"<td>{service}</td><td>{attempts}</td>"
+            f"<td><code>{payload_preview}</code></td></tr>"
+        )
+
+    body = f"""<h2>Dead Letter Queue</h2>
+<p>Showing up to 50 entries.
+   Use <code>just admin dlq replay &lt;id&gt;</code> to replay a failed message.</p>
+<div class="table-scroll">
+<table>
+  <tr><th>Entry ID</th><th>Failure Code</th>
+      <th>Service</th><th>Attempts</th><th>Payload</th></tr>
+  {rows}
+</table>
+</div>
+"""
+    return HTMLResponse(_page("Dead Letter Queue", body, path="/dlq"))
 
 
 _MATCH_PAGE_SIZE = 20
