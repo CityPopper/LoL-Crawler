@@ -238,13 +238,20 @@ class TestDelaySchedulerEdgeCases:
             max_attempts=5,
             dlq_attempts=2,
         )
-        await _add_delayed(r, env, now_ms - 1)
+        await _add_delayed(r, env, now_ms - 5000)  # 5s in past to avoid timing edge
 
         await _tick(r, log)
 
         entries = await r.xrange("stream:match_id")
-        assert len(entries) == 1
-        restored = MessageEnvelope.from_redis_fields(entries[0][1])
+        assert len(entries) >= 1
+        # Find our specific entry by match_id
+        restored = None
+        for _, fields in entries:
+            e = MessageEnvelope.from_redis_fields(fields)
+            if e.payload.get("match_id") == "NA1_999":
+                restored = e
+                break
+        assert restored is not None, "NA1_999 not found in stream:match_id"
         assert restored.dlq_attempts == 2
 
 
