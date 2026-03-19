@@ -42,33 +42,36 @@ async def _write_participant(
 ) -> str:
     puuid: str = p["puuid"]
     items = json.dumps([p.get(k, 0) for k in _ITEM_KEYS])
-    await r.hset(  # type: ignore[misc]
-        f"participant:{match_id}:{puuid}",
-        mapping={
-            "champion_id": str(p.get("championId", "")),
-            "champion_name": p.get("championName", ""),
-            "team_id": str(p.get("teamId", "")),
-            "team_position": p.get("teamPosition", ""),
-            "role": p.get("role", ""),
-            "win": "1" if p.get("win") else "0",
-            "kills": str(p.get("kills", 0)),
-            "deaths": str(p.get("deaths", 0)),
-            "assists": str(p.get("assists", 0)),
-            "gold_earned": str(p.get("goldEarned", 0)),
-            "total_damage_dealt_to_champions": str(p.get("totalDamageDealtToChampions", 0)),
-            "total_minions_killed": str(p.get("totalMinionsKilled", 0)),
-            "vision_score": str(p.get("visionScore", 0)),
-            "items": items,
-        },
-    )
-    await r.sadd(f"match:participants:{match_id}", puuid)  # type: ignore[misc]
-    await r.zadd(f"player:matches:{puuid}", {match_id: float(game_start)})
-    # Backfill player identity from match data (NX = don't overwrite seed-provided values)
-    riot_name = p.get("riotIdGameName", "")
-    riot_tag = p.get("riotIdTagline", "")
-    if riot_name and riot_tag:
-        await r.hsetnx(f"player:{puuid}", "game_name", riot_name)  # type: ignore[misc]
-        await r.hsetnx(f"player:{puuid}", "tag_line", riot_tag)  # type: ignore[misc]
+    async with r.pipeline(transaction=False) as pipe:
+        pipe.hset(  # type: ignore[misc]
+            f"participant:{match_id}:{puuid}",
+            mapping={
+                "champion_id": str(p.get("championId", "")),
+                "champion_name": p.get("championName", ""),
+                "team_id": str(p.get("teamId", "")),
+                "team_position": p.get("teamPosition", ""),
+                "role": p.get("role", ""),
+                "win": "1" if p.get("win") else "0",
+                "kills": str(p.get("kills", 0)),
+                "deaths": str(p.get("deaths", 0)),
+                "assists": str(p.get("assists", 0)),
+                "gold_earned": str(p.get("goldEarned", 0)),
+                "total_damage_dealt_to_champions": str(
+                    p.get("totalDamageDealtToChampions", 0)
+                ),
+                "total_minions_killed": str(p.get("totalMinionsKilled", 0)),
+                "vision_score": str(p.get("visionScore", 0)),
+                "items": items,
+            },
+        )
+        pipe.sadd(f"match:participants:{match_id}", puuid)  # type: ignore[misc]
+        pipe.zadd(f"player:matches:{puuid}", {match_id: float(game_start)})
+        riot_name = p.get("riotIdGameName", "")
+        riot_tag = p.get("riotIdTagline", "")
+        if riot_name and riot_tag:
+            pipe.hsetnx(f"player:{puuid}", "game_name", riot_name)  # type: ignore[misc]
+            pipe.hsetnx(f"player:{puuid}", "tag_line", riot_tag)  # type: ignore[misc]
+        await pipe.execute()
     return puuid
 
 

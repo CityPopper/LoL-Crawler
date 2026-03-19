@@ -502,6 +502,40 @@ class TestParserMalformedData:
         assert p["gold_earned"] == "0"
 
 
+class TestParserPipeline:
+    """CQ-15: _write_participant uses Redis pipeline for batched writes."""
+
+    @pytest.mark.asyncio
+    async def test_write_participant_uses_pipeline(self, r, cfg, log):
+        """All per-participant Redis calls are batched in a single pipeline."""
+        raw_store = RawStore(r)
+        match_id = "NA1_1234567890"
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, _load_fixture("match_normal.json"))
+
+        # Track individual hset calls on the connection (not pipeline)
+        direct_hset_count = 0
+        original_hset = r.hset
+
+        async def counting_hset(*args, **kwargs):
+            nonlocal direct_hset_count
+            direct_hset_count += 1
+            return await original_hset(*args, **kwargs)
+
+        r.hset = counting_hset
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        # Only the match:{id} hset should be called directly on r (not per-participant)
+        # Participant writes go through pipeline, so direct hset count should be 1
+        assert direct_hset_count == 1, (
+            f"Expected 1 direct hset (match metadata), got {direct_hset_count}"
+        )
+        # But data should still be correct
+        assert await r.scard(f"match:participants:{match_id}") == 10
+
+
 class TestMainEntryPoint:
     """Tests for main() bootstrap and teardown."""
 

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from lol_pipeline.models import DLQEnvelope, MessageEnvelope
 
 
@@ -203,3 +206,18 @@ class TestDLQEnvelopeBoundary:
         assert dlq.original_message_id == ""
         assert dlq.retry_after_ms is None
         assert dlq.dlq_attempts == 0
+
+
+class TestEnvelopeSchemaIncludesDlqAttempts:
+    """CQ-8: envelope.json must include dlq_attempts to match the dataclass."""
+
+    def test_dlq_attempts_in_envelope_schema(self):
+        """The envelope.json schema includes 'dlq_attempts' with type 'string' and default '0'."""
+        schema_path = (
+            Path(__file__).parent.parent.parent / "contracts" / "schemas" / "envelope.json"
+        )
+        schema = json.loads(schema_path.read_text())
+        props = schema["properties"]
+        assert "dlq_attempts" in props, "dlq_attempts missing from envelope.json properties"
+        assert props["dlq_attempts"]["type"] == "string"
+        assert props["dlq_attempts"]["default"] == "0"

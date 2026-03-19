@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from unittest.mock import AsyncMock, patch
 
@@ -216,26 +217,36 @@ class TestRunConsumer:
         """CQ-7: SIGTERM handler sets shutdown flag, loop exits cleanly."""
         import signal
 
+        captured_handlers: dict[int, object] = {}
         call_count = 0
 
-        async def handler(mid, env):
+        original_add = asyncio.get_event_loop().add_signal_handler
+
+        def spy_add(sig: int, callback: object, *args: object) -> None:
+            captured_handlers[sig] = callback
+
+        async def handler(mid: str, env: object) -> None:
             pass
 
-        original_consume = consume
-
-        async def consume_then_sigterm(*args, **kwargs):
+        async def consume_then_fire(*args: object, **kwargs: object) -> list[object]:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                # Simulate SIGTERM by sending the signal to ourselves
-                import os
-
-                os.kill(os.getpid(), signal.SIGTERM)
+                # Invoke the SIGTERM handler directly (simulates OS signal)
+                cb = captured_handlers.get(signal.SIGTERM)
+                if cb and callable(cb):
+                    cb()
             return []
 
-        with patch("lol_pipeline.service.consume", side_effect=consume_then_sigterm):
+        with (
+            patch("lol_pipeline.service.asyncio.get_event_loop") as mock_loop_fn,
+            patch("lol_pipeline.service.consume", side_effect=consume_then_fire),
+        ):
+            mock_loop = mock_loop_fn.return_value
+            mock_loop.add_signal_handler.side_effect = spy_add
             await run_consumer(r, _STREAM, _GROUP, "c", handler, log)
 
-        # Loop should have exited after SIGTERM, not because of system:halted
+        # Loop should have exited after SIGTERM callback, not because of system:halted
         assert await r.get("system:halted") is None
+        assert signal.SIGTERM in captured_handlers
         assert call_count >= 1

@@ -93,8 +93,9 @@ class RawStore:
 
     @staticmethod
     def _search_bundle_file(path: Path, match_id: str) -> str | None:
-        """Search an uncompressed JSONL bundle for match_id."""
-        return RawStore._find_in_lines(path.read_text().splitlines(), match_id)
+        """Search an uncompressed JSONL bundle for match_id (line-by-line streaming)."""
+        with path.open(encoding="utf-8") as f:
+            return RawStore._find_in_lines(f, match_id)
 
     @staticmethod
     def _search_compressed_bundle(path: Path, match_id: str) -> str | None:

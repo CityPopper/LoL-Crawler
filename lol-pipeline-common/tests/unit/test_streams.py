@@ -146,6 +146,18 @@ class TestEnsureGroup:
         await _ensure_group(r, "stream:test", "g")  # no error
 
 
+class TestEnsureGroupErrors:
+    @pytest.mark.asyncio
+    async def test_unexpected_error_propagates(self):
+        """Non-ResponseError exceptions from xgroup_create propagate."""
+        from lol_pipeline.streams import _ensure_group
+
+        mock_r = AsyncMock()
+        mock_r.xgroup_create.side_effect = ConnectionError("redis down")
+        with pytest.raises(ConnectionError, match="redis down"):
+            await _ensure_group(mock_r, "stream:test", "g")
+
+
 class TestPublishErrors:
     @pytest.mark.asyncio
     async def test_publish__xadd_raises__propagates(self):
