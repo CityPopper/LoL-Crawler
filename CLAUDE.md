@@ -38,6 +38,10 @@ None — all TODO.md items implemented. 297 unit tests + 65 contract tests passi
 | `lol-pipeline-lcu/lcu-data/` | JSONL match history — **precious, do not delete** |
 | `tests/integration/` | 7 integration tests (IT-01 through IT-07, testcontainers) |
 
+## Secrets
+
+- GitHub token: `GITHUB_TOKEN` in `.env` — use for pushes and GitHub API (releases, CI checks)
+
 ## Constraints
 
 - Do not add features beyond what is asked
