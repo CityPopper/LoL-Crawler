@@ -25,57 +25,48 @@ Workers that cannot acquire a token calculate the required sleep time and retry;
 ## Lua Script
 
 ```lua
--- KEYS[1] = "ratelimit:short"
--- KEYS[2] = "ratelimit:long"
--- ARGV[1] = now_ms         (current epoch in milliseconds)
--- ARGV[2] = short_window   (1000)
--- ARGV[3] = long_window    (120000)
--- ARGV[4] = short_limit    (20)
--- ARGV[5] = long_limit     (100)
--- ARGV[6] = req_id         (UUID — unique per call)
+-- KEYS[1] = "ratelimit:short"   (1-second sliding window ZSET)
+-- KEYS[2] = "ratelimit:long"    (2-minute sliding window ZSET)
+-- ARGV[1] = now_ms              (current epoch in milliseconds)
+-- ARGV[2] = short_limit_fallback (20)
+-- ARGV[3] = long_limit_fallback  (100)
+-- ARGV[4] = short_window_ms     (1000)
+-- ARGV[5] = long_window_ms      (120000)
+-- ARGV[6] = uid                 (UUID — unique per call)
 --
--- Returns: {allowed, oldest_short_ms, oldest_long_ms}
---   allowed = 1 → token granted
---   allowed = 0 → denied; sleep time = max(
---       short_window - (now - oldest_short_ms),
---       long_window  - (now - oldest_long_ms)
---   ) + buffer
+-- Returns: 1 (token granted) or 0 (denied)
+--
+-- Dynamic limits: reads ratelimit:limits:short / ratelimit:limits:long
+-- (written by RiotClient after each API response). Falls back to ARGV
+-- values when no stored limits exist.
 
-local now          = tonumber(ARGV[1])
-local short_window = tonumber(ARGV[2])
-local long_window  = tonumber(ARGV[3])
-local short_limit  = tonumber(ARGV[4])
-local long_limit   = tonumber(ARGV[5])
-local req_id       = ARGV[6]
+local key_s = KEYS[1]
+local key_l = KEYS[2]
+local now     = tonumber(ARGV[1])
+local win_s   = tonumber(ARGV[4])
+local win_l   = tonumber(ARGV[5])
+local uid     = ARGV[6]
 
--- Remove expired entries from both windows
-redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, now - short_window)
-redis.call('ZREMRANGEBYSCORE', KEYS[2], 0, now - long_window)
+local stored_s = redis.call("GET", "ratelimit:limits:short")
+local stored_l = redis.call("GET", "ratelimit:limits:long")
+local limit_s = (stored_s and tonumber(stored_s)) or tonumber(ARGV[2])
+local limit_l = (stored_l and tonumber(stored_l)) or tonumber(ARGV[3])
 
-local short_count = redis.call('ZCARD', KEYS[1])
-local long_count  = redis.call('ZCARD', KEYS[2])
+redis.call("ZREMRANGEBYSCORE", key_s, "-inf", now - win_s)
+redis.call("ZREMRANGEBYSCORE", key_l, "-inf", now - win_l)
 
-if short_count < short_limit and long_count < long_limit then
-    -- Grant token: record in both windows
-    redis.call('ZADD', KEYS[1], now, req_id)
-    redis.call('PEXPIRE', KEYS[1], short_window)
-    redis.call('ZADD', KEYS[2], now, req_id)
-    redis.call('PEXPIRE', KEYS[2], long_window)
-    return {1, -1, -1}
+local count_s = redis.call("ZCARD", key_s)
+local count_l = redis.call("ZCARD", key_l)
+
+if count_s >= limit_s or count_l >= limit_l then
+    return 0
 end
 
--- Denied: return oldest scores so caller can compute sleep duration
-local oldest_short = -1
-local oldest_long  = -1
-if short_count >= short_limit then
-    local s = redis.call('ZRANGE', KEYS[1], 0, 0, 'WITHSCORES')
-    oldest_short = tonumber(s[2])
-end
-if long_count >= long_limit then
-    local l = redis.call('ZRANGE', KEYS[2], 0, 0, 'WITHSCORES')
-    oldest_long = tonumber(l[2])
-end
-return {0, oldest_short, oldest_long}
+redis.call("ZADD", key_s, now, uid)
+redis.call("ZADD", key_l, now, uid)
+redis.call("PEXPIRE", key_s, win_s)
+redis.call("PEXPIRE", key_l, win_l)
+return 1
 ```
 
 ---
@@ -83,61 +74,64 @@ return {0, oldest_short, oldest_long}
 ## Python Usage
 
 `acquire_token(r, key_prefix, limit_per_second)` is **non-blocking**: it calls the Lua
-script once and returns True/False immediately. `wait_for_token()` wraps it in a polling
-loop (50ms interval). Both accept `limit_per_second` to override the default of 20.
+script once via `EVAL` and returns `True` (granted) or `False` (denied). The Lua script
+returns `1` or `0`; the Python wrapper converts to `bool`.
 
-Services pass `cfg.api_rate_limit_per_second` from `Config` (sourced from `API_RATE_LIMIT_PER_SECOND`):
+`wait_for_token(r, key_prefix, limit_per_second)` wraps `acquire_token()` in a polling
+loop with a fixed **50ms** sleep between attempts. It blocks until a token is acquired.
+
+Both functions accept:
+- `r` — async Redis connection
+- `key_prefix` — default `"ratelimit"` (keys become `{prefix}:short` and `{prefix}:long`)
+- `limit_per_second` — overrides the 1-second window cap (default: 20)
 
 ```python
-# rate_limiter.py — module-level state (redis client + lua SHA loaded at startup)
-_redis: Redis | None = None
-_lua_sha: str | None = None
-
-async def acquire_token() -> tuple[bool, float]:
-    """Try to acquire one rate-limit token.
-
-    Returns:
-        (True, 0.0)              — token granted; proceed immediately.
-        (False, wait_seconds)    — denied; caller should sleep wait_seconds then retry.
-
-    wait_seconds already includes a 50ms buffer to avoid boundary races.
-    """
-    BUFFER_MS = 50
+async def acquire_token(
+    r: aioredis.Redis,
+    key_prefix: str = "ratelimit",
+    limit_per_second: int = 20,
+) -> bool:
+    """Return True and record a token if within both rate windows; False otherwise."""
     now_ms = int(time.time() * 1000)
-    req_id = str(uuid4())
-    result = await _redis.evalsha(
-        _lua_sha,
+    uid = str(uuid.uuid4())
+    result = await r.eval(
+        _LUA_RATE_LIMIT_SCRIPT,
         2,
-        "ratelimit:short",
-        "ratelimit:long",
-        now_ms, 1000, 120000, 20, 100, req_id
+        f"{key_prefix}:short",
+        f"{key_prefix}:long",
+        now_ms,
+        limit_per_second,  # ARGV[2]: short limit fallback
+        100,               # ARGV[3]: long limit fallback
+        1000,              # ARGV[4]: short window ms
+        120000,            # ARGV[5]: long window ms
+        uid,               # ARGV[6]: unique member ID
     )
-    allowed, oldest_short, oldest_long = result
-    if allowed:
-        return True, 0.0
+    return int(result) == 1
 
-    sleep_ms = 0
-    if oldest_short >= 0:
-        sleep_ms = max(sleep_ms, 1000 - (now_ms - oldest_short) + BUFFER_MS)
-    if oldest_long >= 0:
-        sleep_ms = max(sleep_ms, 120000 - (now_ms - oldest_long) + BUFFER_MS)
-    return False, sleep_ms / 1000
+
+async def wait_for_token(
+    r: aioredis.Redis,
+    key_prefix: str = "ratelimit",
+    limit_per_second: int = 20,
+) -> None:
+    """Block until a rate limit token is acquired, polling every 50ms."""
+    while not await acquire_token(r, key_prefix, limit_per_second):
+        await asyncio.sleep(0.05)
 ```
 
 **Caller pattern** (e.g., inside `riot_api.py` before each HTTP call):
 
 ```python
-while True:
-    allowed, wait_seconds = await acquire_token()
-    if allowed:
-        break
-    await asyncio.sleep(wait_seconds)
+await wait_for_token(r)
 # proceed with API call
 ```
 
-The Lua script is loaded at worker startup via `SCRIPT LOAD` and called via `EVALSHA` for
-efficiency. The SHA is stored on the module; if Redis is restarted and the script cache is
-cleared, the module reloads it automatically on `NOSCRIPT` error.
+**Dynamic limits:** The Lua script reads `ratelimit:limits:short` and `ratelimit:limits:long`
+keys from Redis on every invocation. These are written by `RiotClient` after each successful
+API response (parsed from the `X-App-Rate-Limit` header). When present, they override the
+fallback values passed as ARGV. This means the limiter automatically adapts to the real API
+key limits without a restart — for example, when upgrading from a dev key (20/s, 100/2m) to
+a production key (higher limits).
 
 ---
 

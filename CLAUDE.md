@@ -41,3 +41,10 @@ See `ARCHITECTURE.md` for doc index. See `docs/standards/01-coding-standards.md`
 ## Constraints
 
 - Do not modify failing tests without user confirmation
+
+## TODO — Phase 7 Sprint 3
+
+- [x] P0-10: Fix 05-rate-limiting.md to match actual rate_limiter.py implementation
+- [x] P0-19: Add /players and /logs route docs to 02-services.md
+- [x] P0-22: Standardize UI pyproject.toml to match crawler template
+- [x] DK-7: Add mem_limit to docker-compose.yml x-service-defaults
