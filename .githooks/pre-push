@@ -13,6 +13,16 @@ echo "=== Pre-push: lint ==="
 echo "=== Pre-push: format ==="
 "$PYTHON" -m ruff format --check lol-pipeline-*/src/ lol-pipeline-common/src/
 
+echo "=== Pre-push: mypy ==="
+COMMON_SRC="${PWD}/lol-pipeline-common/src"
+for dir in lol-pipeline-*/; do
+    [ -f "$dir/pyproject.toml" ] && [ -d "$dir/src" ] || continue
+    (cd "$dir" && MYPYPATH="$COMMON_SRC" "$PYTHON" -m mypy src/ --ignore-missing-imports) || {
+        echo "MYPY FAILED in $dir"
+        exit 1
+    }
+done
+
 echo "=== Pre-push: tests ==="
 FAILED=""
 for svc in lol-pipeline-*/; do

@@ -136,7 +136,7 @@ async def _crawl_player(  # noqa: C901, PLR0915
 async def main() -> None:
     """Crawler worker loop."""
     log = get_logger("crawler")
-    cfg = Config()  # type: ignore[call-arg]  # pydantic-settings reads env
+    cfg = Config()
     r = get_redis(cfg.redis_url)
     riot = RiotClient(cfg.riot_api_key, r=r)
     consumer = f"{socket.gethostname()}-{os.getpid()}"

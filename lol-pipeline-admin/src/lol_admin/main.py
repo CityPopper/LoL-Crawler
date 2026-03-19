@@ -315,14 +315,14 @@ async def _dispatch(
     handler = _CMD_DISPATCH.get(args.command)
     if handler is None:
         raise AssertionError(f"unreachable command: {args.command}")
-    return await handler(r, riot, cfg, args)
+    return await handler(r, riot, cfg, args)  # type: ignore[no-untyped-call]
 
 
 async def _dispatch_dlq(r: aioredis.Redis, cfg: Config, args: argparse.Namespace) -> int:
     handler = _DLQ_DISPATCH.get(args.dlq_command)
     if handler is None:
         raise AssertionError(f"unreachable dlq subcommand: {args.dlq_command}")
-    return await handler(r, cfg, args)
+    return await handler(r, cfg, args)  # type: ignore[no-untyped-call]
 
 
 # ---------------------------------------------------------------------------
@@ -335,7 +335,7 @@ async def main(argv: list[str]) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv[1:])
 
-    cfg = Config()  # type: ignore[call-arg]  # pydantic-settings reads env
+    cfg = Config()
     r = get_redis(cfg.redis_url)
     riot = RiotClient(cfg.riot_api_key)
 

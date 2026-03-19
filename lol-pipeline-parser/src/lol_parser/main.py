@@ -43,7 +43,7 @@ async def _write_participant(
     puuid: str = p["puuid"]
     items = json.dumps([p.get(k, 0) for k in _ITEM_KEYS])
     async with r.pipeline(transaction=False) as pipe:
-        pipe.hset(  # type: ignore[misc]
+        pipe.hset(
             f"participant:{match_id}:{puuid}",
             mapping={
                 "champion_id": str(p.get("championId", "")),
@@ -62,13 +62,13 @@ async def _write_participant(
                 "items": items,
             },
         )
-        pipe.sadd(f"match:participants:{match_id}", puuid)  # type: ignore[misc]
+        pipe.sadd(f"match:participants:{match_id}", puuid)
         pipe.zadd(f"player:matches:{puuid}", {match_id: float(game_start)})
         riot_name = p.get("riotIdGameName", "")
         riot_tag = p.get("riotIdTagline", "")
         if riot_name and riot_tag:
-            pipe.hsetnx(f"player:{puuid}", "game_name", riot_name)  # type: ignore[misc]
-            pipe.hsetnx(f"player:{puuid}", "tag_line", riot_tag)  # type: ignore[misc]
+            pipe.hsetnx(f"player:{puuid}", "game_name", riot_name)
+            pipe.hsetnx(f"player:{puuid}", "tag_line", riot_tag)
         await pipe.execute()
     return puuid
 
@@ -162,7 +162,7 @@ async def _parse_match(
     # but those still need discovery to crawl their match history.
     discover_scores: dict[str, float] = {}
     for puuid in seen_puuids:
-        seeded: bool = await r.hexists(f"player:{puuid}", "seeded_at")
+        seeded: bool = await r.hexists(f"player:{puuid}", "seeded_at")  # type: ignore[misc]
         if not seeded:
             discover_scores[f"{puuid}:{region}"] = float(game_start)
     if discover_scores:
@@ -184,7 +184,7 @@ async def _parse_match(
 async def main() -> None:
     """Parser worker loop."""
     log = get_logger("parser")
-    cfg = Config()  # type: ignore[call-arg]  # pydantic-settings reads env
+    cfg = Config()
     r = get_redis(cfg.redis_url)
     raw_store = RawStore(r, data_dir=cfg.match_data_dir)
     consumer = f"{socket.gethostname()}-{os.getpid()}"

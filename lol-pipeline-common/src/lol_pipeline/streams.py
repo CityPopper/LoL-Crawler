@@ -24,7 +24,7 @@ async def publish(
 ) -> str:
     """XADD envelope to stream; return the Redis entry ID."""
     fields: dict[str, Any] = envelope.to_redis_fields()
-    return await r.xadd(stream, fields)  # type: ignore[arg-type, no-any-return]  # redis-py 7 xadd signature
+    return await r.xadd(stream, fields)  # type: ignore[no-any-return,arg-type]
 
 
 async def _ensure_group(r: aioredis.Redis, stream: str, group: str) -> None:
@@ -144,4 +144,4 @@ async def nack_to_dlq(
         priority=envelope.priority,
     )
     fields: dict[str, Any] = dlq.to_redis_fields()
-    await r.xadd(_DLQ_STREAM, fields)  # type: ignore[arg-type]  # redis-py 7 xadd signature
+    await r.xadd(_DLQ_STREAM, fields)  # type: ignore[arg-type]
