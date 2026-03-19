@@ -4,6 +4,7 @@ x-service-defaults: &service-defaults
   security_opt: ["no-new-privileges:true"]
   stop_grace_period: 30s
   mem_limit: 512m
+  user: root  # Dev mode: pip install at startup needs write access. Prod compose uses Dockerfile USER.
   environment:
     PIP_ROOT_USER_ACTION: ignore
     PIP_DISABLE_PIP_VERSION_CHECK: "1"
