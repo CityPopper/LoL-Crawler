@@ -121,7 +121,12 @@ async def main() -> None:
     try:
         autoclaim_ms = cfg.stream_ack_timeout * 1000
         await run_consumer(
-            r, _IN_STREAM, _GROUP, consumer, _handler, log,
+            r,
+            _IN_STREAM,
+            _GROUP,
+            consumer,
+            _handler,
+            log,
             autoclaim_min_idle_ms=autoclaim_ms,
         )
     finally:

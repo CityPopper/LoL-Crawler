@@ -186,6 +186,122 @@ class TestCrawlDedup:
         assert await r.xlen(_STREAM_OUT) == 40
 
 
+class TestCrawlWindowedDedup:
+    """Windowed dedup: use ZRANGEBYSCORE when last_crawled_at exists."""
+
+    @pytest.mark.asyncio
+    async def test_windowed_dedup_uses_zrangebyscore(self, r, cfg, log):
+        """With last_crawled_at set, crawler uses ZRANGEBYSCORE instead of ZRANGE."""
+        env = _puuid_envelope()
+        msg_id = await _setup_message(r, env)
+
+        # Set last_crawled_at (recent)
+        ts = "2025-01-15T12:00:00+00:00"
+        await r.hset(
+            "player:test-puuid-0001",
+            mapping={"last_crawled_at": ts},
+        )
+
+        # Pre-populate 100 recent known matches (within window)
+        recent_ids = [f"NA1_{i}" for i in range(100)]
+        key = "player:matches:test-puuid-0001"
+        for mid in recent_ids:
+            # Score = Jan 14, 2025 in epoch ms (within 7-day window)
+            await r.zadd(key, {mid: 1736899200000.0})
+
+        zrangebyscore_called = False
+        zrange_called = False
+        original_zrangebyscore = r.zrangebyscore
+        original_zrange = r.zrange
+
+        async def tracking_zrangebyscore(*args, **kwargs):
+            nonlocal zrangebyscore_called
+            zrangebyscore_called = True
+            return await original_zrangebyscore(*args, **kwargs)
+
+        async def tracking_zrange(*args, **kwargs):
+            nonlocal zrange_called
+            zrange_called = True
+            return await original_zrange(*args, **kwargs)
+
+        r.zrangebyscore = tracking_zrangebyscore
+        r.zrange = tracking_zrange
+
+        with respx.mock:
+            respx.get(_match_ids_url(start=0)).mock(
+                return_value=httpx.Response(200, json=recent_ids)
+            )
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        assert zrangebyscore_called, "Expected ZRANGEBYSCORE to be called"
+        assert not zrange_called, "Expected ZRANGE not to be called"
+        assert await r.xlen(_STREAM_OUT) == 0  # all known
+
+    @pytest.mark.asyncio
+    async def test_windowed_dedup_excludes_old_matches(self, r, cfg, log):
+        """Old matches outside the window are not loaded into the known set."""
+        env = _puuid_envelope()
+        msg_id = await _setup_message(r, env)
+
+        # Set last_crawled_at to Jan 15, 2025
+        ts = "2025-01-15T12:00:00+00:00"
+        await r.hset(
+            "player:test-puuid-0001",
+            mapping={"last_crawled_at": ts},
+        )
+
+        # Add an old match well outside the 7-day window (Dec 2024)
+        key = "player:matches:test-puuid-0001"
+        await r.zadd(key, {"NA1_OLD": 1733011200000.0})
+
+        # API returns the old match ID — since it's outside the window,
+        # it won't be in the known set and will be published as "new"
+        with respx.mock:
+            respx.get(_match_ids_url(start=0)).mock(
+                return_value=httpx.Response(200, json=["NA1_OLD"])
+            )
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        # Old match is re-published because it was outside the dedup window
+        assert await r.xlen(_STREAM_OUT) == 1
+
+    @pytest.mark.asyncio
+    async def test_no_last_crawled_at_falls_back_to_zrange(self, r, cfg, log):
+        """Without last_crawled_at, crawler falls back to ZRANGE (loads all)."""
+        env = _puuid_envelope()
+        msg_id = await _setup_message(r, env)
+
+        # No last_crawled_at set — first crawl scenario
+        # Pre-populate a known match
+        key = "player:matches:test-puuid-0001"
+        await r.zadd(key, {"NA1_KNOWN": 1000.0})
+
+        zrange_called = False
+        original_zrange = r.zrange
+
+        async def tracking_zrange(*args, **kwargs):
+            nonlocal zrange_called
+            zrange_called = True
+            return await original_zrange(*args, **kwargs)
+
+        r.zrange = tracking_zrange
+
+        with respx.mock:
+            respx.get(_match_ids_url(start=0)).mock(
+                return_value=httpx.Response(200, json=["NA1_KNOWN"])
+            )
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        assert zrange_called, "Expected ZRANGE fallback when no last_crawled_at"
+        assert await r.xlen(_STREAM_OUT) == 0  # known match filtered
+
+
 class TestCrawlSingleZrange:
     @pytest.mark.asyncio
     async def test_zrange_called_once(self, r, cfg, log):

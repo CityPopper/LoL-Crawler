@@ -70,7 +70,7 @@ async def acquire_token(
     """
     now_ms = int(time.time() * 1000)
     uid = str(uuid.uuid4())
-    result: Any = await r.eval(  # type: ignore[misc]
+    result: Any = await r.eval(  # type: ignore[misc]  # redis-py 7 eval returns Any
         _LUA_RATE_LIMIT_SCRIPT,
         2,
         f"{key_prefix}:short",

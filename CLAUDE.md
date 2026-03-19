@@ -17,7 +17,7 @@ See `ARCHITECTURE.md` for doc index. See `docs/standards/01-coding-standards.md`
 
 ## Pending Work
 
-None — all TODO.md items implemented. 297 unit tests + 65 contract tests passing.
+GitHub CI fix: `ruff format` failing on multiple services. Run `ruff format` across all service src/ dirs to fix formatting. Push to branch, verify CI passes, merge to main.
 
 ## Gotchas
 
@@ -44,7 +44,4 @@ None — all TODO.md items implemented. 297 unit tests + 65 contract tests passi
 
 ## Constraints
 
-- Do not add features beyond what is asked
 - Do not modify failing tests without user confirmation
-- Do not create new files unless necessary
-- Do not add error handling for impossible scenarios

@@ -172,6 +172,42 @@ class TestDelaySchedulerDispatch:
         assert await r.xlen("stream:match_id") == 0
 
 
+class TestDelaySchedulerPagination:
+    @pytest.mark.asyncio
+    async def test_zrangebyscore_uses_limit(self, r, log):
+        """ZRANGEBYSCORE is called with LIMIT to bound memory."""
+        now_ms = int(time.time() * 1000)
+        env = _delayed_envelope()
+        await _add_delayed(r, env, now_ms - 1)
+
+        calls = []
+        original = r.zrangebyscore
+
+        async def tracking(*args, **kwargs):
+            calls.append(kwargs)
+            return await original(*args, **kwargs)
+
+        r.zrangebyscore = tracking
+
+        await _tick(r, log)
+
+        assert len(calls) >= 1
+        assert "num" in calls[0], "Expected LIMIT (num=) on zrangebyscore"
+
+    @pytest.mark.asyncio
+    async def test_large_batch_all_processed(self, r, log):
+        """150 past-due messages → all processed across multiple batches."""
+        now_ms = int(time.time() * 1000)
+        for i in range(150):
+            env = _delayed_envelope(match_id=f"NA1_{i}")
+            await _add_delayed(r, env, now_ms - 1000 - i)
+
+        await _tick(r, log)
+
+        assert await r.zcard(_DELAYED_KEY) == 0
+        assert await r.xlen("stream:match_id") == 150
+
+
 class TestDelaySchedulerEdgeCases:
     @pytest.mark.asyncio
     async def test_multiple_streams_dispatched_correctly(self, r, log):

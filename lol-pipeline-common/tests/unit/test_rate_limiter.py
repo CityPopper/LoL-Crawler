@@ -20,7 +20,9 @@ pytestmark = pytest.mark.skipif(
 
 import fakeredis.aioredis
 
-from lol_pipeline.rate_limiter import acquire_token
+from unittest.mock import AsyncMock, patch
+
+from lol_pipeline.rate_limiter import acquire_token, wait_for_token
 
 
 @pytest.fixture
@@ -109,3 +111,45 @@ class TestStoredLimits:
 
         assert results[:2] == [True, True]
         assert results[2] is False
+
+
+class TestWaitForToken:
+    @pytest.mark.asyncio
+    async def test_immediate_acquire_no_sleep(self, r):
+        """If token is available immediately, no sleep occurs."""
+        with patch("lol_pipeline.rate_limiter.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            await wait_for_token(r, limit_per_second=20)
+            mock_sleep.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_retries_until_acquired(self, r):
+        """Polls until a token becomes available."""
+        call_count = 0
+        original_acquire = acquire_token
+
+        async def limited_acquire(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                return False
+            return await original_acquire(*args, **kwargs)
+
+        with patch("lol_pipeline.rate_limiter.acquire_token", side_effect=limited_acquire):
+            with patch("lol_pipeline.rate_limiter.asyncio.sleep", new_callable=AsyncMock):
+                await wait_for_token(r, limit_per_second=20)
+        assert call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_sleep_interval_is_50ms(self, r):
+        """Each retry sleeps for 0.05 seconds."""
+        async def deny_then_allow(*args, **kwargs):
+            deny_then_allow.calls += 1
+            return deny_then_allow.calls > 1
+        deny_then_allow.calls = 0
+
+        with patch("lol_pipeline.rate_limiter.acquire_token", side_effect=deny_then_allow):
+            with patch(
+                "lol_pipeline.rate_limiter.asyncio.sleep", new_callable=AsyncMock
+            ) as mock_sleep:
+                await wait_for_token(r)
+                mock_sleep.assert_called_once_with(0.05)

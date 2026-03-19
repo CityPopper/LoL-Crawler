@@ -1,7 +1,5 @@
 """Tests for LcuClient — lockfile parsing and API calls."""
 
-import json
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -27,6 +25,24 @@ class TestLockfileParsing:
     def test_empty_lockfile_raises(self, tmp_path):
         lockfile = tmp_path / "lockfile"
         lockfile.write_text("")
+        with pytest.raises(LcuNotRunningError):
+            LcuClient(install_path=str(tmp_path))
+
+    def test_too_few_parts_raises(self, tmp_path):
+        lockfile = tmp_path / "lockfile"
+        lockfile.write_text("LeagueClient:12345")
+        with pytest.raises(LcuNotRunningError, match="at least 4"):
+            LcuClient(install_path=str(tmp_path))
+
+    def test_non_numeric_port_raises(self, tmp_path):
+        lockfile = tmp_path / "lockfile"
+        lockfile.write_text("LeagueClient:pid:abc:pass:https")
+        with pytest.raises(LcuNotRunningError, match="non-numeric port"):
+            LcuClient(install_path=str(tmp_path))
+
+    def test_whitespace_only_raises(self, tmp_path):
+        lockfile = tmp_path / "lockfile"
+        lockfile.write_text("  \n  ")
         with pytest.raises(LcuNotRunningError):
             LcuClient(install_path=str(tmp_path))
 

@@ -62,6 +62,7 @@ jobs:
           - lol-pipeline-analyzer
           - lol-pipeline-admin
           - lol-pipeline-discovery
+          - lol-pipeline-lcu
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

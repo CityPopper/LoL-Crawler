@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import logging
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -80,23 +82,27 @@ class RawStore:
         return None
 
     @staticmethod
-    def _search_bundle_file(path: Path, match_id: str) -> str | None:
-        """Search an uncompressed JSONL bundle for match_id."""
+    def _find_in_lines(lines: Iterable[str], match_id: str) -> str | None:
+        """Scan lines for a tab-prefixed match_id entry, return data or None."""
         prefix = match_id + "\t"
-        for line in path.read_text().splitlines():
+        for line in lines:
+            line = line.rstrip("\n")
             if line.startswith(prefix):
-                return line[len(prefix):]
+                return line[len(prefix) :]
         return None
 
     @staticmethod
+    def _search_bundle_file(path: Path, match_id: str) -> str | None:
+        """Search an uncompressed JSONL bundle for match_id."""
+        return RawStore._find_in_lines(path.read_text().splitlines(), match_id)
+
+    @staticmethod
     def _search_compressed_bundle(path: Path, match_id: str) -> str | None:
-        """Search a zstd-compressed JSONL bundle for match_id."""
-        prefix = match_id + "\t"
+        """Search a zstd-compressed JSONL bundle for match_id (streaming)."""
         dctx = zstd.ZstdDecompressor()
-        data = dctx.decompress(path.read_bytes())
-        for line in data.decode().splitlines():
-            if line.startswith(prefix):
-                return line[len(prefix):]
+        with path.open("rb") as fh, dctx.stream_reader(fh) as reader:
+            text = io.TextIOWrapper(reader, encoding="utf-8")
+            return RawStore._find_in_lines(text, match_id)
         return None
 
     def _exists_in_bundles(self, match_id: str) -> bool:
@@ -123,16 +129,22 @@ class RawStore:
 
     async def set(self, match_id: str, data: str) -> None:
         """Write raw JSON blob to Redis and disk. No-op if already stored."""
-        await self._r.set(f"{_KEY_PREFIX}{match_id}", data, nx=True)
+        was_set = await self._r.set(f"{_KEY_PREFIX}{match_id}", data, nx=True)
         bp = self._bundle_path(match_id)
         if bp is None:
             return
-        # Write-once: skip if already in Redis (was pre-existing) or in bundles
-        if self._exists_in_bundles(match_id):
+        # Redis SET NX is the atomic coordinator: only the winner writes to disk.
+        # Also check bundles for the Redis-restart case (key gone, disk has it).
+        if not was_set or self._exists_in_bundles(match_id):
             return
         try:
             bp.parent.mkdir(parents=True, exist_ok=True)
             with bp.open("a") as f:
                 f.write(f"{match_id}\t{data}\n")
         except OSError as exc:
-            _log.warning("disk write failed", extra={"match_id": match_id, "error": str(exc)})
+            # Remove Redis key so next attempt can retry both Redis + disk
+            await self._r.delete(f"{_KEY_PREFIX}{match_id}")
+            _log.warning(
+                "disk write failed — removed Redis key for retry",
+                extra={"match_id": match_id, "error": str(exc)},
+            )

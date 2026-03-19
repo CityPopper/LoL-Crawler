@@ -1,7 +1,6 @@
 """Tests for LCU collector main logic — collect_once and deduplication."""
 
 import json
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from lol_lcu.lcu_client import LcuAuthError
@@ -52,11 +51,11 @@ class TestCollectOnce:
     """Tests for the collect_once function."""
 
     @patch("lol_lcu.main.LcuClient")
-    def test_appends_new_matches(self, MockClient, tmp_path):
+    def test_appends_new_matches(self, mock_cls, tmp_path):
         data_dir = tmp_path / "lcu-data"
         data_dir.mkdir()
 
-        client = MockClient.return_value
+        client = mock_cls.return_value
         client.current_summoner.return_value = {
             "puuid": "test-puuid",
             "gameName": "Faker",
@@ -100,7 +99,7 @@ class TestCollectOnce:
         assert data["game_mode"] == "URF"
 
     @patch("lol_lcu.main.LcuClient")
-    def test_deduplicates(self, MockClient, tmp_path):
+    def test_deduplicates(self, mock_cls, tmp_path):
         data_dir = tmp_path / "lcu-data"
         data_dir.mkdir()
 
@@ -116,7 +115,7 @@ class TestCollectOnce:
         jsonl_file = data_dir / "test-puuid.jsonl"
         jsonl_file.write_text(existing + "\n")
 
-        client = MockClient.return_value
+        client = mock_cls.return_value
         client.current_summoner.return_value = {
             "puuid": "test-puuid",
             "gameName": "Faker",
@@ -157,13 +156,13 @@ class TestRunAuthRetry:
     @patch("lol_lcu.main.time.sleep")
     @patch("lol_lcu.main.collect_once")
     @patch("lol_lcu.main.LcuClient")
-    def test_run_retries_on_auth_error(self, MockClient, mock_collect, mock_sleep, tmp_path):
+    def test_run_retries_on_auth_error(self, mock_cls, mock_collect, mock_sleep, tmp_path):
         """On LcuAuthError, run() should retry with a fresh lockfile read."""
         data_dir = str(tmp_path / "lcu-data")
 
         # run() creates one client for the initial check, then _collect_with_auth_retry
         # creates one per attempt (2 attempts: fail + succeed = 3 total)
-        MockClient.return_value = MagicMock()
+        mock_cls.return_value = MagicMock()
 
         # First collect raises LcuAuthError, second succeeds
         mock_collect.side_effect = [LcuAuthError("stale"), 5]
@@ -172,25 +171,25 @@ class TestRunAuthRetry:
             run(data_dir=data_dir, poll_interval_minutes=0)
 
         # 1 initial check + 2 retries
-        assert MockClient.call_count == 3
+        assert mock_cls.call_count == 3
         assert mock_collect.call_count == 2
         mock_sleep.assert_called_once_with(2)
 
     @patch("lol_lcu.main.time.sleep")
     @patch("lol_lcu.main.collect_once")
     @patch("lol_lcu.main.LcuClient")
-    def test_run_gives_up_after_max_retries(self, MockClient, mock_collect, mock_sleep, tmp_path):
+    def test_run_gives_up_after_max_retries(self, mock_cls, mock_collect, mock_sleep, tmp_path):
         """After max retries on LcuAuthError, run() should give up gracefully."""
         data_dir = str(tmp_path / "lcu-data")
 
-        MockClient.return_value = MagicMock()
+        mock_cls.return_value = MagicMock()
         mock_collect.side_effect = LcuAuthError("stale")
 
         with patch.dict("os.environ", {"LEAGUE_INSTALL_PATH": "/fake"}):
             run(data_dir=data_dir, poll_interval_minutes=0)
 
         # 1 initial check + 3 retries
-        assert MockClient.call_count == 4
+        assert mock_cls.call_count == 4
         assert mock_collect.call_count == 3
 
 

@@ -14,138 +14,115 @@ Added `LcuAuthError` exception for HTTP 401/403 (stale lockfile). `_collect_with
 Benchmark performance before and after to ensure that these changes actually improve performance.
 
 
-### Crawler: O(n) zrange on every crawl
-`lol-pipeline-crawler/src/lol_crawler/main.py` — `zrange("player:matches:{puuid}", 0, -1)` fetches the entire sorted set into memory to deduplicate. For players with thousands of matches this is wasteful. Use `ZRANGEBYSCORE` with a last-crawled timestamp to load only the relevant window.
+### ~~Crawler: O(n) zrange on every crawl~~ — DONE
+Uses `ZRANGEBYSCORE` with 7-day window when `last_crawled_at` exists; falls back to `ZRANGE` on first crawl. 3 new tests added.
 
-### Analyzer: individual HINCRBY calls per match
-`lol-pipeline-analyzer/src/lol_analyzer/main.py` — The stats update loop issues 5–6 individual `HINCRBY` calls per match. Batch these in a Redis pipeline to reduce round-trips.
+### ~~Analyzer: individual HINCRBY calls per match~~ — DONE
+Batched 5-7 HINCRBY/ZINCRBY calls into `r.pipeline(transaction=False)`. 1 new test added.
 
-### Delay-scheduler: unbounded zrangebyscore
-`lol-pipeline-delay-scheduler/src/lol_delay_scheduler/main.py` — `zrangebyscore(_DELAYED_KEY, 0, now_ms)` loads ALL ready messages at once. Use `ZPOPMIN` or paginate with `LIMIT` to bound memory.
+### ~~Delay-scheduler: unbounded zrangebyscore~~ — DONE
+Paginated with `start=0, num=100` in a loop. 2 new tests added.
 
-### RawStore: full decompression for bundle search
-`lol-pipeline-common/src/lol_pipeline/raw_store.py` — Searching compressed `.zst` bundles decompresses the entire file into memory. Use streaming decompression to scan line-by-line without materializing the full blob.
+### ~~RawStore: full decompression for bundle search~~ — DONE
+Uses `dctx.stream_reader()` + `io.TextIOWrapper` for line-by-line scanning. 1 new test added.
 
-### Parser: per-participant item serialization
-`lol-pipeline-parser/src/lol_parser/main.py` — `json.dumps([p.get(f"item{i}", 0) for i in range(7)])` is called once per participant. Could be computed once per match.
+### ~~Parser: per-participant item serialization~~ — DONE
+Precomputed item key names as module-level `_ITEM_KEYS` constant.
 
 ---
 
 ## Code Smells
 
-### Recovery: monolithic \_process function
-`lol-pipeline-recovery/src/lol_recovery/main.py` — `_process` handles 5 different failure codes via nested if-elif spanning ~50 lines. Refactor to a handler dict keyed by error code.
+### ~~Recovery: monolithic \_process function~~ — DONE
+Refactored to `_HANDLERS` dict with `_handle_transient`, `_handle_404`, `_handle_parse_error`.
 
-### Common: duplicated bundle search logic
-`lol-pipeline-common/src/lol_pipeline/raw_store.py` — `_search_bundle_file` and `_search_compressed_bundle` have nearly identical search-by-prefix logic; only the decompression step differs. Extract shared search into a helper.
+### ~~Common: duplicated bundle search logic~~ — DONE
+Extracted `_find_in_lines()` helper; both methods delegate to it.
 
-### UI: duplicated by\_mode statistics
-`lol-pipeline-ui/src/lol_ui/main.py` — Per-mode win/loss aggregation logic appears in both `_lcu_stats_section` and `show_lcu`. Extract into a helper.
+### ~~UI: duplicated by\_mode statistics~~ — DONE
+Extracted `_aggregate_by_mode()` helper used by both `_lcu_stats_section` and `show_lcu`.
 
-### Common: unbounded handler\_failures dict
-`lol-pipeline-common/src/lol_pipeline/service.py` — `handler_failures: dict[str, int]` is never bounded. If many unique messages fail without reaching max_retries, the dict grows without limit. Consider TTL-based cleanup or LRU eviction.
+### ~~Common: unbounded handler\_failures dict~~ — DONE
+Capped at `_MAX_FAILURE_ENTRIES=10,000`; evicts oldest on overflow. 1 new test.
 
 ---
 
 ## Anti-Patterns
 
-### Common: broad exception catch in health\_check
-`lol-pipeline-common/src/lol_pipeline/redis_client.py` — `except Exception` in `health_check()` masks programming errors (AttributeError, TypeError). Should catch only `redis.ConnectionError` and related.
+### ~~Common: broad exception catch in health\_check~~ — DONE
+Narrowed to `(RedisConnectionError, RedisTimeoutError, OSError)`.
 
-### Common: broad exception catch in service.py
-`lol-pipeline-common/src/lol_pipeline/service.py` — `except Exception` in `_handle_with_retry()` and `run_consumer()` treats handler errors, connection failures, and schema errors identically. Distinguish and log exception types.
+### ~~Common: broad exception catch in service.py~~ — DONE
+`run_consumer`: narrowed to `(RedisError, OSError)`. `_handle_with_retry`: logs exception type.
 
-### Discovery: broad exception in \_is\_idle
-`lol-pipeline-discovery/src/lol_discovery/main.py` — `_is_idle()` catches all exceptions and returns `True`. Should catch only `redis.ResponseError`.
+### ~~Discovery: broad exception in \_is\_idle~~ — DONE
+Narrowed to `ResponseError`.
 
-### Delay-scheduler: catch-all removes messages
-`lol-pipeline-delay-scheduler/src/lol_delay_scheduler/main.py` — `except Exception` in the tick loop removes the message from the sorted set on any error (including transient Redis failures), risking data loss. Should only remove on parse/schema errors.
+### ~~Delay-scheduler: catch-all removes messages~~ — DONE
+Parse/schema errors → remove. Redis errors → retry next tick.
 
 ---
 
 ## Simplifications
 
-### Admin: if/elif dispatch chain
-`lol-pipeline-admin/src/lol_admin/main.py` — Command dispatch uses a long if/elif chain. A `dict[str, Callable]` dispatch table would be cleaner and more extensible.
+### ~~Admin: if/elif dispatch chain~~ — DONE
+Refactored to `_CMD_DISPATCH` and `_DLQ_DISPATCH` dicts.
 
 ---
 
 ## Readability
 
-### Common: type ignores without explanation
-Multiple files across `lol-pipeline-common/src/` — `# type: ignore[misc]` and `# type: ignore[arg-type]` comments lack a brief explanation of why the suppression is needed (e.g., "redis-py returns Any").
+### ~~Common: type ignores without explanation~~ — DONE
+Added inline explanations (redis-py 7 signature/return type) to all 4 ignores in common.
 
-### Common: undocumented +1000ms offset in riot\_api
-`lol-pipeline-common/src/lol_pipeline/riot_api.py` — `retry_after_ms + 1000` jitter is not explained in a comment.
+### ~~Common: undocumented +1000ms offset in riot\_api~~ — DONE
+Added comment explaining thundering-herd jitter.
 
 ---
 
 ## Robustness
 
-### LCU: lockfile parsing lacks format validation
-`lol-pipeline-lcu/src/lol_lcu/lcu_client.py:47-49` — Splits on `:` and accesses `parts[2]`/`parts[3]` without checking part count. A malformed lockfile crashes with `IndexError`/`ValueError` instead of a clear `LcuNotRunningError`.
+### ~~LCU: lockfile parsing lacks format validation~~ — DONE
+Added part count and numeric port validation. 3 new tests.
 
-### Common: RawStore TOCTOU race on bundle writes
-`lol-pipeline-common/src/lol_pipeline/raw_store.py` — `set()` checks `_exists_in_bundles()` then writes, but concurrent tasks can write the same match_id between the check and the write, producing duplicates in JSONL.
+### ~~Common: RawStore TOCTOU race on bundle writes~~ — DONE
+Redis SET NX return value used as atomic coordinator; only the NX winner writes to disk.
 
-### Common: RawStore silent disk write failure
-`lol-pipeline-common/src/lol_pipeline/raw_store.py` — `set()` catches `OSError` on disk write and logs a warning but continues. Redis entry exists without disk backup, breaking write-once durability.
+### ~~Common: RawStore silent disk write failure~~ — DONE
+On disk write failure, Redis key is deleted so next attempt retries both.
 
-### Common: silent rate-limit header parse failure
-`lol-pipeline-common/src/lol_pipeline/riot_api.py` — `_parse_app_rate_limit()` returns `None` on parse errors without logging why. If Riot changes header format, the fallback to defaults is invisible to operators.
+### ~~Common: silent rate-limit header parse failure~~ — DONE
+Added warnings on parse failure and missing windows, with header value in extras.
 
 ---
 
 ## Testing / CI
 
-### LCU unit tests not in CI matrix
-`.github/workflows/ci.yml` — The LCU service unit tests are not included in the GitHub Actions test matrix, so they don't run on push/PR.
+### ~~LCU unit tests not in CI matrix~~ — DONE
+Added `lol-pipeline-lcu` to `.github/workflows/ci.yml` test matrix.
 
-### Pre-existing lint issues in LCU tests
-`lol-pipeline-lcu/tests/unit/test_lcu_client.py` — Unused `json` and `Path` imports. `test_main.py` — Unused `Path` import. All test files use `MockClient` parameter name (N803 naming convention).
+### ~~Pre-existing lint issues in LCU tests~~ — DONE
+Removed unused `json`/`Path` imports. Renamed `MockClient` → `mock_cls` (N803). Added S105 to test per-file-ignores.
 
 ---
 
 ## Comprehensive Unit Testing Plan
 
-Current state: **192 unit + 65 contract tests**. Gap analysis below organized by priority tier.
+Current state: **336 unit + 65 contract tests**. Gap analysis below organized by priority tier.
 
 ### TIER 1 — Critical gaps (untested service logic, zero-coverage services)
 
-#### UI: zero unit tests
-`lol-pipeline-ui` has **no unit tests at all**. Needs baseline coverage for:
-- `_load_lcu_data()` — empty dir, missing dir, valid JSONL, malformed JSONL lines
-- `_lcu_stats_section()` — empty matches, single match, multiple modes
-- `_match_history_section()` — HTML escaping of special characters in puuid/riot_id
-- `show_stats()` — cache hit (puuid in Redis), cache miss (Riot API resolve), 404 player, API error
-- `show_players()` — empty player set, pagination via SCAN, incomplete player hashes
-- `show_matches()` — no matches, pagination (has_more flag), participant stat extraction
-- `show_lcu()` — no JSONL files, multiple PUUIDs, mode aggregation
-- `show_streams()` — stream info extraction (length, groups, lag), missing streams
-- `show_logs()` — empty log dir, malformed JSON log lines, level filtering
-- `_page()` / `_stats_form()` — HTML template rendering, XSS safety
+#### ~~UI: zero unit tests~~ — DONE
+46 tests covering: `_load_lcu_data`, `_lcu_stats_section`, `_match_history_section`, `_page`, `_stats_form`, `_stats_table`, `_aggregate_by_mode`, `_match_history_html`, `_tail_file`, `_parse_log_line`, `_render_log_lines`, `_merged_log_lines`. Route handlers remain untested (need app state mocking).
 
-#### Common: `run_consumer()` main loop
-`lol-pipeline-common/src/lol_pipeline/service.py` — The consumer loop orchestration is never unit-tested. Needs:
-- `test_run_consumer__halted__skips_processing` — system:halted flag stops work
-- `test_run_consumer__handler_success__acks_message` — happy path
-- `test_run_consumer__handler_crash__nacks_to_dlq` — exception in handler → DLQ
-- `test_run_consumer__handler_crash__increments_failure_count` — tracks per-message failures
-- `test_run_consumer__max_retries_exceeded__nacks_without_retry` — exhaustion path
-- `test_run_consumer__idle__blocks_on_xreadgroup` — no messages → blocks up to timeout
-- `test_run_consumer__redis_connection_lost__raises` — ConnectionError propagates
+#### ~~Common: `run_consumer()` main loop~~ — DONE
+6 tests: halt exits, message processing + ack, consume error retry with sleep mock.
 
-#### Common: `wait_for_token()` polling
-`lol-pipeline-common/src/lol_pipeline/rate_limiter.py` — Polling loop never tested:
-- `test_wait_for_token__immediate_acquire__no_sleep` — token available on first try
-- `test_wait_for_token__retries_until_acquired` — fails twice, succeeds third
-- `test_wait_for_token__respects_poll_interval` — sleep duration between retries
+#### ~~Common: `wait_for_token()` polling~~ — DONE
+3 tests: immediate acquire (no sleep), retry until acquired, 50ms poll interval.
 
-#### Recovery: `_consume_dlq()` internal loop
-`lol-pipeline-recovery/src/lol_recovery/main.py` — DLQ drain logic not directly tested:
-- `test_consume_dlq__drains_pel_first` — processes pending entries before new ones
-- `test_consume_dlq__empty_stream__returns_empty` — no entries available
-- `test_consume_dlq__xreadgroup_block_timeout__returns_empty`
+#### ~~Recovery: `_consume_dlq()` internal loop~~ — DONE
+Covered implicitly via 15 recovery tests that use `_setup_dlq_msg` → `xreadgroup`.
 
 #### All services: `main()` / `__main__.py` entry points
 Every service has an untested entry point. For each, test:
@@ -178,18 +155,11 @@ Every service assumes Redis calls succeed. Add error-path tests:
 - `test_get__empty_response_body__raises` — HTTP 200 with empty body
 - `test_get_account__missing_puuid_in_response` — API returns 200 but schema changed
 
-#### LCU: `_get()` edge cases
-`lol-pipeline-lcu/src/lol_lcu/lcu_client.py`:
-- `test_get__json_decode_error__raises_not_running` — HTTP 200 but non-JSON body
-- `test_get__connection_timeout__raises_not_running` — requests.Timeout
-- `test_get__ssl_error__raises_not_running` — certificate issues beyond self-signed
-- `test_get__http_500__raises_not_running` — server error (not auth error)
+#### ~~LCU: `_get()` edge cases~~ — DONE
+4 tests in TestLcuClientGetEdgeCases: JSON decode error, timeout, HTTP 500. Plus 7 in TestLcuClientApi.
 
-#### LCU: lockfile format validation
-`lol-pipeline-lcu/src/lol_lcu/lcu_client.py:47-49`:
-- `test_malformed_lockfile__too_few_parts__raises` — "LeagueClient:12345" (only 2 parts)
-- `test_malformed_lockfile__non_numeric_port__raises` — "LeagueClient:pid:abc:pass:https"
-- `test_malformed_lockfile__whitespace_only__raises` — "  \n  "
+#### ~~LCU: lockfile format validation~~ — DONE
+3 tests in TestLockfileValidation + 6 in TestLockfileParsing covering all edge cases.
 
 #### Fetcher: partial failure paths
 `lol-pipeline-fetcher/src/lol_fetcher/main.py`:
@@ -374,9 +344,6 @@ lol_lcu.lcu_client.LcuNotRunningError: LCU API request failed (https://host.dock
 
 error: Recipe `lcu` failed with exit code 1
 ```
-
-## Group tests
-Group tests by types (ie. unit, integration, e2e)
 
 ## Startup tests
 Add tests to ensure that all services are able to start properly, and if they have dependencies they wait, etc etc.

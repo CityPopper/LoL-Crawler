@@ -7,6 +7,7 @@ import logging
 from collections.abc import Awaitable, Callable
 
 import redis.asyncio as aioredis
+from redis.exceptions import RedisError
 
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.streams import ack, consume, nack_to_dlq
@@ -15,9 +16,10 @@ from lol_pipeline.streams import ack, consume, nack_to_dlq
 MessageHandler = Callable[[str, MessageEnvelope], Awaitable[None]]
 
 _MAX_HANDLER_RETRIES = 3
+_MAX_FAILURE_ENTRIES = 10_000
 
 
-async def _handle_with_retry(
+async def _handle_with_retry(  # noqa: PLR0913
     r: aioredis.Redis,
     stream: str,
     group: str,
@@ -32,9 +34,12 @@ async def _handle_with_retry(
     try:
         await handler(msg_id, envelope)
         failures.pop(msg_id, None)
-    except Exception:
+    except Exception as exc:
         count = failures.get(msg_id, 0) + 1
         failures[msg_id] = count
+        if len(failures) > _MAX_FAILURE_ENTRIES:
+            oldest = next(iter(failures))
+            del failures[oldest]
         if count >= max_retries:
             log.error(
                 "handler crashed %d times — sending to DLQ",
@@ -42,7 +47,8 @@ async def _handle_with_retry(
                 extra={"msg_id": msg_id},
             )
             await nack_to_dlq(
-                r, envelope,
+                r,
+                envelope,
                 failure_code="handler_crash",
                 failed_by="run_consumer",
                 original_message_id=msg_id,
@@ -51,7 +57,10 @@ async def _handle_with_retry(
             failures.pop(msg_id, None)
         else:
             log.exception(
-                "handler error (%d/%d)", count, max_retries,
+                "handler error (%d/%d) [%s]",
+                count,
+                max_retries,
+                type(exc).__name__,
                 extra={"msg_id": msg_id},
             )
 
@@ -80,10 +89,13 @@ async def run_consumer(
             break
         try:
             messages = await consume(
-                r, stream, group, consumer,
+                r,
+                stream,
+                group,
+                consumer,
                 autoclaim_min_idle_ms=autoclaim_min_idle_ms,
             )
-        except Exception:
+        except (RedisError, OSError):
             log.exception("consume error — retrying in 1s")
             await asyncio.sleep(1)
             continue
@@ -95,5 +107,12 @@ async def run_consumer(
                 log.debug("waiting for messages", extra={"stream": stream})
         for msg_id, envelope in messages:
             await _handle_with_retry(
-                r, stream, group, msg_id, envelope, handler, log, handler_failures,
+                r,
+                stream,
+                group,
+                msg_id,
+                envelope,
+                handler,
+                log,
+                handler_failures,
             )

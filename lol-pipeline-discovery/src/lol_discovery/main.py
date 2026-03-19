@@ -14,6 +14,7 @@ from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.riot_api import NotFoundError, RiotAPIError, RiotClient
 from lol_pipeline.streams import publish
+from redis.exceptions import ResponseError
 
 _STREAM_PUUID = "stream:puuid"
 _DISCOVER_KEY = "discover:players"
@@ -36,13 +37,11 @@ async def _is_idle(r: aioredis.Redis) -> bool:
     """
     try:
         groups: list[Any] = await r.xinfo_groups(_STREAM_PUUID)  # type: ignore[misc]
-    except Exception:
+    except ResponseError:
         return True  # stream or group does not exist yet — nothing to process
     if not groups:
         return True  # no consumer groups registered = nothing consuming the stream
-    return all(
-        int(g.get("pending", 0)) == 0 and int(g.get("lag", 0)) == 0 for g in groups
-    )
+    return all(int(g.get("pending", 0)) == 0 and int(g.get("lag", 0)) == 0 for g in groups)
 
 
 async def _resolve_names(

@@ -21,6 +21,7 @@ _IN_STREAM = "stream:parse"
 _OUT_STREAM = "stream:analyze"
 _GROUP = "parsers"
 _DISCOVER_KEY = "discover:players"
+_ITEM_KEYS = [f"item{i}" for i in range(7)]
 
 
 def _validate(data: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -40,7 +41,7 @@ async def _write_participant(
     p: dict[str, Any],
 ) -> str:
     puuid: str = p["puuid"]
-    items = json.dumps([p.get(f"item{i}", 0) for i in range(7)])
+    items = json.dumps([p.get(k, 0) for k in _ITEM_KEYS])
     await r.hset(  # type: ignore[misc]
         f"participant:{match_id}:{puuid}",
         mapping={
@@ -187,7 +188,12 @@ async def main() -> None:
     try:
         autoclaim_ms = cfg.stream_ack_timeout * 1000
         await run_consumer(
-            r, _IN_STREAM, _GROUP, consumer, _handler, log,
+            r,
+            _IN_STREAM,
+            _GROUP,
+            consumer,
+            _handler,
+            log,
             autoclaim_min_idle_ms=autoclaim_ms,
         )
     finally:

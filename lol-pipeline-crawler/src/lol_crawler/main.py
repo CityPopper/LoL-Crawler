@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import socket
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import redis.asyncio as aioredis
 from lol_pipeline.config import Config
@@ -39,7 +39,13 @@ async def _crawl_player(
     game_name: str = envelope.payload.get("game_name", "")
     tag_line: str = envelope.payload.get("tag_line", "")
 
-    known: set[str] = set(await r.zrange(f"player:matches:{puuid}", 0, -1))
+    last_crawled = await r.hget(f"player:{puuid}", "last_crawled_at")
+    if last_crawled:
+        cutoff_dt = datetime.fromisoformat(last_crawled) - timedelta(days=7)
+        cutoff_ms = cutoff_dt.timestamp() * 1000
+        known: set[str] = set(await r.zrangebyscore(f"player:matches:{puuid}", cutoff_ms, "+inf"))
+    else:
+        known = set(await r.zrange(f"player:matches:{puuid}", 0, -1))
     log.info(
         "starting crawl",
         extra={
@@ -139,7 +145,12 @@ async def main() -> None:
     try:
         autoclaim_ms = cfg.stream_ack_timeout * 1000
         await run_consumer(
-            r, _IN_STREAM, _GROUP, consumer, _handler, log,
+            r,
+            _IN_STREAM,
+            _GROUP,
+            consumer,
+            _handler,
+            log,
             autoclaim_min_idle_ms=autoclaim_ms,
         )
     finally:
