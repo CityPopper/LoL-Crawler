@@ -51,11 +51,11 @@ Messages delivered to a consumer but not yet ACKed. High counts indicate slow pr
 
 ```bash
 # Per-stream pending counts
-docker compose exec redis redis-cli XPENDING stream:puuid crawler-group - + 10
-docker compose exec redis redis-cli XPENDING stream:match_id fetcher-group - + 10
-docker compose exec redis redis-cli XPENDING stream:parse parser-group - + 10
-docker compose exec redis redis-cli XPENDING stream:analyze analyzer-group - + 10
-docker compose exec redis redis-cli XPENDING stream:dlq recovery-group - + 10
+docker compose exec redis redis-cli XPENDING stream:puuid crawlers - + 10
+docker compose exec redis redis-cli XPENDING stream:match_id fetchers - + 10
+docker compose exec redis redis-cli XPENDING stream:parse parsers - + 10
+docker compose exec redis redis-cli XPENDING stream:analyze analyzers - + 10
+docker compose exec redis redis-cli XPENDING stream:dlq recovery - + 10
 ```
 
 ### DLQ Metrics
@@ -112,7 +112,7 @@ docker compose exec redis redis-cli GET system:halted
 | **analyzer** | `stream:analyze` drains; `player:stats:*` keys updated | `stream:analyze` grows; lock contention warnings |
 | **recovery** | `stream:dlq` drains or stable; delayed messages requeued | `stream:dlq` grows; `stream:dlq:archive` growing rapidly |
 | **delay-scheduler** | `delayed:messages` count stays low; past-due messages moved promptly | `delayed:messages` grows with past-due entries |
-| **discovery** | `discovered:players` set shrinks during idle periods | Discovery log shows repeated failures |
+| **discovery** | `discover:players` sorted set shrinks during idle periods | Discovery log shows repeated failures |
 | **ui** | HTTP 200 on `http://localhost:8080`; `/streams` page loads | Connection refused on port 8080 |
 | **lcu** | New entries in `lcu-data/{puuid}.jsonl` | LCU connection errors in logs; League client not running |
 
@@ -390,21 +390,21 @@ Key metrics to expose:
 
 | Data Type | Size Per Item | Typical Count | Total |
 |-----------|---------------|---------------|-------|
-| `raw:{match_id}` | ~100-200 KB | 10,000 matches | 1-2 GB |
+| `raw:match:{match_id}` | ~15-30 KB | 10,000 matches | 150-300 MB |
 | `match:{match_id}` hash | ~500 bytes | 10,000 matches | 5 MB |
 | `participant:{match_id}:{puuid}` hash | ~300 bytes | 100,000 participants | 30 MB |
 | `player:stats:{puuid}` hash | ~500 bytes | 1,000 players | 500 KB |
 | `player:matches:{puuid}` sorted set | ~50 bytes/member | 100,000 entries | 5 MB |
 | Stream entries | ~500 bytes each | Transient | Negligible when drained |
 
-**Primary memory driver:** `raw:{match_id}` blobs. Enable `MATCH_DATA_DIR` for disk write-through to keep Redis memory manageable.
+**Primary memory driver:** `raw:match:{match_id}` blobs. Enable `MATCH_DATA_DIR` for disk write-through to keep Redis memory manageable.
 
 ### Disk Space Estimates
 
 | Directory | Growth Rate | Retention |
 |-----------|-------------|-----------|
 | `redis-data/` | Proportional to Redis memory | Permanent (RDB + AOF) |
-| `match-data/` (if enabled) | ~150 KB per match | Permanent; use `just consolidate` to compress |
+| `match-data/` (if enabled) | ~15-30 KB per match | Permanent; use `just consolidate` to compress |
 | `lcu-data/` | ~2 KB per match | Permanent; append-only |
 | `logs/` | Varies by activity | Rotating: 150 MB max per service, 3 backups |
 

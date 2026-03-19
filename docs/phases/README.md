@@ -23,13 +23,7 @@ Each phase has a clear objective, concrete deliverables, and quantifiable accept
 
 | Phase | Name | Objective |
 |-------|------|-----------|
-| [07](07-next-phase.md) | Post-MVP | Weighted queue, code quality, test coverage, LCU fixes |
-
-## Architect Review
-
-| Doc | Contents |
-|-----|----------|
-| [07](07-architect-review.md) | Concerns, ordering issues, clarifying questions + PM resolutions |
+| [07](07-next-phase.md) | IRONCLAD | Security hardening, code quality, Docker/CI, weighted priority queue |
 
 ---
 

@@ -7,7 +7,7 @@ All application state lives in Redis. No other database.
 | Key Pattern                          | Type       | TTL      | Contents                                                    |
 |--------------------------------------|------------|----------|-------------------------------------------------------------|
 | `system:halted`                      | String     | none     | Set to `"1"` by Recovery on HTTP 403; cleared manually     |
-| `player:{puuid}`                     | Hash       | none     | `game_name`, `tag_line`, `region`, `seeded_at` (epoch ms as string), `last_crawled_at` (epoch ms as string) |
+| `player:{puuid}`                     | Hash       | none     | `game_name`, `tag_line`, `region`, `seeded_at` (ISO 8601 string), `last_crawled_at` (ISO 8601 string) |
 | `player:matches:{puuid}`             | Sorted Set | none     | member=`match_id`, score=`game_start` epoch ms              |
 | `player:stats:{puuid}`               | Hash       | none     | Raw totals: `total_games`, `total_wins`, `total_kills`, `total_deaths`, `total_assists`; Derived: `win_rate`, `avg_kills`, `avg_deaths`, `avg_assists`, `kda` |
 | `player:stats:cursor:{puuid}`        | String     | none     | `game_start` epoch ms of last match processed by Analyzer   |
@@ -22,8 +22,11 @@ All application state lives in Redis. No other database.
 | `raw:match:{match_id}`               | String     | none     | Raw match JSON blob; also persisted to disk when `MATCH_DATA_DIR` is set |
 | `discover:players`                   | Sorted Set | none     | member=`{puuid}:{region}`, score=most-recent `game_start` epoch ms; GT update semantics |
 | `delayed:messages`                   | Sorted Set | none     | member=serialized envelope, score=ready epoch ms            |
+| `player:name:{game_name}#{tag_line}` | String     | none     | PUUID cache; maps lowercased Riot ID to PUUID               |
 | `ratelimit:short`                    | Sorted Set | 1000ms   | member=`req_id`, score=epoch ms; sliding 1s window          |
 | `ratelimit:long`                     | Sorted Set | 120000ms | member=`req_id`, score=epoch ms; sliding 2min window        |
+| `ratelimit:limits:short`             | String     | none     | Dynamic 1s window limit from Riot API `X-App-Rate-Limit` header |
+| `ratelimit:limits:long`              | String     | none     | Dynamic 2min window limit from Riot API `X-App-Rate-Limit` header |
 
 ---
 
@@ -73,21 +76,27 @@ class RawStore:
 ```
 
 **Disk persistence (recommended):** When `MATCH_DATA_DIR` is set, `RawStore` becomes
-write-through — every `set()` call also writes `{MATCH_DATA_DIR}/{platform}/{match_id}.json`
-(e.g. `match-data/NA1/NA1_1234567890.json`). On a Redis miss, `get()` falls back to disk
+write-through — every `set()` call appends to a JSONL bundle file at
+`{MATCH_DATA_DIR}/{platform}/{YYYY-MM}.jsonl`. Each line is tab-separated:
+`{match_id}\t{data}`. On a Redis miss, `get()` falls back to scanning the bundle file
 and repopulates Redis automatically. This ensures match data survives Redis resets.
+
+Individual `{match_id}.json` files are a read-only legacy fallback — `get()` checks for
+them if the match is not found in the JSONL bundle, but `set()` always writes to the
+bundle format.
 
 ```
 Fetcher                     Parser
   │                           │
   │  set(match_id, json)      │  get(match_id)
   │    ├─ Redis SET nx=True   │    ├─ Redis GET  → hit: return
-  │    └─ disk write (if set) │    └─ disk read (if miss) → Redis SET + return
+  │    └─ JSONL append        │    └─ JSONL scan (if miss) → Redis SET + return
   │                           │
   └──────────── lol-pipeline-fetcher/match-data/ ────────────┘
 ```
 
-**Location on disk:** `lol-pipeline-fetcher/match-data/{platform}/{match_id}.json`
+**Location on disk:** `lol-pipeline-fetcher/match-data/{platform}/{YYYY-MM}.jsonl`
+(e.g. `match-data/NA1/2026-03.jsonl`)
 
 Both the fetcher (read-write) and parser (read-only) containers mount this directory.
 The `MATCH_DATA_DIR` env var must be set to `/match-data` in both containers (already

@@ -29,6 +29,7 @@ Pipeline state lives in Redis. LCU data is stored on disk as JSONL in `lol-pipel
 
 ## Prerequisites
 
+- [Python 3.12+](https://www.python.org/downloads/)
 - [Docker](https://docs.docker.com/get-docker/)
 - [just](https://github.com/casey/just#installation)
 
@@ -90,15 +91,19 @@ The UI `/lcu` page shows an overview; `/stats` shows API + LCU side by side.
 
 ## Testing
 
-366 unit tests + 44 contract tests across all services.
+404 unit tests + 44 contract tests across all services.
 
 ```bash
 just test                       # run all unit tests (services tested in parallel)
+just test-svc crawler           # run unit tests for a single service
 just contract                   # run PACT contract tests for all services
 just integration                # integration tests (requires Docker for testcontainers)
 just e2e                        # end-to-end test (requires running stack + valid API key)
 just test-all                   # unit + contract tests combined
+just coverage                   # run all unit tests with coverage report
 just lint                       # ruff check + format check on all services
+just fix                        # auto-fix lint issues + format all services
+just format                     # format all services (ruff format)
 just typecheck                  # mypy on all services
 just check                      # lint + typecheck
 just update-mocks               # refresh Pwnerer#1337 fixtures from live Riot API

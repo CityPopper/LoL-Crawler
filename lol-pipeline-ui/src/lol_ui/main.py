@@ -112,6 +112,7 @@ def _page(title: str, body: str) -> str:
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{title} — LoL Pipeline</title>
   <style>
     body {{ font-family: monospace; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }}

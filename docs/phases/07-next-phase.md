@@ -60,6 +60,8 @@ Blockers found by QA agent — docs say commands exist but they don't.
 | P0-32 | Fix `02-monitoring.md` line 115: `discovered:players` → `discover:players` | |
 | P0-33 | Fix `02-troubleshooting.md` line 380: `SCARD "discovered:players"` → `ZCARD "discover:players"` (it's a Sorted Set) | |
 | P0-34 | Fix `06-failure-resilience.md` DLQ lifecycle: add in-process retry phase (service.py `_handle_with_retry` retries up to 3 handler crashes before nack to DLQ) — diagram is missing this step | |
+| P0-35 | Add `<meta name="viewport">` to `_page()` in Web UI (mobile completely broken without it) | |
+| P0-36 | Add `stream:dlq:archive` and `system:halted` check to `just streams` recipe | |
 
 ---
 

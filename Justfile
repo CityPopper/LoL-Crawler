@@ -88,7 +88,9 @@ streams:
     printf "%-24s %s\n" "stream:parse:"      "$(exec_redis XLEN stream:parse)"
     printf "%-24s %s\n" "stream:analyze:"    "$(exec_redis XLEN stream:analyze)"
     printf "%-24s %s\n" "stream:dlq:"        "$(exec_redis XLEN stream:dlq)"
+    printf "%-24s %s\n" "stream:dlq:archive:" "$(exec_redis XLEN stream:dlq:archive)"
     printf "%-24s %s\n" "delayed:messages:"  "$(exec_redis ZCARD delayed:messages)"
+    printf "%-24s %s\n" "system:halted:"     "$(exec_redis GET system:halted)"
 
 # Run an admin command (auto-starts stack if needed)
 # e.g. just admin stats Faker#KR1
@@ -144,7 +146,27 @@ lint:
     set -euo pipefail
     for dir in lol-pipeline-*/; do
         if [ -f "$dir/pyproject.toml" ]; then
-            echo "=== $dir ===" && (cd "$dir" && ruff check --fix . && ruff format --check .)
+            echo "=== $dir ===" && (cd "$dir" && ruff check . && ruff format --check .)
+        fi
+    done
+
+# Auto-fix lint issues and format all service repos
+fix:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for dir in lol-pipeline-*/; do
+        if [ -f "$dir/pyproject.toml" ]; then
+            echo "=== $dir ===" && (cd "$dir" && ruff check --fix . && ruff format .)
+        fi
+    done
+
+# Format all service repos (ruff format)
+format:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for dir in lol-pipeline-*/; do
+        if [ -f "$dir/pyproject.toml" ]; then
+            echo "=== $dir ===" && (cd "$dir" && ruff format .)
         fi
     done
 
@@ -207,8 +229,32 @@ test:
     rm -rf "$TMPDIR"
     exit $FAILED
 
+# Run unit tests for a single service (e.g. just test-svc crawler)
+test-svc name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PYTEST="python3 -m pytest"
+    if [ -f ".venv/bin/python" ]; then PYTEST=".venv/bin/python -m pytest"; fi
+    $PYTEST lol-pipeline-{{name}}/tests/unit -v --tb=short
+
 # Run all unit + contract tests
 test-all: test contract
+
+# Run all unit tests with coverage report
+coverage:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PYTEST="python3 -m pytest"
+    if [ -f ".venv/bin/python" ]; then PYTEST=".venv/bin/python -m pytest"; fi
+    for dir in lol-pipeline-*/; do
+        name="${dir%/}"
+        short="${name#lol-pipeline-}"
+        if [ -d "$dir/tests/unit" ] && [ -d "$dir/src" ]; then
+            pkg=$(ls "$dir/src/")
+            echo "=== $name ==="
+            (cd "$dir" && ../$PYTEST tests/unit --cov="src/$pkg" --cov-report=term-missing -q --tb=short)
+        fi
+    done
 
 # Consolidate individual match JSON files into JSONL+zstd bundles
 consolidate:

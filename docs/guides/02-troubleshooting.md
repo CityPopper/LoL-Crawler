@@ -54,7 +54,7 @@ To follow a specific player or match through the entire pipeline:
 just seed "Faker#KR1" kr
 
 # 2. Find the PUUID
-docker compose exec redis redis-cli HGETALL "player:name:faker#kr1"
+docker compose exec redis redis-cli GET "player:name:faker#kr1"
 
 # 3. Check if the PUUID was published to stream:puuid
 docker compose exec redis redis-cli XRANGE stream:puuid - + COUNT 5
@@ -79,7 +79,7 @@ docker compose exec redis redis-cli HGETALL "player:stats:<puuid>"
 docker compose exec redis redis-cli HGET "match:<match_id>" status
 
 # 2. Check if raw blob exists
-docker compose exec redis redis-cli EXISTS "raw:<match_id>"
+docker compose exec redis redis-cli EXISTS "raw:match:<match_id>"
 
 # 3. Check if match was parsed
 docker compose exec redis redis-cli SISMEMBER "match:status:parsed" "<match_id>"
@@ -105,7 +105,7 @@ docker compose exec redis redis-cli XINFO STREAM stream:match_id
 docker compose exec redis redis-cli XINFO GROUPS stream:match_id
 
 # Consumers within a group
-docker compose exec redis redis-cli XINFO CONSUMERS stream:match_id fetcher-group
+docker compose exec redis redis-cli XINFO CONSUMERS stream:match_id fetchers
 ```
 
 ### XPENDING — Pending Entry List
@@ -114,10 +114,10 @@ Messages delivered to a consumer but not yet ACKed:
 
 ```bash
 # Summary: total pending, min/max IDs, consumer counts
-docker compose exec redis redis-cli XPENDING stream:match_id fetcher-group
+docker compose exec redis redis-cli XPENDING stream:match_id fetchers
 
 # Detailed: show pending entries with idle time
-docker compose exec redis redis-cli XPENDING stream:match_id fetcher-group - + 10
+docker compose exec redis redis-cli XPENDING stream:match_id fetchers - + 10
 
 # Output columns: entry-id, consumer-name, idle-time-ms, delivery-count
 ```
@@ -349,10 +349,10 @@ MATCH_ID="NA1_12345"
 docker compose exec redis redis-cli HGETALL "match:$MATCH_ID"
 
 # Raw blob exists?
-docker compose exec redis redis-cli EXISTS "raw:$MATCH_ID"
+docker compose exec redis redis-cli EXISTS "raw:match:$MATCH_ID"
 
 # Raw blob size
-docker compose exec redis redis-cli STRLEN "raw:$MATCH_ID"
+docker compose exec redis redis-cli STRLEN "raw:match:$MATCH_ID"
 
 # Participants
 docker compose exec redis redis-cli SMEMBERS "match:participants:$MATCH_ID"
@@ -377,7 +377,7 @@ docker compose exec redis redis-cli SCARD "match:status:parsed"
 docker compose exec redis redis-cli SCARD "match:status:failed"
 
 # Discovered players waiting
-docker compose exec redis redis-cli SCARD "discovered:players"
+docker compose exec redis redis-cli ZCARD "discover:players"
 
 # All stream depths
 for s in stream:puuid stream:match_id stream:parse stream:analyze stream:dlq stream:dlq:archive; do

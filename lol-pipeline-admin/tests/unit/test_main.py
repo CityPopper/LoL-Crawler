@@ -24,6 +24,7 @@ from lol_admin.main import (
     cmd_replay_parse,
     cmd_reseed,
     cmd_stats,
+    cmd_system_halt,
     cmd_system_resume,
     main,
 )
@@ -178,6 +179,26 @@ class TestReseed:
         # Cooldown fields should be deleted
         assert await r.hget(f"player:{puuid}", "seeded_at") is None
         assert await r.hget(f"player:{puuid}", "last_crawled_at") is None
+
+
+class TestSystemHalt:
+    @pytest.mark.asyncio
+    async def test_system_halt(self, r, capsys):
+        """system-halt → system:halted set to '1'."""
+        args = argparse.Namespace()
+        result = await cmd_system_halt(r, args)
+        assert result == 0
+        assert await r.get("system:halted") == "1"
+        assert "halted" in capsys.readouterr().out
+
+    @pytest.mark.asyncio
+    async def test_system_halt_already_halted(self, r, capsys):
+        """system-halt when already halted → still succeeds."""
+        await r.set("system:halted", "1")
+        args = argparse.Namespace()
+        result = await cmd_system_halt(r, args)
+        assert result == 0
+        assert await r.get("system:halted") == "1"
 
 
 class TestSystemResume:

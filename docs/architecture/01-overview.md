@@ -45,6 +45,9 @@ All services are written in Python. The primary bottleneck is the Riot API rate 
 | 6 | Recovery          | Processes DLQ; retries or archives failed jobs    |
 | 7 | Delay Scheduler   | Moves ready delayed messages into target streams  |
 | 8 | Discovery         | Promotes co-discovered players to stream:puuid when idle |
+| 9 | Admin             | One-shot CLI tool for operational commands         |
+| 10 | UI               | Web dashboard for stats, streams, and logs        |
+| 11 | LCU              | Collects match history from local League client   |
 
 Full service contracts: [02-services.md](02-services.md)
 
@@ -67,7 +70,7 @@ LCU data is stored as append-only JSONL files (`lcu-data/{puuid}.jsonl`) in `lol
 
 | Factor               | Implementation                                                       |
 |----------------------|----------------------------------------------------------------------|
-| Codebase             | Polyrepo; one deployable per service; shared common library          |
+| Codebase             | Monorepo; one deployable per service; shared common library          |
 | Dependencies         | Explicit in `pyproject.toml`; isolated virtualenv per service        |
 | Config               | All secrets and connection strings via environment variables only    |
 | Backing services     | Redis treated as attached resource via `REDIS_URL`                   |

@@ -1,6 +1,6 @@
 ---
 name: graphic-designer
-description: Graphic designer for visual assets — ASCII diagrams, pipeline flow charts, dashboard wireframes, status indicators, color systems, and visual hierarchy. Use when creating or improving visual representations of data, architecture diagrams, or UI mockups.
+description: Graphic designer for terminal and documentation visuals — ASCII diagrams, pipeline flow charts, dashboard wireframes, status indicators in CLI output. Use for terminal UI, documentation diagrams, and ASCII art. For web UI design use the web-designer agent instead.
 tools: Read, Glob, Grep, Bash, Edit, Write, WebSearch, WebFetch
 model: sonnet
 ---

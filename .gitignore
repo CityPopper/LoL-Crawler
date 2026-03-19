@@ -54,6 +54,7 @@ Thumbs.db
 
 # Logs
 *.log
+logs/
 
 # Match data — individual JSON files (use `just consolidate` to create JSONL bundles)
 lol-pipeline-fetcher/match-data/**/*.json
