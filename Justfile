@@ -95,7 +95,8 @@ streams:
 admin *args: _ensure_up
     {{DC}} run --rm admin {{args}}
 
-# Collect LCU match history (one-shot). Runs via Docker on WSL (required to reach Windows localhost).
+# Collect LCU match history (one-shot). On WSL, runs via Windows Python (the LCU
+# only accepts connections from Windows localhost — Docker and WSL2 get 403).
 # On native Windows/macOS, runs locally. Set LEAGUE_INSTALL_PATH in .env.
 lcu:
     #!/usr/bin/env bash
@@ -104,8 +105,11 @@ lcu:
         set -a; source ".env"; set +a
     fi
     if grep -qi microsoft /proc/version 2>/dev/null; then
-        echo "WSL detected — running LCU collector via Docker (required to reach Windows localhost)..."
-        {{DC}} run --rm lcu python -m lol_lcu --data-dir /lcu-data
+        echo "WSL detected — running LCU collector via Windows Python (LCU only accepts localhost)..."
+        WIN_PROJECT=$(wslpath -w "$(pwd)/{{LCU_DIR}}")
+        WIN_DATA=$(wslpath -w "$(pwd)/{{LCU_DIR}}/lcu-data")
+        WIN_INSTALL=$(wslpath -w "${LEAGUE_INSTALL_PATH}")
+        powershell.exe -Command "cd '${WIN_PROJECT}'; pip install -q -e .; \$env:LEAGUE_INSTALL_PATH='${WIN_INSTALL}'; \$env:LCU_HOST='127.0.0.1'; python -m lol_lcu --data-dir '${WIN_DATA}'"
     else
         cd {{LCU_DIR}} && pip install -q -e . && python3 -m lol_lcu --data-dir lcu-data
     fi
@@ -118,11 +122,15 @@ lcu-watch:
     if [ -z "${LEAGUE_INSTALL_PATH:-}" ] && [ -f ".env" ]; then
         set -a; source ".env"; set +a
     fi
+    POLL="${LCU_POLL_INTERVAL_MINUTES:-5}"
     if grep -qi microsoft /proc/version 2>/dev/null; then
-        echo "WSL detected — running LCU collector via Docker (required to reach Windows localhost)..."
-        {{DC}} run --rm lcu python -m lol_lcu --data-dir /lcu-data --poll-interval "${LCU_POLL_INTERVAL_MINUTES:-5}"
+        echo "WSL detected — running LCU collector via Windows Python (LCU only accepts localhost)..."
+        WIN_PROJECT=$(wslpath -w "$(pwd)/{{LCU_DIR}}")
+        WIN_DATA=$(wslpath -w "$(pwd)/{{LCU_DIR}}/lcu-data")
+        WIN_INSTALL=$(wslpath -w "${LEAGUE_INSTALL_PATH}")
+        powershell.exe -Command "cd '${WIN_PROJECT}'; pip install -q -e .; \$env:LEAGUE_INSTALL_PATH='${WIN_INSTALL}'; \$env:LCU_HOST='127.0.0.1'; python -m lol_lcu --data-dir '${WIN_DATA}' --poll-interval ${POLL}"
     else
-        cd {{LCU_DIR}} && pip install -q -e . && python3 -m lol_lcu --data-dir lcu-data --poll-interval "${LCU_POLL_INTERVAL_MINUTES:-5}"
+        cd {{LCU_DIR}} && pip install -q -e . && python3 -m lol_lcu --data-dir lcu-data --poll-interval "$POLL"
     fi
 
 # Open the web UI in the default browser

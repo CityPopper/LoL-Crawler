@@ -28,10 +28,29 @@ def load_existing_game_ids(jsonl_path: Path) -> set[int]:
     return ids
 
 
+def _identity_map(game: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    """Build participantId -> player identity from participantIdentities.
+
+    The LCU match history uses the v4 format: participant stats live in
+    ``participants[]`` keyed by participantId, while identity info (puuid,
+    gameName, etc.) lives in ``participantIdentities[].player``.
+    """
+    result: dict[int, dict[str, Any]] = {}
+    for entry in game.get("participantIdentities", []):
+        pid = entry.get("participantId")
+        player = entry.get("player", {})
+        if pid is not None:
+            result[pid] = player
+    return result
+
+
 def _extract_player_stats(game: dict[str, Any], puuid: str) -> dict[str, Any] | None:
     """Extract the current player's stats from a game's participants."""
+    id_map = _identity_map(game)
     for p in game.get("participants", []):
-        if p.get("puuid") == puuid:
+        pid = p.get("participantId")
+        identity = id_map.get(pid, {})
+        if identity.get("puuid") == puuid:
             stats = p.get("stats", {})
             return {
                 "champion_id": p.get("championId", 0),
@@ -47,12 +66,19 @@ def _extract_player_stats(game: dict[str, Any], puuid: str) -> dict[str, Any] | 
 
 
 def _build_participants(game: dict[str, Any]) -> list[dict[str, Any]]:
-    """Build a minimal participant list from the game data."""
+    """Build a minimal participant list from the game data.
+
+    Joins ``participants`` with ``participantIdentities`` to attach each
+    player's puuid (the LCU v4 format stores them separately).
+    """
+    id_map = _identity_map(game)
     result = []
     for p in game.get("participants", []):
+        pid = p.get("participantId")
+        identity = id_map.get(pid, {})
         result.append(
             {
-                "puuid": p.get("puuid", ""),
+                "puuid": identity.get("puuid", ""),
                 "championId": p.get("championId", 0),
             }
         )

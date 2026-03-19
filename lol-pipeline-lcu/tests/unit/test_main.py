@@ -1,20 +1,72 @@
 """Tests for LCU collector main logic — collect_once and deduplication."""
 
 import json
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 from lol_lcu.__main__ import main as lcu_main
 from lol_lcu.lcu_client import LcuAuthError
 from lol_lcu.main import (
     _build_participants,
     _extract_player_stats,
+    _identity_map,
     _show_summary,
     collect_once,
     load_existing_game_ids,
     run,
 )
+
+# ---------------------------------------------------------------------------
+# Helpers — LCU v4 format uses participantIdentities + participants
+# ---------------------------------------------------------------------------
+
+
+def _make_game(
+    game_id: int,
+    participants: list[dict],
+    *,
+    game_creation: int = 0,
+    game_duration: int = 0,
+    queue_id: int = 0,
+    game_mode: str = "SR",
+) -> dict:
+    """Build a LCU v4 game dict with participantIdentities auto-generated.
+
+    Each entry in *participants* must have at least ``puuid``, ``championId``,
+    and ``participantId``.  Stats go inside a ``stats`` sub-dict.
+    """
+    identities = []
+    parts = []
+    for p in participants:
+        pid = p.get("participantId", 0)
+        identities.append(
+            {
+                "participantId": pid,
+                "player": {
+                    "puuid": p.get("puuid", ""),
+                    "gameName": p.get("gameName", ""),
+                    "tagLine": p.get("tagLine", ""),
+                },
+            }
+        )
+        part = {
+            "participantId": pid,
+            "championId": p.get("championId", 0),
+        }
+        if "stats" in p:
+            part["stats"] = p["stats"]
+        parts.append(part)
+
+    return {
+        "gameId": game_id,
+        "gameCreation": game_creation,
+        "gameDuration": game_duration,
+        "queueId": queue_id,
+        "gameMode": game_mode,
+        "participantIdentities": identities,
+        "participants": parts,
+    }
 
 
 class TestLoadExistingGameIds:
@@ -76,6 +128,37 @@ class TestLoadExistingGameIds:
         assert ids == {100, 200}
 
 
+class TestIdentityMap:
+    """Tests for _identity_map helper."""
+
+    def test_builds_map_from_identities(self):
+        game = {
+            "participantIdentities": [
+                {"participantId": 1, "player": {"puuid": "aaa", "gameName": "A"}},
+                {"participantId": 2, "player": {"puuid": "bbb", "gameName": "B"}},
+            ],
+        }
+        result = _identity_map(game)
+        assert len(result) == 2
+        assert result[1]["puuid"] == "aaa"
+        assert result[2]["puuid"] == "bbb"
+
+    def test_empty_identities(self):
+        assert _identity_map({"participantIdentities": []}) == {}
+        assert _identity_map({}) == {}
+
+    def test_missing_player_key(self):
+        game = {"participantIdentities": [{"participantId": 1}]}
+        result = _identity_map(game)
+        assert result[1] == {}
+
+    def test_missing_participant_id_skipped(self):
+        game = {"participantIdentities": [{"player": {"puuid": "x"}}]}
+        result = _identity_map(game)
+        # Entry without participantId is skipped (guard: pid is not None)
+        assert result == {}
+
+
 class TestCollectOnce:
     """Tests for the collect_once function."""
 
@@ -91,15 +174,12 @@ class TestCollectOnce:
             "tagLine": "KR1",
         }
         client.match_history.return_value = [
-            {
-                "gameId": 100,
-                "gameCreation": 1700000000000,
-                "gameDuration": 1800,
-                "queueId": 900,
-                "gameMode": "URF",
-                "participants": [
+            _make_game(
+                100,
+                [
                     {
                         "puuid": "test-puuid",
+                        "participantId": 1,
                         "championId": 91,
                         "stats": {
                             "win": True,
@@ -118,7 +198,11 @@ class TestCollectOnce:
                         },
                     }
                 ],
-            }
+                game_creation=1700000000000,
+                game_duration=1800,
+                queue_id=900,
+                game_mode="URF",
+            )
         ]
 
         count = collect_once(client, str(data_dir))
@@ -168,15 +252,12 @@ class TestCollectOnce:
             "tagLine": "KR1",
         }
         client.match_history.return_value = [
-            {
-                "gameId": 100,  # duplicate
-                "gameCreation": 1700000000000,
-                "gameDuration": 1800,
-                "queueId": 900,
-                "gameMode": "URF",
-                "participants": [
+            _make_game(
+                100,  # duplicate
+                [
                     {
                         "puuid": "test-puuid",
+                        "participantId": 1,
                         "championId": 91,
                         "stats": {
                             "win": True,
@@ -195,7 +276,11 @@ class TestCollectOnce:
                         },
                     }
                 ],
-            }
+                game_creation=1700000000000,
+                game_duration=1800,
+                queue_id=900,
+                game_mode="URF",
+            )
         ]
 
         count = collect_once(client, str(data_dir))
@@ -252,10 +337,12 @@ class TestExtractPlayerStats:
     """Tests for _extract_player_stats helper."""
 
     def test_happy_path(self):
-        game = {
-            "participants": [
+        game = _make_game(
+            1,
+            [
                 {
                     "puuid": "abc",
+                    "participantId": 7,
                     "championId": 91,
                     "stats": {
                         "win": True,
@@ -274,7 +361,7 @@ class TestExtractPlayerStats:
                     },
                 }
             ],
-        }
+        )
         result = _extract_player_stats(game, "abc")
         assert result is not None
         assert result["champion_id"] == 91
@@ -283,16 +370,23 @@ class TestExtractPlayerStats:
         assert result["items"] == [3071, 3153, 0, 0, 0, 0, 3340]
 
     def test_player_not_found(self):
-        game = {"participants": [{"puuid": "other", "championId": 1, "stats": {}}]}
+        game = _make_game(
+            1,
+            [{"puuid": "other", "participantId": 1, "championId": 1, "stats": {}}],
+        )
         assert _extract_player_stats(game, "abc") is None
 
     def test_empty_participants(self):
-        assert _extract_player_stats({"participants": []}, "abc") is None
+        game = {"participants": [], "participantIdentities": []}
+        assert _extract_player_stats(game, "abc") is None
         assert _extract_player_stats({}, "abc") is None
 
     def test_missing_stats_dict(self):
         """Participant without stats key should use defaults."""
-        game = {"participants": [{"puuid": "abc", "championId": 50}]}
+        game = _make_game(
+            1,
+            [{"puuid": "abc", "participantId": 1, "championId": 50}],
+        )
         result = _extract_player_stats(game, "abc")
         assert result is not None
         assert result["kills"] == 0
@@ -303,22 +397,23 @@ class TestBuildParticipants:
     """Tests for _build_participants helper."""
 
     def test_happy_path(self):
-        game = {
-            "participants": [
-                {"puuid": "a", "championId": 1},
-                {"puuid": "b", "championId": 2},
-            ]
-        }
+        game = _make_game(
+            1,
+            [
+                {"puuid": "a", "participantId": 1, "championId": 1},
+                {"puuid": "b", "participantId": 2, "championId": 2},
+            ],
+        )
         result = _build_participants(game)
         assert len(result) == 2
         assert result[0] == {"puuid": "a", "championId": 1}
 
     def test_empty_participants(self):
-        assert _build_participants({"participants": []}) == []
+        assert _build_participants({"participants": [], "participantIdentities": []}) == []
         assert _build_participants({}) == []
 
     def test_missing_fields_use_defaults(self):
-        game = {"participants": [{}]}
+        game = {"participants": [{"participantId": 1}], "participantIdentities": []}
         result = _build_participants(game)
         assert result[0] == {"puuid": "", "championId": 0}
 
@@ -360,15 +455,12 @@ class TestCollectOnceEdgeCases:
         }
         # First page: exactly 20 games, second page: empty
         page1 = [
-            {
-                "gameId": i,
-                "gameCreation": 0,
-                "gameDuration": 0,
-                "queueId": 0,
-                "gameMode": "SR",
-                "participants": [
+            _make_game(
+                i,
+                [
                     {
                         "puuid": "test",
+                        "participantId": 1,
                         "championId": 1,
                         "stats": {
                             "win": True,
@@ -387,7 +479,7 @@ class TestCollectOnceEdgeCases:
                         },
                     }
                 ],
-            }
+            )
             for i in range(20)
         ]
         client.match_history.side_effect = [page1, []]
@@ -407,15 +499,12 @@ class TestCollectOnceEdgeCases:
             "tagLine": "NA1",
         }
         page = [
-            {
-                "gameId": i,
-                "gameCreation": 0,
-                "gameDuration": 0,
-                "queueId": 0,
-                "gameMode": "SR",
-                "participants": [
+            _make_game(
+                i,
+                [
                     {
                         "puuid": "test",
+                        "participantId": 1,
                         "championId": 1,
                         "stats": {
                             "win": True,
@@ -434,7 +523,7 @@ class TestCollectOnceEdgeCases:
                         },
                     }
                 ],
-            }
+            )
             for i in range(5)
         ]
         client.match_history.return_value = page
@@ -491,17 +580,14 @@ class TestCollectOnceEdgeCases:
             "gameName": "Test",
             "tagLine": "NA1",
         }
-        # Return same 20 games
+        # Return same 20 games (v4 format)
         page = [
-            {
-                "gameId": i,
-                "gameCreation": 0,
-                "gameDuration": 0,
-                "queueId": 0,
-                "gameMode": "SR",
-                "participants": [
+            _make_game(
+                i,
+                [
                     {
                         "puuid": "test",
+                        "participantId": 1,
                         "championId": 1,
                         "stats": {
                             "win": True,
@@ -520,7 +606,7 @@ class TestCollectOnceEdgeCases:
                         },
                     }
                 ],
-            }
+            )
             for i in range(20)
         ]
         client.match_history.return_value = page
@@ -541,14 +627,10 @@ class TestCollectOnceEdgeCases:
             "tagLine": "NA1",
         }
         client.match_history.return_value = [
-            {
-                "gameId": 100,
-                "gameCreation": 0,
-                "gameDuration": 0,
-                "queueId": 0,
-                "gameMode": "SR",
-                "participants": [{"puuid": "someone_else", "championId": 1, "stats": {}}],
-            }
+            _make_game(
+                100,
+                [{"puuid": "someone_else", "participantId": 1, "championId": 1, "stats": {}}],
+            )
         ]
         count = collect_once(client, str(data_dir))
         assert count == 0
@@ -559,10 +641,12 @@ class TestExtractPlayerStatsEdgeCases:
 
     def test_partial_stats_fills_defaults(self):
         """Participant with some stat keys missing should fill defaults for others."""
-        game = {
-            "participants": [
+        game = _make_game(
+            1,
+            [
                 {
                     "puuid": "abc",
+                    "participantId": 1,
                     "championId": 91,
                     "stats": {
                         "kills": 10,
@@ -570,7 +654,7 @@ class TestExtractPlayerStatsEdgeCases:
                     },
                 }
             ],
-        }
+        )
         result = _extract_player_stats(game, "abc")
         assert result is not None
         assert result["kills"] == 10
@@ -597,20 +681,17 @@ class TestCollectOnceFileWriteFailure:
             "tagLine": "NA1",
         }
         client.match_history.return_value = [
-            {
-                "gameId": 100,
-                "gameCreation": 0,
-                "gameDuration": 0,
-                "queueId": 0,
-                "gameMode": "SR",
-                "participants": [
+            _make_game(
+                100,
+                [
                     {
                         "puuid": "test",
+                        "participantId": 1,
                         "championId": 1,
                         "stats": {"win": True, "kills": 0, "deaths": 0, "assists": 0},
                     }
                 ],
-            }
+            )
         ]
         # Make the JSONL file path a directory so open() fails
         jsonl_file = data_dir / "test.jsonl"
