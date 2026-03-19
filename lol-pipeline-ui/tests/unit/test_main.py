@@ -8,13 +8,13 @@ import re
 from unittest.mock import patch
 
 import pytest
-
 from lol_pipeline.riot_api import (
     AuthError,
     NotFoundError,
     RateLimitError,
     ServerError,
 )
+
 from lol_ui.main import (
     _BADGE_VARIANTS,
     _CSS,
@@ -1168,7 +1168,6 @@ class TestErrorMessages:
         """NotFoundError shows player-not-found guidance."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from lol_pipeline.riot_api import AuthError, NotFoundError, RateLimitError, ServerError  # noqa: F811
         from lol_ui.main import show_stats
 
         mock_r = AsyncMock()
@@ -1401,6 +1400,134 @@ class TestPlayersEmptyState:
         assert "No players seeded yet" in body
         assert "just seed GameName#Tag" in body
         await r.aclose()
+
+
+class TestFavicon:
+    """Sprint 5.1: Favicon appears in _page() output."""
+
+    def test_page__contains_favicon_link(self):
+        result = _page("Test", "")
+        assert 'rel="icon"' in result
+        assert "data:image/svg+xml" in result
+
+
+class TestDlqBrowser:
+    """Sprint 5.3: /dlq route displays DLQ entries."""
+
+    @pytest.mark.asyncio
+    async def test_show_dlq__empty_dlq_shows_empty_state(self):
+        """When DLQ stream is empty, show 'pipeline is healthy' empty state."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_dlq
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+
+        resp = await show_dlq(request)
+        body = resp.body.decode()
+
+        assert "Dead Letter Queue" in body
+        assert 'class="empty-state"' in body
+        assert "DLQ is empty" in body
+        assert "pipeline is healthy" in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_show_dlq__displays_entries(self):
+        """When DLQ has entries, display them in a table."""
+        import fakeredis.aioredis
+        from lol_pipeline.models import DLQEnvelope
+
+        from lol_ui.main import show_dlq
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"match_id": "NA1_123", "region": "na1"},
+            attempts=3,
+            max_attempts=5,
+            failure_code="http_429",
+            failure_reason="rate limited",
+            failed_by="fetcher",
+            original_stream="stream:match_id",
+            original_message_id="orig-123",
+        )
+        await r.xadd("stream:dlq", dlq.to_redis_fields())
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+
+        resp = await show_dlq(request)
+        body = resp.body.decode()
+
+        assert "Dead Letter Queue" in body
+        assert "http_429" in body
+        assert "fetcher" in body
+        assert "NA1_123" in body
+        assert 'class="badge badge--error"' in body
+        await r.aclose()
+
+
+class TestPlayerSearch:
+    """Sprint 5.5: /players has client-side search filter input."""
+
+    @pytest.mark.asyncio
+    async def test_players__has_search_input(self):
+        """The /players page includes a search input when players exist."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_players
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.hset(
+            "player:test-puuid",
+            mapping={
+                "game_name": "TestPlayer",
+                "tag_line": "NA1",
+                "region": "na1",
+                "seeded_at": "2026-03-19T00:00:00",
+            },
+        )
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {"page": "0"}
+
+        resp = await show_players(request)
+        body = resp.body.decode()
+
+        assert 'id="player-search"' in body
+        assert 'placeholder="Filter players..."' in body
+        await r.aclose()
+
+
+class TestStatsGrid:
+    """Sprint 5.6: Stats table uses stats-grid for wide layout."""
+
+    def test_stats_table__wraps_champs_and_roles_in_stats_grid(self):
+        """Champions and roles tables are wrapped in a stats-grid div."""
+        result = _stats_table({"total_games": "10"}, [("Zed", 5.0)], [("MID", 3.0)])
+        assert 'class="stats-grid"' in result
+
+
+class TestDlqNav:
+    """Sprint 5.3: DLQ nav link is always present."""
+
+    def test_page__nav_contains_dlq_link(self):
+        result = _page("Test", "")
+        assert "/dlq" in result
+        assert "DLQ" in result
 
 
 class TestUiEntryPoint:

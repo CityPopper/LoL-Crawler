@@ -42,9 +42,10 @@ See `ARCHITECTURE.md` for doc index. See `docs/standards/01-coding-standards.md`
 
 - Do not modify failing tests without user confirmation
 
-## TODO — Phase 7 Sprint 3
+## TODO — Phase 8 Sprint 4 (Polish)
 
-- [x] P0-10: Fix 05-rate-limiting.md to match actual rate_limiter.py implementation
-- [x] P0-19: Add /players and /logs route docs to 02-services.md
-- [x] P0-22: Standardize UI pyproject.toml to match crawler template
-- [x] DK-7: Add mem_limit to docker-compose.yml x-service-defaults
+- [x] 4.1: Favicon — inline SVG data URI in `_page()` `<head>`
+- [x] 4.2: DLQ Browser — `/dlq` route + `_NAV_ITEMS` + 2 tests
+- [x] 4.3: Wide-screen layout — wrap stats in `stats-grid` div
+- [x] 4.4: Player search — JS filter on `/players` + 1 test
+- [x] Run tests — 138 passed
