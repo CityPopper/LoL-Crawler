@@ -113,3 +113,21 @@ class TestNackToDlq:
         assert fields["failed_by"] == "fetcher"
         assert fields["original_message_id"] == "456-0"
         assert fields["retry_after_ms"] == "5000"
+
+
+class TestEnsureGroup:
+    @pytest.mark.asyncio
+    async def test_creates_group_and_stream(self, r):
+        """_ensure_group creates both stream and group if neither exist."""
+        from lol_pipeline.streams import _ensure_group
+        await _ensure_group(r, "stream:new", "new-group")
+        # Should be able to consume from it now
+        msgs = await consume(r, "stream:new", "new-group", "c", block=0)
+        assert msgs == []
+
+    @pytest.mark.asyncio
+    async def test_idempotent_group_creation(self, r):
+        """Calling _ensure_group twice does not raise."""
+        from lol_pipeline.streams import _ensure_group
+        await _ensure_group(r, "stream:test", "g")
+        await _ensure_group(r, "stream:test", "g")  # no error

@@ -10,7 +10,7 @@ import pytest
 
 from lol_pipeline.config import Config
 from lol_pipeline.models import DLQEnvelope, MessageEnvelope
-from lol_recovery.main import _archive, _process, _requeue_delayed
+from lol_recovery.main import _archive, _backoff_ms, _consume_dlq, _process, _requeue_delayed
 
 _DLQ_STREAM = "stream:dlq"
 _ARCHIVE_STREAM = "stream:dlq:archive"
@@ -202,6 +202,78 @@ class TestRecoveryHalted:
         dlq = _make_dlq(failure_code="http_403")
         msg_id = await _setup_dlq_msg(r, dlq)
 
+        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+
+        assert await r.xlen(_ARCHIVE_STREAM) == 1
+
+
+class TestBackoffMs:
+    def test_attempt_0(self):
+        from lol_recovery.main import _backoff_ms
+        assert _backoff_ms(0) == 5_000
+
+    def test_attempt_1(self):
+        from lol_recovery.main import _backoff_ms
+        assert _backoff_ms(1) == 15_000
+
+    def test_attempt_3(self):
+        from lol_recovery.main import _backoff_ms
+        assert _backoff_ms(3) == 300_000
+
+    def test_attempt_beyond_array_clamps(self):
+        """Attempts beyond backoff array length clamp to max value."""
+        from lol_recovery.main import _backoff_ms
+        assert _backoff_ms(10) == 300_000
+        assert _backoff_ms(100) == 300_000
+
+
+class TestRecoveryEdgeCases:
+    @pytest.mark.asyncio
+    async def test_429_with_retry_after_uses_retry_after(self, r, cfg, log):
+        """http_429 with retry_after_ms should use that value, not backoff."""
+        dlq = _make_dlq(failure_code="http_429", dlq_attempts=0, retry_after_ms=31000)
+        msg_id = await _setup_dlq_msg(r, dlq)
+        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+
+        members = await r.zrange(_DELAYED_KEY, 0, -1, withscores=True)
+        assert len(members) == 1
+        # Score should be now + 31000, not now + 5000 (backoff)
+        import time
+        now_ms = int(time.time() * 1000)
+        score = members[0][1]
+        # Score should be close to now + 31000 (within 2s tolerance)
+        assert abs(score - (now_ms + 31000)) < 2000
+
+    @pytest.mark.asyncio
+    async def test_5xx_without_retry_after_uses_backoff(self, r, cfg, log):
+        """http_5xx (no retry_after) should use exponential backoff."""
+        dlq = _make_dlq(failure_code="http_5xx", dlq_attempts=2)
+        msg_id = await _setup_dlq_msg(r, dlq)
+        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+
+        members = await r.zrange(_DELAYED_KEY, 0, -1, withscores=True)
+        assert len(members) == 1
+        import time
+        now_ms = int(time.time() * 1000)
+        score = members[0][1]
+        # dlq_attempts=2 → backoff=60000
+        assert abs(score - (now_ms + 60000)) < 2000
+
+    @pytest.mark.asyncio
+    async def test_5xx_at_max_attempts_archived(self, r, cfg, log):
+        """http_5xx at dlq_max_attempts → archived, not requeued."""
+        dlq = _make_dlq(failure_code="http_5xx", dlq_attempts=cfg.dlq_max_attempts)
+        msg_id = await _setup_dlq_msg(r, dlq)
+        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+
+        assert await r.xlen(_ARCHIVE_STREAM) == 1
+        assert await r.zcard(_DELAYED_KEY) == 0
+
+    @pytest.mark.asyncio
+    async def test_handler_crash_archived(self, r, cfg, log):
+        """handler_crash failure code → archived (same as unknown)."""
+        dlq = _make_dlq(failure_code="handler_crash")
+        msg_id = await _setup_dlq_msg(r, dlq)
         await _process(r, cfg, "test-consumer", msg_id, dlq, log)
 
         assert await r.xlen(_ARCHIVE_STREAM) == 1

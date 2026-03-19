@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from lol_lcu.lcu_client import LcuClient, LcuNotRunningError
+from lol_lcu.lcu_client import LcuAuthError, LcuClient, LcuNotRunningError
 from lol_lcu.log import get_logger
 from lol_lcu.models import LcuMatch
 
@@ -117,6 +117,28 @@ def collect_once(client: LcuClient, data_dir: str) -> int:
     return new_count
 
 
+_AUTH_RETRY_MAX = 3
+_AUTH_RETRY_DELAY = 2  # seconds
+
+
+def _collect_with_auth_retry(install_path: str, data_dir: str) -> int | None:
+    """Collect once, retrying up to _AUTH_RETRY_MAX times on stale credentials."""
+    for attempt in range(_AUTH_RETRY_MAX):
+        client = LcuClient(install_path=install_path)
+        try:
+            return collect_once(client, data_dir)
+        except LcuAuthError:
+            log.warning(
+                "Stale lockfile credentials (attempt %d/%d) — retrying",
+                attempt + 1,
+                _AUTH_RETRY_MAX,
+            )
+            if attempt < _AUTH_RETRY_MAX - 1:
+                time.sleep(_AUTH_RETRY_DELAY)
+    log.error("LCU auth failed after %d retries — lockfile may be stale", _AUTH_RETRY_MAX)
+    return None
+
+
 def run(data_dir: str, poll_interval_minutes: int = 0) -> None:
     """Main entry point — collect once or poll continuously."""
     install_path = os.environ.get("LEAGUE_INSTALL_PATH", "")
@@ -125,21 +147,20 @@ def run(data_dir: str, poll_interval_minutes: int = 0) -> None:
         return
 
     try:
-        client = LcuClient(install_path=install_path)
+        LcuClient(install_path=install_path)
     except LcuNotRunningError:
         log.warning("League client not running — showing historical summary")
         _show_summary(data_dir)
         return
 
-    collect_once(client, data_dir)
+    _collect_with_auth_retry(install_path, data_dir)
 
     if poll_interval_minutes > 0:
         log.info("Polling every %d minutes", poll_interval_minutes)
         while True:
             time.sleep(poll_interval_minutes * 60)
             try:
-                client = LcuClient(install_path=install_path)
-                collect_once(client, data_dir)
+                _collect_with_auth_retry(install_path, data_dir)
             except LcuNotRunningError:
                 log.warning("League client not running — will retry next interval")
 

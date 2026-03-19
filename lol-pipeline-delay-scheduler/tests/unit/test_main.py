@@ -170,3 +170,40 @@ class TestDelaySchedulerDispatch:
 
         assert await r.xlen("stream:parse") == 1
         assert await r.xlen("stream:match_id") == 0
+
+
+class TestDelaySchedulerEdgeCases:
+    @pytest.mark.asyncio
+    async def test_multiple_streams_dispatched_correctly(self, r, log):
+        """Messages to different streams are dispatched to correct targets."""
+        now_ms = int(time.time() * 1000)
+        env1 = _delayed_envelope(stream="stream:match_id", match_id="NA1_1")
+        env2 = _delayed_envelope(stream="stream:parse", match_id="NA1_2")
+        await _add_delayed(r, env1, now_ms - 1000)
+        await _add_delayed(r, env2, now_ms - 1000)
+
+        await _tick(r, log)
+
+        assert await r.xlen("stream:match_id") == 1
+        assert await r.xlen("stream:parse") == 1
+        assert await r.zcard(_DELAYED_KEY) == 0
+
+    @pytest.mark.asyncio
+    async def test_preserves_dlq_attempts_on_dispatch(self, r, log):
+        """Dispatched envelope preserves dlq_attempts from delayed entry."""
+        now_ms = int(time.time() * 1000)
+        env = MessageEnvelope(
+            source_stream="stream:match_id",
+            type="match_id",
+            payload={"match_id": "NA1_999", "region": "na1"},
+            max_attempts=5,
+            dlq_attempts=2,
+        )
+        await _add_delayed(r, env, now_ms - 1)
+
+        await _tick(r, log)
+
+        entries = await r.xrange("stream:match_id")
+        assert len(entries) == 1
+        restored = MessageEnvelope.from_redis_fields(entries[0][1])
+        assert restored.dlq_attempts == 2
