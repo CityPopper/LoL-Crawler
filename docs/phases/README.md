@@ -24,6 +24,7 @@ Each phase has a clear objective, concrete deliverables, and quantifiable accept
 | Phase | Name | Objective |
 |-------|------|-----------|
 | [07](07-next-phase.md) | IRONCLAD | Security hardening, code quality, Docker/CI, weighted priority queue |
+| [08](08-ui-overhaul.md) | FACELIFT | UI overhaul (dark theme, responsive, components), deferred Phase 7 items |
 
 ---
 
