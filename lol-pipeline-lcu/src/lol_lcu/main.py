@@ -96,7 +96,7 @@ def collect_once(client: LcuClient, data_dir: str) -> int:
     jsonl_file = data_path / f"{puuid}.jsonl"
 
     existing_ids = load_existing_game_ids(jsonl_file)
-    log.info("Loaded %d existing game IDs for %s", len(existing_ids), riot_id)
+    log.debug("Loaded %d existing game IDs for %s", len(existing_ids), riot_id)
 
     # Paginate newest-first
     new_count = 0
@@ -139,7 +139,7 @@ def collect_once(client: LcuClient, data_dir: str) -> int:
             break
         beg += page_size
 
-    log.info("Collected %d new matches for %s", new_count, riot_id)
+    print(f"Collected {new_count} new matches for {riot_id}")
     return new_count
 
 
@@ -169,13 +169,13 @@ def run(data_dir: str, poll_interval_minutes: int = 0) -> None:
     """Main entry point — collect once or poll continuously."""
     install_path = os.environ.get("LEAGUE_INSTALL_PATH", "")
     if not install_path:
-        log.error("LEAGUE_INSTALL_PATH not set")
+        print("error: LEAGUE_INSTALL_PATH not set")
         return
 
     try:
         LcuClient(install_path=install_path)
     except LcuNotRunningError:
-        log.warning("League client not running — showing historical summary")
+        print("League client not running — showing historical summary")
         _show_summary(data_dir)
         return
 
@@ -195,8 +195,8 @@ def _show_summary(data_dir: str) -> None:
     """Show a summary of existing JSONL data."""
     data_path = Path(data_dir)
     if not data_path.exists():
-        log.info("No LCU data directory found at %s", data_dir)
+        print(f"No LCU data directory found at {data_dir}")
         return
     for jsonl_file in sorted(data_path.glob("*.jsonl")):
         ids = load_existing_game_ids(jsonl_file)
-        log.info("%s: %d matches", jsonl_file.stem, len(ids))
+        print(f"{jsonl_file.stem}: {len(ids)} matches")

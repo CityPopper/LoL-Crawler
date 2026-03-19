@@ -313,13 +313,10 @@ class TestSeedEdgeCases:
                     await seed(r, riot, cfg, "Faker", "KR1", "kr", log)
             await riot.close()
 
-        # seeded_at was written before publish — this is a known ordering issue.
-        # The player hash exists but the stream message was never sent.
-        # A subsequent seed attempt should NOT be blocked by cooldown.
-        # Current behavior: seeded_at IS set (publish happens after hset).
-        # This test documents the current behavior.
+        # CQ-5 FIX: publish() now happens BEFORE hset(seeded_at).
+        # If publish fails, seeded_at is NOT set — the player can be retried.
         seeded_at = await r.hget("player:test-puuid-0001", "seeded_at")
-        assert seeded_at is not None  # seeded_at was written before publish failed
+        assert seeded_at is None  # seeded_at was NOT written because publish failed first
 
 
 class TestMainEntryPoint:
@@ -393,3 +390,41 @@ class TestMainEntryPoint:
             await main(["seed", "Faker#KR1", "euw1"])
         call_args = mock_seed.call_args[0]
         assert call_args[5] == "euw1"
+
+
+class TestSeedPublishBeforeHset:
+    """CQ-5: publish() must happen before hset(seeded_at)."""
+
+    @pytest.mark.asyncio
+    async def test_publish_before_hset_seeded_at(self, r, cfg, log):
+        """seed() publishes to stream:puuid BEFORE writing seeded_at to player hash."""
+        call_order: list[str] = []
+
+        original_hset = r.hset
+
+        async def tracking_hset(key, *args, **kwargs):
+            mapping = kwargs.get("mapping", {})
+            if "seeded_at" in mapping:
+                call_order.append("hset_seeded_at")
+            return await original_hset(key, *args, **kwargs)
+
+        original_publish = __import__("lol_pipeline.streams", fromlist=["publish"]).publish
+
+        async def tracking_publish(redis, stream, envelope):
+            call_order.append("publish")
+            return await original_publish(redis, stream, envelope)
+
+        r.hset = tracking_hset  # type: ignore[assignment]
+        with (
+            respx.mock,
+            patch("lol_seed.main.publish", side_effect=tracking_publish),
+        ):
+            respx.get(
+                "https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Faker/KR1"
+            ).mock(return_value=_account_response())
+            riot = RiotClient("RGAPI-test")
+            result = await seed(r, riot, cfg, "Faker", "KR1", "kr", log)
+            await riot.close()
+
+        assert result == 0
+        assert call_order == ["publish", "hset_seeded_at"]

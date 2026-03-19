@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from unittest.mock import AsyncMock, patch
 
 import fakeredis.aioredis
 import pytest
@@ -209,3 +210,32 @@ class TestRunConsumer:
             with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
                 await run_consumer(r, _STREAM, _GROUP, "c", handler, log)
                 mock_sleep.assert_called_with(1)
+
+    @pytest.mark.asyncio
+    async def test_sigterm_sets_shutdown_flag(self, r, log):
+        """CQ-7: SIGTERM handler sets shutdown flag, loop exits cleanly."""
+        import signal
+
+        call_count = 0
+
+        async def handler(mid, env):
+            pass
+
+        original_consume = consume
+
+        async def consume_then_sigterm(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # Simulate SIGTERM by sending the signal to ourselves
+                import os
+
+                os.kill(os.getpid(), signal.SIGTERM)
+            return []
+
+        with patch("lol_pipeline.service.consume", side_effect=consume_then_sigterm):
+            await run_consumer(r, _STREAM, _GROUP, "c", handler, log)
+
+        # Loop should have exited after SIGTERM, not because of system:halted
+        assert await r.get("system:halted") is None
+        assert call_count >= 1

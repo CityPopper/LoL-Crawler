@@ -146,6 +146,14 @@ async def seed(
     if await _within_cooldown(r, puuid, cfg.seed_cooldown_minutes, log):
         return 0
 
+    envelope = MessageEnvelope(
+        source_stream=_STREAM,
+        type=_MSG_TYPE,
+        payload={"puuid": puuid, "game_name": game_name, "tag_line": tag_line, "region": region},
+        max_attempts=cfg.max_attempts,
+    )
+    entry_id = await publish(r, _STREAM, envelope)
+
     now_iso = datetime.now(tz=UTC).isoformat()
     await r.hset(  # type: ignore[misc]
         f"player:{puuid}",
@@ -156,14 +164,6 @@ async def seed(
             "seeded_at": now_iso,
         },
     )
-
-    envelope = MessageEnvelope(
-        source_stream=_STREAM,
-        type=_MSG_TYPE,
-        payload={"puuid": puuid, "game_name": game_name, "tag_line": tag_line, "region": region},
-        max_attempts=cfg.max_attempts,
-    )
-    entry_id = await publish(r, _STREAM, envelope)
 
     log.info(
         "player seeded",

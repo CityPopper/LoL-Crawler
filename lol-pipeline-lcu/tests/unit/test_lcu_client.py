@@ -185,6 +185,23 @@ class TestLockfileValidation:
             LcuClient(install_path=str(tmp_path))
 
 
+class TestLockfilePasswordRedaction:
+    """SEC-6: Lockfile password must be redacted in error messages."""
+
+    def test_malformed_lockfile_redacts_password_field(self, tmp_path):
+        """When lockfile has too few fields, error message must not leak the password."""
+        lockfile = tmp_path / "lockfile"
+        # Only 3 fields — triggers the "at least 4" error. The 3rd field (index 2) is
+        # normally PORT, but the content is echoed. Ensure password-like content is redacted.
+        lockfile.write_text("LeagueClient:12345:secret_password")
+        with pytest.raises(LcuNotRunningError) as exc_info:
+            LcuClient(install_path=str(tmp_path))
+        msg = str(exc_info.value)
+        assert "secret_password" not in msg
+        # Should show redacted content
+        assert "***" in msg
+
+
 class TestLcuClientGetEdgeCases:
     """Tests for _get method edge cases."""
 

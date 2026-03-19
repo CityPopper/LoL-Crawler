@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,18 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 log = get_logger("lcu")
 
 _TIMEOUT = 10
+
+
+def _redact_lockfile(content: str) -> str:
+    """Redact sensitive fields from lockfile content for safe logging.
+
+    Lockfile format: ``LeagueClient:PID:PORT:PASSWORD:PROTOCOL``
+    Only the first two fields (app name, PID) are safe to log.
+    """
+    parts = content[:80].split(":")
+    if len(parts) <= 2:
+        return content[:80]
+    return ":".join(parts[:2]) + ":***"
 
 
 class LcuNotRunningError(Exception):
@@ -48,7 +61,7 @@ class LcuClient:
         if len(parts) < 4:
             raise LcuNotRunningError(
                 f"Malformed lockfile (expected at least 4 colon-separated fields, "
-                f"got {len(parts)}): {content[:80]}"
+                f"got {len(parts)}): {_redact_lockfile(content)}"
             )
         try:
             self.port = int(parts[2])

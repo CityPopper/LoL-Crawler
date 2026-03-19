@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import signal
 from datetime import UTC, datetime
 from typing import Any
 
@@ -12,12 +13,14 @@ from lol_pipeline.config import Config
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.redis_client import get_redis
-from lol_pipeline.riot_api import NotFoundError, RiotAPIError, RiotClient
+from lol_pipeline.riot_api import AuthError, NotFoundError, RiotAPIError, RiotClient
 from lol_pipeline.streams import publish
 from redis.exceptions import ResponseError
 
 _STREAM_PUUID = "stream:puuid"
 _DISCOVER_KEY = "discover:players"
+
+_shutdown = False
 
 
 def _parse_member(member: str) -> tuple[str, str]:
@@ -98,6 +101,10 @@ async def _promote_batch(
 
         try:
             names = await _resolve_names(r, riot, puuid, region, log)
+        except AuthError:
+            log.error("auth error (403) — halting system", extra={"puuid": puuid})
+            await r.set("system:halted", "1")
+            break
         except RiotAPIError:
             log.error("transient api error — will retry", extra={"puuid": puuid})
             continue  # leave in queue for next batch
@@ -106,16 +113,6 @@ async def _promote_batch(
             continue
         game_name, tag_line = names
 
-        now_iso = datetime.now(tz=UTC).isoformat()
-        await r.hset(  # type: ignore[misc]
-            f"player:{puuid}",
-            mapping={
-                "game_name": game_name,
-                "tag_line": tag_line,
-                "region": region,
-                "seeded_at": now_iso,
-            },
-        )
         envelope = MessageEnvelope(
             source_stream=_STREAM_PUUID,
             type="puuid",
@@ -129,6 +126,16 @@ async def _promote_batch(
         )
         await publish(r, _STREAM_PUUID, envelope)
         await r.zrem(_DISCOVER_KEY, member)
+        now_iso = datetime.now(tz=UTC).isoformat()
+        await r.hset(  # type: ignore[misc]
+            f"player:{puuid}",
+            mapping={
+                "game_name": game_name,
+                "tag_line": tag_line,
+                "region": region,
+                "seeded_at": now_iso,
+            },
+        )
         promoted += 1
 
     if promoted:
@@ -136,8 +143,17 @@ async def _promote_batch(
     return promoted
 
 
+def _handle_sigterm(_signum: int, _frame: Any) -> None:
+    global _shutdown  # noqa: PLW0603
+    _shutdown = True
+
+
 async def main() -> None:
     """Discovery loop — runs only when stream:puuid is idle."""
+    global _shutdown  # noqa: PLW0603
+    _shutdown = False
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+
     log = get_logger("discovery")
     cfg = Config()
     r = get_redis(cfg.redis_url)
@@ -154,7 +170,7 @@ async def main() -> None:
     polls_since_log = 0
     heartbeat_polls = int(60 / interval_s)  # log roughly every 60s
     try:
-        while True:
+        while not _shutdown:
             idle = await _is_idle(r)
             if idle:
                 promoted = await _promote_batch(r, cfg, log, riot)
@@ -170,6 +186,7 @@ async def main() -> None:
                 )
                 polls_since_log = 0
             await asyncio.sleep(interval_s)
+        log.info("SIGTERM received — shutting down gracefully")
     finally:
         await riot.close()
         await r.aclose()

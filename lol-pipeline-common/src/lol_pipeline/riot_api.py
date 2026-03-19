@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, cast
+from urllib.parse import quote
 
 import httpx
 import redis.asyncio as aioredis
@@ -148,7 +149,9 @@ class RiotClient:
         """Resolve a Riot ID to an account dict containing 'puuid'."""
         routing = PLATFORM_TO_REGION.get(region, "americas")
         base = _API_BASE.format(routing=routing)
-        url = f"{base}/riot/account/v1/accounts/by-riot-id/{game_name}/{tag_line}"
+        safe_name = quote(game_name, safe="")
+        safe_tag = quote(tag_line, safe="")
+        url = f"{base}/riot/account/v1/accounts/by-riot-id/{safe_name}/{safe_tag}"
         return cast(dict[str, Any], await self._get(url))
 
     async def get_account_by_puuid(self, puuid: str, region: str) -> dict[str, Any]:

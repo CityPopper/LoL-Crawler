@@ -82,3 +82,27 @@ class TestConfig:
 
         cfg = Config(_env_file=None)  # type: ignore[call-arg]
         assert cfg.riot_api_key == "test"
+
+    @pytest.mark.parametrize(
+        "field_name",
+        [
+            "SEED_COOLDOWN_MINUTES",
+            "STREAM_ACK_TIMEOUT",
+            "MAX_ATTEMPTS",
+            "DLQ_MAX_ATTEMPTS",
+            "DELAY_SCHEDULER_INTERVAL_MS",
+            "ANALYZER_LOCK_TTL_SECONDS",
+            "API_RATE_LIMIT_PER_SECOND",
+            "DISCOVERY_POLL_INTERVAL_MS",
+            "DISCOVERY_BATCH_SIZE",
+        ],
+    )
+    def test_numeric_fields_reject_zero(self, monkeypatch, field_name):
+        """CQ-6: numeric config fields must be >= 1."""
+        monkeypatch.setenv("RIOT_API_KEY", "test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        monkeypatch.setenv(field_name, "0")
+        from lol_pipeline.config import Config
+
+        with pytest.raises(ValidationError):
+            Config(_env_file=None)  # type: ignore[call-arg]

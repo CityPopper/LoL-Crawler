@@ -186,6 +186,32 @@ class TestAckEdgeCases:
         await ack(r, "stream:test", "g", "999999-0")
 
 
+class TestCorruptMessageHandling:
+    """CQ-14: corrupt messages in consume() are acked and skipped."""
+
+    @pytest.mark.asyncio
+    async def test_consume__corrupt_entry_acked_and_skipped(self, r):
+        """A message with missing required fields is acked and not returned."""
+        # Publish a valid message
+        env = _env()
+        await publish(r, "stream:test", env)
+        # Inject a corrupt entry directly (missing 'payload' and other fields)
+        await r.xadd("stream:test", {"garbage": "data"})
+
+        # First consume: gets both messages. Corrupt one is acked + skipped.
+        msgs = await consume(r, "stream:test", "g", "c", block=0, count=10)
+        # Only the valid message should be returned
+        assert len(msgs) == 1
+        assert msgs[0][1].id == env.id
+
+        # Ack the valid one
+        await ack(r, "stream:test", "g", msgs[0][0])
+
+        # Second consume: should get nothing (corrupt was already acked)
+        msgs2 = await consume(r, "stream:test", "g", "c", block=0)
+        assert msgs2 == []
+
+
 class TestNackToDlqErrors:
     @pytest.mark.asyncio
     async def test_nack_to_dlq__xadd_raises__propagates(self):

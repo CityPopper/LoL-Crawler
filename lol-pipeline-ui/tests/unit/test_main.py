@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import html
 import json
+import re
 from unittest.mock import patch
 
+import pytest
+
 from lol_ui.main import (
+    _PUUID_RE,
     _aggregate_by_mode,
     _lcu_stats_section,
     _load_lcu_data,
@@ -383,6 +387,109 @@ class TestMergedLogLines:
         f.write_text("\n".join(lines) + "\n")
         result = _merged_log_lines(tmp_path, 3)
         assert len(result) == 3
+
+    def test_heapq_merge_interleaves_sorted_files(self, tmp_path):
+        """CQ-1: heapq.merge correctly interleaves pre-sorted per-file lines."""
+        f1 = tmp_path / "svc1.log"
+        f2 = tmp_path / "svc2.log"
+        # File 1 has timestamps 01, 03, 05; file 2 has 02, 04, 06
+        f1.write_text(
+            "\n".join(
+                json.dumps({"timestamp": f"2025-01-01T00:00:{t:02d}", "message": f"f1-{t}"})
+                for t in [1, 3, 5]
+            )
+            + "\n"
+        )
+        f2.write_text(
+            "\n".join(
+                json.dumps({"timestamp": f"2025-01-01T00:00:{t:02d}", "message": f"f2-{t}"})
+                for t in [2, 4, 6]
+            )
+            + "\n"
+        )
+        result = _merged_log_lines(tmp_path, 6)
+        assert len(result) == 6
+        # Verify interleaved order: f1-1, f2-2, f1-3, f2-4, f1-5, f2-6
+        messages = [json.loads(line)["message"] for line in result]
+        assert messages == ["f1-1", "f2-2", "f1-3", "f2-4", "f1-5", "f2-6"]
+
+
+class TestPuuidValidation:
+    """SEC-1: PUUID format validation at the /stats/matches endpoint."""
+
+    def test_valid_puuid_matches_regex(self):
+        """Standard alphanumeric PUUID with hyphens and underscores passes."""
+        assert _PUUID_RE.match("abc-DEF_123") is not None
+
+    def test_empty_puuid_rejected(self):
+        """Empty string is rejected."""
+        assert _PUUID_RE.match("") is None
+
+    def test_too_long_puuid_rejected(self):
+        """PUUID longer than 128 chars is rejected."""
+        assert _PUUID_RE.match("a" * 129) is None
+
+    def test_special_chars_rejected(self):
+        """PUUIDs with special characters (injection) are rejected."""
+        assert _PUUID_RE.match("puuid:../../etc/passwd") is None
+        assert _PUUID_RE.match("puuid<script>") is None
+        assert _PUUID_RE.match("puuid with spaces") is None
+
+    def test_max_length_puuid_accepted(self):
+        """128-char PUUID is accepted."""
+        assert _PUUID_RE.match("a" * 128) is not None
+
+
+class TestAutoSeedOrdering:
+    """CQ-12: publish() must happen before hset(seeded_at) in auto-seed path."""
+
+    @pytest.mark.asyncio
+    async def test_publish_before_hset_seeded_at(self):
+        """Auto-seed writes to stream:puuid BEFORE marking seeded_at in player hash."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from lol_ui.main import show_stats
+
+        call_order: list[str] = []
+
+        mock_r = AsyncMock()
+        mock_r.get.return_value = None  # no system:halted, no cached puuid
+        mock_r.hget.return_value = None  # no existing seeded_at
+        mock_r.hgetall.return_value = {}  # no stats
+        mock_r.set.return_value = True
+
+        original_hset = mock_r.hset
+
+        async def tracking_hset(key, *args, **kwargs):
+            if "seeded_at" in str(kwargs.get("mapping", {})):
+                call_order.append("hset_seeded_at")
+            return await original_hset(key, *args, **kwargs)
+
+        mock_r.hset = tracking_hset
+
+        mock_riot = AsyncMock()
+        mock_riot.get_account_by_riot_id.return_value = {"puuid": "test-puuid-123"}
+
+        mock_cfg = MagicMock()
+        mock_cfg.max_attempts = 5
+
+        with patch("lol_ui.main.publish", new_callable=AsyncMock) as mock_publish:
+
+            async def tracking_publish(*args, **kwargs):
+                call_order.append("publish")
+
+            mock_publish.side_effect = tracking_publish
+
+            request = MagicMock()
+            request.query_params = {"riot_id": "Test#NA1", "region": "na1"}
+            request.app.state.r = mock_r
+            request.app.state.cfg = mock_cfg
+            request.app.state.riot = mock_riot
+            request.app.state.lcu = {}
+
+            await show_stats(request)
+
+        assert call_order == ["publish", "hset_seeded_at"]
 
 
 class TestUiEntryPoint:

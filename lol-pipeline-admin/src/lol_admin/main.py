@@ -63,7 +63,7 @@ async def _resolve_puuid(
     r: aioredis.Redis | None = None,
 ) -> str | None:
     if "#" not in riot_id:
-        _log.error("invalid Riot ID — expected GameName#TagLine", extra={"riot_id": riot_id})
+        print(f"error: invalid Riot ID — expected GameName#TagLine: {riot_id}", file=sys.stderr)
         return None
     game_name, tag_line = riot_id.split("#", 1)
     if r is not None:
@@ -77,7 +77,7 @@ async def _resolve_puuid(
             await r.set(_name_cache_key(game_name, tag_line), puuid)
         return puuid
     except NotFoundError:
-        _log.error("player not found", extra={"riot_id": riot_id})
+        print(f"error: player not found: {riot_id}", file=sys.stderr)
         return None
 
 
@@ -94,7 +94,7 @@ async def cmd_stats(
         return 1
     stats: dict[str, str] = await r.hgetall(f"player:stats:{puuid}")  # type: ignore[misc]
     if not stats:
-        _log.error("player not found in Redis (not yet analyzed)", extra={"riot_id": args.riot_id})
+        print(f"error: player not found in Redis (not yet analyzed): {args.riot_id}", file=sys.stderr)
         return 1
     game_name, tag_line = args.riot_id.split("#", 1)
     print(f"Stats for {game_name}#{tag_line} ({puuid[:12]}...):")
@@ -141,7 +141,7 @@ async def cmd_dlq_replay(r: aioredis.Redis, cfg: Config, args: argparse.Namespac
         return 0
     targets = entries if args.all else [(e, d) for e, d in entries if e == args.id]
     if not targets:
-        _log.error("entry not found", extra={"id": args.id})
+        print(f"error: entry not found: {args.id}", file=sys.stderr)
         return 1
     for entry_id, dlq in targets:
         envelope = _make_replay_envelope(dlq, cfg.max_attempts)
@@ -153,7 +153,7 @@ async def cmd_dlq_replay(r: aioredis.Redis, cfg: Config, args: argparse.Namespac
 
 async def cmd_dlq_clear(r: aioredis.Redis, args: argparse.Namespace) -> int:
     if not args.all:
-        _log.error("--all is required")
+        print("error: --all is required", file=sys.stderr)
         return 1
     entries = await _dlq_entries(r)
     if not entries:
@@ -167,7 +167,7 @@ async def cmd_dlq_clear(r: aioredis.Redis, args: argparse.Namespace) -> int:
 
 async def cmd_replay_parse(r: aioredis.Redis, cfg: Config, args: argparse.Namespace) -> int:
     if not args.all:
-        _log.error("--all is required")
+        print("error: --all is required", file=sys.stderr)
         return 1
     match_ids: set[str] = await r.smembers("match:status:parsed")  # type: ignore[misc]
     if not match_ids:

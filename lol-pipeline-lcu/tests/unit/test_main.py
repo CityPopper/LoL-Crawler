@@ -746,3 +746,19 @@ class TestLcuMainEntryPoint:
         ):
             lcu_main()
         mock_run.assert_called_once_with(data_dir="/cli-dir", poll_interval_minutes=5)
+
+
+class TestTerminalOutputUsesPrint:
+    """CQ-3: terminal-visible messages use print(), not JSON logger."""
+
+    def test_show_summary__prints_to_stdout(self, tmp_path, capsys):
+        """_show_summary outputs match counts to stdout via print()."""
+        import json as _json
+
+        for puuid in ["aaa", "bbb"]:
+            f = tmp_path / f"{puuid}.jsonl"
+            f.write_text(_json.dumps({"game_id": 1}) + "\n")
+        _show_summary(str(tmp_path))
+        captured = capsys.readouterr()
+        assert "aaa: 1 matches" in captured.out
+        assert "bbb: 1 matches" in captured.out
