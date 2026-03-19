@@ -65,9 +65,10 @@ async def consume(
         result: Any = await r.xautoclaim(
             stream, group, consumer, autoclaim_min_idle_ms, start_id="0-0", count=count
         )
+        claimed_entries = result[1]  # xautoclaim returns [cursor, entries]
         claimed: list[tuple[str, MessageEnvelope]] = [
             (msg_id, MessageEnvelope.from_redis_fields(fields))
-            for msg_id, fields in result[1]
+            for msg_id, fields in claimed_entries
             if fields  # skip deleted entries (nil bodies)
         ]
         if claimed:

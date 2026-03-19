@@ -5,20 +5,26 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import fakeredis.aioredis
 import pytest
-
 from lol_pipeline.config import Config
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.raw_store import RawStore
 from lol_pipeline.streams import consume, publish
-from lol_parser.main import _parse_match
+
+from lol_parser.main import _parse_match, main
 
 _IN_STREAM = "stream:parse"
 _OUT_STREAM = "stream:analyze"
 _GROUP = "parsers"
-_FIXTURES = Path(__file__).resolve().parent.parent.parent.parent / "lol-pipeline-common" / "tests" / "fixtures"
+_FIXTURES = (
+    Path(__file__).resolve().parent.parent.parent.parent
+    / "lol-pipeline-common"
+    / "tests"
+    / "fixtures"
+)
 
 
 @pytest.fixture
@@ -149,7 +155,10 @@ class TestParserErrors:
         match_id = "NA1_BAD"
         env = _parse_envelope(match_id)
         msg_id = await _setup_message(r, env)
-        data = {"metadata": {"matchId": match_id, "participants": []}, "info": {"gameStartTimestamp": 1000}}
+        data = {
+            "metadata": {"matchId": match_id, "participants": []},
+            "info": {"gameStartTimestamp": 1000},
+        }
         await raw_store.set(match_id, json.dumps(data))
 
         await _parse_match(r, raw_store, cfg, msg_id, env, log)
@@ -295,22 +304,26 @@ class TestParserDiscovery:
                 "gameVersion": "14.1.1",
                 "queueId": 420,
                 "platformId": "NA1",
-                "participants": [{
-                    "puuid": "puuid-with-name",
-                    "championId": 1,
-                    "championName": "Annie",
-                    "teamId": 100,
-                    "teamPosition": "MID",
-                    "role": "SOLO",
-                    "win": True,
-                    "kills": 5, "deaths": 2, "assists": 3,
-                    "goldEarned": 10000,
-                    "totalDamageDealtToChampions": 15000,
-                    "totalMinionsKilled": 100,
-                    "visionScore": 10,
-                    "riotIdGameName": "TestPlayer",
-                    "riotIdTagline": "NA1",
-                }],
+                "participants": [
+                    {
+                        "puuid": "puuid-with-name",
+                        "championId": 1,
+                        "championName": "Annie",
+                        "teamId": 100,
+                        "teamPosition": "MID",
+                        "role": "SOLO",
+                        "win": True,
+                        "kills": 5,
+                        "deaths": 2,
+                        "assists": 3,
+                        "goldEarned": 10000,
+                        "totalDamageDealtToChampions": 15000,
+                        "totalMinionsKilled": 100,
+                        "visionScore": 10,
+                        "riotIdGameName": "TestPlayer",
+                        "riotIdTagline": "NA1",
+                    }
+                ],
             },
         }
         env = _parse_envelope(match_id)
@@ -341,29 +354,38 @@ class TestParserDiscovery:
                 "gameVersion": "14.1.1",
                 "queueId": 420,
                 "platformId": "NA1",
-                "participants": [{
-                    "puuid": "puuid-seeded",
-                    "championId": 1,
-                    "championName": "Annie",
-                    "teamId": 100,
-                    "teamPosition": "MID",
-                    "role": "SOLO",
-                    "win": True,
-                    "kills": 5, "deaths": 2, "assists": 3,
-                    "goldEarned": 10000,
-                    "totalDamageDealtToChampions": 15000,
-                    "totalMinionsKilled": 100,
-                    "visionScore": 10,
-                    "riotIdGameName": "Seeded",
-                    "riotIdTagline": "NA1",
-                }],
+                "participants": [
+                    {
+                        "puuid": "puuid-seeded",
+                        "championId": 1,
+                        "championName": "Annie",
+                        "teamId": 100,
+                        "teamPosition": "MID",
+                        "role": "SOLO",
+                        "win": True,
+                        "kills": 5,
+                        "deaths": 2,
+                        "assists": 3,
+                        "goldEarned": 10000,
+                        "totalDamageDealtToChampions": 15000,
+                        "totalMinionsKilled": 100,
+                        "visionScore": 10,
+                        "riotIdGameName": "Seeded",
+                        "riotIdTagline": "NA1",
+                    }
+                ],
             },
         }
         # Pre-seed the player
-        await r.hset("player:puuid-seeded", mapping={
-            "game_name": "Seeded", "tag_line": "NA1",
-            "region": "na1", "seeded_at": "2024-01-01T00:00:00+00:00",
-        })
+        await r.hset(
+            "player:puuid-seeded",
+            mapping={
+                "game_name": "Seeded",
+                "tag_line": "NA1",
+                "region": "na1",
+                "seeded_at": "2024-01-01T00:00:00+00:00",
+            },
+        )
 
         env = _parse_envelope(match_id)
         msg_id = await _setup_message(r, env)
@@ -374,3 +396,144 @@ class TestParserDiscovery:
         # Already seeded — should NOT be in discovery queue
         discover_count = await r.zcard("discover:players")
         assert discover_count == 0
+
+
+class TestParserMalformedData:
+    """Tests for malformed match data handling."""
+
+    @pytest.mark.asyncio
+    async def test_raw_blob_not_json__nacks_to_dlq(self, r, cfg, log):
+        """Non-JSON raw blob → parse_error in DLQ."""
+        raw_store = RawStore(r)
+        match_id = "NA1_NOTJSON"
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, "this is not json {{{")
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        assert await r.xlen("stream:dlq") == 1
+        entries = await r.xrange("stream:dlq")
+        assert entries[0][1]["failure_code"] == "parse_error"
+
+    @pytest.mark.asyncio
+    async def test_participant_missing_puuid__skips_participant(self, r, cfg, log):
+        """Participant without puuid is skipped; valid participants still processed."""
+        raw_store = RawStore(r)
+        match_id = "NA1_NOPUUID"
+        data = {
+            "metadata": {"matchId": match_id, "participants": ["valid-puuid"]},
+            "info": {
+                "gameStartTimestamp": 1700000000000,
+                "gameDuration": 900,
+                "gameMode": "CLASSIC",
+                "gameType": "MATCHED_GAME",
+                "gameVersion": "14.1.1",
+                "queueId": 420,
+                "platformId": "NA1",
+                "participants": [
+                    {
+                        "championId": 1,
+                        "championName": "Annie",
+                        "teamId": 100,
+                        "win": True,
+                        "kills": 5,
+                        "deaths": 2,
+                        "assists": 3,
+                    },
+                    {
+                        "puuid": "valid-puuid",
+                        "championId": 2,
+                        "championName": "Garen",
+                        "teamId": 200,
+                        "win": False,
+                        "kills": 3,
+                        "deaths": 4,
+                        "assists": 2,
+                    },
+                ],
+            },
+        }
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, json.dumps(data))
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        assert await r.scard(f"match:participants:{match_id}") == 1
+        assert await r.xlen(_OUT_STREAM) == 1
+        assert await r.hget(f"match:{match_id}", "status") == "parsed"
+
+    @pytest.mark.asyncio
+    async def test_participant_missing_stats__uses_defaults(self, r, cfg, log):
+        """Participant with missing stat fields uses 0 defaults."""
+        raw_store = RawStore(r)
+        match_id = "NA1_NOSTATS"
+        data = {
+            "metadata": {"matchId": match_id, "participants": ["puuid-nostats"]},
+            "info": {
+                "gameStartTimestamp": 1700000000000,
+                "gameDuration": 900,
+                "gameMode": "CLASSIC",
+                "gameType": "MATCHED_GAME",
+                "gameVersion": "14.1.1",
+                "queueId": 420,
+                "platformId": "NA1",
+                "participants": [
+                    {
+                        "puuid": "puuid-nostats",
+                        "championId": 1,
+                        "championName": "Annie",
+                        "teamId": 100,
+                    },
+                ],
+            },
+        }
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, json.dumps(data))
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        p = await r.hgetall(f"participant:{match_id}:puuid-nostats")
+        assert p["kills"] == "0"
+        assert p["deaths"] == "0"
+        assert p["assists"] == "0"
+        assert p["gold_earned"] == "0"
+
+
+class TestMainEntryPoint:
+    """Tests for main() bootstrap and teardown."""
+
+    @pytest.mark.asyncio
+    async def test_main__creates_redis_and_starts_consumer(self, monkeypatch):
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_r = AsyncMock()
+        mock_consumer = AsyncMock()
+        with (
+            patch("lol_parser.main.Config") as mock_cfg,
+            patch("lol_parser.main.get_redis", return_value=mock_r),
+            patch("lol_parser.main.RawStore"),
+            patch("lol_parser.main.run_consumer", mock_consumer),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            await main()
+        mock_consumer.assert_called_once()
+        mock_r.aclose.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_main__keyboard_interrupt__closes_redis(self, monkeypatch):
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_r = AsyncMock()
+        with (
+            patch("lol_parser.main.Config") as mock_cfg,
+            patch("lol_parser.main.get_redis", return_value=mock_r),
+            patch("lol_parser.main.RawStore"),
+            patch("lol_parser.main.run_consumer", side_effect=KeyboardInterrupt),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            with pytest.raises(KeyboardInterrupt):
+                await main()
+        mock_r.aclose.assert_called_once()

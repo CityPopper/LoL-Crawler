@@ -108,7 +108,7 @@ Removed unused `json`/`Path` imports. Renamed `MockClient` → `mock_cls` (N803)
 
 ## Comprehensive Unit Testing Plan
 
-Current state: **336 unit + 65 contract tests**. Gap analysis below organized by priority tier.
+Current state: **383 unit + 44 contract tests**. Gap analysis below organized by priority tier.
 
 ### TIER 1 — Critical gaps (untested service logic, zero-coverage services)
 
@@ -124,58 +124,28 @@ Current state: **336 unit + 65 contract tests**. Gap analysis below organized by
 #### ~~Recovery: `_consume_dlq()` internal loop~~ — DONE
 Covered implicitly via 15 recovery tests that use `_setup_dlq_msg` → `xreadgroup`.
 
-#### All services: `main()` / `__main__.py` entry points
-Every service has an untested entry point. For each, test:
-- Config loading from environment
-- Redis connection initialization
-- Consumer/loop bootstrap
-- Graceful exit on KeyboardInterrupt
-
-Specific per-service:
-- **Seed** `__main__.py`: argparse routing (`seed <riot_id> <region>`)
-- **Admin** `__main__.py`: subcommand dispatch (`stats`, `dlq list`, `dlq replay`, `system-resume`, `reseed`)
-- **LCU** `__main__.py`: `--data-dir` default from env, `--poll-interval` type coercion
+#### ~~All services: `main()` / `__main__.py` entry points~~ — DONE
+29 tests added across all services:
+- **Seed** (5): missing args, invalid riot ID, valid args, default region na1, custom region
+- **Admin** (5): stats/system-resume/dlq list/dlq replay/reseed dispatch
+- **LCU** (5): data-dir from env, fallback, poll-interval from env, default zero, CLI override
+- **Consumer services** (2 each × 5 = 10): crawler, fetcher, parser, analyzer, recovery — bootstrap + KeyboardInterrupt cleanup
+- **Polling services** (2 each × 2 = 4): delay-scheduler, discovery — loop start + KeyboardInterrupt cleanup
+- **UI** (1): uvicorn.run called with correct host/port
 
 ---
 
-### TIER 2 — Error paths (exception handling, failure modes)
+### ~~TIER 2 — Error paths (exception handling, failure modes)~~ — DONE
+14 tests added across 5 services:
+- **Streams** (5): publish XADD failure, consume XREADGROUP failure, consume XAUTOCLAIM failure, ack non-existent message, nack_to_dlq XADD failure
+- **RiotClient** (3): malformed JSON response, empty response body, missing puuid in response (timeout/connection reset already covered)
+- **Fetcher** (2): raw_store.set failure prevents publish, publish failure + idempotent redelivery
+- **Parser** (3): non-JSON raw blob → DLQ, missing puuid → skip participant (code fix), missing stats → defaults
+- **Delay-scheduler** (1): XADD failure preserves sorted set member (fixed infinite retry bug)
 
-#### Common: Redis operation failures across all services
-Every service assumes Redis calls succeed. Add error-path tests:
-- **Streams** `publish()` — XADD failure (connection lost, stream deleted)
-- **Streams** `consume()` — XREADGROUP failure, XAUTOCLAIM failure
-- **Streams** `ack()` — XACK on non-existent message ID
-- **Streams** `nack_to_dlq()` — XADD to DLQ fails, original message left in PEL
-
-#### Common: RiotClient network edge cases
-`lol-pipeline-common/src/lol_pipeline/riot_api.py` — Beyond existing 403/429/500 tests:
-- `test_get__connection_timeout__raises_server_error` — httpx.TimeoutException
-- `test_get__connection_reset__raises_server_error` — httpx.RemoteProtocolError
-- `test_get__malformed_json_response__raises` — valid HTTP 200 but non-JSON body
-- `test_get__empty_response_body__raises` — HTTP 200 with empty body
-- `test_get_account__missing_puuid_in_response` — API returns 200 but schema changed
-
-#### ~~LCU: `_get()` edge cases~~ — DONE
-4 tests in TestLcuClientGetEdgeCases: JSON decode error, timeout, HTTP 500. Plus 7 in TestLcuClientApi.
-
-#### ~~LCU: lockfile format validation~~ — DONE
-3 tests in TestLockfileValidation + 6 in TestLockfileParsing covering all edge cases.
-
-#### Fetcher: partial failure paths
-`lol-pipeline-fetcher/src/lol_fetcher/main.py`:
-- `test_fetch__raw_store_set_fails__does_not_publish` — store fails, no downstream publish
-- `test_fetch__publish_fails_after_store__message_redeliverable` — idempotent on re-delivery
-
-#### Parser: malformed data
-`lol-pipeline-parser/src/lol_parser/main.py`:
-- `test_parse__raw_blob_not_json__nacks_to_dlq` — corrupt raw store data
-- `test_parse__participant_missing_puuid__skips_participant` — partial participant data
-- `test_parse__participant_stats_none__uses_defaults` — stats dict is None vs missing
-
-#### Delay-scheduler: XADD failure
-`lol-pipeline-delay-scheduler/src/lol_delay_scheduler/main.py`:
-- `test_tick__xadd_fails__does_not_remove_from_sorted_set` — transient Redis error preserves message
-- `test_tick__malformed_envelope__removes_and_logs` — corrupt JSON is cleaned up (already tested, verify)
+Code fixes:
+- Parser: wrap `_write_participant` in try/except to skip participants with missing puuid
+- Delay-scheduler: break pagination loop when no progress made (prevents infinite retry on XADD failures)
 
 ---
 
@@ -310,23 +280,25 @@ Target: **192 → ~320 unit tests** (current → with all tiers complete).
 ## ~~Bugs~~ — FIXED
 ~~LCU 403 raising LcuNotRunningError instead of LcuAuthError.~~ Fixed: `_get()` now checks `resp.status_code in (401, 403)` before the general HTTPError handler. `_collect_with_auth_retry` retries up to 3x with 2s delay. 5 tests cover this.
 
-## Startup tests
-Add tests to ensure that all services are able to start properly, and if they have dependencies they wait, etc etc.
-If there are failures, add new tests that are needed in `TODO.md` to implement later.
+## ~~Startup tests~~ — DONE
+Covered by Tier 1 entry point tests: 29 tests across all services verify Config loading, Redis initialization, consumer/loop bootstrap, and graceful KeyboardInterrupt cleanup. No new failures found.
 
-## Update Todo with code improvements
-review the codebase and add to the todo list: performance optimizations, code smells, anti-patterns, simplifications, improvements for readability, and improve robustness
+## ~~Update Todo with code improvements~~ — DONE
+Reviewed all service source code. Findings added below.
 
-## GitHub CI is failing, find out why
-The GitHub CI is failing, look at the failures using the API key and find out why. Test some fixes and push them, ensure that the author email for the commits is set to reflect that changes are being made by Claude. Push to a new branch for new testing, then when things pass merge to main.
+---
 
-## Next Phase
-Add new doc that shows what's needed in the next phase.
-Afterwards, review with cold eyes.
-Finally, break down the tasks and put them in relevant docs + in the TODO.md for implementation.
+## ~~Code Improvements (from review)~~ — DONE
+7 fixes implemented: LCU narrow exception catch + port range validation, Discovery empty PUUID validation, UI corrupt JSON logging + magic number constant + bounded memory in merged logs, Analyzer transaction=True. 3 new tests added (port out of range, port zero, empty PUUID).
 
-## Update README.md
-Update it to ensure that everything is actually up to date.
+## ~~GitHub CI is failing, find out why~~ — FIXED
+`ruff format` was failing on 13 files across all services. Applied formatting, fixed lint issues (SIM117, I001, E501, PLR0913 noqa, unused imports, N803). Added LCU to test matrix. Pushed to `fix/ci-lint-tests-336` branch, all 21 CI jobs passed (including new LCU job), merged to main via PR #1.
+
+## ~~Next Phase~~ — DONE
+Created `docs/phases/07-next-phase.md` with 4 priority areas: data collection priority (weighted queue), code quality improvements (7 fixes), test coverage expansion (~90 tests), LCU troubleshooting. Updated phase index. Findings already broken down in TODO.md above.
+
+## ~~Update README.md~~ — DONE
+Added Discovery service to pipeline diagram and table. Added Players and Logs pages to Web UI section. Added `just up`, `just scale`, `just lcu-watch`, `just test`, `just integration`, `just test-all`, `just lint`, `just typecheck`, `just check`, `just consolidate` commands. Added test counts (330 unit + 44 contract). Added Data Management section.
 
 ## Data collection priority
 Ensure that there is a weighted queue for fetching data. For example manually requested seeded data should be higher priority than automatically discovered players.
@@ -336,5 +308,5 @@ Update all relevant documentation to reflect this afterwards.
 Make a comprehensive implementation plan including testing, and implement using red/green TDD. Store the plan in Claude.md under the `Pending Work` and begin implementing, updating the status there as you go.
 Once you are completed, remove from pending.
 
-## Readibility
-Review code for uses of `arg[]` etc and replace them if they are hard to read -- ie. assign them to proper variable names and perform validation. Add this as a coding standard.
+## ~~Readibility~~ — DONE
+Reviewed all raw index access patterns. Fixed: seed `hmget` fields to named variables, streams `xautoclaim` result to `claimed_entries`. Other uses (lockfile `parts[2]`/`parts[3]`, admin `split("_")[0]`) already have clear context.

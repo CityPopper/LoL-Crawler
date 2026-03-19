@@ -135,7 +135,14 @@ async def _parse_match(
 
     seen_puuids: set[str] = set()
     for participant in info["participants"]:
-        puuid = await _write_participant(r, match_id, game_start, participant)
+        try:
+            puuid = await _write_participant(r, match_id, game_start, participant)
+        except (KeyError, TypeError) as exc:
+            log.warning(
+                "skipping participant with missing data",
+                extra={"match_id": match_id, "error": str(exc)},
+            )
+            continue
         seen_puuids.add(puuid)
 
     for puuid in seen_puuids:

@@ -6,8 +6,8 @@ import json
 
 import fakeredis.aioredis
 import pytest
-
 from lol_pipeline.models import DLQEnvelope, MessageEnvelope
+
 from lol_recovery.main import _requeue_delayed
 
 _DELAYED_KEY = "delayed:messages"

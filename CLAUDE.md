@@ -17,7 +17,15 @@ See `ARCHITECTURE.md` for doc index. See `docs/standards/01-coding-standards.md`
 
 ## Pending Work
 
-None — waiting for CI to pass on fix/ci-lint-tests-336 branch, then merge to main.
+### Tier 3 Tests — Edge cases and boundary conditions (~50 tests)
+Implementing edge case tests from TODO.md Tier 3 section:
+- [ ] LCU: collect_once pagination (6), _extract_player_stats (5), _build_participants (3), _show_summary (3)
+- [ ] Crawler: pagination edge cases (2)
+- [ ] Seed: edge cases (3)
+- [ ] Analyzer: edge cases (4)
+- [ ] Recovery: edge cases (4)
+- [ ] Discovery: edge cases (4)
+- [ ] Common: rate limiter (3), RawStore (3), models (4), log.py (3)
 
 ## Gotchas
 

@@ -73,7 +73,7 @@ class TestLcuClientApi:
     @patch("lol_lcu.lcu_client.requests.get")
     def test_current_summoner_not_running(self, mock_get, tmp_path):
         client = self._make_client(tmp_path)
-        mock_get.side_effect = Exception("Connection refused")
+        mock_get.side_effect = requests.exceptions.ConnectionError("Connection refused")
         with pytest.raises(LcuNotRunningError):
             client.current_summoner()
 
@@ -168,6 +168,20 @@ class TestLockfileValidation:
         lockfile = tmp_path / "lockfile"
         lockfile.write_text("   \n  ")
         with pytest.raises(LcuNotRunningError, match="empty"):
+            LcuClient(install_path=str(tmp_path))
+
+    def test_port_out_of_range_raises(self, tmp_path):
+        """Port outside 1-65535 should raise."""
+        lockfile = tmp_path / "lockfile"
+        lockfile.write_text("LeagueClient:pid:99999:pass:https")
+        with pytest.raises(LcuNotRunningError, match="out of range"):
+            LcuClient(install_path=str(tmp_path))
+
+    def test_port_zero_raises(self, tmp_path):
+        """Port 0 should raise."""
+        lockfile = tmp_path / "lockfile"
+        lockfile.write_text("LeagueClient:pid:0:pass:https")
+        with pytest.raises(LcuNotRunningError, match="out of range"):
             LcuClient(install_path=str(tmp_path))
 
 

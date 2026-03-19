@@ -41,7 +41,10 @@ class TestMessageEnvelope:
 
     def test_defaults(self):
         env = MessageEnvelope(
-            source_stream="s", type="t", payload={}, max_attempts=3,
+            source_stream="s",
+            type="t",
+            payload={},
+            max_attempts=3,
         )
         assert env.attempts == 0
         assert env.dlq_attempts == 0
@@ -131,7 +134,10 @@ class TestDLQEnvelope:
 class TestMessageEnvelopeBoundary:
     def test_max_attempts_zero(self):
         env = MessageEnvelope(
-            source_stream="s", type="t", payload={}, max_attempts=0,
+            source_stream="s",
+            type="t",
+            payload={},
+            max_attempts=0,
         )
         assert env.max_attempts == 0
 
@@ -143,13 +149,34 @@ class TestMessageEnvelopeBoundary:
         assert restored.payload == big
 
 
+class TestMessageEnvelopeNegativeAttempts:
+    def test_negative_attempts_handled(self):
+        """Negative attempts value should be preserved through round-trip."""
+        env = MessageEnvelope(
+            source_stream="s",
+            type="t",
+            payload={},
+            max_attempts=5,
+            attempts=-1,
+        )
+        fields = env.to_redis_fields()
+        assert fields["attempts"] == "-1"
+        restored = MessageEnvelope.from_redis_fields(fields)
+        assert restored.attempts == -1
+
+
 class TestDLQEnvelopeBoundary:
     def test_empty_failure_reason(self):
         dlq = DLQEnvelope(
-            source_stream="stream:dlq", type="dlq", payload={},
-            attempts=1, max_attempts=5,
-            failure_code="test", failure_reason="",
-            failed_by="test", original_stream="stream:test",
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={},
+            attempts=1,
+            max_attempts=5,
+            failure_code="test",
+            failure_reason="",
+            failed_by="test",
+            original_stream="stream:test",
             original_message_id="1-0",
         )
         fields = dlq.to_redis_fields()
@@ -159,8 +186,12 @@ class TestDLQEnvelopeBoundary:
     def test_missing_optional_fields_on_deserialize(self):
         """Old DLQ entries missing optional fields should use defaults."""
         fields = {
-            "id": "abc", "source_stream": "stream:dlq", "type": "dlq",
-            "payload": "{}", "attempts": "1", "max_attempts": "5",
+            "id": "abc",
+            "source_stream": "stream:dlq",
+            "type": "dlq",
+            "payload": "{}",
+            "attempts": "1",
+            "max_attempts": "5",
             "failure_code": "http_429",
             "failed_at": "2024-01-01T00:00:00+00:00",
             "enqueued_at": "2024-01-01T00:00:00+00:00",

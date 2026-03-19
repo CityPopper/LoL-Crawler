@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import html
 import json
-from pathlib import Path
+from unittest.mock import patch
 
 from lol_ui.main import (
     _aggregate_by_mode,
-    _load_lcu_data,
     _lcu_stats_section,
+    _load_lcu_data,
     _match_history_html,
     _match_history_section,
     _merged_log_lines,
@@ -33,8 +33,12 @@ class TestLoadLcuData:
 
     def test_valid_jsonl_files(self, tmp_path):
         f = tmp_path / "puuid1.jsonl"
-        f.write_text(json.dumps({"game_id": 1, "win": True}) + "\n"
-                     + json.dumps({"game_id": 2, "win": False}) + "\n")
+        f.write_text(
+            json.dumps({"game_id": 1, "win": True})
+            + "\n"
+            + json.dumps({"game_id": 2, "win": False})
+            + "\n"
+        )
         result = _load_lcu_data(str(tmp_path))
         assert "puuid1" in result
         assert len(result["puuid1"]) == 2
@@ -195,8 +199,11 @@ class TestMatchHistoryHtml:
 
     def test_renders_match_rows(self):
         matches = [
-            ("NA1_123", {"game_start": "1700000000000", "game_mode": "CLASSIC"},
-             {"win": "1", "champion_name": "Zed", "kills": "10", "deaths": "2", "assists": "5"}),
+            (
+                "NA1_123",
+                {"game_start": "1700000000000", "game_mode": "CLASSIC"},
+                {"win": "1", "champion_name": "Zed", "kills": "10", "deaths": "2", "assists": "5"},
+            ),
         ]
         result = _match_history_html(matches, "puuid", "na1", "P#1", 0, False)
         assert "Zed" in result
@@ -205,8 +212,11 @@ class TestMatchHistoryHtml:
 
     def test_loss_renders_correctly(self):
         matches = [
-            ("NA1_456", {"game_start": "1700000000000", "game_mode": "ARAM"},
-             {"win": "0", "champion_name": "Ahri", "kills": "3", "deaths": "7", "assists": "1"}),
+            (
+                "NA1_456",
+                {"game_start": "1700000000000", "game_mode": "ARAM"},
+                {"win": "0", "champion_name": "Ahri", "kills": "3", "deaths": "7", "assists": "1"},
+            ),
         ]
         result = _match_history_html(matches, "puuid", "na1", "P#1", 0, False)
         assert "Loss" in result
@@ -214,8 +224,11 @@ class TestMatchHistoryHtml:
 
     def test_has_more_shows_load_link(self):
         matches = [
-            ("NA1_123", {"game_start": "0", "game_mode": "SR"},
-             {"win": "1", "champion_name": "X", "kills": "0", "deaths": "0", "assists": "0"}),
+            (
+                "NA1_123",
+                {"game_start": "0", "game_mode": "SR"},
+                {"win": "1", "champion_name": "X", "kills": "0", "deaths": "0", "assists": "0"},
+            ),
         ]
         result = _match_history_html(matches, "puuid", "na1", "P#1", 0, True)
         assert "Load more" in result
@@ -223,17 +236,28 @@ class TestMatchHistoryHtml:
 
     def test_no_more_hides_load_link(self):
         matches = [
-            ("NA1_123", {"game_start": "0", "game_mode": "SR"},
-             {"win": "1", "champion_name": "X", "kills": "0", "deaths": "0", "assists": "0"}),
+            (
+                "NA1_123",
+                {"game_start": "0", "game_mode": "SR"},
+                {"win": "1", "champion_name": "X", "kills": "0", "deaths": "0", "assists": "0"},
+            ),
         ]
         result = _match_history_html(matches, "puuid", "na1", "P#1", 0, False)
         assert "Load more" not in result
 
     def test_html_escapes_champion_name(self):
         matches = [
-            ("NA1_1", {"game_start": "0", "game_mode": "SR"},
-             {"win": "0", "champion_name": "<b>XSS</b>", "kills": "0", "deaths": "0",
-              "assists": "0"}),
+            (
+                "NA1_1",
+                {"game_start": "0", "game_mode": "SR"},
+                {
+                    "win": "0",
+                    "champion_name": "<b>XSS</b>",
+                    "kills": "0",
+                    "deaths": "0",
+                    "assists": "0",
+                },
+            ),
         ]
         result = _match_history_html(matches, "puuid", "na1", "P#1", 0, False)
         assert "<b>XSS</b>" not in result
@@ -272,13 +296,15 @@ class TestTailFile:
 
 class TestParseLogLine:
     def test_valid_json_log(self):
-        line = json.dumps({
-            "timestamp": "2025-01-01T12:00:00.000",
-            "level": "ERROR",
-            "logger": "crawler",
-            "message": "something failed",
-            "extra_key": "val",
-        })
+        line = json.dumps(
+            {
+                "timestamp": "2025-01-01T12:00:00.000",
+                "level": "ERROR",
+                "logger": "crawler",
+                "message": "something failed",
+                "extra_key": "val",
+            }
+        )
         ts, level, logger, msg, extra = _parse_log_line(line)
         assert ts == "2025-01-01 12:00:00"
         assert level == "ERROR"
@@ -311,8 +337,16 @@ class TestRenderLogLines:
         assert "No log entries" in result
 
     def test_renders_log_entries(self):
-        lines = [json.dumps({"timestamp": "2025-01-01T00:00:00", "level": "INFO",
-                             "logger": "test", "message": "hello"})]
+        lines = [
+            json.dumps(
+                {
+                    "timestamp": "2025-01-01T00:00:00",
+                    "level": "INFO",
+                    "logger": "test",
+                    "message": "hello",
+                }
+            )
+        ]
         result = _render_log_lines(lines)
         assert "hello" in result
         assert "log-line" in result
@@ -342,8 +376,28 @@ class TestMergedLogLines:
 
     def test_limits_to_n_lines(self, tmp_path):
         f = tmp_path / "svc.log"
-        lines = [json.dumps({"timestamp": f"2025-01-01T00:00:{i:02d}", "message": str(i)})
-                 for i in range(10)]
+        lines = [
+            json.dumps({"timestamp": f"2025-01-01T00:00:{i:02d}", "message": str(i)})
+            for i in range(10)
+        ]
         f.write_text("\n".join(lines) + "\n")
         result = _merged_log_lines(tmp_path, 3)
         assert len(result) == 3
+
+
+class TestUiEntryPoint:
+    """Tests for __main__ module."""
+
+    def test_main__calls_uvicorn_run(self):
+        """__main__ calls uvicorn.run with correct host and port."""
+        import importlib
+        import sys
+
+        # Remove cached module so reload actually re-executes it
+        sys.modules.pop("lol_ui.__main__", None)
+        with patch("uvicorn.run") as mock_uvicorn:
+            importlib.import_module("lol_ui.__main__")
+        mock_uvicorn.assert_called_once()
+        call_args = mock_uvicorn.call_args
+        assert call_args[1]["host"] == "0.0.0.0"
+        assert call_args[1]["port"] == 8080

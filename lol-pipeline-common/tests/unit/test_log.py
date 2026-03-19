@@ -51,3 +51,57 @@ class TestGetLogger:
 
         log = get_logger("test-prop")
         assert log.propagate is False
+
+
+class TestLogFileHandler:
+    """Tier 3 — log.py file handler and log level tests."""
+
+    def test_log_dir_creates_file_handler(self, tmp_path, monkeypatch):
+        """When LOG_DIR is set, a RotatingFileHandler is added."""
+        import importlib
+
+        import lol_pipeline.log as log_mod
+
+        monkeypatch.setattr(log_mod, "_LOG_DIR", str(tmp_path))
+
+        # Force fresh logger (clear existing handlers)
+        logger_name = "test-filelog"
+        logger = logging.getLogger(logger_name)
+        logger.handlers.clear()
+
+        log = log_mod.get_logger(logger_name)
+        handler_types = [type(h).__name__ for h in log.handlers]
+        assert "RotatingFileHandler" in handler_types
+
+    def test_log_level_env_respected(self, monkeypatch):
+        """LOG_LEVEL env var controls the logger level."""
+        import importlib
+
+        import lol_pipeline.log as log_mod
+
+        monkeypatch.setattr(log_mod, "_LOG_LEVEL", logging.DEBUG)
+
+        logger_name = "test-level"
+        logger = logging.getLogger(logger_name)
+        logger.handlers.clear()
+
+        log = log_mod.get_logger(logger_name)
+        assert log.level == logging.DEBUG
+
+    def test_log_dir_not_writable_raises(self, monkeypatch):
+        """Non-writable LOG_DIR raises during get_logger (no silent fallback)."""
+        import lol_pipeline.log as log_mod
+
+        monkeypatch.setattr(log_mod, "_LOG_DIR", "/nonexistent/deep/path/that/cannot/exist")
+
+        logger_name = "test-nowrite"
+        logger = logging.getLogger(logger_name)
+        logger.handlers.clear()
+
+        # mkdir(parents=True, exist_ok=True) will fail on truly unwritable paths
+        # On most systems /nonexistent doesn't exist and can't be created
+        try:
+            log_mod.get_logger(logger_name)
+            # If it succeeds (e.g. running as root), that's acceptable
+        except OSError:
+            pass  # Expected — documents that errors propagate

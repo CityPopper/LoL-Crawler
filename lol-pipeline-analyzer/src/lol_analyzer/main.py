@@ -87,7 +87,7 @@ async def _analyze_player(
                 )
                 if p:
                     stats_key = f"player:stats:{puuid}"
-                    pipe = r.pipeline(transaction=False)
+                    pipe = r.pipeline(transaction=True)
                     pipe.hincrby(stats_key, "total_games", 1)
                     pipe.hincrby(stats_key, "total_wins", int(p.get("win", "0")))
                     pipe.hincrby(stats_key, "total_kills", int(p.get("kills", "0")))

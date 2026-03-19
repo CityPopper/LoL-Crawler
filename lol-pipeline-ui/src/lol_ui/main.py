@@ -54,7 +54,7 @@ def _load_lcu_data(data_dir: str) -> dict[str, list[dict[str, Any]]]:
             try:
                 matches.append(json.loads(stripped))
             except json.JSONDecodeError:
-                pass
+                _log.warning("corrupt JSON line in %s, skipping", f.name)
         if matches:
             result[puuid] = matches
     return result
@@ -655,6 +655,9 @@ _LOG_CSS = """
 """
 
 
+_EST_BYTES_PER_LOG_LINE = 600  # heuristic for JSON structured log lines
+
+
 def _tail_file(path: Path, n: int) -> list[str]:
     """Read last n non-empty lines from a file efficiently (byte-seeks from end)."""
     try:
@@ -663,7 +666,7 @@ def _tail_file(path: Path, n: int) -> list[str]:
             size = f.tell()
             if size == 0:
                 return []
-            read_bytes = min(n * 600, size)
+            read_bytes = min(n * _EST_BYTES_PER_LOG_LINE, size)
             f.seek(size - read_bytes)
             raw = f.read()
         parts = raw.split(b"\n")
@@ -709,9 +712,11 @@ def _render_log_lines(raw_lines: list[str]) -> str:
 
 def _merged_log_lines(log_dir: Path, n: int) -> list[str]:
     """Read last n lines from ALL log files, merge by timestamp, return newest n."""
+    log_files = list(log_dir.glob("*.log"))
+    per_file = max(n // len(log_files) + 1, 10) if log_files else 0
     all_lines: list[tuple[str, str]] = []
-    for f in log_dir.glob("*.log"):
-        for line in _tail_file(f, n):
+    for f in log_files:
+        for line in _tail_file(f, per_file):
             try:
                 d = json.loads(line)
                 ts = str(d.get("timestamp", ""))

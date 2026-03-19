@@ -5,12 +5,15 @@ from __future__ import annotations
 import json
 import logging
 import time
+from unittest.mock import AsyncMock, patch
 
 import fakeredis.aioredis
 import pytest
-
+from lol_pipeline.config import Config
 from lol_pipeline.models import MessageEnvelope
-from lol_delay_scheduler.main import _tick
+from redis.exceptions import RedisError
+
+from lol_delay_scheduler.main import _tick, main
 
 _DELAYED_KEY = "delayed:messages"
 
@@ -243,3 +246,68 @@ class TestDelaySchedulerEdgeCases:
         assert len(entries) == 1
         restored = MessageEnvelope.from_redis_fields(entries[0][1])
         assert restored.dlq_attempts == 2
+
+
+class TestDelaySchedulerRedisErrors:
+    @pytest.mark.asyncio
+    async def test_xadd_fails__does_not_remove_from_sorted_set(self, r, log):
+        """XADD failure preserves member in delayed:messages for retry."""
+        env = _delayed_envelope()
+        past_ms = int(time.time() * 1000) - 1
+        await _add_delayed(r, env, past_ms)
+
+        original_xadd = r.xadd
+
+        async def failing_xadd(*args, **kwargs):
+            raise RedisError("connection lost")
+
+        r.xadd = failing_xadd
+
+        await _tick(r, log)
+
+        r.xadd = original_xadd
+        # Member should still be in sorted set since XADD failed
+        assert await r.zcard(_DELAYED_KEY) == 1
+
+
+class TestMainEntryPoint:
+    """Tests for main() bootstrap and teardown."""
+
+    @pytest.mark.asyncio
+    async def test_main__creates_redis_and_starts_loop(self, monkeypatch):
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_r = AsyncMock()
+        call_count = 0
+
+        async def fake_tick(*args):
+            nonlocal call_count
+            call_count += 1
+            if call_count > 1:
+                raise KeyboardInterrupt
+
+        with (
+            patch("lol_delay_scheduler.main.Config") as mock_cfg,
+            patch("lol_delay_scheduler.main.get_redis", return_value=mock_r),
+            patch("lol_delay_scheduler.main._tick", side_effect=fake_tick),
+            patch("lol_delay_scheduler.main.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            with pytest.raises(KeyboardInterrupt):
+                await main()
+        mock_r.aclose.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_main__keyboard_interrupt__closes_redis(self, monkeypatch):
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_r = AsyncMock()
+        with (
+            patch("lol_delay_scheduler.main.Config") as mock_cfg,
+            patch("lol_delay_scheduler.main.get_redis", return_value=mock_r),
+            patch("lol_delay_scheduler.main._tick", side_effect=KeyboardInterrupt),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            with pytest.raises(KeyboardInterrupt):
+                await main()
+        mock_r.aclose.assert_called_once()

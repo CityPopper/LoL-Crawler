@@ -56,6 +56,8 @@ class LcuClient:
             raise LcuNotRunningError(
                 f"Malformed lockfile (non-numeric port: {parts[2]!r})"
             ) from exc
+        if not (1 <= self.port <= 65535):
+            raise LcuNotRunningError(f"Malformed lockfile (port out of range: {self.port})")
         self.password = parts[3]
 
     @property
@@ -83,7 +85,7 @@ class LcuClient:
             raise LcuNotRunningError(
                 f"LCU API request failed ({self.base_url}, LCU_HOST={self.host}): {exc}"
             ) from exc
-        except Exception as exc:
+        except (requests.RequestException, ValueError) as exc:
             raise LcuNotRunningError(
                 f"LCU API request failed ({self.base_url}, LCU_HOST={self.host}): {exc}"
             ) from exc

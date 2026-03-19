@@ -3,18 +3,19 @@
 from __future__ import annotations
 
 import logging
+from unittest.mock import AsyncMock, patch
 
 import fakeredis.aioredis
 import httpx
 import pytest
 import respx
-
 from lol_pipeline.config import Config
-from lol_pipeline.models import DLQEnvelope, MessageEnvelope
+from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.raw_store import RawStore
 from lol_pipeline.riot_api import RiotClient
 from lol_pipeline.streams import consume, publish
-from lol_fetcher.main import _fetch_match
+
+from lol_fetcher.main import _fetch_match, main
 
 _STREAM_IN = "stream:match_id"
 _STREAM_OUT = "stream:parse"
@@ -22,6 +23,7 @@ _GROUP = "fetchers"
 
 try:
     import lupa  # noqa: F401
+
     _LUPA_AVAILABLE = True
 except ImportError:
     _LUPA_AVAILABLE = False
@@ -213,9 +215,7 @@ class TestFetchMaxAttempts:
         msg_id = await _setup_message(r, env)
 
         with respx.mock:
-            respx.get(_match_url()).mock(
-                return_value=httpx.Response(500, text="Server Error")
-            )
+            respx.get(_match_url()).mock(return_value=httpx.Response(500, text="Server Error"))
             riot = RiotClient("RGAPI-test")
             await _fetch_match(r, riot, raw_store, cfg, msg_id, env, log)
             await riot.close()
@@ -227,3 +227,114 @@ class TestFetchMaxAttempts:
         assert fields["failed_by"] == "fetcher"
         assert "original_message_id" in fields
         assert "payload" in fields
+
+
+class TestFetchStoreErrors:
+    """Tests for failure modes during fetch and store."""
+
+    @pytest.mark.asyncio
+    async def test_raw_store_set_fails__does_not_publish(self, r, cfg, log):
+        """If RawStore.set raises, no message is published to stream:parse."""
+        raw_store = RawStore(r)
+        env = _match_envelope()
+        msg_id = await _setup_message(r, env)
+
+        with respx.mock:
+            respx.get(_match_url()).mock(
+                return_value=httpx.Response(200, json={"info": {"gameDuration": 1800}})
+            )
+
+            async def failing_set(*args, **kwargs):
+                raise OSError("disk full")
+
+            raw_store.set = failing_set
+            riot = RiotClient("RGAPI-test")
+            with pytest.raises(OSError):
+                await _fetch_match(r, riot, raw_store, cfg, msg_id, env, log)
+            await riot.close()
+
+        assert await r.xlen(_STREAM_OUT) == 0
+        assert await r.hget("match:NA1_123", "status") is None
+
+    @pytest.mark.asyncio
+    async def test_publish_fails_after_store__redelivery_idempotent(self, r, cfg, log):
+        """If publish fails after store, redelivery finds blob and re-publishes."""
+        raw_store = RawStore(r)
+        env = _match_envelope()
+        msg_id = await _setup_message(r, env)
+
+        with respx.mock:
+            respx.get(_match_url()).mock(
+                return_value=httpx.Response(200, json={"info": {"gameDuration": 1800}})
+            )
+            riot = RiotClient("RGAPI-test")
+
+            call_count = 0
+            original_xadd = r.xadd
+
+            async def xadd_fail_once(stream, fields, *args, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                # Fail the first XADD to stream:parse (publish after store)
+                # but allow XADD to stream:match_id (test setup)
+                if stream == _STREAM_OUT and call_count <= 2:
+                    raise Exception("connection lost")
+                return await original_xadd(stream, fields, *args, **kwargs)
+
+            r.xadd = xadd_fail_once
+            with pytest.raises(Exception, match="connection lost"):
+                await _fetch_match(r, riot, raw_store, cfg, msg_id, env, log)
+
+            # Raw blob was stored despite publish failure
+            assert await raw_store.exists("NA1_123") is True
+
+            # Simulate redelivery: same message, same msg_id
+            r.xadd = original_xadd
+            env2 = _match_envelope()
+            msg_id2 = await _setup_message(r, env2)
+            await _fetch_match(r, riot, raw_store, cfg, msg_id2, env2, log)
+            await riot.close()
+
+        # Idempotent path detected existing blob and published
+        assert await r.xlen(_STREAM_OUT) == 1
+
+
+class TestMainEntryPoint:
+    """Tests for main() bootstrap and teardown."""
+
+    @pytest.mark.asyncio
+    async def test_main__creates_redis_and_starts_consumer(self, monkeypatch):
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_r = AsyncMock()
+        mock_consumer = AsyncMock()
+        with (
+            patch("lol_fetcher.main.Config") as mock_cfg,
+            patch("lol_fetcher.main.get_redis", return_value=mock_r),
+            patch("lol_fetcher.main.RiotClient") as mock_riot,
+            patch("lol_fetcher.main.RawStore"),
+            patch("lol_fetcher.main.run_consumer", mock_consumer),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            mock_riot.return_value = AsyncMock()
+            await main()
+        mock_consumer.assert_called_once()
+        mock_r.aclose.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_main__keyboard_interrupt__closes_redis(self, monkeypatch):
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_r = AsyncMock()
+        with (
+            patch("lol_fetcher.main.Config") as mock_cfg,
+            patch("lol_fetcher.main.get_redis", return_value=mock_r),
+            patch("lol_fetcher.main.RiotClient") as mock_riot,
+            patch("lol_fetcher.main.RawStore"),
+            patch("lol_fetcher.main.run_consumer", side_effect=KeyboardInterrupt),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            mock_riot.return_value = AsyncMock()
+            with pytest.raises(KeyboardInterrupt):
+                await main()
+        mock_r.aclose.assert_called_once()

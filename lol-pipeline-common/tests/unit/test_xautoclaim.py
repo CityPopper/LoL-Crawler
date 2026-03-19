@@ -39,9 +39,7 @@ class TestXautoclaim:
 
         # New consumer calls consume — should reclaim via XAUTOCLAIM
         # min_idle_ms=0 means claim everything regardless of idle time
-        new_msgs = await consume(
-            r, stream, group, "new-worker", block=0, autoclaim_min_idle_ms=0
-        )
+        new_msgs = await consume(r, stream, group, "new-worker", block=0, autoclaim_min_idle_ms=0)
         assert len(new_msgs) == 1
         assert new_msgs[0][1].payload == {"key": "value"}
 
@@ -49,9 +47,7 @@ class TestXautoclaim:
         await ack(r, stream, group, new_msgs[0][0])
 
     @pytest.mark.asyncio
-    async def test_no_autoclaim_when_disabled(
-        self, r: fakeredis.aioredis.FakeRedis
-    ) -> None:
+    async def test_no_autoclaim_when_disabled(self, r: fakeredis.aioredis.FakeRedis) -> None:
         """When autoclaim_min_idle_ms is None (default), no reclaim happens."""
         stream = "stream:test2"
         group = "test-group2"

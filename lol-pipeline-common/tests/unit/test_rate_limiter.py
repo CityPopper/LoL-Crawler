@@ -18,9 +18,9 @@ pytestmark = pytest.mark.skipif(
     not _LUPA_AVAILABLE, reason="lupa not installed — Lua scripting unavailable"
 )
 
-import fakeredis.aioredis
-
 from unittest.mock import AsyncMock, patch
+
+import fakeredis.aioredis
 
 from lol_pipeline.rate_limiter import acquire_token, wait_for_token
 
@@ -34,9 +34,7 @@ async def r() -> fakeredis.aioredis.FakeRedis:
 
 class TestStoredLimits:
     @pytest.mark.asyncio
-    async def test_stored_short_limit_is_used(
-        self, r: fakeredis.aioredis.FakeRedis
-    ) -> None:
+    async def test_stored_short_limit_is_used(self, r: fakeredis.aioredis.FakeRedis) -> None:
         # Input:  ratelimit:limits:short = "5" pre-set in Redis
         #         config limit_per_second = 20 (higher than stored)
         #         6 sequential acquire_token() calls
@@ -96,9 +94,7 @@ class TestStoredLimits:
         assert results[10] is False
 
     @pytest.mark.asyncio
-    async def test_stored_long_limit_is_enforced(
-        self, r: fakeredis.aioredis.FakeRedis
-    ) -> None:
+    async def test_stored_long_limit_is_enforced(self, r: fakeredis.aioredis.FakeRedis) -> None:
         # Input:  ratelimit:limits:long = "2" pre-set in Redis (very small — for test speed)
         #         ratelimit:limits:short is NOT set (fallback to config)
         #         config limit_per_second = 100 (much larger than long limit)
@@ -111,6 +107,52 @@ class TestStoredLimits:
 
         assert results[:2] == [True, True]
         assert results[2] is False
+
+
+class TestRateLimiterBoundary:
+    """Tier 3 — Rate limiter boundary conditions."""
+
+    @pytest.mark.asyncio
+    async def test_exactly_at_limit_returns_false(self, r: fakeredis.aioredis.FakeRedis) -> None:
+        """When exactly at the limit, next request returns False."""
+        # Use limit of 5 for test speed
+        await r.set("ratelimit:limits:short", "5")
+        for _ in range(5):
+            assert await acquire_token(r, limit_per_second=20) is True
+        # 6th should fail
+        assert await acquire_token(r, limit_per_second=20) is False
+
+    @pytest.mark.asyncio
+    async def test_just_after_window_expires_returns_true(
+        self, r: fakeredis.aioredis.FakeRedis
+    ) -> None:
+        """After window expires, new tokens should be available."""
+        # Fill up the window with limit 2
+        await r.set("ratelimit:limits:short", "2")
+        assert await acquire_token(r, limit_per_second=20) is True
+        assert await acquire_token(r, limit_per_second=20) is True
+        assert await acquire_token(r, limit_per_second=20) is False
+
+        # Manually expire the short window entries
+        await r.delete("ratelimit:short")
+
+        # Should now allow again
+        assert await acquire_token(r, limit_per_second=20) is True
+
+    @pytest.mark.asyncio
+    async def test_lua_script_error_propagates(self, r: fakeredis.aioredis.FakeRedis) -> None:
+        """Redis errors during Lua eval should propagate to caller."""
+        original_eval = r.eval
+
+        async def failing_eval(*args, **kwargs):
+            raise ConnectionError("redis down")
+
+        r.eval = failing_eval  # type: ignore[assignment]
+
+        with pytest.raises(ConnectionError, match="redis down"):
+            await acquire_token(r, limit_per_second=20)
+
+        r.eval = original_eval  # type: ignore[assignment]
 
 
 class TestWaitForToken:
@@ -142,9 +184,11 @@ class TestWaitForToken:
     @pytest.mark.asyncio
     async def test_sleep_interval_is_50ms(self, r):
         """Each retry sleeps for 0.05 seconds."""
+
         async def deny_then_allow(*args, **kwargs):
             deny_then_allow.calls += 1
             return deny_then_allow.calls > 1
+
         deny_then_allow.calls = 0
 
         with patch("lol_pipeline.rate_limiter.acquire_token", side_effect=deny_then_allow):

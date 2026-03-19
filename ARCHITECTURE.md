@@ -32,6 +32,26 @@ Detailed documentation lives in `docs/`. Start here for orientation, then follow
 | [Coding Standards](docs/standards/01-coding-standards.md) | Linting (ruff), type checking (mypy), complexity limits, security rules, naming |
 | [Service Layout](docs/standards/02-service-layout.md) | Standard directory structure, deviations, new service checklist |
 
+## Security
+
+| Doc | Contents |
+|-----|----------|
+| [Security Posture](docs/security/01-security.md) | Threat model, secret management, Redis/Docker hardening, input validation, incident response |
+
+## Operations
+
+| Doc | Contents |
+|-----|----------|
+| [Deployment & Operations](docs/operations/01-deployment.md) | Prerequisites, Docker Compose, scaling, env vars, incident response, backup/recovery |
+| [Monitoring & Observability](docs/operations/02-monitoring.md) | Metrics, health checks, log analysis, alerting, capacity planning, dashboard design |
+
+## Guides
+
+| Doc | Contents |
+|-----|----------|
+| [Local Development](docs/guides/01-local-dev.md) | Setup, venv workflow, testing, linting, TDD, adding services, IDE tips |
+| [Troubleshooting](docs/guides/02-troubleshooting.md) | Diagnostic commands, stream/DLQ/lock debugging, LCU issues, nuclear options |
+
 ## Implementation Phases
 
 See [docs/phases/README.md](docs/phases/README.md) for the phased delivery plan with quantifiable acceptance criteria.
@@ -46,6 +66,7 @@ See [docs/phases/README.md](docs/phases/README.md) for the phased delivery plan 
 | [04](docs/phases/04-processing.md) | Processing Pipeline — Parser, Analyzer |
 | [05](docs/phases/05-resilience.md) | Resilience Layer — Recovery, Delay Scheduler |
 | [06](docs/phases/06-operations.md) | Operations — Admin CLI, Justfile, integration tests |
+| [07](docs/phases/07-next-phase.md) | IRONCLAD — Security hardening, code quality, weighted queue |
 
 ---
 

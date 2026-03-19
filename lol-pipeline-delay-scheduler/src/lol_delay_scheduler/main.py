@@ -34,6 +34,7 @@ async def _tick(r: aioredis.Redis, log: logging.Logger) -> None:
         )
         if not members:
             return
+        dispatched = 0
         for member in members:
             try:
                 fields: dict[str, str] = json.loads(member)
@@ -41,10 +42,12 @@ async def _tick(r: aioredis.Redis, log: logging.Logger) -> None:
             except (json.JSONDecodeError, KeyError, ValueError) as exc:
                 log.error("corrupt delayed member — removing", extra={"error": str(exc)})
                 await r.zrem(_DELAYED_KEY, member)
+                dispatched += 1
                 continue
             try:
                 await r.xadd(env.source_stream, env.to_redis_fields())  # type: ignore[arg-type]
                 await r.zrem(_DELAYED_KEY, member)
+                dispatched += 1
                 log.info(
                     "dispatched delayed message",
                     extra={"stream": env.source_stream, "id": env.id},
@@ -54,6 +57,8 @@ async def _tick(r: aioredis.Redis, log: logging.Logger) -> None:
                     "Redis error dispatching — will retry",
                     extra={"error": str(exc), "id": env.id},
                 )
+        if not dispatched:
+            return
 
 
 async def main() -> None:

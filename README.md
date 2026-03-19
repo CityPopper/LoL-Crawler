@@ -6,10 +6,10 @@ A streaming data pipeline that collects League of Legends match history via the 
 
 ```
 Seed → Crawler → Fetcher → Parser → Analyzer
-                                ↕
-                      Recovery + Delay Scheduler
-                                ↕
-                          Web UI (port 8080)
+                    ↑                    ↕
+               Discovery        Recovery + Delay Scheduler
+                                         ↕
+                                   Web UI (port 8080)
 ```
 
 | Service         | Role                                                   |
@@ -21,6 +21,7 @@ Seed → Crawler → Fetcher → Parser → Analyzer
 | Analyzer        | Builds incremental per-player aggregate stats          |
 | Recovery        | Retries failed messages from the DLQ                   |
 | Delay Scheduler | Moves rate-limit-delayed messages into target streams  |
+| Discovery       | Promotes discovered players into the pipeline when idle |
 | Web UI          | Seed players and view stats at http://localhost:8080   |
 | LCU Collector   | Collects match history from the local League client (all game modes, including rotating queues not in Match-v5) |
 
@@ -42,11 +43,13 @@ just build          # builds all Docker images
 ## Run
 
 ```bash
+just up                         # setup + build + run in one step
 just run                        # start all services (auto-runs via `just seed` too)
 just seed "Faker#KR1" kr        # seed a player (auto-starts stack if needed)
 just logs fetcher               # tail logs for a service
 just streams                    # inspect Redis stream depths
 just restart crawler            # restart a single service after code change
+just scale fetcher 3            # scale a service to N replicas
 just stop                       # pause containers (data preserved)
 just down                       # remove containers (data preserved)
 just reset                      # remove containers + wipe Redis data
@@ -59,7 +62,7 @@ just ui             # prints URL and opens browser
 # or navigate to http://localhost:8080
 ```
 
-Pages: **Seed** (seed a player), **Stats** (view player stats — shows verified Riot API data and unverified LCU data combined), **Streams** (stream depths + system status), **LCU** (overview of all collected LCU match history).
+Pages: **Stats** (look up player stats — Riot API data and LCU data side by side), **Players** (paginated list of all seeded players), **Streams** (stream depths + system status), **LCU** (LCU match history overview), **Logs** (merged service logs with auto-refresh).
 
 ## Admin CLI
 
@@ -78,6 +81,7 @@ Collects match history directly from the running League client — includes game
 ```bash
 # With the League client open:
 just lcu                        # collect + append new matches for the logged-in player
+just lcu-watch                  # continuously collect, polling every LCU_POLL_INTERVAL_MINUTES (default: 5)
 just restart ui                 # reload UI to pick up new data
 ```
 
@@ -86,10 +90,24 @@ The UI `/lcu` page shows an overview; `/stats` shows API + LCU side by side.
 
 ## Testing
 
+366 unit tests + 44 contract tests across all services.
+
 ```bash
+just test                       # run all unit tests (services tested in parallel)
 just contract                   # run PACT contract tests for all services
+just integration                # integration tests (requires Docker for testcontainers)
 just e2e                        # end-to-end test (requires running stack + valid API key)
+just test-all                   # unit + contract tests combined
+just lint                       # ruff check + format check on all services
+just typecheck                  # mypy on all services
+just check                      # lint + typecheck
 just update-mocks               # refresh Pwnerer#1337 fixtures from live Riot API
+```
+
+## Data Management
+
+```bash
+just consolidate                # bundle individual match JSON files into JSONL+zstd archives
 ```
 
 ## Code Changes (No Rebuild Needed)

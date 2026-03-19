@@ -3,27 +3,27 @@
 from __future__ import annotations
 
 import logging
+from unittest.mock import AsyncMock, patch
 
 import fakeredis.aioredis
 import pytest
-
 from lol_pipeline.config import Config
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.streams import consume, publish
-from lol_analyzer.main import _analyze_player
+
+from lol_analyzer.main import _analyze_player, main
 
 _IN_STREAM = "stream:analyze"
 _GROUP = "analyzers"
 
 try:
     import lupa  # noqa: F401
+
     _LUPA_AVAILABLE = True
 except ImportError:
     _LUPA_AVAILABLE = False
 
-pytestmark = pytest.mark.skipif(
-    not _LUPA_AVAILABLE, reason="lupa required for Lua lock release"
-)
+pytestmark = pytest.mark.skipif(not _LUPA_AVAILABLE, reason="lupa required for Lua lock release")
 
 
 @pytest.fixture
@@ -61,7 +61,18 @@ async def _setup_message(r, envelope):
     return msgs[0][0]
 
 
-async def _add_participant(r, match_id, puuid, game_start, win=True, kills=10, deaths=2, assists=5, champion="Annie", role="SOLO"):
+async def _add_participant(
+    r,
+    match_id,
+    puuid,
+    game_start,
+    win=True,
+    kills=10,
+    deaths=2,
+    assists=5,
+    champion="Annie",
+    role="SOLO",
+):
     """Write participant hash and add to player:matches sorted set."""
     await r.hset(
         f"participant:{match_id}:{puuid}",
@@ -124,6 +135,7 @@ class TestAnalyzerLock:
 
         # Let the lock expire and another worker grab it
         import asyncio
+
         await asyncio.sleep(0.01)
 
         await _analyze_player(r, cfg, "my-worker", msg_id, env, log)
@@ -266,9 +278,7 @@ class TestAnalyzerPipeline:
         await _analyze_player(r, cfg, "my-worker", msg_id, env, log)
 
         # With pipeline batching, hincrby is called on the pipe, not r
-        assert hincrby_count == 0, (
-            f"Expected 0 individual hincrby calls, got {hincrby_count}"
-        )
+        assert hincrby_count == 0, f"Expected 0 individual hincrby calls, got {hincrby_count}"
         # Stats should still be updated correctly
         assert await r.hget(f"player:stats:{puuid}", "total_games") == "1"
 
@@ -283,10 +293,16 @@ class TestAnalyzerDerivedRecovery:
         await _add_participant(r, "NA1_1", puuid, 1000, kills=10, deaths=2, assists=5, win=True)
 
         # Simulate a crashed state: raw stats exist, cursor is advanced, but no derived stats
-        await r.hset(f"player:stats:{puuid}", mapping={
-            "total_games": "1", "total_wins": "1",
-            "total_kills": "10", "total_deaths": "2", "total_assists": "5",
-        })
+        await r.hset(
+            f"player:stats:{puuid}",
+            mapping={
+                "total_games": "1",
+                "total_wins": "1",
+                "total_kills": "10",
+                "total_deaths": "2",
+                "total_assists": "5",
+            },
+        )
         await r.set(f"player:stats:cursor:{puuid}", "1000")
 
         # Run analyzer with no new matches
@@ -297,6 +313,59 @@ class TestAnalyzerDerivedRecovery:
         # Derived stats should have been recomputed
         assert await r.hget(f"player:stats:{puuid}", "win_rate") == "1.0000"
         assert await r.hget(f"player:stats:{puuid}", "kda") == "7.5000"
+
+
+class TestAnalyzerTier3EdgeCases:
+    """Tier 3 — Analyzer edge case tests."""
+
+    @pytest.mark.asyncio
+    async def test_empty_match_history_no_cursor_update(self, r, cfg, log):
+        """No player:matches entries → cursor stays unset; derived stats still computed."""
+        puuid = "test-puuid-0001"
+        env = _analyze_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        await _analyze_player(r, cfg, "w1", msg_id, env, log)
+
+        # No cursor should be set (no matches to process)
+        assert await r.get(f"player:stats:cursor:{puuid}") is None
+        # No stats should exist
+        assert await r.hget(f"player:stats:{puuid}", "total_games") is None
+
+    @pytest.mark.asyncio
+    async def test_very_large_cursor_handles_float_precision(self, r, cfg, log):
+        """Cursor values near float precision limit are handled correctly."""
+        puuid = "test-puuid-0001"
+        # Use a very large timestamp (year ~2100 in ms)
+        large_ts = 4102444800000.0
+        await _add_participant(r, "NA1_FUTURE", puuid, large_ts, kills=5, deaths=1, assists=3)
+        env = _analyze_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        await _analyze_player(r, cfg, "w1", msg_id, env, log)
+
+        cursor = await r.get(f"player:stats:cursor:{puuid}")
+        assert float(cursor) == large_ts
+        assert await r.hget(f"player:stats:{puuid}", "total_games") == "1"
+
+    @pytest.mark.asyncio
+    async def test_lock_acquisition_redis_error_propagates(self, r, cfg, log):
+        """Redis error during lock SET NX propagates to caller."""
+        puuid = "test-puuid-0001"
+        env = _analyze_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        original_set = r.set
+
+        async def failing_set(key, *args, **kwargs):
+            if "player:stats:lock" in key:
+                raise ConnectionError("redis down")
+            return await original_set(key, *args, **kwargs)
+
+        r.set = failing_set
+
+        with pytest.raises(ConnectionError, match="redis down"):
+            await _analyze_player(r, cfg, "w1", msg_id, env, log)
 
 
 class TestAnalyzerSystemHalted:
@@ -310,3 +379,38 @@ class TestAnalyzerSystemHalted:
         await _analyze_player(r, cfg, "w1", msg_id, env, log)
 
         assert await r.hget("player:stats:test-puuid-0001", "total_games") is None
+
+
+class TestMainEntryPoint:
+    """Tests for main() bootstrap and teardown."""
+
+    @pytest.mark.asyncio
+    async def test_main__creates_redis_and_starts_consumer(self, monkeypatch):
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_r = AsyncMock()
+        mock_consumer = AsyncMock()
+        with (
+            patch("lol_analyzer.main.Config") as mock_cfg,
+            patch("lol_analyzer.main.get_redis", return_value=mock_r),
+            patch("lol_analyzer.main.run_consumer", mock_consumer),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            await main()
+        mock_consumer.assert_called_once()
+        mock_r.aclose.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_main__keyboard_interrupt__closes_redis(self, monkeypatch):
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_r = AsyncMock()
+        with (
+            patch("lol_analyzer.main.Config") as mock_cfg,
+            patch("lol_analyzer.main.get_redis", return_value=mock_r),
+            patch("lol_analyzer.main.run_consumer", side_effect=KeyboardInterrupt),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            with pytest.raises(KeyboardInterrupt):
+                await main()
+        mock_r.aclose.assert_called_once()

@@ -67,7 +67,15 @@ class TestHandleWithRetry:
 
         for _ in range(3):
             await _handle_with_retry(
-                r, _STREAM, _GROUP, msg_id, envelope, bad_handler, log, failures, 3,
+                r,
+                _STREAM,
+                _GROUP,
+                msg_id,
+                envelope,
+                bad_handler,
+                log,
+                failures,
+                3,
             )
 
         assert await r.xlen("stream:dlq") == 1
@@ -90,12 +98,28 @@ class TestHandleWithRetry:
         # Two failures
         for _ in range(2):
             await _handle_with_retry(
-                r, _STREAM, _GROUP, msg_id, envelope, flaky_handler, log, failures, 3,
+                r,
+                _STREAM,
+                _GROUP,
+                msg_id,
+                envelope,
+                flaky_handler,
+                log,
+                failures,
+                3,
             )
 
         # Third call succeeds
         await _handle_with_retry(
-            r, _STREAM, _GROUP, msg_id, envelope, flaky_handler, log, failures, 3,
+            r,
+            _STREAM,
+            _GROUP,
+            msg_id,
+            envelope,
+            flaky_handler,
+            log,
+            failures,
+            3,
         )
 
         assert await r.xlen("stream:dlq") == 0
@@ -113,8 +137,15 @@ class TestFailuresDictBounded:
             raise RuntimeError("boom")
 
         await _handle_with_retry(
-            r, _STREAM, _GROUP, msg_id, envelope,
-            bad_handler, log, failures, 3,
+            r,
+            _STREAM,
+            _GROUP,
+            msg_id,
+            envelope,
+            bad_handler,
+            log,
+            failures,
+            3,
         )
         assert len(failures) <= 10_000
 
@@ -125,9 +156,11 @@ class TestRunConsumer:
         """run_consumer exits when system:halted is set."""
         await r.set("system:halted", "1")
         call_count = 0
+
         async def handler(mid, env):
             nonlocal call_count
             call_count += 1
+
         await run_consumer(r, _STREAM, _GROUP, "c", handler, log)
         assert call_count == 0
 
@@ -135,29 +168,34 @@ class TestRunConsumer:
     async def test_processes_messages_then_halts(self, r, log):
         """Processes available messages, then exits on halt."""
         env = MessageEnvelope(
-            source_stream=_STREAM, type="test",
-            payload={"key": "val"}, max_attempts=5,
+            source_stream=_STREAM,
+            type="test",
+            payload={"key": "val"},
+            max_attempts=5,
         )
         await publish(r, _STREAM, env)
         processed = []
+
         async def handler(mid, envelope):
             processed.append(mid)
             await ack(r, _STREAM, _GROUP, mid)
             await r.set("system:halted", "1")
+
         await run_consumer(r, _STREAM, _GROUP, "c", handler, log)
         assert len(processed) == 1
 
     @pytest.mark.asyncio
     async def test_consume_error_retries(self, r, log):
         """On consume error, retries after 1s (we mock sleep)."""
-        import asyncio
         from unittest.mock import AsyncMock, patch
 
         call_count = 0
+
         async def handler(mid, env):
             pass
 
         original_consume = consume
+
         async def failing_consume(*args, **kwargs):
             nonlocal call_count
             call_count += 1

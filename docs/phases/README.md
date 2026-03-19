@@ -19,6 +19,12 @@ Each phase has a clear objective, concrete deliverables, and quantifiable accept
 | [05](05-resilience.md) | Resilience Layer | Recovery + Delay Scheduler — failure handling |
 | [06](06-operations.md) | Operations | Admin CLI + Justfile + integration tests — operable system |
 
+## Post-MVP
+
+| Phase | Name | Objective |
+|-------|------|-----------|
+| [07](07-next-phase.md) | Post-MVP | Weighted queue, code quality, test coverage, LCU fixes |
+
 ## Architect Review
 
 | Doc | Contents |
