@@ -58,7 +58,6 @@ class TestLogFileHandler:
 
     def test_log_dir_creates_file_handler(self, tmp_path, monkeypatch):
         """When LOG_DIR is set, a RotatingFileHandler is added."""
-        import importlib
 
         import lol_pipeline.log as log_mod
 
@@ -75,7 +74,6 @@ class TestLogFileHandler:
 
     def test_log_level_env_respected(self, monkeypatch):
         """LOG_LEVEL env var controls the logger level."""
-        import importlib
 
         import lol_pipeline.log as log_mod
 

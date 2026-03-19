@@ -18,11 +18,11 @@ pytestmark = pytest.mark.skipif(
     not _LUPA_AVAILABLE, reason="lupa not installed — Lua scripting unavailable"
 )
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, patch  # noqa: E402
 
-import fakeredis.aioredis
+import fakeredis.aioredis  # noqa: E402
 
-from lol_pipeline.rate_limiter import acquire_token, wait_for_token
+from lol_pipeline.rate_limiter import acquire_token, wait_for_token  # noqa: E402
 
 
 @pytest.fixture

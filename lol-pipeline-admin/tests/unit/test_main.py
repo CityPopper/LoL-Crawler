@@ -88,7 +88,7 @@ class TestDlqList:
         args = argparse.Namespace()
         result = await cmd_dlq_list(r, args)
         assert result == 0
-        lines = [l for l in capsys.readouterr().out.strip().split("\n") if l]
+        lines = [x for x in capsys.readouterr().out.strip().split("\n") if x]
         assert len(lines) == 3
         for line in lines:
             record = json.loads(line)

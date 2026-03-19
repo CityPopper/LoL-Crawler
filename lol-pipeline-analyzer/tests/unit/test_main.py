@@ -61,7 +61,7 @@ async def _setup_message(r, envelope):
     return msgs[0][0]
 
 
-async def _add_participant(
+async def _add_participant(  # noqa: PLR0913
     r,
     match_id,
     puuid,
@@ -507,7 +507,6 @@ class TestAnalyzerAtomicCursorAdvancement:
     async def test_source_has_cursor_and_pexpire_in_pipeline_block(self, r, cfg, log):
         """Source inspection: cursor SET and lock PEXPIRE are inside the pipe block."""
         import inspect
-        import textwrap
 
         source = inspect.getsource(_analyze_player)
         # Find the transaction pipeline block

@@ -334,10 +334,7 @@ class TestEnvelopeSchemaIncludesPriority:
 
     def test_priority_in_dlq_envelope_schema(self):
         schema_path = (
-            Path(__file__).parent.parent.parent
-            / "contracts"
-            / "schemas"
-            / "dlq_envelope.json"
+            Path(__file__).parent.parent.parent / "contracts" / "schemas" / "dlq_envelope.json"
         )
         schema = json.loads(schema_path.read_text())
         props = schema["properties"]

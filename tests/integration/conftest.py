@@ -30,9 +30,7 @@ async def r(redis_container) -> AsyncGenerator[aioredis.Redis, None]:
     """Per-test async Redis client; FLUSHALL after each test for isolation."""
     host = redis_container.get_container_host_ip()
     port = redis_container.get_exposed_port(6379)
-    client = aioredis.from_url(
-        f"redis://{host}:{port}/0", decode_responses=True
-    )
+    client = aioredis.from_url(f"redis://{host}:{port}/0", decode_responses=True)
     yield client
     await client.flushall()
     await client.aclose()
@@ -47,6 +45,7 @@ def cfg(redis_container):
     os.environ["REDIS_URL"] = f"redis://{host}:{port}/0"
     os.environ.pop("MATCH_DATA_DIR", None)
     from lol_pipeline.config import Config
+
     return Config()
 
 

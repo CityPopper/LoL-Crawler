@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from unittest.mock import AsyncMock, patch
 
@@ -196,8 +195,6 @@ class TestRunConsumer:
         async def handler(mid, env):
             pass
 
-        original_consume = consume
-
         async def failing_consume(*args, **kwargs):
             nonlocal call_count
             call_count += 1
@@ -301,8 +298,6 @@ class TestRunConsumer:
 
         captured_handlers: dict[int, object] = {}
         call_count = 0
-
-        original_add = asyncio.get_event_loop().add_signal_handler
 
         def spy_add(sig: int, callback: object, *args: object) -> None:
             captured_handlers[sig] = callback

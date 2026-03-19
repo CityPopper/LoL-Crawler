@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from unittest.mock import AsyncMock, patch
@@ -69,7 +68,7 @@ async def _setup_dlq_msg(r, dlq):
     # Create group and read to put in PEL
     try:
         await r.xgroup_create(_DLQ_STREAM, _GROUP, id="0", mkstream=True)
-    except Exception:
+    except Exception:  # noqa: S110
         pass
     await r.xreadgroup(_GROUP, "test-consumer", {_DLQ_STREAM: ">"}, count=1)
     return msg_id

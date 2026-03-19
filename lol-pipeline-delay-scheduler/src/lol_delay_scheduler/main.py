@@ -51,7 +51,9 @@ async def _tick(r: aioredis.Redis, log: logging.Logger) -> None:
                 # re-delivery on restart). This is acceptable because all downstream
                 # consumers are idempotent. A Lua script could make this atomic but
                 # adds complexity for marginal benefit.
-                await r.xadd(env.source_stream, env.to_redis_fields(), maxlen=10_000, approximate=True)  # type: ignore[arg-type]
+                await r.xadd(
+                    env.source_stream, env.to_redis_fields(), maxlen=10_000, approximate=True
+                )  # type: ignore[arg-type]
                 await r.zrem(_DELAYED_KEY, member)
                 dispatched += 1
                 log.info(

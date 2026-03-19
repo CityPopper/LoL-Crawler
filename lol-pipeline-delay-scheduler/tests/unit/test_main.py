@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import time
@@ -375,7 +374,6 @@ class TestMainLoopRedisError:
                 raise KeyboardInterrupt
 
         sleep_args: list[float] = []
-        original_sleep = asyncio.sleep
 
         async def tracking_sleep(seconds, *args, **kwargs):
             sleep_args.append(seconds)

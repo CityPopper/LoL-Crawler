@@ -88,7 +88,9 @@ async def run() -> None:
         print(f"  PUUID: {puuid[:20]}...")
 
         print(f"Fetching {_MATCH_COUNT} recent match IDs...")
-        match_ids = await client.get_match_ids(puuid, _REGION, start=0, count=_MATCH_COUNT)
+        match_ids = await client.get_match_ids(
+            puuid, _REGION, start=0, count=_MATCH_COUNT
+        )
         _save("match_ids.json", match_ids)
         print(f"  Got {len(match_ids)} match IDs")
 
@@ -104,7 +106,9 @@ async def run() -> None:
         for pact_file in _root.rglob("pacts/*.json"):
             _update_pact(pact_file, puuid)
 
-        print(f"\nDone. Fixtures saved to {_FIXTURES.relative_to(Path(__file__).parent.parent)}/")
+        print(
+            f"\nDone. Fixtures saved to {_FIXTURES.relative_to(Path(__file__).parent.parent)}/"
+        )
         print("Re-run 'just contract' to verify all contract tests still pass.")
 
     finally:
