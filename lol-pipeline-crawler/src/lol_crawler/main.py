@@ -40,7 +40,7 @@ async def _crawl_player(  # noqa: C901, PLR0915
     game_name: str = envelope.payload.get("game_name", "")
     tag_line: str = envelope.payload.get("tag_line", "")
 
-    last_crawled = await r.hget(f"player:{puuid}", "last_crawled_at")
+    last_crawled = await r.hget(f"player:{puuid}", "last_crawled_at")  # type: ignore[misc]
     if last_crawled:
         cutoff_dt = datetime.fromisoformat(last_crawled) - timedelta(days=7)
         cutoff_ms = cutoff_dt.timestamp() * 1000
@@ -136,7 +136,7 @@ async def _crawl_player(  # noqa: C901, PLR0915
 async def main() -> None:
     """Crawler worker loop."""
     log = get_logger("crawler")
-    cfg = Config()
+    cfg = Config()  # type: ignore[call-arg]  # pydantic-settings reads env
     r = get_redis(cfg.redis_url)
     riot = RiotClient(cfg.riot_api_key, r=r)
     consumer = f"{socket.gethostname()}-{os.getpid()}"

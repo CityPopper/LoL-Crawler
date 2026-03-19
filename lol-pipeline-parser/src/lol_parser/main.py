@@ -184,7 +184,7 @@ async def _parse_match(
 async def main() -> None:
     """Parser worker loop."""
     log = get_logger("parser")
-    cfg = Config()
+    cfg = Config()  # type: ignore[call-arg]  # pydantic-settings reads env
     r = get_redis(cfg.redis_url)
     raw_store = RawStore(r, data_dir=cfg.match_data_dir)
     consumer = f"{socket.gethostname()}-{os.getpid()}"

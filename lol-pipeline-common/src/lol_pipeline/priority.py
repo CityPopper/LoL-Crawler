@@ -24,7 +24,7 @@ return redis.call("get", KEYS[2])
 
 async def set_priority(r: aioredis.Redis, puuid: str) -> int:
     """Atomically SET player:priority:{puuid} with TTL and INCR system:priority_count."""
-    result = await r.eval(
+    result = await r.eval(  # type: ignore[misc]
         _SET_INCR_LUA,
         2,
         f"{_PRIORITY_KEY_PREFIX}{puuid}",
@@ -37,7 +37,7 @@ async def set_priority(r: aioredis.Redis, puuid: str) -> int:
 
 async def clear_priority(r: aioredis.Redis, puuid: str) -> int:
     """Atomically DEL player:priority:{puuid} and DECR system:priority_count."""
-    result = await r.eval(
+    result = await r.eval(  # type: ignore[misc]
         _DEL_DECR_LUA,
         2,
         f"{_PRIORITY_KEY_PREFIX}{puuid}",

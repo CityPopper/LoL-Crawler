@@ -335,7 +335,7 @@ async def main(argv: list[str]) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv[1:])
 
-    cfg = Config()
+    cfg = Config()  # type: ignore[call-arg]  # pydantic-settings reads env
     r = get_redis(cfg.redis_url)
     riot = RiotClient(cfg.riot_api_key)
 

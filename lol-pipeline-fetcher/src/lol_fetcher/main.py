@@ -108,7 +108,7 @@ async def _fetch_match(
 async def main() -> None:
     """Fetcher worker loop."""
     log = get_logger("fetcher")
-    cfg = Config()
+    cfg = Config()  # type: ignore[call-arg]  # pydantic-settings reads env
     r = get_redis(cfg.redis_url)
     riot = RiotClient(cfg.riot_api_key, r=r)
     raw_store = RawStore(r, data_dir=cfg.match_data_dir)

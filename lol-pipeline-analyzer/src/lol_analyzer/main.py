@@ -130,7 +130,7 @@ async def _analyze_player(  # noqa: C901
 async def main() -> None:
     """Analyzer worker loop."""
     log = get_logger("analyzer")
-    cfg = Config()
+    cfg = Config()  # type: ignore[call-arg]  # pydantic-settings reads env
     r = get_redis(cfg.redis_url)
     worker_id = f"{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
 

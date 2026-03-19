@@ -75,7 +75,7 @@ async def main() -> None:
     signal.signal(signal.SIGTERM, _handle_sigterm)
 
     log = get_logger("delay-scheduler")
-    cfg = Config()
+    cfg = Config()  # type: ignore[call-arg]  # pydantic-settings reads env
     r = get_redis(cfg.redis_url)
 
     interval_s = cfg.delay_scheduler_interval_ms / 1000
