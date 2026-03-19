@@ -286,7 +286,7 @@ async def index() -> RedirectResponse:
 
 
 @app.get("/stats", response_class=HTMLResponse)
-async def show_stats(request: Request) -> HTMLResponse:
+async def show_stats(request: Request) -> HTMLResponse:  # noqa: PLR0911
     riot_id = request.query_params.get("riot_id", "")
     region = request.query_params.get("region", "na1")
 

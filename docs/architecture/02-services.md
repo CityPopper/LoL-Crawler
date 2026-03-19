@@ -397,8 +397,11 @@ halted) regardless of system state.
 | `/` | Redirect to `/stats` |
 | `/stats?riot_id=...&region=...` | Player stats — verified API data + unverified LCU data combined + lazy-load match history; auto-seeds player if no data found |
 | `/stats/matches?puuid=...&region=...&riot_id=...&page=N` | Fragment: paginated match history rows (lazy-loaded by `/stats`) |
-| `/streams` | Redis stream depths + system halted status |
+| `/players?page=N` | Paginated player list. Uses `SCAN` to find all `player:{puuid}` keys, fetches metadata via pipeline, sorts by `seeded_at` descending (newest first). 25 players per page with prev/next navigation. Each row links to the player's `/stats` page. |
+| `/streams` | Redis stream depths + system halted status + priority player count |
 | `/lcu` | Overview of all collected LCU match history, grouped by player and game mode |
+| `/logs` | Merged structured JSON logs from all services with auto-refresh (2s polling). Reads `*.log` files from `LOG_DIR`, tails last 50 lines per file, merges by timestamp via `heapq.merge`. Includes pause/resume button. |
+| `/logs/fragment` | Fragment: raw log lines HTML for AJAX polling (used by `/logs` auto-refresh) |
 
 **Auto-seed:** If `/stats` is requested for a player with no data, the UI automatically publishes to `stream:puuid` (same as a manual seed) and shows a "processing" message. No manual seed step required.
 
@@ -411,3 +414,4 @@ halted) regardless of system state.
 **Env vars:**
 - `LCU_DATA_DIR` (default `./lcu-data`; set to `/lcu-data` in Docker via volume mount)
 - `LCU_POLL_INTERVAL_MINUTES` (default `0`; set to `5` to auto-reload every 5 minutes)
+- `LOG_DIR` (default unset; set to `/logs` in Docker via `x-service-defaults` environment; required for `/logs` route to function)
