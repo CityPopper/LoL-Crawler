@@ -67,7 +67,7 @@ async def _resolve_names(
     Returns None when the player permanently cannot be resolved (404).
     Raises RiotAPIError on transient failures so the caller can retry.
     """
-    game_name, tag_line = await r.hmget(f"player:{puuid}", ["game_name", "tag_line"])
+    game_name, tag_line = await r.hmget(f"player:{puuid}", ["game_name", "tag_line"])  # type: ignore[misc]
     if game_name and tag_line:
         return game_name, tag_line
 
