@@ -41,7 +41,7 @@ jobs:
           COMMON_SRC="$PWD/lol-pipeline-common/src"
           for dir in lol-pipeline-*/; do
             if [ -f "$dir/pyproject.toml" ] && [ -d "$dir/src" ]; then
-              echo "=== $dir ===" && (cd "$dir" && MYPYPATH="$COMMON_SRC" mypy src/ || true)
+              echo "=== $dir ===" && (cd "$dir" && MYPYPATH="$COMMON_SRC" mypy src/)
             fi
           done
 
@@ -63,6 +63,7 @@ jobs:
           - lol-pipeline-admin
           - lol-pipeline-discovery
           - lol-pipeline-lcu
+          - lol-pipeline-ui
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -72,7 +73,7 @@ jobs:
         run: |
           pip install -e "lol-pipeline-common/[dev]"
           if [ "${{ matrix.service }}" != "lol-pipeline-common" ]; then
-            pip install -e "${{ matrix.service }}[dev]" 2>/dev/null || pip install -e "${{ matrix.service }}" || true
+            pip install -e "${{ matrix.service }}[dev]"
           fi
       - name: Run unit tests
         run: cd ${{ matrix.service }} && python -m pytest tests/unit -v --tb=short
@@ -101,7 +102,30 @@ jobs:
         run: |
           pip install -e "lol-pipeline-common/[dev]"
           if [ "${{ matrix.service }}" != "lol-pipeline-common" ]; then
-            pip install -e "${{ matrix.service }}[dev]" 2>/dev/null || pip install -e "${{ matrix.service }}" || true
+            pip install -e "${{ matrix.service }}[dev]"
           fi
       - name: Run contract tests
         run: cd ${{ matrix.service }} && python -m pytest tests/contract -v --tb=short
+
+  docker-build:
+    name: "Docker Build (${{ matrix.service }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - lol-pipeline-admin
+          - lol-pipeline-analyzer
+          - lol-pipeline-crawler
+          - lol-pipeline-delay-scheduler
+          - lol-pipeline-discovery
+          - lol-pipeline-fetcher
+          - lol-pipeline-lcu
+          - lol-pipeline-parser
+          - lol-pipeline-recovery
+          - lol-pipeline-seed
+          - lol-pipeline-ui
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image
+        run: docker build -f ${{ matrix.service }}/Dockerfile -t ${{ matrix.service }}:ci .

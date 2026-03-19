@@ -215,6 +215,30 @@ class TestRawStoreBundleSearchEdgeCases:
             pass
 
 
+class TestRawStoreBundleStreaming:
+    """CQ-18: _search_bundle_file streams line-by-line instead of loading whole file."""
+
+    def test_search_bundle_file_uses_open_not_read_text(self, tmp_path):
+        """_search_bundle_file uses open() for line-by-line iteration."""
+        bundle = tmp_path / "test.jsonl"
+        bundle.write_text("NA1_STREAM\t{\"streamed\": true}\nNA1_OTHER\t{\"other\": 1}\n")
+
+        # Verify the function works correctly with streaming
+        result = RawStore._search_bundle_file(bundle, "NA1_STREAM")
+        assert result == '{"streamed": true}'
+
+        # Verify it returns None for missing entries
+        assert RawStore._search_bundle_file(bundle, "NA1_MISSING") is None
+
+        # Verify it uses open() by inspecting source — the implementation
+        # uses `with path.open()` not `path.read_text().splitlines()`
+        import inspect
+
+        source = inspect.getsource(RawStore._search_bundle_file)
+        assert "path.open(" in source, "Expected path.open() for streaming"
+        assert "read_text" not in source, "read_text() loads entire file into memory"
+
+
 class TestRawStoreBundleEdgeCases:
     @pytest.mark.asyncio
     async def test_search_empty_jsonl_file(self, r, tmp_path):

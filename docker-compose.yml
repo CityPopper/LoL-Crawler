@@ -1,6 +1,8 @@
 x-service-defaults: &service-defaults
   env_file: .env
   restart: unless-stopped
+  security_opt: ["no-new-privileges:true"]
+  stop_grace_period: 30s
   environment:
     PIP_ROOT_USER_ACTION: ignore
     PIP_DISABLE_PIP_VERSION_CHECK: "1"
@@ -33,9 +35,8 @@ services:
   crawler:
     <<: *service-defaults
     build:
-      context: lol-pipeline-crawler
-      args:
-        COMMON_VERSION: local
+      context: .
+      dockerfile: lol-pipeline-crawler/Dockerfile
     volumes:
       - ./lol-pipeline-common:/common
       - ./lol-pipeline-crawler:/svc
@@ -46,9 +47,8 @@ services:
   fetcher:
     <<: *service-defaults
     build:
-      context: lol-pipeline-fetcher
-      args:
-        COMMON_VERSION: local
+      context: .
+      dockerfile: lol-pipeline-fetcher/Dockerfile
     volumes:
       - ./lol-pipeline-common:/common
       - ./lol-pipeline-fetcher:/svc
@@ -60,9 +60,8 @@ services:
   parser:
     <<: *service-defaults
     build:
-      context: lol-pipeline-parser
-      args:
-        COMMON_VERSION: local
+      context: .
+      dockerfile: lol-pipeline-parser/Dockerfile
     volumes:
       - ./lol-pipeline-common:/common
       - ./lol-pipeline-parser:/svc
@@ -74,9 +73,8 @@ services:
   analyzer:
     <<: *service-defaults
     build:
-      context: lol-pipeline-analyzer
-      args:
-        COMMON_VERSION: local
+      context: .
+      dockerfile: lol-pipeline-analyzer/Dockerfile
     volumes:
       - ./lol-pipeline-common:/common
       - ./lol-pipeline-analyzer:/svc
@@ -87,9 +85,8 @@ services:
   recovery:
     <<: *service-defaults
     build:
-      context: lol-pipeline-recovery
-      args:
-        COMMON_VERSION: local
+      context: .
+      dockerfile: lol-pipeline-recovery/Dockerfile
     volumes:
       - ./lol-pipeline-common:/common
       - ./lol-pipeline-recovery:/svc
@@ -100,9 +97,8 @@ services:
   delay-scheduler:
     <<: *service-defaults
     build:
-      context: lol-pipeline-delay-scheduler
-      args:
-        COMMON_VERSION: local
+      context: .
+      dockerfile: lol-pipeline-delay-scheduler/Dockerfile
     volumes:
       - ./lol-pipeline-common:/common
       - ./lol-pipeline-delay-scheduler:/svc
@@ -113,9 +109,8 @@ services:
   ui:
     <<: *service-defaults
     build:
-      context: lol-pipeline-ui
-      args:
-        COMMON_VERSION: local
+      context: .
+      dockerfile: lol-pipeline-ui/Dockerfile
     volumes:
       - ./lol-pipeline-common:/common
       - ./lol-pipeline-ui:/svc
@@ -129,9 +124,8 @@ services:
   discovery:
     <<: *service-defaults
     build:
-      context: lol-pipeline-discovery
-      args:
-        COMMON_VERSION: local
+      context: .
+      dockerfile: lol-pipeline-discovery/Dockerfile
     volumes:
       - ./lol-pipeline-common:/common
       - ./lol-pipeline-discovery:/svc
@@ -141,9 +135,12 @@ services:
 
   lcu:
     build:
-      context: lol-pipeline-lcu
+      context: .
+      dockerfile: lol-pipeline-lcu/Dockerfile
     env_file: .env
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 30s
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
@@ -165,9 +162,8 @@ services:
   seed:
     <<: *service-defaults
     build:
-      context: lol-pipeline-seed
-      args:
-        COMMON_VERSION: local
+      context: .
+      dockerfile: lol-pipeline-seed/Dockerfile
     volumes:
       - ./lol-pipeline-common:/common
       - ./lol-pipeline-seed:/svc
@@ -179,9 +175,8 @@ services:
   admin:
     <<: *service-defaults
     build:
-      context: lol-pipeline-admin
-      args:
-        COMMON_VERSION: local
+      context: .
+      dockerfile: lol-pipeline-admin/Dockerfile
     volumes:
       - ./lol-pipeline-common:/common
       - ./lol-pipeline-admin:/svc

@@ -440,6 +440,62 @@ class TestPuuidValidation:
         assert _PUUID_RE.match("a" * 128) is not None
 
 
+class TestStatsMatchesPipeline:
+    """CQ-17: stats_matches uses pipeline for HGETALL calls."""
+
+    @pytest.mark.asyncio
+    async def test_hgetall_batched_via_pipeline(self):
+        """2 HGETALL per match should go through pipeline, not individual calls."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import stats_matches
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        # Set up match data
+        await r.zadd("player:matches:testpuuid", {"NA1_1": 1000.0, "NA1_2": 2000.0})
+        await r.hset("match:NA1_1", mapping={"game_start": "1000", "game_mode": "CLASSIC"})
+        await r.hset("match:NA1_2", mapping={"game_start": "2000", "game_mode": "ARAM"})
+        await r.hset(
+            "participant:NA1_1:testpuuid",
+            mapping={"win": "1", "champion_name": "Zed", "kills": "5", "deaths": "2", "assists": "3"},
+        )
+        await r.hset(
+            "participant:NA1_2:testpuuid",
+            mapping={"win": "0", "champion_name": "Ahri", "kills": "1", "deaths": "4", "assists": "2"},
+        )
+
+        # Track direct hgetall calls on r (not pipeline)
+        direct_hgetall_count = 0
+        original_hgetall = r.hgetall
+
+        async def counting_hgetall(*args, **kwargs):
+            nonlocal direct_hgetall_count
+            direct_hgetall_count += 1
+            return await original_hgetall(*args, **kwargs)
+
+        r.hgetall = counting_hgetall
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.query_params = {
+            "puuid": "testpuuid",
+            "region": "na1",
+            "riot_id": "Test#NA1",
+            "page": "0",
+        }
+        request.app.state.r = r
+
+        resp = await stats_matches(request)
+
+        # No direct hgetall calls — all go through pipeline
+        assert direct_hgetall_count == 0
+        assert resp.status_code == 200
+        assert "Zed" in resp.body.decode()
+        assert "Ahri" in resp.body.decode()
+        await r.aclose()
+
+
 class TestAutoSeedOrdering:
     """CQ-12: publish() must happen before hset(seeded_at) in auto-seed path."""
 

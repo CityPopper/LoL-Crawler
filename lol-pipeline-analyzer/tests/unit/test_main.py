@@ -283,6 +283,38 @@ class TestAnalyzerPipeline:
         assert await r.hget(f"player:stats:{puuid}", "total_games") == "1"
 
 
+class TestAnalyzerHgetallBatching:
+    """CQ-16: HGETALL calls for participant data are batched in a pipeline."""
+
+    @pytest.mark.asyncio
+    async def test_hgetall_not_called_individually(self, r, cfg, log):
+        """Per-match HGETALL calls go through pipeline, not individual calls on r."""
+        puuid = "test-puuid-0001"
+        for i in range(5):
+            await _add_participant(r, f"NA1_{i}", puuid, 1000 + i)
+        env = _analyze_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        direct_hgetall_count = 0
+        original_hgetall = r.hgetall
+
+        async def counting_hgetall(*args, **kwargs):
+            nonlocal direct_hgetall_count
+            direct_hgetall_count += 1
+            return await original_hgetall(*args, **kwargs)
+
+        r.hgetall = counting_hgetall
+
+        await _analyze_player(r, cfg, "w1", msg_id, env, log)
+
+        # Only the final stats HGETALL should be called directly on r.
+        # The 5 per-match HGETALLs should go through the pipeline.
+        assert direct_hgetall_count == 1, (
+            f"Expected 1 direct hgetall (final stats), got {direct_hgetall_count}"
+        )
+        assert await r.hget(f"player:stats:{puuid}", "total_games") == "5"
+
+
 class TestAnalyzerDerivedRecovery:
     @pytest.mark.asyncio
     async def test_derived_stats_recomputed_on_empty_run(self, r, cfg, log):

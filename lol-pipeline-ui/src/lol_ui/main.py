@@ -567,11 +567,18 @@ async def stats_matches(request: Request) -> HTMLResponse:
     has_more = len(raw_pairs) > _MATCH_PAGE_SIZE
     raw_pairs = raw_pairs[:_MATCH_PAGE_SIZE]
 
+    # Batch all HGETALL calls into a single pipeline round-trip
     results: list[tuple[str, dict[str, str], dict[str, str]]] = []
-    for match_id, _ in raw_pairs:
-        match: dict[str, str] = await r.hgetall(f"match:{match_id}")
-        participant: dict[str, str] = await r.hgetall(f"participant:{match_id}:{puuid}")
-        results.append((match_id, match, participant))
+    if raw_pairs:
+        async with r.pipeline(transaction=False) as pipe:
+            for match_id, _ in raw_pairs:
+                pipe.hgetall(f"match:{match_id}")
+                pipe.hgetall(f"participant:{match_id}:{puuid}")
+            pipe_results: list[dict[str, str]] = await pipe.execute()
+        for i, (match_id, _) in enumerate(raw_pairs):
+            match_data: dict[str, str] = pipe_results[i * 2]
+            participant_data: dict[str, str] = pipe_results[i * 2 + 1]
+            results.append((match_id, match_data, participant_data))
 
     return HTMLResponse(_match_history_html(results, puuid, region, riot_id, page, has_more))
 

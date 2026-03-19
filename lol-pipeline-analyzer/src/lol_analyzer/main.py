@@ -81,10 +81,13 @@ async def _analyze_player(
             extra={"puuid": puuid, "cursor": cursor, "new_matches": len(new_matches)},
         )
         if new_matches:
-            for match_id, score in new_matches:
-                p: dict[str, str] = await r.hgetall(  # type: ignore[misc]
-                    f"participant:{match_id}:{puuid}"
-                )
+            # Batch all HGETALL calls into a single pipeline round-trip
+            async with r.pipeline(transaction=False) as fetch_pipe:
+                for match_id, _score in new_matches:
+                    fetch_pipe.hgetall(f"participant:{match_id}:{puuid}")
+                participant_data: list[dict[str, str]] = await fetch_pipe.execute()
+
+            for (match_id, score), p in zip(new_matches, participant_data):
                 if p:
                     stats_key = f"player:stats:{puuid}"
                     pipe = r.pipeline(transaction=True)
