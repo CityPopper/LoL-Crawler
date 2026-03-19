@@ -38,7 +38,7 @@
 | 3 | Interactive Features — auto-refresh, loading states, empty states, DLQ browser, filters | Medium-Large |
 | 5 | Polish — favicon, log colors, stats sorting, player filter, admin CLI status indicators | Medium |
 
-> **NOTE:** Sprint 4 (deferred Phase 7 infra/docs/test items) has been **extracted to Phase 9** per product-manager review. Those 19 items across Docker, docs, and test infra are not UI work and should not block the FACELIFT gate. The admin CLI `--json` flag has also moved to Phase 9.
+> **NOTE:** Sprint 4 (deferred Phase 7 infra/docs/test items) has been **extracted to Phase 9** per product-manager review. Those 19 items across Docker, docs, and test infra are not UI work and should not block the FACELIFT gate. The admin CLI `--json` flag has also been deferred to Phase 9 (Sprint 5.4).
 
 ---
 
@@ -372,6 +372,43 @@ Wrap ALL `<table>` elements in `<div class="table-scroll">` for mobile horizonta
 - `show_lcu()` (lines 633-636) — 1 table
 - `_match_history_html()` (line 546) — 1 table
 
+### 1.7 XSS Fix: Remove Inline onclick Handlers
+
+**[REVIEW FIX — SECURITY]** Moved from Sprint 3 to Sprint 1. This is a security defect, not a feature — it must ship in the first sprint.
+
+`_match_history_section()` and `_match_history_html()` embed user-controlled values (`region`, `riot_id`) in inline `onclick` handlers via `html.escape()`. HTML entity decoding happens before JS execution, allowing string breakout.
+
+**Required fix:** Replace ALL inline `onclick` handlers with `data-*` attributes + event delegation:
+
+```html
+<a href="..." data-puuid="..." data-region="..." data-riot-id="..." data-page="0"
+   class="load-matches">Load match history</a>
+```
+
+```javascript
+document.addEventListener('click', function(e) {
+  var el = e.target.closest('.load-matches');
+  if (!el) return;
+  e.preventDefault();
+  loadMatches(el.dataset.puuid, el.dataset.region, el.dataset.riotId, +el.dataset.page);
+});
+```
+
+This eliminates all inline JS and prevents JS-context XSS. After this change, `grep onclick= main.py` must return zero matches in match history code.
+
+### 1.8 Tests That Will Break
+
+The following existing tests WILL break due to Sprint 1 changes. They must be updated alongside the code, not after.
+
+| Change | Affected Tests | What Breaks |
+|--------|---------------|-------------|
+| `_page()` signature gains `path: str = ""` parameter | All `TestPage` tests that assert on `_page()` output | Return value HTML structure changes (nav active class, meta tags, CSS) |
+| `_stats_form()` gains `selected_region` parameter | Form-related tests that assert on `_stats_form()` output | Form HTML changes (region `<option selected>` attribute) |
+| Inline `onclick` replaced with `data-*` attributes | Tests that assert on match history HTML containing `onclick=` | The `onclick` attribute no longer exists; must assert `data-puuid`, `data-region`, etc. instead |
+| CSS extraction to `_CSS` module-level constant | Tests that check for specific inline `<style>` content | Style content is now in `_CSS`, not inlined per-call |
+
+> **[REVIEW FIX]** Tester agent: enumerate breaking tests per sprint so developers do not discover failures after the fact. Update tests in the same commit as the code change.
+
 ### Acceptance Criteria — Sprint 1
 
 | ID | Criterion | Verification |
@@ -388,7 +425,9 @@ Wrap ALL `<table>` elements in `<div class="table-scroll">` for mobile horizonta
 | S1-10 | `max-width` is fluid: `min(900px, 100% - 2rem)` | Check CSS |
 | S1-11 | Mobile media query stacks form vertically below 768px | Check CSS |
 | S1-12 | Wide desktop media query expands to 1200px at 1440px+ | Check CSS |
-| S1-13 | All existing unit tests pass after CSS changes | `cd lol-pipeline-ui && python -m pytest` |
+| S1-13 | All existing unit tests pass after CSS changes (updated alongside code) | `cd lol-pipeline-ui && python -m pytest` |
+| S1-14 | Match history uses `data-*` attributes (no inline onclick) | Grep for `onclick=` in match history code — zero matches |
+| S1-15 | Tests updated for `_page()` signature change, `_stats_form()` region param, onclick removal | Test suite green with no skips |
 
 ---
 
@@ -485,6 +524,21 @@ def _sort_stats(stats: dict[str, str]) -> list[tuple[str, str]]:
     remaining = [(k, v) for k, v in sorted(stats.items()) if k not in _STATS_ORDER]
     return ordered + remaining
 ```
+
+**[REVIEW FIX]** UI-UX agent: `win_rate` is stored as a decimal (e.g., `0.5432`) but must be displayed as a percentage (e.g., `54.32%`). Add explicit formatting when rendering the stats table:
+
+```python
+def _format_stat_value(key: str, value: str) -> str:
+    """Format a stat value for display. win_rate is multiplied by 100 and shown as %."""
+    if key == "win_rate":
+        try:
+            return f"{float(value) * 100:.2f}%"
+        except ValueError:
+            return value
+    return value
+```
+
+Apply `_format_stat_value()` in the stats table rendering loop so that `win_rate` of `0.5432` renders as `54.32%`.
 
 **Changes to `_lcu_stats_section()` (line 250):**
 - Wrap in `<div class="card">`
@@ -748,27 +802,9 @@ else:
 ```
 Display the badge next to the player name heading.
 
-### 3.6 XSS Fix for onclick Handlers
+### 3.6 *(Moved to Sprint 1.7)*
 
-**[REVIEW FIX]** Security agent (MEDIUM severity): `_match_history_section()` and `_match_history_html()` embed user-controlled values (`region`, `riot_id`) in inline `onclick` handlers via `html.escape()`. HTML entity decoding happens before JS execution, allowing string breakout.
-
-**Required fix:** Rewrite to use `data-*` attributes + unobtrusive JS:
-
-```html
-<a href="..." data-puuid="..." data-region="..." data-riot-id="..." data-page="0"
-   class="load-matches">Load match history</a>
-```
-
-```javascript
-document.addEventListener('click', function(e) {
-  var el = e.target.closest('.load-matches');
-  if (!el) return;
-  e.preventDefault();
-  loadMatches(el.dataset.puuid, el.dataset.region, el.dataset.riotId, +el.dataset.page);
-});
-```
-
-This eliminates all inline JS and prevents JS-context XSS.
+The XSS onclick fix was moved to Sprint 1.7 — it is a security defect and must ship first. See section 1.7 above.
 
 ### 3.7 Better Error Messages
 
@@ -839,7 +875,7 @@ async def show_stats(request: Request) -> HTMLResponse:
 | S3-9 | `_empty_state()` helper exists and is used in all routes | Grep for `_empty_state(` — at least 6 call sites |
 | S3-10 | All existing tests pass | Full test suite |
 | S3-11 | Halt banner appears on ALL pages when `system:halted` is set | Unit test: mock halted, check banner in all routes |
-| S3-12 | Match history uses `data-*` attributes (no inline onclick) | Grep for `onclick=` — zero matches in match history |
+| S3-12 | *(Moved to S1-14)* | — |
 | S3-13 | `show_stats()` refactored: extracted `_resolve_puuid()` and `_auto_seed()` | Function exists; McCabe <=10 |
 | S3-14 | DLQ browser route (`/dlq`) exists and shows DLQ entries | Visit `/dlq` in browser |
 | S3-15 | `/streams/fragment` returns HTML fragment (no `_page()` wrapper) | Unit test: response has no `<!doctype` |
@@ -988,28 +1024,7 @@ async def show_dlq(request: Request) -> HTMLResponse:
 
 ### 5.4 Admin CLI `--json` Flag
 
-Add a `--json` flag to the admin CLI that outputs JSON instead of human-readable text. Default: human-readable (the CQ-2 fix from Phase 7 already moves to `print()`).
-
-**Modify:** `lol-pipeline-admin/src/lol_admin/main.py`
-
-```python
-import argparse
-import json
-
-parser = argparse.ArgumentParser()
-parser.add_argument("--json", action="store_true", help="Output JSON instead of text")
-# ... existing subparsers ...
-```
-
-When `--json` is set, wrap output in `json.dumps()`:
-```python
-if args.json:
-    print(json.dumps({"status": "ok", "data": result}))
-else:
-    print(f"Stats for {name}: ...")
-```
-
-Apply to all commands: `stats`, `dlq list`, `dlq replay`, `dlq clear`, `system-resume`, `reseed`, `replay-parse`, `replay-fetch`, `recalc-priority`.
+**Deferred to Phase 9.** The `--json` flag is CLI infrastructure, not UI work. Keeping it here would blur the FACELIFT scope.
 
 ### 5.5 Dark Theme Log Viewer Colors
 
@@ -1024,7 +1039,7 @@ Already fully specified in Sprint 2, section 2.5. This sprint verifies they are 
 |----|------|---------|
 | P5-1 | Pagination touch targets | Ensure pagination buttons on `/players` and match history "Load more" have `min-height: 44px` |
 | P5-2 | System halted banner with fix instruction | Everywhere the halted banner appears, include: "Run `just admin system-resume` to clear." |
-| P5-3 | Code-copy button on LCU empty state | Add a JS copy-to-clipboard on `<code>just lcu</code>`: `onclick="navigator.clipboard.writeText('just lcu')"` |
+| P5-3 | Code-copy button on LCU empty state | Add a copy-to-clipboard button next to `<code>just lcu</code>` using `data-copy="just lcu"` + event delegation (consistent with Sprint 1.7 XSS fix — no inline `onclick`). JS listener: `document.addEventListener('click', e => { var btn = e.target.closest('[data-copy]'); if (btn) navigator.clipboard.writeText(btn.dataset.copy); })` |
 | P5-4 | Log line wrap on mobile | Ensure `flex-wrap: wrap` on `.log-line` so timestamp+badge wrap cleanly above message on narrow screens |
 | P5-5 | Player search/filter on `/players` | Add a client-side JS filter input above the table that hides non-matching rows |
 | P5-6 | Wide-screen layout at 1440px+ | At 1440px, expand `max-width` to 1200px; on `/stats`, place champions and roles tables side-by-side using CSS grid |
@@ -1037,14 +1052,14 @@ Already fully specified in Sprint 2, section 2.5. This sprint verifies they are 
 | S5-2 | Stats table sorted by importance (totals first) | Visual check + unit test |
 | S5-3 | `/dlq` route exists and displays DLQ entries | Visit `/dlq` in browser |
 | S5-4 | DLQ empty state shows "pipeline is healthy" | Visit `/dlq` with empty DLQ |
-| S5-5 | Admin CLI `--json` flag outputs JSON for all commands | `just admin --json stats Name#Tag` outputs JSON |
+| S5-5 | *(Deferred to Phase 9)* | — |
 | S5-6 | Log viewer dark theme has no light-theme artifacts | Visual check: no `#ffe0e0`, `#fff0f0`, `#fffbe6` backgrounds |
 | S5-7 | All pagination controls have 44px+ touch targets | Check CSS |
 | S5-8 | LCU empty state has code-copy functionality | Click `just lcu` code, verify clipboard |
 | S5-9 | `/players` has client-side search filter | Type in filter, rows hide |
 | S5-10 | Nav includes DLQ link | Check `_page()` nav |
 | S5-11 | All existing tests pass | Full test suite |
-| S5-12 | New tests added for: `_sort_stats()`, DLQ route, `_empty_state()`, `_badge()`, priority badge | At least 10 new unit tests |
+| S5-12 | New tests added for: `_sort_stats()`, `_format_stat_value()`, DLQ route, `_empty_state()`, `_badge()`, priority badge, data-* XSS fix | At least 10 new unit tests |
 
 ---
 
@@ -1061,7 +1076,7 @@ Phase 8 is **complete** when ALL of the following are true:
 7. `_LOG_CSS` uses dark-theme colors only
 8. Favicon renders in browser tab
 9. `/dlq` route exists and shows DLQ entries
-10. Admin CLI supports `--json` flag on all commands
+10. ~~Admin CLI supports `--json` flag on all commands~~ *(Deferred to Phase 9)*
 11. `docker-compose.prod.yml` exists with full production hardening
 12. Integration test CI job runs IT-01 through IT-07
 13. Redis ACL config documented and included in prod compose
@@ -1079,8 +1094,8 @@ Phase 8 is **complete** when ALL of the following are true:
 |------|---------|---------|
 | `lol-pipeline-ui/src/lol_ui/main.py` | 1, 2, 3, 5 | CSS overhaul, component helpers, route redesigns, DLQ route, empty states, auto-refresh |
 | `lol-pipeline-ui/tests/unit/test_main.py` | 1, 2, 3, 5 | Tests for `_badge()`, `_sort_stats()`, `_empty_state()`, DLQ route, priority badge |
-| `lol-pipeline-admin/src/lol_admin/main.py` | 5 | `--json` flag |
-| `lol-pipeline-admin/tests/unit/test_main.py` | 5 | Tests for `--json` output |
+| `lol-pipeline-admin/src/lol_admin/main.py` | *(Phase 9)* | `--json` flag deferred |
+| `lol-pipeline-admin/tests/unit/test_main.py` | *(Phase 9)* | Tests for `--json` output deferred |
 | `lol-pipeline-common/src/lol_pipeline/streams.py` | 4 | MAXLEN on XADD |
 | `docker-compose.prod.yml` | 4 | New file — production compose |
 | `redis-acl.conf` | 4 | New file — per-service ACLs |
@@ -1118,4 +1133,4 @@ Phase 8 is **complete** when ALL of the following are true:
 | Auto-refresh pages | 1 (`/logs`) | 2 (+ `/streams`) |
 | Component helpers | 0 | 4 (`_badge()`, `_empty_state()`, `_sort_stats()`, table-scroll wrappers) |
 | New documentation files | 0 | 6 (Discovery README, LCU README, CI guide, CONTRIBUTING, Discovery arch, prod compose) |
-| New tests (est.) | 0 | ~30 (UI components + DLQ route + admin JSON + priority badge + empty states) |
+| New tests (est.) | 0 | ~25 (UI components + DLQ route + priority badge + empty states + XSS data-attr) |
