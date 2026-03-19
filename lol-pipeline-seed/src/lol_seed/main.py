@@ -13,13 +13,8 @@ from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.priority import set_priority
 from lol_pipeline.redis_client import get_redis
-from lol_pipeline.riot_api import (
-    AuthError,
-    NotFoundError,
-    RateLimitError,
-    RiotClient,
-    ServerError,
-)
+from lol_pipeline.resolve import resolve_puuid
+from lol_pipeline.riot_api import RiotClient
 from lol_pipeline.streams import publish
 
 _STREAM = "stream:puuid"
@@ -34,51 +29,6 @@ def _parse_epoch(value: str | None) -> float:
         return datetime.fromisoformat(value).timestamp()
     except ValueError:
         return 0.0
-
-
-def _name_cache_key(game_name: str, tag_line: str) -> str:
-    return f"player:name:{game_name.lower()}#{tag_line.lower()}"
-
-
-async def _resolve_puuid(
-    riot: RiotClient,
-    r: aioredis.Redis,
-    game_name: str,
-    tag_line: str,
-    region: str,
-    log: logging.Logger,
-) -> str | None:
-    """Return PUUID or None on a handled error (already logged).
-
-    Checks local Redis cache first to avoid an unnecessary Riot API call.
-    """
-    cache_key = _name_cache_key(game_name, tag_line)
-    cached: str | None = await r.get(cache_key)
-    if cached:
-        log.debug("puuid resolved from cache", extra={"game_name": game_name, "tag_line": tag_line})
-        return cached
-
-    try:
-        account = await riot.get_account_by_riot_id(game_name, tag_line, region)
-        puuid = str(account["puuid"])
-        await r.set(cache_key, puuid, ex=86400)
-        return puuid
-    except NotFoundError:
-        log.error("player not found", extra={"game_name": game_name, "tag_line": tag_line})
-        return None
-    except AuthError:
-        await r.set("system:halted", "1")
-        log.critical(
-            "Riot API key rejected (403) — system halted",
-            extra={"game_name": game_name},
-        )
-        return None
-    except (RateLimitError, ServerError) as exc:
-        log.error(
-            "Riot API error — retry later",
-            extra={"error": str(exc), "game_name": game_name},
-        )
-        return None
 
 
 async def _within_cooldown(
@@ -135,7 +85,7 @@ async def seed(
         "resolving PUUID",
         extra={"game_name": game_name, "tag_line": tag_line, "region": region},
     )
-    puuid = await _resolve_puuid(riot, r, game_name, tag_line, region, log)
+    puuid = await resolve_puuid(r, riot, game_name, tag_line, region, log)
     if puuid:
         log.info(
             "PUUID resolved",

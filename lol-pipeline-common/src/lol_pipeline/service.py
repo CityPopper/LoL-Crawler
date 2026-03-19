@@ -121,14 +121,18 @@ async def run_consumer(
             idle_polls += 1
             if idle_polls % 12 == 1:  # ~60s at 5s block
                 log.debug("waiting for messages", extra={"stream": stream})
-        for msg_id, envelope in messages:
-            await _handle_with_retry(
-                r,
-                stream,
-                group,
-                msg_id,
-                envelope,
-                handler,
-                log,
-                handler_failures,
-            )
+        try:
+            for msg_id, envelope in messages:
+                await _handle_with_retry(
+                    r,
+                    stream,
+                    group,
+                    msg_id,
+                    envelope,
+                    handler,
+                    log,
+                    handler_failures,
+                )
+        except (RedisError, OSError):
+            log.exception("dispatch error — retrying on next consume cycle")
+            await asyncio.sleep(1)

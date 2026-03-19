@@ -17,14 +17,18 @@ _log = logging.getLogger("streams")
 _DLQ_STREAM = "stream:dlq"
 
 
+_DEFAULT_MAXLEN = 10_000
+
+
 async def publish(
     r: aioredis.Redis,
     stream: str,
     envelope: MessageEnvelope,
+    maxlen: int = _DEFAULT_MAXLEN,
 ) -> str:
-    """XADD envelope to stream; return the Redis entry ID."""
+    """XADD envelope to stream with approximate trimming; return the Redis entry ID."""
     fields: dict[str, Any] = envelope.to_redis_fields()
-    return await r.xadd(stream, fields)  # type: ignore[no-any-return,arg-type]
+    return await r.xadd(stream, fields, maxlen=maxlen, approximate=True)  # type: ignore[no-any-return,arg-type]
 
 
 async def _ensure_group(r: aioredis.Redis, stream: str, group: str) -> None:
@@ -144,4 +148,4 @@ async def nack_to_dlq(
         priority=envelope.priority,
     )
     fields: dict[str, Any] = dlq.to_redis_fields()
-    await r.xadd(_DLQ_STREAM, fields)  # type: ignore[arg-type]
+    await r.xadd(_DLQ_STREAM, fields, maxlen=50_000, approximate=True)  # type: ignore[arg-type]

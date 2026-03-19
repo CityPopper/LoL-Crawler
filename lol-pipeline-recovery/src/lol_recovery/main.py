@@ -7,6 +7,7 @@ import contextlib
 import json
 import logging
 import os
+import signal
 import socket
 import time
 from typing import Any
@@ -88,7 +89,7 @@ async def _archive(
     dlq: DLQEnvelope,
     log: logging.Logger,
 ) -> None:
-    await r.xadd(_ARCHIVE_STREAM, dlq.to_redis_fields())  # type: ignore[arg-type]
+    await r.xadd(_ARCHIVE_STREAM, dlq.to_redis_fields(), maxlen=50_000, approximate=True)  # type: ignore[arg-type]
     match_id: str | None = dlq.payload.get("match_id")
     if match_id:
         await r.hset(f"match:{match_id}", mapping={"status": "failed"})  # type: ignore[misc]
@@ -231,19 +232,26 @@ async def _process(
 
 async def main() -> None:
     """Recovery worker loop — continues even when system:halted."""
+    shutdown_event = asyncio.Event()
+
     log = get_logger("recovery")
     cfg = Config()
     r = get_redis(cfg.redis_url)
     consumer = f"{socket.gethostname()}-{os.getpid()}"
 
+    loop = asyncio.get_event_loop()
+    with contextlib.suppress(NotImplementedError, OSError):
+        loop.add_signal_handler(signal.SIGTERM, shutdown_event.set)
+
     log.info("recovery started", extra={"consumer": consumer})
     try:
-        while True:
+        while not shutdown_event.is_set():
             try:
                 for msg_id, dlq in await _consume_dlq(r, consumer):
                     await _process(r, cfg, consumer, msg_id, dlq, log)
             except (RedisError, OSError):
                 log.exception("consume error — retrying in 1s")
                 await asyncio.sleep(1)
+        log.info("SIGTERM received — shutting down gracefully")
     finally:
         await r.aclose()

@@ -9,7 +9,7 @@ import pytest
 from redis.exceptions import RedisError
 
 from lol_pipeline.models import MessageEnvelope
-from lol_pipeline.streams import ack, consume, nack_to_dlq, publish
+from lol_pipeline.streams import _DEFAULT_MAXLEN, ack, consume, nack_to_dlq, publish
 
 
 @pytest.fixture
@@ -47,6 +47,43 @@ class TestPublish:
         _, restored = msgs[0]
         assert restored.payload == {"k": "v"}
         assert restored.id == env.id
+
+
+class TestPublishMaxlen:
+    @pytest.mark.asyncio
+    async def test_publish_default_maxlen_constant(self):
+        """Default maxlen is 10_000."""
+        assert _DEFAULT_MAXLEN == 10_000
+
+    @pytest.mark.asyncio
+    async def test_publish_passes_maxlen_to_xadd(self):
+        """publish() passes maxlen and approximate=True to r.xadd."""
+        mock_r = AsyncMock()
+        mock_r.xadd.return_value = "1-0"
+        env = _env()
+        await publish(mock_r, "stream:test", env)
+        call_kwargs = mock_r.xadd.call_args
+        assert call_kwargs[1]["maxlen"] == _DEFAULT_MAXLEN
+        assert call_kwargs[1]["approximate"] is True
+
+    @pytest.mark.asyncio
+    async def test_publish_custom_maxlen(self):
+        """publish() accepts custom maxlen parameter."""
+        mock_r = AsyncMock()
+        mock_r.xadd.return_value = "1-0"
+        env = _env()
+        await publish(mock_r, "stream:test", env, maxlen=500)
+        call_kwargs = mock_r.xadd.call_args
+        assert call_kwargs[1]["maxlen"] == 500
+
+    @pytest.mark.asyncio
+    async def test_publish_with_maxlen_still_works(self, r):
+        """publish() with maxlen still adds to stream and is consumable."""
+        env = _env()
+        msg_id = await publish(r, "stream:test", env, maxlen=100)
+        assert msg_id is not None
+        length = await r.xlen("stream:test")
+        assert length == 1
 
 
 class TestConsume:

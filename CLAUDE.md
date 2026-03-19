@@ -42,10 +42,34 @@ See `ARCHITECTURE.md` for doc index. See `docs/standards/01-coding-standards.md`
 
 - Do not modify failing tests without user confirmation
 
-## TODO — Phase 8 Sprint 4 (Polish)
+## TODO — Orchestrator Cycle 1 (10-agent review)
 
-- [x] 4.1: Favicon — inline SVG data URI in `_page()` `<head>`
-- [x] 4.2: DLQ Browser — `/dlq` route + `_NAV_ITEMS` + 2 tests
-- [x] 4.3: Wide-screen layout — wrap stats in `stats-grid` div
-- [x] 4.4: Player search — JS filter on `/players` + 1 test
-- [x] Run tests — 138 passed
+### Correctness Bugs
+- [ ] C1: Analyzer — include cursor SET in same MULTI/EXEC as HINCRBY (crash → double-count)
+- [x] C2: Priority — use SET NX in `_SET_INCR_LUA` to prevent double-increment
+- [x] C3: service.py — wrap dispatch loop in try/except (RedisError, OSError)
+- [ ] C4: Discovery main loop — add Redis error handling (try/except + sleep)
+- [ ] C5: Delay Scheduler main loop — add Redis error handling (try/except + sleep)
+
+### Safety / Unbounded Growth
+- [ ] S1: Add maxlen to all 6 direct r.xadd() calls bypassing publish()
+- [ ] S2: Docker — Redis restart: always
+- [ ] S3: Docker — Redis --maxmemory 800mb --maxmemory-policy noeviction
+- [ ] S4: Docker — log rotation (json-file driver, max-size 50m, max-file 5)
+- [ ] S5: Create .dockerignore
+
+### Security
+- [ ] X1: Fix DOM XSS in UI match history JS error handler (innerHTML → textContent)
+
+### Code Quality
+- [ ] Q1: Rename _CACHE_TTL_S → CACHE_TTL_S in resolve.py + update importers
+- [ ] Q2: Move `import contextlib` to top-level in discovery + delay-scheduler
+- [ ] Q3: Fix envelope.json dlq_attempts type: "string" → "integer"
+- [ ] Q4: Admin dlq replay — validate args (no id + no --all → error message)
+
+### Performance
+- [ ] P1: UI _streams_fragment_html — pipeline 9 Redis calls into 1
+- [ ] P2: consume() — cache _ensure_group, skip after first call per (stream, group)
+
+### Tests
+- [ ] Run all tests after changes

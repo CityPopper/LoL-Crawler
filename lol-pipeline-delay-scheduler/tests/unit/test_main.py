@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -278,29 +279,157 @@ class TestDelaySchedulerRedisErrors:
 
 
 class TestGracefulShutdown:
-    """CQ-13: Delay scheduler checks _shutdown flag in main loop."""
+    """CQ-13: Delay scheduler uses asyncio.Event for shutdown."""
 
     @pytest.mark.asyncio
     async def test_sigterm_stops_main_loop(self, monkeypatch):
-        """Setting _shutdown=True causes main() to exit cleanly."""
+        """Triggering the shutdown event causes main() to exit cleanly."""
         monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
         monkeypatch.setenv("REDIS_URL", "redis://localhost")
         mock_r = AsyncMock()
 
-        import lol_delay_scheduler.main as mod
+        captured_callbacks: list[object] = []
 
         async def fake_tick(*args):
-            mod._shutdown = True  # simulate SIGTERM handler
+            if captured_callbacks:
+                cb = captured_callbacks[0]
+                if callable(cb):
+                    cb()  # sets the shutdown_event
+
+        def spy_add_signal_handler(sig, callback, *args):
+            captured_callbacks.append(callback)
+
+        mock_loop = AsyncMock()
+        mock_loop.add_signal_handler.side_effect = spy_add_signal_handler
 
         with (
             patch("lol_delay_scheduler.main.Config") as mock_cfg,
             patch("lol_delay_scheduler.main.get_redis", return_value=mock_r),
             patch("lol_delay_scheduler.main._tick", side_effect=fake_tick),
             patch("lol_delay_scheduler.main.asyncio.sleep", new_callable=AsyncMock),
-            patch("lol_delay_scheduler.main.signal.signal"),
+            patch("lol_delay_scheduler.main.asyncio.get_event_loop", return_value=mock_loop),
         ):
             mock_cfg.return_value = Config(_env_file=None)
             await main()  # should exit cleanly, not loop forever
+        mock_r.aclose.assert_called_once()
+
+
+class TestShutdownEventPattern:
+    """Architecture: delay-scheduler uses asyncio.Event instead of module-level global."""
+
+    @pytest.mark.asyncio
+    async def test_no_module_level_shutdown_global(self):
+        """The _shutdown global should no longer exist in the module."""
+        import lol_delay_scheduler.main as mod
+
+        assert not hasattr(mod, "_shutdown"), "Module-level _shutdown global should be removed"
+
+    @pytest.mark.asyncio
+    async def test_signal_handler_registered_via_loop(self, monkeypatch):
+        """main() registers SIGTERM via loop.add_signal_handler, not signal.signal."""
+        import signal as sig_mod
+
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_r = AsyncMock()
+
+        registered_signals: list[int] = []
+
+        def spy_add_signal_handler(signum, callback, *args):
+            registered_signals.append(signum)
+            callback()  # immediately set to stop the loop
+
+        mock_loop = AsyncMock()
+        mock_loop.add_signal_handler.side_effect = spy_add_signal_handler
+
+        with (
+            patch("lol_delay_scheduler.main.Config") as mock_cfg,
+            patch("lol_delay_scheduler.main.get_redis", return_value=mock_r),
+            patch("lol_delay_scheduler.main.asyncio.sleep", new_callable=AsyncMock),
+            patch("lol_delay_scheduler.main.asyncio.get_event_loop", return_value=mock_loop),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            await main()
+
+        assert sig_mod.SIGTERM in registered_signals
+
+
+class TestMainLoopRedisError:
+    """C5: main() loop catches RedisError/OSError from _tick and continues."""
+
+    @pytest.mark.asyncio
+    async def test_tick_redis_error__loop_continues(self, monkeypatch):
+        """RedisError in _tick is caught; loop retries after 1s sleep, then exits cleanly."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_r = AsyncMock()
+        call_count = 0
+
+        async def fake_tick(*args):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RedisError("connection reset")
+            # Second call succeeds; then we stop the loop
+            if call_count >= 2:
+                raise KeyboardInterrupt
+
+        sleep_args: list[float] = []
+        original_sleep = asyncio.sleep
+
+        async def tracking_sleep(seconds, *args, **kwargs):
+            sleep_args.append(seconds)
+
+        mock_loop = AsyncMock()
+        mock_loop.add_signal_handler.return_value = None
+
+        with (
+            patch("lol_delay_scheduler.main.Config") as mock_cfg,
+            patch("lol_delay_scheduler.main.get_redis", return_value=mock_r),
+            patch("lol_delay_scheduler.main._tick", side_effect=fake_tick),
+            patch("lol_delay_scheduler.main.asyncio.sleep", side_effect=tracking_sleep),
+            patch("lol_delay_scheduler.main.asyncio.get_event_loop", return_value=mock_loop),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            with pytest.raises(KeyboardInterrupt):
+                await main()
+
+        # _tick was called at least twice (first errored, second raised KeyboardInterrupt)
+        assert call_count >= 2, f"Expected _tick called >=2 times, got {call_count}"
+        # The error path sleeps 1s before retrying
+        assert 1 in sleep_args, f"Expected 1s retry sleep, got {sleep_args}"
+        mock_r.aclose.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_tick_os_error__loop_continues(self, monkeypatch):
+        """OSError in _tick is also caught; loop retries."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_r = AsyncMock()
+        call_count = 0
+
+        async def fake_tick(*args):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise OSError("broken pipe")
+            raise KeyboardInterrupt
+
+        mock_loop = AsyncMock()
+        mock_loop.add_signal_handler.return_value = None
+
+        with (
+            patch("lol_delay_scheduler.main.Config") as mock_cfg,
+            patch("lol_delay_scheduler.main.get_redis", return_value=mock_r),
+            patch("lol_delay_scheduler.main._tick", side_effect=fake_tick),
+            patch("lol_delay_scheduler.main.asyncio.sleep", new_callable=AsyncMock),
+            patch("lol_delay_scheduler.main.asyncio.get_event_loop", return_value=mock_loop),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            with pytest.raises(KeyboardInterrupt):
+                await main()
+
+        assert call_count == 2, f"Expected _tick called twice, got {call_count}"
         mock_r.aclose.assert_called_once()
 
 
@@ -320,11 +449,15 @@ class TestMainEntryPoint:
             if call_count > 1:
                 raise KeyboardInterrupt
 
+        mock_loop = AsyncMock()
+        mock_loop.add_signal_handler.return_value = None
+
         with (
             patch("lol_delay_scheduler.main.Config") as mock_cfg,
             patch("lol_delay_scheduler.main.get_redis", return_value=mock_r),
             patch("lol_delay_scheduler.main._tick", side_effect=fake_tick),
             patch("lol_delay_scheduler.main.asyncio.sleep", new_callable=AsyncMock),
+            patch("lol_delay_scheduler.main.asyncio.get_event_loop", return_value=mock_loop),
         ):
             mock_cfg.return_value = Config(_env_file=None)
             with pytest.raises(KeyboardInterrupt):
@@ -336,10 +469,15 @@ class TestMainEntryPoint:
         monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
         monkeypatch.setenv("REDIS_URL", "redis://localhost")
         mock_r = AsyncMock()
+
+        mock_loop = AsyncMock()
+        mock_loop.add_signal_handler.return_value = None
+
         with (
             patch("lol_delay_scheduler.main.Config") as mock_cfg,
             patch("lol_delay_scheduler.main.get_redis", return_value=mock_r),
             patch("lol_delay_scheduler.main._tick", side_effect=KeyboardInterrupt),
+            patch("lol_delay_scheduler.main.asyncio.get_event_loop", return_value=mock_loop),
         ):
             mock_cfg.return_value = Config(_env_file=None)
             with pytest.raises(KeyboardInterrupt):

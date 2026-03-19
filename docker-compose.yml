@@ -5,6 +5,11 @@ x-service-defaults: &service-defaults
   stop_grace_period: 30s
   mem_limit: 512m
   user: root  # Dev mode: pip install at startup needs write access. Prod compose uses Dockerfile USER.
+  logging:
+    driver: json-file
+    options:
+      max-size: "50m"
+      max-file: "5"
   environment:
     PIP_ROOT_USER_ACTION: ignore
     PIP_DISABLE_PIP_VERSION_CHECK: "1"
@@ -17,6 +22,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    restart: always
     mem_limit: 1g
     command: >
       redis-server
@@ -25,6 +31,8 @@ services:
       --save 900 1
       --save 300 10
       --save 60 10000
+      --maxmemory 800mb
+      --maxmemory-policy noeviction
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
@@ -34,6 +42,11 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
 
   crawler:
     <<: *service-defaults

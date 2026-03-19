@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 
 import redis.asyncio as aioredis
 from lol_pipeline.config import Config
+from lol_pipeline.helpers import is_system_halted
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.priority import clear_priority
@@ -31,7 +32,7 @@ async def _crawl_player(  # noqa: C901, PLR0915
     envelope: MessageEnvelope,
     log: logging.Logger,
 ) -> None:
-    if await r.get("system:halted"):
+    if await is_system_halted(r):
         log.critical("system halted — skipping message")
         return
 

@@ -21,10 +21,12 @@ from urllib.parse import quote as _url_quote
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from lol_pipeline.config import Config
+from lol_pipeline.helpers import name_cache_key
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import DLQEnvelope, MessageEnvelope
 from lol_pipeline.priority import set_priority
 from lol_pipeline.redis_client import get_redis
+from lol_pipeline.resolve import _CACHE_TTL_S
 from lol_pipeline.riot_api import (
     AuthError,
     NotFoundError,
@@ -370,14 +372,26 @@ def _depth_badge(stream_name: str, depth: int) -> str:
 
 
 def _badge(variant: str, text: str) -> str:
-    """Render a status badge. text is raw HTML (caller must escape user data).
+    """Render a status badge with auto-escaped text (safe for user-supplied input).
 
     variant: success|error|warning|info|muted.
     """
     if variant not in _BADGE_VARIANTS:
         msg = f"Invalid badge variant: {variant}"
         raise ValueError(msg)
-    return f'<span class="badge badge--{variant}">{text}</span>'
+    return f'<span class="badge badge--{variant}">{html.escape(text)}</span>'
+
+
+def _badge_html(variant: str, raw_html: str) -> str:
+    """Render a status badge with raw HTML content (for trusted HTML entities).
+
+    Use this ONLY for trusted content like ``&#10003;``. For user data, use ``_badge()``.
+    variant: success|error|warning|info|muted.
+    """
+    if variant not in _BADGE_VARIANTS:
+        msg = f"Invalid badge variant: {variant}"
+        raise ValueError(msg)
+    return f'<span class="badge badge--{variant}">{raw_html}</span>'
 
 
 def _empty_state(title: str, body_html: str) -> str:
@@ -462,7 +476,7 @@ def _stats_table(
     champ_rows = "".join(f"<tr><td>{html.escape(c)}</td><td>{int(n)}</td></tr>" for c, n in champs)
     role_rows = "".join(f"<tr><td>{html.escape(r)}</td><td>{int(n)}</td></tr>" for r, n in roles)
     return f"""
-<h3>Verified (Riot API) {_badge("success", "&#10003; Verified")}</h3>
+<h3>Verified (Riot API) {_badge_html("success", "&#10003; Verified")}</h3>
 <div class="table-scroll">
 <table><tr><th>Stat</th><th>Value</th></tr>{rows}</table>
 </div>
@@ -549,7 +563,7 @@ def _lcu_stats_section(matches: list[dict[str, Any]]) -> str:
         for mode, d in sorted(by_mode.items())
     )
     return f"""
-<h3>Unverified (LCU) {_badge("warning", "&#9888; Unverified")}</h3>
+<h3>Unverified (LCU) {_badge_html("warning", "&#9888; Unverified")}</h3>
 <p class="unverified">Collected from the local League client. May include game modes not
 tracked by the Riot API (ARAM Mayhem, URF, etc.). May overlap with verified data above.</p>
 <div class="table-scroll">
@@ -602,7 +616,7 @@ async def show_stats(request: Request) -> HTMLResponse:  # noqa: PLR0911, C901
     cfg: Config = request.app.state.cfg
     riot: RiotClient = request.app.state.riot
 
-    cache_key = f"player:name:{game_name.lower()}#{tag_line.lower()}"
+    cache_key = name_cache_key(game_name, tag_line)
     cached_puuid: str | None = await r.get(cache_key)
     if cached_puuid:
         puuid = cached_puuid
@@ -642,7 +656,7 @@ async def show_stats(request: Request) -> HTMLResponse:  # noqa: PLR0911, C901
                 )
             )
         puuid = account["puuid"]
-        await r.set(cache_key, puuid, ex=86400)
+        await r.set(cache_key, puuid, ex=_CACHE_TTL_S)
     stats: dict[str, str] = await r.hgetall(f"player:stats:{puuid}")
 
     lcu_matches: list[dict[str, Any]] = request.app.state.lcu.get(puuid, [])
@@ -942,7 +956,7 @@ async def show_dlq(request: Request) -> HTMLResponse:
     for entry_id, fields in entries:
         dlq = DLQEnvelope.from_redis_fields(fields)
         safe_id = html.escape(entry_id)
-        fc_badge = _badge("error", html.escape(dlq.failure_code))
+        fc_badge = _badge("error", dlq.failure_code)
         service = html.escape(dlq.failed_by or "?")
         attempts = html.escape(str(dlq.dlq_attempts))
         raw_payload = json.dumps(dlq.payload)
@@ -1073,7 +1087,7 @@ async def show_lcu(request: Request) -> HTMLResponse:
 
     if not lcu:
         body = f"""
-<h2>LCU Match History {_badge("warning", "&#9888; Unverified")}</h2>
+<h2>LCU Match History {_badge_html("warning", "&#9888; Unverified")}</h2>
 <p>No LCU data collected yet.</p>
 <p>Run <code>just lcu</code> with the League client open, then restart the UI to reload.</p>
 """
@@ -1107,7 +1121,7 @@ async def show_lcu(request: Request) -> HTMLResponse:
         )
 
     body = f"""
-<h2>LCU Match History {_badge("warning", "&#9888; Unverified")}</h2>
+<h2>LCU Match History {_badge_html("warning", "&#9888; Unverified")}</h2>
 <p class="unverified">Data collected from the local League client. Not verified against the Riot
 API. Includes game modes unavailable in Match-v5 (ARAM Mayhem, URF, One for All, etc.).</p>
 <p>To collect more data: run <code>just lcu</code> with the League client open,
