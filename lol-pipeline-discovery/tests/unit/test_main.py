@@ -11,7 +11,7 @@ import respx
 
 from lol_pipeline.config import Config
 from lol_pipeline.riot_api import RiotClient
-from lol_discovery.main import _promote_batch
+from lol_discovery.main import _is_idle, _parse_member, _promote_batch, _resolve_names
 
 
 @pytest.fixture
@@ -128,3 +128,70 @@ class TestPromoteBatchNames:
 
         assert promoted == 0
         assert await r.zcard("discover:players") == 0
+
+
+class TestParseMember:
+    def test_puuid_with_region(self):
+        puuid, region = _parse_member("abc-def-123:na1")
+        assert puuid == "abc-def-123"
+        assert region == "na1"
+
+    def test_puuid_without_region(self):
+        puuid, region = _parse_member("abc-def-123")
+        assert puuid == "abc-def-123"
+        assert region == "na1"  # default
+
+    def test_puuid_with_colons(self):
+        """PUUIDs can contain colons — rfind ensures last colon is the separator."""
+        puuid, region = _parse_member("some:complex:puuid:euw1")
+        assert puuid == "some:complex:puuid"
+        assert region == "euw1"
+
+
+class TestIsIdle:
+    @pytest.mark.asyncio
+    async def test_no_stream_returns_true(self, r):
+        """When stream doesn't exist, pipeline is idle."""
+        assert await _is_idle(r) is True
+
+    @pytest.mark.asyncio
+    async def test_no_groups_returns_true(self, r):
+        """Stream exists but no consumer groups — idle."""
+        await r.xadd("stream:puuid", {"id": "test", "source_stream": "stream:puuid",
+                                       "type": "puuid", "payload": "{}", "attempts": "0",
+                                       "max_attempts": "5", "enqueued_at": "2024-01-01",
+                                       "dlq_attempts": "0"})
+        assert await _is_idle(r) is True
+
+    @pytest.mark.asyncio
+    async def test_pending_messages_not_idle(self, r):
+        """When group has pending (unACKed) messages, not idle."""
+        from lol_pipeline.models import MessageEnvelope
+        from lol_pipeline.streams import consume, publish
+        env = MessageEnvelope(source_stream="stream:puuid", type="puuid",
+                             payload={"puuid": "test"}, max_attempts=5)
+        await publish(r, "stream:puuid", env)
+        await consume(r, "stream:puuid", "crawlers", "c1", block=0)
+        # Message delivered but not ACKed
+        assert await _is_idle(r) is False
+
+
+class TestPromoteBatchEdgeCases:
+    @pytest.mark.asyncio
+    async def test_empty_queue(self, r, cfg, log):
+        """Empty discover:players → 0 promoted."""
+        riot = RiotClient("RGAPI-test")
+        assert await _promote_batch(r, cfg, log, riot) == 0
+        await riot.close()
+
+    @pytest.mark.asyncio
+    async def test_halted_system_returns_zero(self, r, cfg, log):
+        """When system:halted, no promotions occur."""
+        await r.set("system:halted", "1")
+        await r.zadd("discover:players", {"puuid-abc:na1": 1700000000000.0})
+        await r.hset("player:puuid-abc", mapping={"game_name": "T", "tag_line": "1"})
+        riot = RiotClient("RGAPI-test")
+        assert await _promote_batch(r, cfg, log, riot) == 0
+        await riot.close()
+        # Player should still be in queue
+        assert await r.zcard("discover:players") == 1

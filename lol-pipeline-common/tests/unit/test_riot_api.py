@@ -335,3 +335,55 @@ class TestPlatformRouting:
     )
     def test_platform_to_region_mapping(self, platform: str, expected_region: str) -> None:
         assert PLATFORM_TO_REGION[platform] == expected_region
+
+
+class TestRiotClientNetworkErrors:
+    @pytest.mark.asyncio
+    async def test_network_error_raises_server_error(self) -> None:
+        """Connection errors are wrapped as ServerError."""
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/X/Y"
+            ).mock(side_effect=httpx.ConnectError("connection refused"))
+            client = RiotClient("RGAPI-test")
+            with pytest.raises(ServerError, match="network error"):
+                await client.get_account_by_riot_id("X", "Y", "na1")
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_timeout_raises_server_error(self) -> None:
+        """Timeout errors are wrapped as ServerError."""
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/X/Y"
+            ).mock(side_effect=httpx.ReadTimeout("read timed out"))
+            client = RiotClient("RGAPI-test")
+            with pytest.raises(ServerError, match="network error"):
+                await client.get_account_by_riot_id("X", "Y", "na1")
+            await client.close()
+
+
+class TestRateLimitErrorDetails:
+    @pytest.mark.asyncio
+    async def test_429_without_retry_after_header(self) -> None:
+        """429 without Retry-After header gives retry_after_ms=None."""
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/X/Y"
+            ).mock(return_value=httpx.Response(429))
+            client = RiotClient("RGAPI-test")
+            with pytest.raises(RateLimitError) as exc_info:
+                await client.get_account_by_riot_id("X", "Y", "na1")
+            assert exc_info.value.retry_after_ms is None
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_502_raises_server_error(self) -> None:
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/X/Y"
+            ).mock(return_value=httpx.Response(502, text="Bad Gateway"))
+            client = RiotClient("RGAPI-test")
+            with pytest.raises(ServerError):
+                await client.get_account_by_riot_id("X", "Y", "na1")
+            await client.close()

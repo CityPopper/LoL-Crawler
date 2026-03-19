@@ -23,6 +23,10 @@ class LcuNotRunningError(Exception):
     """Raised when the League client is not running or lockfile is missing."""
 
 
+class LcuAuthError(Exception):
+    """Raised when LCU returns 401/403 — lockfile credentials are stale."""
+
+
 class LcuClient:
     """Client for the local League Client Update (LCU) HTTP API."""
 
@@ -60,6 +64,15 @@ class LcuClient:
             )
             resp.raise_for_status()
             return resp.json()
+        except requests.exceptions.HTTPError as exc:
+            if resp.status_code in (401, 403):
+                raise LcuAuthError(
+                    f"LCU returned {resp.status_code} — lockfile credentials likely stale "
+                    f"({self.base_url}, LCU_HOST={self.host})"
+                ) from exc
+            raise LcuNotRunningError(
+                f"LCU API request failed ({self.base_url}, LCU_HOST={self.host}): {exc}"
+            ) from exc
         except Exception as exc:
             raise LcuNotRunningError(
                 f"LCU API request failed ({self.base_url}, LCU_HOST={self.host}): {exc}"

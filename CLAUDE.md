@@ -17,7 +17,7 @@ See `ARCHITECTURE.md` for doc index. See `docs/standards/01-coding-standards.md`
 
 ## Pending Work
 
-None — all TODO.md items implemented. 211 unit tests + 65 contract tests passing.
+None — all TODO.md items implemented. 297 unit tests + 65 contract tests passing.
 
 ## Gotchas
 

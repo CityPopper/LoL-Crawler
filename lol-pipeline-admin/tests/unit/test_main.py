@@ -14,6 +14,7 @@ from lol_pipeline.models import DLQEnvelope
 from lol_pipeline.riot_api import RiotClient
 
 from lol_admin.main import (
+    _dispatch,
     _resolve_puuid,
     cmd_dlq_clear,
     cmd_dlq_list,
@@ -232,3 +233,60 @@ class TestStats:
         output = capsys.readouterr().out
         assert "total_games" in output
         assert "win_rate" in output
+
+
+class TestDispatch:
+    @pytest.mark.asyncio
+    async def test_stats_dispatches(self, r, cfg):
+        """stats command dispatches to cmd_stats."""
+        import argparse
+        await r.hset("player:stats:p", mapping={"total_games": "5", "win_rate": "0.5000"})
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Test/NA1"
+            ).mock(return_value=httpx.Response(
+                200, json={"puuid": "p", "gameName": "Test", "tagLine": "NA1"},
+            ))
+            riot = RiotClient("RGAPI-test")
+            args = argparse.Namespace(command="stats", riot_id="Test#NA1", region="na1")
+            result = await _dispatch(r, riot, cfg, args)
+            await riot.close()
+        assert result == 0
+
+    @pytest.mark.asyncio
+    async def test_system_resume_dispatches(self, r, cfg):
+        """system-resume command dispatches correctly."""
+        import argparse
+        riot = RiotClient("RGAPI-test")
+        args = argparse.Namespace(command="system-resume")
+        result = await _dispatch(r, riot, cfg, args)
+        await riot.close()
+        assert result == 0
+
+    @pytest.mark.asyncio
+    async def test_unknown_command_raises(self, r, cfg):
+        """Unknown command raises AssertionError."""
+        import argparse
+        riot = RiotClient("RGAPI-test")
+        args = argparse.Namespace(command="nonexistent")
+        with pytest.raises(AssertionError, match="unreachable"):
+            await _dispatch(r, riot, cfg, args)
+        await riot.close()
+
+
+class TestResolvePuuidApi:
+    @pytest.mark.asyncio
+    async def test_api_fallback(self, r):
+        """When no cache, resolves via Riot API."""
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Test/NA1"
+            ).mock(return_value=httpx.Response(
+                200, json={"puuid": "resolved-puuid", "gameName": "Test", "tagLine": "NA1"},
+            ))
+            riot = RiotClient("RGAPI-test")
+            result = await _resolve_puuid(riot, "Test#NA1", "na1", r)
+            await riot.close()
+        assert result == "resolved-puuid"
+        # Should be cached now
+        assert await r.get("player:name:test#na1") == "resolved-puuid"

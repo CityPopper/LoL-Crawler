@@ -156,3 +156,39 @@ class TestRawStoreJsonlBundle:
         lines = jsonl_files[0].read_text().strip().split("\n")
         assert len(lines) == 1
         assert '"first"' in lines[0]
+
+
+class TestRawStoreBundleEdgeCases:
+    @pytest.mark.asyncio
+    async def test_search_empty_jsonl_file(self, r, tmp_path):
+        """Empty JSONL bundle file returns None."""
+        platform_dir = tmp_path / "NA1"
+        platform_dir.mkdir()
+        (platform_dir / "2024-01.jsonl").write_text("")
+        store = RawStore(r, data_dir=str(tmp_path))
+        assert await store.get("NA1_999") is None
+
+    @pytest.mark.asyncio
+    async def test_no_data_dir_skips_disk(self, r):
+        """RawStore without data_dir only uses Redis."""
+        store = RawStore(r)
+        await store.set("NA1_100", '{"test": 1}')
+        result = await store.get("NA1_100")
+        assert result == '{"test": 1}'
+        # Delete from Redis — no disk fallback
+        await r.delete("raw:match:NA1_100")
+        assert await store.get("NA1_100") is None
+
+    @pytest.mark.asyncio
+    async def test_unknown_platform_prefix(self, r, tmp_path):
+        """Match IDs without underscore get platform 'UNKNOWN'."""
+        store = RawStore(r, data_dir=str(tmp_path))
+        await store.set("NOUNDERSCORE", '{"data": 1}')
+        # Should write to UNKNOWN directory
+        assert (tmp_path / "UNKNOWN").exists()
+
+    @pytest.mark.asyncio
+    async def test_exists_false_on_disk_when_not_stored(self, r, tmp_path):
+        """exists() returns False when match is in neither Redis nor disk."""
+        store = RawStore(r, data_dir=str(tmp_path))
+        assert await store.exists("NA1_nonexistent") is False
