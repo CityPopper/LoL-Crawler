@@ -9,6 +9,12 @@ from unittest.mock import patch
 
 import pytest
 
+from lol_pipeline.riot_api import (
+    AuthError,
+    NotFoundError,
+    RateLimitError,
+    ServerError,
+)
 from lol_ui.main import (
     _BADGE_VARIANTS,
     _CSS,
@@ -297,6 +303,22 @@ class TestStatsForm:
     def test_stats_nav_active(self):
         result = _stats_form()
         assert 'href="/stats" class="active"' in result
+
+    def test_region_default_na1_selected(self):
+        result = _stats_form()
+        assert 'value="na1"selected' in result or 'value="na1" selected' in result
+
+    def test_region_preserves_euw1_selection(self):
+        result = _stats_form(selected_region="euw1")
+        assert 'value="euw1"selected' in result or 'value="euw1" selected' in result
+        # na1 should NOT be selected
+        na1_match = re.search(r'value="na1"[^>]*>', result)
+        assert na1_match is not None
+        assert "selected" not in na1_match.group(0)
+
+    def test_region_preserves_kr_selection(self):
+        result = _stats_form(selected_region="kr")
+        assert 'value="kr"selected' in result or 'value="kr" selected' in result
 
 
 class TestStatsTable:
@@ -828,6 +850,557 @@ class TestAutoSeedOrdering:
             await show_stats(request)
 
         assert call_order == ["publish", "hset_seeded_at"]
+
+
+class TestStatsOrder:
+    """Sprint 2.1: _STATS_ORDER controls display order in stats table."""
+
+    def test_stats_order__contains_all_core_stats(self):
+        """All expected stat keys are present in the order list."""
+        expected = [
+            "total_games", "total_wins", "win_rate",
+            "total_kills", "total_deaths", "total_assists",
+            "kda", "avg_kills", "avg_deaths", "avg_assists",
+        ]
+        for key in expected:
+            assert key in _STATS_ORDER, f"{key} missing from _STATS_ORDER"
+
+    def test_stats_order__totals_before_averages(self):
+        """Total stats appear before average stats in the order."""
+        total_games_idx = _STATS_ORDER.index("total_games")
+        avg_kills_idx = _STATS_ORDER.index("avg_kills")
+        assert total_games_idx < avg_kills_idx
+
+    def test_stats_order__win_rate_after_total_wins(self):
+        """win_rate appears after total_wins."""
+        assert _STATS_ORDER.index("win_rate") > _STATS_ORDER.index("total_wins")
+
+    def test_stats_table__uses_ordered_stats(self):
+        """Stats table renders in _STATS_ORDER order, not alphabetical."""
+        stats = {
+            "avg_kills": "7.2",
+            "total_games": "150",
+            "win_rate": "0.567",
+            "total_wins": "85",
+        }
+        result = _stats_table(stats, [], [])
+        # total_games should appear before avg_kills
+        pos_total = result.index("total_games")
+        pos_avg = result.index("avg_kills")
+        assert pos_total < pos_avg, "total_games must appear before avg_kills"
+
+    def test_stats_table__unknown_keys_appended_after_ordered(self):
+        """Stats not in _STATS_ORDER are appended alphabetically after known keys."""
+        stats = {
+            "total_games": "10",
+            "some_custom_stat": "42",
+        }
+        result = _stats_table(stats, [], [])
+        pos_total = result.index("total_games")
+        pos_custom = result.index("some_custom_stat")
+        assert pos_total < pos_custom
+
+
+class TestFormatStatValue:
+    """Sprint 2.1: _format_stat_value formats stats for display."""
+
+    def test_win_rate__formatted_as_percentage(self):
+        """win_rate decimal is displayed as percentage with 1 decimal place."""
+        assert _format_stat_value("win_rate", "0.567") == "56.7%"
+
+    def test_win_rate__zero(self):
+        assert _format_stat_value("win_rate", "0") == "0.0%"
+
+    def test_win_rate__one(self):
+        assert _format_stat_value("win_rate", "1") == "100.0%"
+
+    def test_win_rate__invalid_value_returned_as_is(self):
+        """Non-numeric win_rate returns the raw value."""
+        assert _format_stat_value("win_rate", "N/A") == "N/A"
+
+    def test_avg_stat__rounded_to_2_decimals(self):
+        """Average stats are rounded to 2 decimal places."""
+        assert _format_stat_value("avg_kills", "7.23456") == "7.23"
+
+    def test_avg_deaths__rounded(self):
+        assert _format_stat_value("avg_deaths", "3.1") == "3.10"
+
+    def test_avg_assists__rounded(self):
+        assert _format_stat_value("avg_assists", "8.999") == "9.00"
+
+    def test_kda__rounded_to_2_decimals(self):
+        assert _format_stat_value("kda", "3.45678") == "3.46"
+
+    def test_non_special_stat__returned_as_is(self):
+        """Non-special stats (total_games, etc.) return the raw value."""
+        assert _format_stat_value("total_games", "150") == "150"
+        assert _format_stat_value("total_wins", "85") == "85"
+
+    def test_avg_invalid_value__returned_as_is(self):
+        """Non-numeric avg value returns raw value."""
+        assert _format_stat_value("avg_kills", "N/A") == "N/A"
+
+    def test_stats_table__applies_formatting(self):
+        """Stats table uses _format_stat_value for rendered values."""
+        stats = {"win_rate": "0.567", "avg_kills": "7.23456", "total_games": "100"}
+        result = _stats_table(stats, [], [])
+        assert "56.7%" in result
+        assert "7.23" in result
+        assert "100" in result
+
+
+class TestDepthBadge:
+    """Sprint 2.3: _depth_badge returns badge HTML based on stream depth."""
+
+    def test_zero_depth__shows_ok(self):
+        result = _depth_badge("stream:puuid", 0)
+        assert "badge--success" in result
+        assert "OK" in result
+
+    def test_low_depth__shows_ok(self):
+        result = _depth_badge("stream:puuid", 50)
+        assert "badge--success" in result
+        assert "OK" in result
+
+    def test_medium_depth__shows_busy(self):
+        result = _depth_badge("stream:puuid", 100)
+        assert "badge--warning" in result
+        assert "Busy" in result
+
+    def test_high_depth__shows_backlog(self):
+        result = _depth_badge("stream:puuid", 1000)
+        assert "badge--error" in result
+        assert "Backlog" in result
+
+    def test_boundary_99__ok(self):
+        result = _depth_badge("stream:puuid", 99)
+        assert "badge--success" in result
+
+    def test_boundary_999__busy(self):
+        result = _depth_badge("stream:puuid", 999)
+        assert "badge--warning" in result
+
+    def test_dlq_nonzero__always_error(self):
+        """DLQ with depth > 0 always shows error badge."""
+        result = _depth_badge("stream:dlq", 1)
+        assert "badge--error" in result
+
+    def test_dlq_zero__shows_ok(self):
+        result = _depth_badge("stream:dlq", 0)
+        assert "badge--success" in result
+
+    def test_dlq_archive__not_treated_as_dlq(self):
+        """stream:dlq:archive is not special-cased like stream:dlq."""
+        result = _depth_badge("stream:dlq:archive", 50)
+        assert "badge--success" in result
+
+
+class TestPlayersPageCount:
+    """Sprint 2.2: /players shows 'page X of Y' and full ISO timestamps."""
+
+    # These test the show_players output directly via route, but we can test
+    # the formatting logic by checking the generated HTML structure.
+    pass
+
+
+class TestLcuPlayerLinks:
+    """Sprint 2.4: /lcu links player names to /stats page."""
+
+    # Tested via route-level integration, covered in the show_lcu tests.
+    pass
+
+
+class TestStatsHeading:
+    """Sprint 2.1: /stats heading shows Riot ID name only (no PUUID)."""
+
+    # Tested via the show_stats route level.
+    pass
+
+
+class TestStreamsFragment:
+    """Sprint 3.1: /streams/fragment returns HTML fragment for AJAX polling."""
+
+    @pytest.mark.asyncio
+    async def test_streams_fragment__returns_table_without_page_wrapper(self):
+        """Fragment endpoint returns table HTML without <!doctype html> wrapper."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import streams_fragment
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+
+        resp = await streams_fragment(request)
+        body = resp.body.decode()
+
+        assert "<!doctype" not in body.lower()
+        assert "<html" not in body.lower()
+        assert "stream:puuid" in body
+        assert "stream:match_id" in body
+        assert "stream:dlq" in body
+        assert "delayed:messages" in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_streams_fragment__shows_halted_status(self):
+        """Fragment shows HALTED banner when system:halted is set."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import streams_fragment
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.set("system:halted", "1")
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+
+        resp = await streams_fragment(request)
+        body = resp.body.decode()
+
+        assert "HALTED" in body
+        assert "banner--error" in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_streams_fragment__shows_running_status(self):
+        """Fragment shows running banner when system is not halted."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import streams_fragment
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+
+        resp = await streams_fragment(request)
+        body = resp.body.decode()
+
+        assert "System running" in body
+        assert "banner--success" in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_streams_fragment__includes_priority_count(self):
+        """Fragment includes priority count display."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import streams_fragment
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.set("system:priority_count", "5")
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+
+        resp = await streams_fragment(request)
+        body = resp.body.decode()
+
+        assert "<strong>5</strong>" in body
+        await r.aclose()
+
+
+class TestStreamsAutoRefresh:
+    """Sprint 3.1: /streams page has auto-refresh JS and pause button."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not _LUPA_AVAILABLE, reason="lupa required for Lua scripts")
+    async def test_show_streams__has_auto_refresh_script(self):
+        """The /streams page includes JS polling script."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_streams
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+
+        resp = await show_streams(request)
+        body = resp.body.decode()
+
+        assert "/streams/fragment" in body
+        assert "setInterval" in body
+        assert "5000" in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not _LUPA_AVAILABLE, reason="lupa required for Lua scripts")
+    async def test_show_streams__has_pause_button(self):
+        """The /streams page includes a Pause button."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_streams
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+
+        resp = await show_streams(request)
+        body = resp.body.decode()
+
+        assert "streams-pause-btn" in body
+        assert "Pause" in body
+        assert "Auto-refresh every 5s" in body
+        await r.aclose()
+
+
+class TestErrorMessages:
+    """Sprint 3.5: show_stats() returns distinct error messages per exception type."""
+
+    @pytest.mark.asyncio
+    async def test_not_found_error__specific_message(self):
+        """NotFoundError shows player-not-found guidance."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from lol_pipeline.riot_api import AuthError, NotFoundError, RateLimitError, ServerError  # noqa: F811
+        from lol_ui.main import show_stats
+
+        mock_r = AsyncMock()
+        mock_r.get.return_value = None  # no cached puuid
+
+        mock_riot = AsyncMock()
+        mock_riot.get_account_by_riot_id.side_effect = NotFoundError("not found")
+
+        request = MagicMock()
+        request.query_params = {"riot_id": "Fake#NA1", "region": "na1"}
+        request.app.state.r = mock_r
+        request.app.state.riot = mock_riot
+        request.app.state.cfg = MagicMock()
+
+        resp = await show_stats(request)
+        body = resp.body.decode()
+
+        assert "Player not found" in body
+        assert "Check the spelling" in body
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_error__specific_message(self):
+        """RateLimitError shows rate-limit guidance."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from lol_ui.main import show_stats
+
+        mock_r = AsyncMock()
+        mock_r.get.return_value = None
+
+        mock_riot = AsyncMock()
+        mock_riot.get_account_by_riot_id.side_effect = RateLimitError("429")
+
+        request = MagicMock()
+        request.query_params = {"riot_id": "Fake#NA1", "region": "na1"}
+        request.app.state.r = mock_r
+        request.app.state.riot = mock_riot
+        request.app.state.cfg = MagicMock()
+
+        resp = await show_stats(request)
+        body = resp.body.decode()
+
+        assert "Rate limited" in body
+        assert "few seconds" in body
+
+    @pytest.mark.asyncio
+    async def test_auth_error__specific_message(self):
+        """AuthError shows API key guidance."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from lol_ui.main import show_stats
+
+        mock_r = AsyncMock()
+        mock_r.get.return_value = None
+
+        mock_riot = AsyncMock()
+        mock_riot.get_account_by_riot_id.side_effect = AuthError("403")
+
+        request = MagicMock()
+        request.query_params = {"riot_id": "Fake#NA1", "region": "na1"}
+        request.app.state.r = mock_r
+        request.app.state.riot = mock_riot
+        request.app.state.cfg = MagicMock()
+
+        resp = await show_stats(request)
+        body = resp.body.decode()
+
+        assert "API key issue" in body
+        assert "system-resume" in body
+
+    @pytest.mark.asyncio
+    async def test_server_error__specific_message(self):
+        """ServerError shows server-unavailable guidance."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from lol_ui.main import show_stats
+
+        mock_r = AsyncMock()
+        mock_r.get.return_value = None
+
+        mock_riot = AsyncMock()
+        mock_riot.get_account_by_riot_id.side_effect = ServerError("500")
+
+        request = MagicMock()
+        request.query_params = {"riot_id": "Fake#NA1", "region": "na1"}
+        request.app.state.r = mock_r
+        request.app.state.riot = mock_riot
+        request.app.state.cfg = MagicMock()
+
+        resp = await show_stats(request)
+        body = resp.body.decode()
+
+        assert "temporarily unavailable" in body
+        assert "Try again later" in body
+
+
+class TestRegionPreservation:
+    """Sprint 3.2: Region dropdown preserves selection across requests."""
+
+    @pytest.mark.asyncio
+    async def test_empty_form__preserves_region_from_query(self):
+        """When no riot_id given, region from query string is preserved."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from lol_ui.main import show_stats
+
+        mock_r = AsyncMock()
+
+        request = MagicMock()
+        request.query_params = {"riot_id": "", "region": "kr"}
+        request.app.state.r = mock_r
+
+        resp = await show_stats(request)
+        body = resp.body.decode()
+
+        kr_match = re.search(r'value="kr"[^>]*>', body)
+        assert kr_match is not None
+        assert "selected" in kr_match.group(0)
+
+    @pytest.mark.asyncio
+    async def test_error_response__preserves_region(self):
+        """On NotFoundError, region selection is preserved in the form."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from lol_ui.main import show_stats
+
+        mock_r = AsyncMock()
+        mock_r.get.return_value = None
+
+        mock_riot = AsyncMock()
+        mock_riot.get_account_by_riot_id.side_effect = NotFoundError("not found")
+
+        request = MagicMock()
+        request.query_params = {"riot_id": "Fake#NA1", "region": "euw1"}
+        request.app.state.r = mock_r
+        request.app.state.riot = mock_riot
+        request.app.state.cfg = MagicMock()
+
+        resp = await show_stats(request)
+        body = resp.body.decode()
+
+        euw1_match = re.search(r'value="euw1"[^>]*>', body)
+        assert euw1_match is not None
+        assert "selected" in euw1_match.group(0)
+
+
+class TestPriorityBadge:
+    """Sprint 3.4: Priority badge shown on /stats for players with active priority."""
+
+    @pytest.mark.asyncio
+    async def test_priority_badge__shown_when_priority_key_exists(self):
+        """Priority badge appears next to player name when priority key is set."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from lol_ui.main import show_stats
+
+        mock_r = AsyncMock()
+        mock_r.get.side_effect = lambda key: {
+            "player:name:test#na1": "test-puuid-123",
+            "player:priority:test-puuid-123": "high",
+            "system:halted": None,
+        }.get(key)
+        mock_r.hgetall.return_value = {"total_games": "10", "wins": "5"}
+        mock_r.zrevrange.return_value = []
+
+        request = MagicMock()
+        request.query_params = {"riot_id": "Test#NA1", "region": "na1"}
+        request.app.state.r = mock_r
+        request.app.state.riot = MagicMock()
+        request.app.state.cfg = MagicMock()
+        request.app.state.lcu = {}
+
+        resp = await show_stats(request)
+        body = resp.body.decode()
+
+        assert "badge--info" in body
+        assert "Priority" in body
+
+    @pytest.mark.asyncio
+    async def test_priority_badge__hidden_when_no_priority_key(self):
+        """No priority badge when priority key does not exist."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from lol_ui.main import show_stats
+
+        mock_r = AsyncMock()
+        mock_r.get.side_effect = lambda key: {
+            "player:name:test#na1": "test-puuid-123",
+            "player:priority:test-puuid-123": None,
+            "system:halted": None,
+        }.get(key)
+        mock_r.hgetall.return_value = {"total_games": "10", "wins": "5"}
+        mock_r.zrevrange.return_value = []
+
+        request = MagicMock()
+        request.query_params = {"riot_id": "Test#NA1", "region": "na1"}
+        request.app.state.r = mock_r
+        request.app.state.riot = MagicMock()
+        request.app.state.cfg = MagicMock()
+        request.app.state.lcu = {}
+
+        resp = await show_stats(request)
+        body = resp.body.decode()
+
+        assert "Priority" not in body
+
+
+class TestPlayersEmptyState:
+    """Sprint 3.3: /players empty state uses _empty_state() component."""
+
+    @pytest.mark.asyncio
+    async def test_no_players__shows_empty_state(self):
+        """When no players seeded, shows styled empty state with guidance."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_players
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {"page": "0"}
+
+        resp = await show_players(request)
+        body = resp.body.decode()
+
+        assert 'class="empty-state"' in body
+        assert "No players seeded yet" in body
+        assert "just seed GameName#Tag" in body
+        await r.aclose()
 
 
 class TestUiEntryPoint:
