@@ -11,6 +11,8 @@ Added `LcuAuthError` exception for HTTP 401/403 (stale lockfile). `_collect_with
 ---
 
 ## Performance Optimizations
+Benchmark performance before and after to ensure that these changes actually improve performance.
+
 
 ### Crawler: O(n) zrange on every crawl
 `lol-pipeline-crawler/src/lol_crawler/main.py` — `zrange("player:matches:{puuid}", 0, -1)` fetches the entire sorted set into memory to deduplicate. For players with thousands of matches this is wasteful. Use `ZRANGEBYSCORE` with a last-crawled timestamp to load only the relevant window.
@@ -390,3 +392,17 @@ The GitHub CI is failing, look at the failures using the API key and find out wh
 Add new doc that shows what's needed in the next phase.
 Afterwards, review with cold eyes.
 Finally, break down the tasks and put them in relevant docs + in the TODO.md for implementation.
+
+## Update README.md
+Update it to ensure that everything is actually up to date.
+
+## Data collection priority
+Ensure that there is a weighted queue for fetching data. For example manually requested seeded data should be higher priority than automatically discovered players.
+Example: I ask for information about Pwnerer#1337 -> Immediately get me this information ASAP. If I ask for second page of data and it's not there yet, ensure it's set to higher priority vs auto discovering other players.
+Players that are manually seeded should have their entire history scraped before contining with auto-discovered ones.
+Update all relevant documentation to reflect this afterwards.
+Make a comprehensive implementation plan including testing, and implement using red/green TDD. Store the plan in Claude.md under the `Pending Work` and begin implementing, updating the status there as you go.
+Once you are completed, remove from pending.
+
+## Readibility
+Review code for uses of `arg[]` etc and replace them if they are hard to read -- ie. assign them to proper variable names and perform validation. Add this as a coding standard.
