@@ -11,6 +11,7 @@ import redis.asyncio as aioredis
 from lol_pipeline.config import Config
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
+from lol_pipeline.priority import clear_priority
 from lol_pipeline.rate_limiter import wait_for_token
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.riot_api import AuthError, RateLimitError, RiotClient, ServerError
@@ -117,6 +118,8 @@ async def _crawl_player(
 
     now_iso = datetime.now(tz=UTC).isoformat()
     await r.hset(f"player:{puuid}", mapping={"last_crawled_at": now_iso})  # type: ignore[misc]
+    if published == 0:
+        await clear_priority(r, puuid)
     log.info(
         "crawl complete",
         extra={

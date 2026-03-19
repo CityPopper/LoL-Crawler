@@ -45,6 +45,12 @@
       "type": "string",
       "default": "0",
       "description": "Number of DLQ round-trips this message has been through"
+    },
+    "priority": {
+      "type": "string",
+      "enum": ["high", "normal"],
+      "default": "normal",
+      "description": "Processing priority — high for manual seeds, normal for auto-discovery"
     }
   }
 }

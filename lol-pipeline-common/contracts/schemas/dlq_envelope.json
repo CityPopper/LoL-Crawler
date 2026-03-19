@@ -55,6 +55,12 @@
     "original_message_id": {
       "type": "string",
       "description": "Redis Stream entry ID of the original message, for audit and replay"
+    },
+    "priority": {
+      "type": "string",
+      "enum": ["high", "normal"],
+      "default": "normal",
+      "description": "Processing priority — high for manual seeds, normal for auto-discovery"
     }
   }
 }

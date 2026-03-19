@@ -24,7 +24,8 @@
         },
         "attempts": 1,
         "max_attempts": 5,
-        "enqueued_at": "2024-01-01T00:00:00+00:00"
+        "enqueued_at": "2024-01-01T00:00:00+00:00",
+        "priority": "normal"
       },
       "matchingRules": {
         "body": {
@@ -56,6 +57,11 @@
             "matchers": [
               { "match": "regex", "regex": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*$" }
             ]
+          },
+          "$.priority": {
+            "matchers": [
+              { "match": "regex", "regex": "^(high|normal)$" }
+            ]
           }
         }
       },
@@ -81,7 +87,8 @@
         },
         "attempts": 2,
         "max_attempts": 5,
-        "enqueued_at": "2024-01-01T00:00:00+00:00"
+        "enqueued_at": "2024-01-01T00:00:00+00:00",
+        "priority": "normal"
       },
       "matchingRules": {
         "body": {
@@ -106,6 +113,11 @@
           "$.enqueued_at": {
             "matchers": [
               { "match": "regex", "regex": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*$" }
+            ]
+          },
+          "$.priority": {
+            "matchers": [
+              { "match": "regex", "regex": "^(high|normal)$" }
             ]
           }
         }

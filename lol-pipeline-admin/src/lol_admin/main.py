@@ -200,6 +200,16 @@ async def cmd_replay_fetch(r: aioredis.Redis, cfg: Config, args: argparse.Namesp
     return 0
 
 
+async def cmd_recalc_priority(r: aioredis.Redis, args: argparse.Namespace) -> int:
+    """Recalculate system:priority_count by scanning actual player:priority:* keys."""
+    count = 0
+    async for _key in r.scan_iter(match="player:priority:*", count=100):
+        count += 1
+    await r.set("system:priority_count", str(count))
+    print(f"system:priority_count recalculated: {count}")
+    return 0
+
+
 async def cmd_reseed(
     r: aioredis.Redis, riot: RiotClient, cfg: Config, args: argparse.Namespace
 ) -> int:
@@ -265,6 +275,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_rs.add_argument("riot_id", metavar="GameName#TagLine")
     p_rs.add_argument("--region", default="na1")
 
+    sub.add_parser(
+        "recalc-priority", help="recalculate system:priority_count from actual priority keys"
+    )
+
     return parser
 
 
@@ -287,6 +301,7 @@ _CMD_DISPATCH = {
     "replay-parse": lambda r, riot, cfg, args: cmd_replay_parse(r, cfg, args),
     "replay-fetch": lambda r, riot, cfg, args: cmd_replay_fetch(r, cfg, args),
     "reseed": cmd_reseed,
+    "recalc-priority": lambda r, riot, cfg, args: cmd_recalc_priority(r, args),
 }
 
 

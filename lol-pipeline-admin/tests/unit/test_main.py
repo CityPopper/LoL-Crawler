@@ -20,6 +20,7 @@ from lol_admin.main import (
     cmd_dlq_clear,
     cmd_dlq_list,
     cmd_dlq_replay,
+    cmd_recalc_priority,
     cmd_replay_fetch,
     cmd_replay_parse,
     cmd_reseed,
@@ -423,6 +424,24 @@ class TestMainEntryPoint:
         args = mock_dispatch.call_args[0][3]
         assert args.command == "reseed"
         assert args.riot_id == "Faker#KR1"
+
+
+class TestRecalcPriority:
+    @pytest.mark.asyncio
+    async def test_recalc_priority__counts_actual_keys(self, r, capsys):
+        """recalc-priority scans player:priority:* keys and updates counter."""
+        # Set up 3 priority keys and a stale counter
+        await r.set("player:priority:puuid-1", "high")
+        await r.set("player:priority:puuid-2", "high")
+        await r.set("player:priority:puuid-3", "high")
+        await r.set("system:priority_count", "99")  # stale/drifted value
+
+        args = argparse.Namespace()
+        result = await cmd_recalc_priority(r, args)
+        assert result == 0
+        assert await r.get("system:priority_count") == "3"
+        output = capsys.readouterr().out
+        assert "recalculated: 3" in output
 
 
 class TestUserFacingErrorsUsePrint:

@@ -256,6 +256,28 @@ class TestAnalyzerEdgeCases:
         assert len(stats["kda"].split(".")[1]) == 4
 
 
+class TestAnalyzerPriority:
+    @pytest.mark.asyncio
+    async def test_analyze__clears_priority_after_processing(self, r, cfg, log):
+        """After stats computation, clear_priority removes player:priority key."""
+        puuid = "test-puuid-0001"
+        # Set priority key (simulating what Seed does)
+        await r.set(f"player:priority:{puuid}", "high")
+        await r.set("system:priority_count", "1")
+
+        await _add_participant(r, "NA1_1", puuid, 1000, kills=5, deaths=1, assists=3)
+        env = _analyze_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        await _analyze_player(r, cfg, "my-worker", msg_id, env, log)
+
+        # Stats should be computed
+        assert await r.hget(f"player:stats:{puuid}", "total_games") == "1"
+        # Priority should be cleared
+        assert await r.get(f"player:priority:{puuid}") is None
+        assert await r.get("system:priority_count") == "0"
+
+
 class TestAnalyzerPipeline:
     @pytest.mark.asyncio
     async def test_stats_update_uses_pipeline(self, r, cfg, log):

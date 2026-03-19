@@ -19,6 +19,7 @@ from lol_pipeline.riot_api import (
     RiotClient,
     ServerError,
 )
+from lol_pipeline.priority import set_priority
 from lol_pipeline.streams import publish
 
 _STREAM = "stream:puuid"
@@ -151,8 +152,10 @@ async def seed(
         type=_MSG_TYPE,
         payload={"puuid": puuid, "game_name": game_name, "tag_line": tag_line, "region": region},
         max_attempts=cfg.max_attempts,
+        priority="high",
     )
     entry_id = await publish(r, _STREAM, envelope)
+    await set_priority(r, puuid)
 
     now_iso = datetime.now(tz=UTC).isoformat()
     await r.hset(  # type: ignore[misc]
