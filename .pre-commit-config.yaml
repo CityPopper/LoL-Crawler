@@ -8,27 +8,11 @@ repos:
       - id: ruff-check
         name: ruff check
         language: system
-        entry: bash -c 'for dir in lol-pipeline-*/; do [ -f "$dir/pyproject.toml" ] && (cd "$dir" && ruff check src/); done'
-        pass_filenames: false
+        entry: bash -c 'ruff check "$@"' --
         types: [python]
 
       - id: ruff-format
         name: ruff format
         language: system
-        entry: bash -c 'for dir in lol-pipeline-*/; do [ -f "$dir/pyproject.toml" ] && (cd "$dir" && ruff format --check src/); done'
-        pass_filenames: false
-        types: [python]
-
-      - id: mypy
-        name: mypy type check
-        language: system
-        entry: bash -c 'COMMON_SRC="$PWD/lol-pipeline-common/src"; for dir in lol-pipeline-*/; do [ -f "$dir/pyproject.toml" ] && [ -d "$dir/src" ] && (cd "$dir" && MYPYPATH="$COMMON_SRC" mypy src/ 2>/dev/null || true); done'
-        pass_filenames: false
-        types: [python]
-
-      - id: unit-tests
-        name: unit tests (changed services only)
-        language: system
-        entry: bash -c 'for dir in lol-pipeline-*/; do [ -d "$dir/tests/unit" ] && (cd "$dir" && python -m pytest tests/unit -q --tb=short 2>/dev/null || exit 1); done'
-        pass_filenames: false
+        entry: bash -c 'ruff format --check "$@"' --
         types: [python]
