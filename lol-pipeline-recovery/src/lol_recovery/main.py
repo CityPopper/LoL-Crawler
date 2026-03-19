@@ -113,9 +113,10 @@ async def _requeue_delayed(
         type=original_type,
         payload=dlq.payload,
         max_attempts=dlq.max_attempts,
-        attempts=0,
+        attempts=dlq.attempts,
         enqueued_at=dlq.enqueued_at,
         dlq_attempts=dlq.dlq_attempts + 1,
+        priority=dlq.priority,
     )
     ready_ms = int(time.time() * 1000) + delay_ms
     member = json.dumps(env.to_redis_fields())
@@ -187,6 +188,7 @@ _HANDLERS = {
     "http_5xx": _handle_transient,
     "http_404": _handle_404,
     "parse_error": _handle_parse_error,
+    "handler_crash": _handle_transient,
 }
 
 

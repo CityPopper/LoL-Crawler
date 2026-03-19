@@ -91,17 +91,17 @@ async def _analyze_player(  # noqa: C901
             for (_match_id, score), p in zip(new_matches, participant_data, strict=True):
                 if p:
                     stats_key = f"player:stats:{puuid}"
-                    pipe = r.pipeline(transaction=True)
-                    pipe.hincrby(stats_key, "total_games", 1)
-                    pipe.hincrby(stats_key, "total_wins", int(p.get("win", "0")))
-                    pipe.hincrby(stats_key, "total_kills", int(p.get("kills", "0")))
-                    pipe.hincrby(stats_key, "total_deaths", int(p.get("deaths", "0")))
-                    pipe.hincrby(stats_key, "total_assists", int(p.get("assists", "0")))
-                    if champ := p.get("champion_name"):
-                        pipe.zincrby(f"player:champions:{puuid}", 1, champ)
-                    if role := p.get("role"):
-                        pipe.zincrby(f"player:roles:{puuid}", 1, role)
-                    await pipe.execute()
+                    async with r.pipeline(transaction=True) as pipe:
+                        pipe.hincrby(stats_key, "total_games", 1)
+                        pipe.hincrby(stats_key, "total_wins", int(p.get("win", "0")))
+                        pipe.hincrby(stats_key, "total_kills", int(p.get("kills", "0")))
+                        pipe.hincrby(stats_key, "total_deaths", int(p.get("deaths", "0")))
+                        pipe.hincrby(stats_key, "total_assists", int(p.get("assists", "0")))
+                        if champ := p.get("champion_name"):
+                            pipe.zincrby(f"player:champions:{puuid}", 1, champ)
+                        if role := p.get("role"):
+                            pipe.zincrby(f"player:roles:{puuid}", 1, role)
+                        await pipe.execute()
                 # Advance cursor per match so a crash mid-loop doesn't cause re-processing
                 await r.set(f"player:stats:cursor:{puuid}", str(score))
                 # Refresh lock TTL to prevent expiry during long processing

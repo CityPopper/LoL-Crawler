@@ -271,13 +271,59 @@ class TestRecoveryEdgeCases:
         assert await r.zcard(_DELAYED_KEY) == 0
 
     @pytest.mark.asyncio
-    async def test_handler_crash_archived(self, r, cfg, log):
-        """handler_crash failure code → archived (same as unknown)."""
-        dlq = _make_dlq(failure_code="handler_crash")
+    async def test_handler_crash_requeued_as_transient(self, r, cfg, log):
+        """handler_crash failure code → requeued with backoff (not archived)."""
+        dlq = _make_dlq(failure_code="handler_crash", dlq_attempts=0)
         msg_id = await _setup_dlq_msg(r, dlq)
         await _process(r, cfg, "test-consumer", msg_id, dlq, log)
 
-        assert await r.xlen(_ARCHIVE_STREAM) == 1
+        assert await r.zcard(_DELAYED_KEY) == 1
+        assert await r.xlen(_ARCHIVE_STREAM) == 0
+
+
+class TestRequeuePreservesFields:
+    """Fix 1-3: _requeue_delayed preserves priority and attempts from DLQ envelope."""
+
+    @pytest.mark.asyncio
+    async def test_requeue_preserves_priority(self, r, cfg, log):
+        """Fix 1: Requeued envelope keeps the original priority from DLQ entry."""
+        dlq = _make_dlq(failure_code="http_5xx", dlq_attempts=0)
+        dlq.priority = "high"
+        msg_id = await _setup_dlq_msg(r, dlq)
+
+        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+
+        members = await r.zrange(_DELAYED_KEY, 0, -1)
+        assert len(members) == 1
+        fields = json.loads(members[0])
+        env = MessageEnvelope.from_redis_fields(fields)
+        assert env.priority == "high"
+
+    @pytest.mark.asyncio
+    async def test_requeue_preserves_attempts(self, r, cfg, log):
+        """Fix 2: Requeued envelope keeps attempts from DLQ (not reset to 0)."""
+        dlq = _make_dlq(failure_code="http_5xx", dlq_attempts=0)
+        dlq.attempts = 3
+        msg_id = await _setup_dlq_msg(r, dlq)
+
+        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+
+        members = await r.zrange(_DELAYED_KEY, 0, -1)
+        fields = json.loads(members[0])
+        env = MessageEnvelope.from_redis_fields(fields)
+        assert env.attempts == 3
+
+    @pytest.mark.asyncio
+    async def test_handler_crash_in_handlers_dict(self, r, cfg, log):
+        """Fix 3: handler_crash is routed to _handle_transient, not unknown handler."""
+        dlq = _make_dlq(failure_code="handler_crash", dlq_attempts=0)
+        msg_id = await _setup_dlq_msg(r, dlq)
+
+        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+
+        # Should be requeued (transient), not archived (unknown)
+        assert await r.zcard(_DELAYED_KEY) == 1
+        assert await r.xlen(_ARCHIVE_STREAM) == 0
 
 
 class TestRecoveryRetryAfterEdgeCases:

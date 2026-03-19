@@ -422,6 +422,31 @@ class TestAnalyzerTier3EdgeCases:
             await _analyze_player(r, cfg, "w1", msg_id, env, log)
 
 
+class TestAnalyzerPipelineContextManager:
+    """Fix 4: Stats pipeline uses async context manager for proper cleanup."""
+
+    @pytest.mark.asyncio
+    async def test_pipeline_context_manager_in_source(self, r, cfg, log):
+        """Stats update pipeline uses 'async with r.pipeline(transaction=True) as pipe:'."""
+        import inspect
+
+        source = inspect.getsource(_analyze_player)
+        assert "async with r.pipeline(transaction=True) as pipe:" in source
+
+    @pytest.mark.asyncio
+    async def test_pipeline_context_manager_still_writes_stats(self, r, cfg, log):
+        """Context manager pipeline correctly writes stats (not a no-op)."""
+        puuid = "test-puuid-0001"
+        await _add_participant(r, "NA1_1", puuid, 1000, kills=5, deaths=1, assists=3)
+        env = _analyze_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        await _analyze_player(r, cfg, "my-worker", msg_id, env, log)
+
+        assert await r.hget(f"player:stats:{puuid}", "total_games") == "1"
+        assert await r.hget(f"player:stats:{puuid}", "total_kills") == "5"
+
+
 class TestAnalyzerSystemHalted:
     @pytest.mark.asyncio
     async def test_system_halted_skips(self, r, cfg, log):

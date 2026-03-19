@@ -940,6 +940,26 @@ class TestFormatStatValue:
         """Non-numeric avg value returns raw value."""
         assert _format_stat_value("avg_kills", "N/A") == "N/A"
 
+    def test_win_rate__nan_returns_na(self):
+        """Fix 5: NaN win_rate returns 'N/A' instead of 'nan%'."""
+        assert _format_stat_value("win_rate", "nan") == "N/A"
+
+    def test_win_rate__inf_returns_na(self):
+        """Fix 5: Inf win_rate returns 'N/A'."""
+        assert _format_stat_value("win_rate", "inf") == "N/A"
+
+    def test_avg_kills__nan_returns_na(self):
+        """Fix 5: NaN avg stat returns 'N/A'."""
+        assert _format_stat_value("avg_kills", "nan") == "N/A"
+
+    def test_kda__inf_returns_na(self):
+        """Fix 5: Inf kda returns 'N/A'."""
+        assert _format_stat_value("kda", "inf") == "N/A"
+
+    def test_kda__neg_inf_returns_na(self):
+        """Fix 5: -Inf kda returns 'N/A'."""
+        assert _format_stat_value("kda", "-inf") == "N/A"
+
     def test_stats_table__applies_formatting(self):
         """Stats table uses _format_stat_value for rendered values."""
         stats = {"win_rate": "0.567", "avg_kills": "7.23456", "total_games": "100"}
@@ -1262,6 +1282,68 @@ class TestErrorMessages:
 
         assert "temporarily unavailable" in body
         assert "Try again later" in body
+
+
+class TestRegionValidation:
+    """Fix 8: Invalid region falls back to na1."""
+
+    @pytest.mark.asyncio
+    async def test_invalid_region__falls_back_to_na1(self):
+        """show_stats with unknown region defaults to na1."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from lol_ui.main import show_stats
+
+        mock_r = AsyncMock()
+
+        request = MagicMock()
+        request.query_params = {"riot_id": "", "region": "INVALID_REGION"}
+        request.app.state.r = mock_r
+
+        resp = await show_stats(request)
+        body = resp.body.decode()
+
+        # na1 should be selected (fallback)
+        na1_match = re.search(r'value="na1"[^>]*>', body)
+        assert na1_match is not None
+        assert "selected" in na1_match.group(0)
+
+
+class TestNameCacheTTLInUI:
+    """Fix 7: player:name cache in UI has 24h TTL."""
+
+    @pytest.mark.asyncio
+    async def test_name_cache_set_with_ttl(self):
+        """show_stats sets player:name cache with ex=86400."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from lol_ui.main import show_stats
+
+        mock_r = AsyncMock()
+        mock_r.get.side_effect = lambda key: {
+            "player:name:test#na1": None,
+            "system:halted": None,
+        }.get(key)
+        mock_r.hgetall.return_value = {"total_games": "10"}
+        mock_r.zrevrange.return_value = []
+        mock_r.hget.return_value = None
+
+        mock_riot = AsyncMock()
+        mock_riot.get_account_by_riot_id.return_value = {"puuid": "test-puuid-ttl"}
+
+        request = MagicMock()
+        request.query_params = {"riot_id": "Test#NA1", "region": "na1"}
+        request.app.state.r = mock_r
+        request.app.state.riot = mock_riot
+        request.app.state.cfg = MagicMock()
+        request.app.state.lcu = {}
+
+        await show_stats(request)
+
+        # Verify set was called with ex=86400
+        mock_r.set.assert_any_call(
+            "player:name:test#na1", "test-puuid-ttl", ex=86400
+        )
 
 
 class TestRegionPreservation:

@@ -61,7 +61,7 @@ async def _resolve_puuid(
     try:
         account = await riot.get_account_by_riot_id(game_name, tag_line, region)
         puuid = str(account["puuid"])
-        await r.set(cache_key, puuid)
+        await r.set(cache_key, puuid, ex=86400)
         return puuid
     except NotFoundError:
         log.error("player not found", extra={"game_name": game_name, "tag_line": tag_line})
