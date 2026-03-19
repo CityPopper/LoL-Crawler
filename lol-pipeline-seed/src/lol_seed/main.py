@@ -11,6 +11,7 @@ import redis.asyncio as aioredis
 from lol_pipeline.config import Config
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
+from lol_pipeline.priority import set_priority
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.riot_api import (
     AuthError,
@@ -19,7 +20,6 @@ from lol_pipeline.riot_api import (
     RiotClient,
     ServerError,
 )
-from lol_pipeline.priority import set_priority
 from lol_pipeline.streams import publish
 
 _STREAM = "stream:puuid"

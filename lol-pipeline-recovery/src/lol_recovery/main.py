@@ -39,7 +39,7 @@ def _deserialize_dlq_entries(
     """Deserialize raw xreadgroup entries. Returns (valid, corrupt_msg_ids)."""
     result: list[tuple[str, DLQEnvelope]] = []
     corrupt: list[str] = []
-    for _, entries in (raw_entries or []):
+    for _, entries in raw_entries or []:
         for msg_id, fields in entries:
             try:
                 env = DLQEnvelope.from_redis_fields(fields)

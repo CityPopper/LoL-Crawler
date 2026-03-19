@@ -46,7 +46,7 @@ def _derived(stats: dict[str, str]) -> dict[str, str]:
     }
 
 
-async def _analyze_player(
+async def _analyze_player(  # noqa: C901
     r: aioredis.Redis,
     cfg: Config,
     worker_id: str,
@@ -88,7 +88,7 @@ async def _analyze_player(
                     fetch_pipe.hgetall(f"participant:{match_id}:{puuid}")
                 participant_data: list[dict[str, str]] = await fetch_pipe.execute()
 
-            for (match_id, score), p in zip(new_matches, participant_data):
+            for (_match_id, score), p in zip(new_matches, participant_data, strict=True):
                 if p:
                     stats_key = f"player:stats:{puuid}"
                     pipe = r.pipeline(transaction=True)

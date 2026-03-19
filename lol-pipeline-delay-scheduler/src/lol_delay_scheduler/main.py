@@ -64,13 +64,13 @@ async def _tick(r: aioredis.Redis, log: logging.Logger) -> None:
 
 
 def _handle_sigterm(_signum: int, _frame: Any) -> None:
-    global _shutdown  # noqa: PLW0603
+    global _shutdown
     _shutdown = True
 
 
 async def main() -> None:
     """Delay Scheduler loop — polls delayed:messages every DELAY_SCHEDULER_INTERVAL_MS."""
-    global _shutdown  # noqa: PLW0603
+    global _shutdown
     _shutdown = False
     signal.signal(signal.SIGTERM, _handle_sigterm)
 

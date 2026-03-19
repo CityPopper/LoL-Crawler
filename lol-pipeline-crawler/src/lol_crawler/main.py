@@ -23,7 +23,7 @@ _OUT_STREAM = "stream:match_id"
 _GROUP = "crawlers"
 
 
-async def _crawl_player(
+async def _crawl_player(  # noqa: C901, PLR0915
     r: aioredis.Redis,
     riot: RiotClient,
     cfg: Config,
