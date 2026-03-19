@@ -11,6 +11,7 @@ import redis.asyncio as aioredis
 from lol_pipeline.config import Config
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
+from lol_pipeline.priority import clear_priority
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.service import run_consumer
 from lol_pipeline.streams import ack
@@ -115,6 +116,8 @@ async def _analyze_player(
         derived = _derived(stats)
         if derived:
             await r.hset(f"player:stats:{puuid}", mapping=derived)  # type: ignore[misc]
+
+        await clear_priority(r, puuid)
 
     finally:
         result = await r.eval(_RELEASE_LOCK_LUA, 1, lock_key, worker_id)  # type: ignore[misc]

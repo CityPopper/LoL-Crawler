@@ -140,6 +140,8 @@ async def nack_to_dlq(
         original_stream=envelope.source_stream,
         original_message_id=original_message_id,
         retry_after_ms=retry_after_ms,
+        enqueued_at=envelope.enqueued_at,
+        priority=envelope.priority,
     )
     fields: dict[str, Any] = dlq.to_redis_fields()
     await r.xadd(_DLQ_STREAM, fields)  # type: ignore[arg-type]  # redis-py 7 xadd signature

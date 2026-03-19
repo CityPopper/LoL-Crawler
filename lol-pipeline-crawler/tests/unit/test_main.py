@@ -92,6 +92,29 @@ class TestCrawlZeroMatches:
         assert await r.hget("player:test-puuid-0001", "last_crawled_at") is not None
 
 
+class TestCrawlPriority:
+    @pytest.mark.asyncio
+    async def test_crawl__zero_matches__clears_priority_key(self, r, cfg, log):
+        """Zero matches found → clear_priority called (removes player:priority key)."""
+        puuid = "test-puuid-0001"
+        # Set a priority key to verify it gets cleared
+        await r.set(f"player:priority:{puuid}", "high")
+        await r.set("system:priority_count", "1")
+
+        env = _puuid_envelope(puuid=puuid)
+        msg_id = await _setup_message(r, env)
+
+        with respx.mock:
+            respx.get(_match_ids_url()).mock(return_value=httpx.Response(200, json=[]))
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        # Priority key should be cleared
+        assert await r.get(f"player:priority:{puuid}") is None
+        assert await r.get("system:priority_count") == "0"
+
+
 class TestCrawlPagination:
     @pytest.mark.asyncio
     async def test_single_page_100_matches(self, r, cfg, log):

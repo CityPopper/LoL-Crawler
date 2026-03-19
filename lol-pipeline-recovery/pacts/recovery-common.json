@@ -31,7 +31,8 @@
         "dlq_attempts": 0,
         "retry_after_ms": 61000,
         "original_stream": "stream:match_id",
-        "original_message_id": "1704067200000-0"
+        "original_message_id": "1704067200000-0",
+        "priority": "normal"
       },
       "matchingRules": {
         "body": {
@@ -57,7 +58,8 @@
           "$.dlq_attempts": { "matchers": [ { "match": "integer" } ] },
           "$.retry_after_ms": { "matchers": [ { "match": "integer" } ] },
           "$.original_stream": { "matchers": [ { "match": "type" } ] },
-          "$.original_message_id": { "matchers": [ { "match": "type" } ] }
+          "$.original_message_id": { "matchers": [ { "match": "type" } ] },
+          "$.priority": { "matchers": [ { "match": "regex", "regex": "^(high|normal)$" } ] }
         }
       },
       "metadata": { "contentType": "application/json" }
@@ -87,7 +89,8 @@
         "dlq_attempts": 0,
         "retry_after_ms": null,
         "original_stream": "stream:match_id",
-        "original_message_id": "1704067200000-1"
+        "original_message_id": "1704067200000-1",
+        "priority": "normal"
       },
       "matchingRules": {
         "body": {
@@ -113,7 +116,8 @@
           "$.dlq_attempts": { "matchers": [ { "match": "integer" } ] },
           "$.retry_after_ms": { "matchers": [ { "match": "null" } ] },
           "$.original_stream": { "matchers": [ { "match": "type" } ] },
-          "$.original_message_id": { "matchers": [ { "match": "type" } ] }
+          "$.original_message_id": { "matchers": [ { "match": "type" } ] },
+          "$.priority": { "matchers": [ { "match": "regex", "regex": "^(high|normal)$" } ] }
         }
       },
       "metadata": { "contentType": "application/json" }
@@ -143,7 +147,8 @@
         "dlq_attempts": 0,
         "retry_after_ms": null,
         "original_stream": "stream:match_id",
-        "original_message_id": "1704067200000-2"
+        "original_message_id": "1704067200000-2",
+        "priority": "normal"
       },
       "matchingRules": {
         "body": {
@@ -160,7 +165,8 @@
           "$.dlq_attempts": { "matchers": [ { "match": "integer" } ] },
           "$.retry_after_ms": { "matchers": [ { "match": "null" } ] },
           "$.original_stream": { "matchers": [ { "match": "type" } ] },
-          "$.original_message_id": { "matchers": [ { "match": "type" } ] }
+          "$.original_message_id": { "matchers": [ { "match": "type" } ] },
+          "$.priority": { "matchers": [ { "match": "regex", "regex": "^(high|normal)$" } ] }
         }
       },
       "metadata": { "contentType": "application/json" }
@@ -190,7 +196,8 @@
         "dlq_attempts": 0,
         "retry_after_ms": null,
         "original_stream": "stream:parse",
-        "original_message_id": "1704067200000-3"
+        "original_message_id": "1704067200000-3",
+        "priority": "normal"
       },
       "matchingRules": {
         "body": {
@@ -207,7 +214,8 @@
           "$.dlq_attempts": { "matchers": [ { "match": "integer" } ] },
           "$.retry_after_ms": { "matchers": [ { "match": "null" } ] },
           "$.original_stream": { "matchers": [ { "match": "type" } ] },
-          "$.original_message_id": { "matchers": [ { "match": "type" } ] }
+          "$.original_message_id": { "matchers": [ { "match": "type" } ] },
+          "$.priority": { "matchers": [ { "match": "regex", "regex": "^(high|normal)$" } ] }
         }
       },
       "metadata": { "contentType": "application/json" }
@@ -237,7 +245,8 @@
         "dlq_attempts": 0,
         "retry_after_ms": null,
         "original_stream": "stream:match_id",
-        "original_message_id": "1704067200000-4"
+        "original_message_id": "1704067200000-4",
+        "priority": "normal"
       },
       "matchingRules": {
         "body": {
@@ -254,7 +263,8 @@
           "$.dlq_attempts": { "matchers": [ { "match": "integer" } ] },
           "$.retry_after_ms": { "matchers": [ { "match": "null" } ] },
           "$.original_stream": { "matchers": [ { "match": "type" } ] },
-          "$.original_message_id": { "matchers": [ { "match": "type" } ] }
+          "$.original_message_id": { "matchers": [ { "match": "type" } ] },
+          "$.priority": { "matchers": [ { "match": "regex", "regex": "^(high|normal)$" } ] }
         }
       },
       "metadata": { "contentType": "application/json" }

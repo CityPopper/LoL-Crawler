@@ -208,6 +208,101 @@ class TestDLQEnvelopeBoundary:
         assert dlq.dlq_attempts == 0
 
 
+class TestEnvelopePriority:
+    """Sprint 5: priority field on MessageEnvelope."""
+
+    def test_envelope__priority_default_is_normal(self):
+        """New envelopes default to priority='normal'."""
+        env = MessageEnvelope(
+            source_stream="stream:test",
+            type="test",
+            payload={},
+            max_attempts=5,
+        )
+        assert env.priority == "normal"
+
+    def test_envelope__priority_high_roundtrips(self):
+        """priority='high' survives to_redis_fields/from_redis_fields."""
+        env = MessageEnvelope(
+            source_stream="stream:puuid",
+            type="puuid",
+            payload={"puuid": "abc"},
+            max_attempts=5,
+            priority="high",
+        )
+        fields = env.to_redis_fields()
+        assert fields["priority"] == "high"
+        restored = MessageEnvelope.from_redis_fields(fields)
+        assert restored.priority == "high"
+
+    def test_envelope__from_redis_missing_priority_defaults_normal(self):
+        """Old messages without priority field default to 'normal'."""
+        fields = {
+            "id": "abc",
+            "source_stream": "stream:test",
+            "type": "test",
+            "payload": "{}",
+            "attempts": "0",
+            "max_attempts": "5",
+            "enqueued_at": "2024-01-01T00:00:00+00:00",
+        }
+        env = MessageEnvelope.from_redis_fields(fields)
+        assert env.priority == "normal"
+
+
+class TestDLQEnvelopePriority:
+    """Sprint 5: priority field on DLQEnvelope."""
+
+    def test_dlq_envelope__priority_default_is_normal(self):
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={},
+            attempts=1,
+            max_attempts=5,
+            failure_code="http_429",
+            failure_reason="rate limited",
+            failed_by="fetcher",
+            original_stream="stream:match_id",
+            original_message_id="1-0",
+        )
+        assert dlq.priority == "normal"
+
+    def test_dlq_envelope__priority_high_roundtrips(self):
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"match_id": "NA1_123"},
+            attempts=1,
+            max_attempts=5,
+            failure_code="http_429",
+            failure_reason="rate limited",
+            failed_by="fetcher",
+            original_stream="stream:match_id",
+            original_message_id="1-0",
+            priority="high",
+        )
+        fields = dlq.to_redis_fields()
+        assert fields["priority"] == "high"
+        restored = DLQEnvelope.from_redis_fields(fields)
+        assert restored.priority == "high"
+
+    def test_dlq_envelope__from_redis_missing_priority_defaults_normal(self):
+        fields = {
+            "id": "abc",
+            "source_stream": "stream:dlq",
+            "type": "dlq",
+            "payload": "{}",
+            "attempts": "1",
+            "max_attempts": "5",
+            "failure_code": "http_429",
+            "failed_at": "2024-01-01T00:00:00+00:00",
+            "enqueued_at": "2024-01-01T00:00:00+00:00",
+        }
+        dlq = DLQEnvelope.from_redis_fields(fields)
+        assert dlq.priority == "normal"
+
+
 class TestEnvelopeSchemaIncludesDlqAttempts:
     """CQ-8: envelope.json must include dlq_attempts to match the dataclass."""
 
@@ -221,3 +316,40 @@ class TestEnvelopeSchemaIncludesDlqAttempts:
         assert "dlq_attempts" in props, "dlq_attempts missing from envelope.json properties"
         assert props["dlq_attempts"]["type"] == "string"
         assert props["dlq_attempts"]["default"] == "0"
+
+
+class TestEnvelopeSchemaIncludesPriority:
+    """Sprint 5: envelope.json and dlq_envelope.json must include priority."""
+
+    def test_priority_in_envelope_schema(self):
+        schema_path = (
+            Path(__file__).parent.parent.parent / "contracts" / "schemas" / "envelope.json"
+        )
+        schema = json.loads(schema_path.read_text())
+        props = schema["properties"]
+        assert "priority" in props, "priority missing from envelope.json properties"
+        assert props["priority"]["type"] == "string"
+        assert props["priority"]["enum"] == ["high", "normal"]
+        assert props["priority"]["default"] == "normal"
+
+    def test_priority_in_dlq_envelope_schema(self):
+        schema_path = (
+            Path(__file__).parent.parent.parent
+            / "contracts"
+            / "schemas"
+            / "dlq_envelope.json"
+        )
+        schema = json.loads(schema_path.read_text())
+        props = schema["properties"]
+        assert "priority" in props, "priority missing from dlq_envelope.json properties"
+        assert props["priority"]["type"] == "string"
+        assert props["priority"]["enum"] == ["high", "normal"]
+        assert props["priority"]["default"] == "normal"
+
+    def test_priority_not_in_required(self):
+        """priority is optional — must NOT be in required array (backward compatible)."""
+        schema_path = (
+            Path(__file__).parent.parent.parent / "contracts" / "schemas" / "envelope.json"
+        )
+        schema = json.loads(schema_path.read_text())
+        assert "priority" not in schema["required"]

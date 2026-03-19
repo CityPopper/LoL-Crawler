@@ -27,6 +27,7 @@ class MessageEnvelope:
     attempts: int = 0
     enqueued_at: str = field(default_factory=_now_iso)
     dlq_attempts: int = 0
+    priority: str = "normal"
 
     def to_redis_fields(self) -> dict[str, str]:
         return {
@@ -38,6 +39,7 @@ class MessageEnvelope:
             "max_attempts": str(self.max_attempts),
             "enqueued_at": self.enqueued_at,
             "dlq_attempts": str(self.dlq_attempts),
+            "priority": self.priority,
         }
 
     @classmethod
@@ -51,6 +53,7 @@ class MessageEnvelope:
             max_attempts=int(fields["max_attempts"]),
             enqueued_at=fields["enqueued_at"],
             dlq_attempts=int(fields.get("dlq_attempts", "0")),
+            priority=fields.get("priority", "normal"),
         )
 
 
@@ -73,6 +76,7 @@ class DLQEnvelope:
     enqueued_at: str = field(default_factory=_now_iso)
     retry_after_ms: int | None = None
     dlq_attempts: int = 0
+    priority: str = "normal"
 
     def to_redis_fields(self) -> dict[str, str]:
         return {
@@ -91,6 +95,7 @@ class DLQEnvelope:
             "enqueued_at": self.enqueued_at,
             "dlq_attempts": str(self.dlq_attempts),
             "retry_after_ms": "null" if self.retry_after_ms is None else str(self.retry_after_ms),
+            "priority": self.priority,
         }
 
     @classmethod
@@ -112,4 +117,5 @@ class DLQEnvelope:
             enqueued_at=fields["enqueued_at"],
             retry_after_ms=None if ram == "null" else int(ram),
             dlq_attempts=int(fields.get("dlq_attempts", "0")),
+            priority=fields.get("priority", "normal"),
         )

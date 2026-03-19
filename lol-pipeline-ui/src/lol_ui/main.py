@@ -30,6 +30,7 @@ from lol_pipeline.riot_api import (
     RiotClient,
     ServerError,
 )
+from lol_pipeline.priority import set_priority
 from lol_pipeline.streams import publish
 
 _STREAM_PUUID = "stream:puuid"
@@ -341,8 +342,10 @@ async def show_stats(request: Request) -> HTMLResponse:
                 "region": region,
             },
             max_attempts=cfg.max_attempts,
+            priority="high",
         )
         await publish(r, _STREAM_PUUID, envelope)
+        await set_priority(r, puuid)
         now_iso = datetime.now(tz=UTC).isoformat()
         await r.hset(
             f"player:{puuid}",
@@ -479,9 +482,13 @@ async def show_streams(request: Request) -> HTMLResponse:
         else '<p class="success">&#10003; System running</p>'
     )
 
+    priority_count_val = await r.get("system:priority_count")
+    priority_display = priority_count_val or "0"
+
     body = f"""
 <h2>Stream Depths</h2>
 {status}
+<p>Priority players in-flight: <strong>{priority_display}</strong></p>
 <table class="streams">
   <tr><th>Key</th><th>Length</th></tr>
   {rows}

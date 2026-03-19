@@ -224,6 +224,70 @@ class TestCorruptMessageHandling:
         assert msgs2 == []
 
 
+class TestNackToDlqPriorityAndEnqueuedAt:
+    """Sprint 5: nack_to_dlq preserves priority and enqueued_at from source envelope."""
+
+    @pytest.mark.asyncio
+    async def test_nack_to_dlq__preserves_priority_field(self, r):
+        """DLQ envelope inherits priority from the source MessageEnvelope."""
+        env = MessageEnvelope(
+            source_stream="stream:match_id",
+            type="match_id",
+            payload={"match_id": "NA1_999"},
+            max_attempts=5,
+            priority="high",
+        )
+        await nack_to_dlq(
+            r,
+            env,
+            failure_code="http_429",
+            failed_by="fetcher",
+            original_message_id="123-0",
+        )
+        entries = await r.xrange("stream:dlq")
+        assert len(entries) == 1
+        fields = entries[0][1]
+        assert fields["priority"] == "high"
+
+    @pytest.mark.asyncio
+    async def test_nack_to_dlq__preserves_enqueued_at(self, r):
+        """DLQ envelope inherits enqueued_at from the source MessageEnvelope (CQ-23)."""
+        original_ts = "2024-06-15T12:00:00+00:00"
+        env = MessageEnvelope(
+            source_stream="stream:parse",
+            type="parse",
+            payload={"match_id": "NA1_111"},
+            max_attempts=5,
+            enqueued_at=original_ts,
+        )
+        await nack_to_dlq(
+            r,
+            env,
+            failure_code="http_5xx",
+            failed_by="parser",
+            original_message_id="456-0",
+        )
+        entries = await r.xrange("stream:dlq")
+        assert len(entries) == 1
+        fields = entries[0][1]
+        assert fields["enqueued_at"] == original_ts
+
+    @pytest.mark.asyncio
+    async def test_nack_to_dlq__default_priority_is_normal(self, r):
+        """When source envelope has default priority, DLQ envelope also gets 'normal'."""
+        env = _env()
+        await nack_to_dlq(
+            r,
+            env,
+            failure_code="http_429",
+            failed_by="fetcher",
+            original_message_id="789-0",
+        )
+        entries = await r.xrange("stream:dlq")
+        fields = entries[0][1]
+        assert fields["priority"] == "normal"
+
+
 class TestNackToDlqErrors:
     @pytest.mark.asyncio
     async def test_nack_to_dlq__xadd_raises__propagates(self):

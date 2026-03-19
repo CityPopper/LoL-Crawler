@@ -392,6 +392,41 @@ class TestMainEntryPoint:
         assert call_args[5] == "euw1"
 
 
+class TestSeedPriority:
+    @pytest.mark.asyncio
+    async def test_seed__envelope_has_high_priority(self, r, cfg, log):
+        """Seeded envelope has priority='high'."""
+        with respx.mock:
+            respx.get(
+                "https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Faker/KR1"
+            ).mock(return_value=_account_response())
+
+            riot = RiotClient("RGAPI-test")
+            result = await seed(r, riot, cfg, "Faker", "KR1", "kr", log)
+            await riot.close()
+
+        assert result == 0
+        entries = await r.xrange("stream:puuid")
+        assert len(entries) == 1
+        assert entries[0][1]["priority"] == "high"
+
+    @pytest.mark.asyncio
+    async def test_seed__sets_priority_key_and_increments_counter(self, r, cfg, log):
+        """Seed sets player:priority:{puuid} and increments system:priority_count."""
+        with respx.mock:
+            respx.get(
+                "https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Faker/KR1"
+            ).mock(return_value=_account_response())
+
+            riot = RiotClient("RGAPI-test")
+            result = await seed(r, riot, cfg, "Faker", "KR1", "kr", log)
+            await riot.close()
+
+        assert result == 0
+        assert await r.get("player:priority:test-puuid-0001") == "high"
+        assert await r.get("system:priority_count") == "1"
+
+
 class TestSeedPublishBeforeHset:
     """CQ-5: publish() must happen before hset(seeded_at)."""
 

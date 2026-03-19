@@ -496,6 +496,79 @@ class TestStatsMatchesPipeline:
         await r.aclose()
 
 
+try:
+    import lupa  # noqa: F401
+
+    _LUPA_AVAILABLE = True
+except ImportError:
+    _LUPA_AVAILABLE = False
+
+
+class TestAutoSeedPriority:
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not _LUPA_AVAILABLE, reason="lupa required for Lua scripts")
+    async def test_show_stats__auto_seed_sets_priority_high(self):
+        """Auto-seed envelope has priority='high' and sets player:priority key."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_stats
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        class FakeRiot:
+            async def get_account_by_riot_id(self, gn, tl, region):
+                return {"puuid": "test-puuid-ui"}
+
+        class FakeCfg:
+            max_attempts = 5
+
+        request = re.Match  # unused, just need a MagicMock
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.query_params = {"riot_id": "Test#NA1", "region": "na1"}
+        request.app.state.r = r
+        request.app.state.cfg = FakeCfg()
+        request.app.state.riot = FakeRiot()
+        request.app.state.lcu = {}
+
+        resp = await show_stats(request)
+
+        # Check envelope in stream has priority=high
+        entries = await r.xrange("stream:puuid")
+        assert len(entries) == 1
+        assert entries[0][1]["priority"] == "high"
+
+        # Check priority key was set
+        assert await r.get("player:priority:test-puuid-ui") == "high"
+        assert await r.get("system:priority_count") == "1"
+
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not _LUPA_AVAILABLE, reason="lupa required for Lua scripts")
+    async def test_show_streams__displays_priority_count(self):
+        """The /streams page displays system:priority_count value."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_streams
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.set("system:priority_count", "3")
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+
+        resp = await show_streams(request)
+        body = resp.body.decode()
+        assert "Priority players in-flight" in body
+        assert "<strong>3</strong>" in body
+
+        await r.aclose()
+
+
 class TestAutoSeedOrdering:
     """CQ-12: publish() must happen before hset(seeded_at) in auto-seed path."""
 

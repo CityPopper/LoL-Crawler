@@ -164,6 +164,21 @@ class TestParseMember:
         assert region == "na1"
 
 
+class TestIsIdlePriority:
+    @pytest.mark.asyncio
+    async def test_is_idle__priority_count_positive__returns_false(self, r):
+        """When system:priority_count > 0, pipeline is NOT idle (priority players in flight)."""
+        await r.set("system:priority_count", "2")
+        assert await _is_idle(r) is False
+
+    @pytest.mark.asyncio
+    async def test_is_idle__priority_count_zero__checks_streams(self, r):
+        """When system:priority_count is 0, falls through to stream check (idle)."""
+        await r.set("system:priority_count", "0")
+        # No stream exists → idle
+        assert await _is_idle(r) is True
+
+
 class TestIsIdle:
     @pytest.mark.asyncio
     async def test_no_stream_returns_true(self, r):

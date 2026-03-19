@@ -14,6 +14,7 @@ from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.riot_api import AuthError, NotFoundError, RiotAPIError, RiotClient
+from lol_pipeline.priority import priority_count
 from lol_pipeline.streams import publish
 from redis.exceptions import ResponseError
 
@@ -40,7 +41,13 @@ async def _is_idle(r: aioredis.Redis) -> bool:
     XLEN counts all entries ever added (including already-consumed ones) so it cannot be
     used as an idle check.  XINFO GROUPS provides 'pending' (delivered but not yet ACKed)
     and 'lag' (not yet delivered) — both zero means the pipeline has caught up.
+
+    Also returns False when priority players are in-flight (system:priority_count > 0)
+    to avoid promoting discovery players that would compete with seeded players.
     """
+    count = await priority_count(r)
+    if count > 0:
+        return False
     try:
         groups: list[Any] = await r.xinfo_groups(_STREAM_PUUID)  # type: ignore[misc]
     except ResponseError:
