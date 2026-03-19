@@ -40,7 +40,7 @@ async def _deserialize_entries(
 ) -> list[tuple[str, MessageEnvelope]]:
     """Deserialize raw xreadgroup entries, acking corrupt messages."""
     result: list[tuple[str, MessageEnvelope]] = []
-    for _, entries in (raw_entries or []):
+    for _, entries in raw_entries or []:
         for msg_id, fields in entries:
             try:
                 env = MessageEnvelope.from_redis_fields(fields)

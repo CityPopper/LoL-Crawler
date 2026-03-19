@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import signal
 from collections.abc import Awaitable, Callable
@@ -90,10 +91,8 @@ async def run_consumer(
         log.info("SIGTERM received — shutting down gracefully")
 
     loop = asyncio.get_event_loop()
-    try:
+    with contextlib.suppress(NotImplementedError, OSError):
         loop.add_signal_handler(signal.SIGTERM, _sigterm_handler)
-    except (NotImplementedError, OSError):
-        pass  # Windows or non-main thread — skip signal handler
 
     idle_polls = 0
     handler_failures: dict[str, int] = {}

@@ -22,6 +22,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from lol_pipeline.config import Config
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
+from lol_pipeline.priority import set_priority
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.riot_api import (
     AuthError,
@@ -30,7 +31,6 @@ from lol_pipeline.riot_api import (
     RiotClient,
     ServerError,
 )
-from lol_pipeline.priority import set_priority
 from lol_pipeline.streams import publish
 
 _STREAM_PUUID = "stream:puuid"
@@ -211,7 +211,8 @@ def _match_history_section(puuid: str, region: str, riot_id: str) -> str:
         f"&amp;region={safe_region}&amp;riot_id={safe_id}&amp;page=0"
     )
     onclick = f"loadMatches(this, '{safe_puuid}', '{safe_region}', '{safe_id}', 0); return false;"
-    err_msg = "container.innerHTML = '<p class=\"error\">Failed to load: ' + (e.message || e) + '</p>';"
+    err_txt = "'<p class=\"error\">Failed to load: ' + (e.message || e) + '</p>'"
+    err_msg = f"container.innerHTML = {err_txt};"
     return f"""
 <h3>Match History</h3>
 <div id="match-history-container">

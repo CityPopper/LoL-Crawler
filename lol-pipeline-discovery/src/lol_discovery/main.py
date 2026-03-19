@@ -12,9 +12,9 @@ import redis.asyncio as aioredis
 from lol_pipeline.config import Config
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
+from lol_pipeline.priority import priority_count
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.riot_api import AuthError, NotFoundError, RiotAPIError, RiotClient
-from lol_pipeline.priority import priority_count
 from lol_pipeline.streams import publish
 from redis.exceptions import ResponseError
 
@@ -151,13 +151,13 @@ async def _promote_batch(
 
 
 def _handle_sigterm(_signum: int, _frame: Any) -> None:
-    global _shutdown  # noqa: PLW0603
+    global _shutdown
     _shutdown = True
 
 
 async def main() -> None:
     """Discovery loop — runs only when stream:puuid is idle."""
-    global _shutdown  # noqa: PLW0603
+    global _shutdown
     _shutdown = False
     signal.signal(signal.SIGTERM, _handle_sigterm)
 

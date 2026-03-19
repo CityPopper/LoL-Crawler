@@ -56,9 +56,7 @@ async def _write_participant(
                 "deaths": str(p.get("deaths", 0)),
                 "assists": str(p.get("assists", 0)),
                 "gold_earned": str(p.get("goldEarned", 0)),
-                "total_damage_dealt_to_champions": str(
-                    p.get("totalDamageDealtToChampions", 0)
-                ),
+                "total_damage_dealt_to_champions": str(p.get("totalDamageDealtToChampions", 0)),
                 "total_minions_killed": str(p.get("totalMinionsKilled", 0)),
                 "vision_score": str(p.get("visionScore", 0)),
                 "items": items,

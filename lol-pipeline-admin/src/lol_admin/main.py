@@ -94,7 +94,8 @@ async def cmd_stats(
         return 1
     stats: dict[str, str] = await r.hgetall(f"player:stats:{puuid}")  # type: ignore[misc]
     if not stats:
-        print(f"error: player not found in Redis (not yet analyzed): {args.riot_id}", file=sys.stderr)
+        rid = args.riot_id
+        print(f"error: player not found in Redis (not yet analyzed): {rid}", file=sys.stderr)
         return 1
     game_name, tag_line = args.riot_id.split("#", 1)
     print(f"Stats for {game_name}#{tag_line} ({puuid[:12]}...):")

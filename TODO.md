@@ -2,22 +2,21 @@
 
 ## Active Work
 
-All active work items are tracked in **Phase 7 "IRONCLAD"**: `docs/phases/07-next-phase.md`
-
-### Quick Reference
-
-| Sprint | Area | Items |
-|--------|------|-------|
-| S1 (P0) | Doc/CLI/DevEx fixes | 34 items |
-| S2 (P1) | Security + code quality | 27 items |
-| S3 (P2) | Tier 3 tests (verify) | Done — needs test run verification |
-| S4 (P3) | Tier 4 tests + Docker/CI | 16 items |
-| S5 (P4) | Weighted priority queue | 15 acceptance criteria |
+Phase 7 "IRONCLAD" is **complete**. All 5 sprints shipped.
 
 ### Open Bugs
 
 None.
 
-### Data Collection Priority (Phase 7 Sprint 5)
+### Phase 8 (not yet started)
 
-Weighted queue for fetching data — manually seeded players processed before auto-discovered ones. Full design and acceptance criteria in `docs/phases/07-next-phase.md` Sprint 5.
+All Phase 8 items are listed in `docs/phases/07-next-phase.md` under "Explicitly Deferred to Phase 8". Key items:
+
+- **LCU troubleshooting** — connection issues on some setups (requires League client)
+- **Integration tests** — IT-08 through IT-11 for priority queue end-to-end
+- **Prometheus + Grafana** — monitoring stack
+- **Redis ACLs** — per-service users for production
+- **TLS reverse proxy** — for Web UI in production
+- **Docker-compose.prod.yml** — production compose (DK-6, deferred)
+- **UI responsive design** — mobile/tablet support (design review items)
+- **Dark theme** — apply design system to actual CSS (design review DR-2)
