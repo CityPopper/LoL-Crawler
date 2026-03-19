@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Pre-push hook: runs lint, format check, and tests before pushing.
+# Install: git config core.hooksPath .githooks
+set -e
+
+# Find Python: prefer .venv, then python3, then python
+PYTHON="${PWD}/.venv/bin/python"
+[ -x "$PYTHON" ] || PYTHON="$(command -v python3 2>/dev/null || command -v python)"
+
+echo "=== Pre-push: lint ==="
+"$PYTHON" -m ruff check lol-pipeline-*/src/ lol-pipeline-common/src/
+
+echo "=== Pre-push: format ==="
+"$PYTHON" -m ruff format --check lol-pipeline-*/src/ lol-pipeline-common/src/
+
+echo "=== Pre-push: tests ==="
+FAILED=""
+for svc in lol-pipeline-*/; do
+    [ -d "$svc/tests/unit" ] || continue
+    if ! "$PYTHON" -m pytest "$svc/tests/unit" -q --no-header --tb=line 2>/dev/null; then
+        FAILED="$FAILED $svc"
+    fi
+done
+
+if [ -n "$FAILED" ]; then
+    echo ""
+    echo "FAILED services:$FAILED"
+    echo "Push aborted. Fix tests before pushing."
+    exit 1
+fi
+
+echo ""
+echo "=== All checks passed ==="
