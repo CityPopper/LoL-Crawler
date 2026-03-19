@@ -102,6 +102,23 @@ class TestHandleWithRetry:
         assert msg_id not in failures
 
 
+class TestFailuresDictBounded:
+    @pytest.mark.asyncio
+    async def test_failures_dict_bounded(self, r, log):
+        """Failures dict does not grow beyond _MAX_FAILURE_ENTRIES."""
+        failures = {f"fake-{i}": 1 for i in range(10_000)}
+        msg_id, envelope = await _setup(r)
+
+        async def bad_handler(mid, env):
+            raise RuntimeError("boom")
+
+        await _handle_with_retry(
+            r, _STREAM, _GROUP, msg_id, envelope,
+            bad_handler, log, failures, 3,
+        )
+        assert len(failures) <= 10_000
+
+
 class TestRunConsumer:
     @pytest.mark.asyncio
     async def test_halted_exits_immediately(self, r, log):

@@ -244,6 +244,35 @@ class TestAnalyzerEdgeCases:
         assert len(stats["kda"].split(".")[1]) == 4
 
 
+class TestAnalyzerPipeline:
+    @pytest.mark.asyncio
+    async def test_stats_update_uses_pipeline(self, r, cfg, log):
+        """HINCRBY calls are batched in a pipeline, not issued individually."""
+        puuid = "test-puuid-0001"
+        await _add_participant(r, "NA1_1", puuid, 1000)
+        env = _analyze_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        hincrby_count = 0
+        original_hincrby = r.hincrby
+
+        async def counting_hincrby(*args, **kwargs):
+            nonlocal hincrby_count
+            hincrby_count += 1
+            return await original_hincrby(*args, **kwargs)
+
+        r.hincrby = counting_hincrby
+
+        await _analyze_player(r, cfg, "my-worker", msg_id, env, log)
+
+        # With pipeline batching, hincrby is called on the pipe, not r
+        assert hincrby_count == 0, (
+            f"Expected 0 individual hincrby calls, got {hincrby_count}"
+        )
+        # Stats should still be updated correctly
+        assert await r.hget(f"player:stats:{puuid}", "total_games") == "1"
+
+
 class TestAnalyzerDerivedRecovery:
     @pytest.mark.asyncio
     async def test_derived_stats_recomputed_on_empty_run(self, r, cfg, log):

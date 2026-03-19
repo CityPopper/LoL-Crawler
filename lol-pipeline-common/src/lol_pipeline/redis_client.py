@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import redis.asyncio as aioredis
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 
 def get_redis(url: str) -> aioredis.Redis:
@@ -13,6 +15,6 @@ def get_redis(url: str) -> aioredis.Redis:
 async def health_check(r: aioredis.Redis) -> bool:
     """Return True if Redis responds to PING."""
     try:
-        return bool(await r.ping())  # type: ignore[misc]
-    except Exception:  # pragma: no cover
+        return bool(await r.ping())  # type: ignore[misc]  # redis-py 7 returns Any
+    except (RedisConnectionError, RedisTimeoutError, OSError):
         return False

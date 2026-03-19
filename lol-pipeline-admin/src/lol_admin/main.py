@@ -57,7 +57,10 @@ def _name_cache_key(game_name: str, tag_line: str) -> str:
 
 
 async def _resolve_puuid(
-    riot: RiotClient, riot_id: str, region: str, r: aioredis.Redis | None = None,
+    riot: RiotClient,
+    riot_id: str,
+    region: str,
+    r: aioredis.Redis | None = None,
 ) -> str | None:
     if "#" not in riot_id:
         _log.error("invalid Riot ID — expected GameName#TagLine", extra={"riot_id": riot_id})
@@ -263,35 +266,39 @@ def _build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 
+_DLQ_DISPATCH = {
+    "list": lambda r, cfg, args: cmd_dlq_list(r, args),
+    "replay": cmd_dlq_replay,
+    "clear": lambda r, cfg, args: cmd_dlq_clear(r, args),
+}
+
+_CMD_DISPATCH = {
+    "stats": cmd_stats,
+    "system-resume": lambda r, riot, cfg, args: cmd_system_resume(r, args),
+    "dlq": lambda r, riot, cfg, args: _dispatch_dlq(r, cfg, args),
+    "replay-parse": lambda r, riot, cfg, args: cmd_replay_parse(r, cfg, args),
+    "replay-fetch": lambda r, riot, cfg, args: cmd_replay_fetch(r, cfg, args),
+    "reseed": cmd_reseed,
+}
+
+
 async def _dispatch(
     r: aioredis.Redis,
     riot: RiotClient,
     cfg: Config,
     args: argparse.Namespace,
 ) -> int:
-    if args.command == "stats":
-        return await cmd_stats(r, riot, cfg, args)
-    if args.command == "system-resume":
-        return await cmd_system_resume(r, args)
-    if args.command == "dlq":
-        return await _dispatch_dlq(r, cfg, args)
-    if args.command == "replay-parse":
-        return await cmd_replay_parse(r, cfg, args)
-    if args.command == "replay-fetch":
-        return await cmd_replay_fetch(r, cfg, args)
-    if args.command == "reseed":
-        return await cmd_reseed(r, riot, cfg, args)
-    raise AssertionError(f"unreachable command: {args.command}")
+    handler = _CMD_DISPATCH.get(args.command)
+    if handler is None:
+        raise AssertionError(f"unreachable command: {args.command}")
+    return await handler(r, riot, cfg, args)
 
 
 async def _dispatch_dlq(r: aioredis.Redis, cfg: Config, args: argparse.Namespace) -> int:
-    if args.dlq_command == "list":
-        return await cmd_dlq_list(r, args)
-    if args.dlq_command == "replay":
-        return await cmd_dlq_replay(r, cfg, args)
-    if args.dlq_command == "clear":
-        return await cmd_dlq_clear(r, args)
-    raise AssertionError(f"unreachable dlq subcommand: {args.dlq_command}")
+    handler = _DLQ_DISPATCH.get(args.dlq_command)
+    if handler is None:
+        raise AssertionError(f"unreachable dlq subcommand: {args.dlq_command}")
+    return await handler(r, cfg, args)
 
 
 # ---------------------------------------------------------------------------
