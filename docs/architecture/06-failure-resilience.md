@@ -51,29 +51,44 @@ Docker's restart backoff.
 ## DLQ Lifecycle
 
 ```
-Service fails to process message
+Message delivered to service handler
         │
-        ├── attempts < max_attempts
-        │       ZADD delayed:messages (backoff delay)
-        │       ACK original
-        │       Delay Scheduler moves to original_stream when ready
-        │       Service retries...
+        │  Phase 1: In-process retry (service.py _handle_with_retry)
+        │  Retries the handler up to 3 times on exception before giving up.
+        │  No DLQ involvement — retries happen in the same consumer loop iteration.
         │
-        └── attempts >= max_attempts
-                XADD stream:dlq (with full DLQ envelope)
-                ACK original
-                        │
-                        Recovery processes stream:dlq
-                        │
-                        ├── Recoverable (http_429, http_5xx)
-                        │       dlq_attempts++
-                        │       if dlq_attempts < DLQ_MAX_ATTEMPTS:
-                        │           ZADD delayed:messages
-                        │       else:
-                        │           XADD stream:dlq:archive
-                        │
-                        └── Permanent (http_404, parse_error, unknown)
-                                Log and discard (or archive)
+        ├── Handler succeeds (attempt 1-3)
+        │       ACK message
+        │       Done
+        │
+        └── Handler fails all 3 in-process retries
+                nack_to_dlq() called
+                │
+                │  Phase 2: Stream-level redelivery
+                │
+                ├── attempts < max_attempts
+                │       ZADD delayed:messages (backoff delay)
+                │       ACK original
+                │       Delay Scheduler moves to original_stream when ready
+                │       Service retries (back to Phase 1)...
+                │
+                └── attempts >= max_attempts
+                        XADD stream:dlq (with full DLQ envelope)
+                        ACK original
+                                │
+                                │  Phase 3: DLQ recovery
+                                │
+                                Recovery processes stream:dlq
+                                │
+                                ├── Recoverable (http_429, http_5xx)
+                                │       dlq_attempts++
+                                │       if dlq_attempts < DLQ_MAX_ATTEMPTS:
+                                │           ZADD delayed:messages
+                                │       else:
+                                │           XADD stream:dlq:archive
+                                │
+                                └── Permanent (http_404, parse_error, unknown)
+                                        Log and discard (or archive)
 ```
 
 ---

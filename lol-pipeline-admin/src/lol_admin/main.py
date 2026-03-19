@@ -103,6 +103,12 @@ async def cmd_stats(
     return 0
 
 
+async def cmd_system_halt(r: aioredis.Redis, args: argparse.Namespace) -> int:
+    await r.set("system:halted", "1")
+    print("system halted — all consumers will stop on next message")
+    return 0
+
+
 async def cmd_system_resume(r: aioredis.Redis, args: argparse.Namespace) -> int:
     await r.delete("system:halted")
     print("system resumed — system:halted cleared")
@@ -235,6 +241,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("riot_id", metavar="GameName#TagLine")
     p.add_argument("--region", default="na1")
 
+    sub.add_parser("system-halt", help="set system:halted=1 (stops all consumers)")
     sub.add_parser("system-resume", help="clear system:halted")
 
     p_dlq = sub.add_parser("dlq", help="DLQ operations")
@@ -274,6 +281,7 @@ _DLQ_DISPATCH = {
 
 _CMD_DISPATCH = {
     "stats": cmd_stats,
+    "system-halt": lambda r, riot, cfg, args: cmd_system_halt(r, args),
     "system-resume": lambda r, riot, cfg, args: cmd_system_resume(r, args),
     "dlq": lambda r, riot, cfg, args: _dispatch_dlq(r, cfg, args),
     "replay-parse": lambda r, riot, cfg, args: cmd_replay_parse(r, cfg, args),

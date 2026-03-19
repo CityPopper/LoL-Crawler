@@ -483,13 +483,13 @@ docker compose exec redis redis-cli XLEN stream:dlq:archive
 # To recompute a single player:
 
 # 1. Get the PUUID
-docker compose exec redis redis-cli HGETALL "player:name:faker#kr1"
+docker compose exec redis redis-cli GET "player:name:faker#kr1"
 
 # 2. Delete their stats
 docker compose exec redis redis-cli DEL "player:stats:<puuid>"
 
 # 3. Reset their cursor so Analyzer reprocesses all matches
-docker compose exec redis redis-cli HDEL "player:stats:<puuid>" "cursor"
+docker compose exec redis redis-cli DEL "player:stats:cursor:<puuid>"
 
 # 4. Publish an analyze message
 just admin reseed "Faker#KR1"

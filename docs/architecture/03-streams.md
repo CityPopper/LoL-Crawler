@@ -94,9 +94,11 @@ DLQ messages include all standard envelope fields plus:
 - After `MAX_ATTEMPTS` failed deliveries, the message is routed to `stream:dlq`.
 - **PEL drain on startup:** `consume()` reads from `id="0"` (own pending entry list) before
   blocking for new messages, so a worker that restarts and reconnects with the same consumer
-  name will re-process any messages it had not ACKed. Note: if a worker crashes and restarts
-  with a different consumer name (e.g. new PID), its pending entries remain stranded in the
-  old consumer's PEL — `XAUTOCLAIM` is not currently implemented.
+  name will re-process any messages it had not ACKed. If a worker crashes and restarts
+  with a different consumer name (e.g. new PID), its pending entries are reclaimed by
+  `XAUTOCLAIM` — the `consume()` function in `streams.py` uses the `autoclaim_min_idle_ms`
+  parameter to automatically claim entries that have been idle longer than
+  `STREAM_ACK_TIMEOUT`.
 
 ---
 
