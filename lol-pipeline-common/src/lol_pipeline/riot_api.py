@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, cast
 
 import httpx
 import redis.asyncio as aioredis
+
+_log = logging.getLogger("riot_api")
 
 PLATFORM_TO_REGION: dict[str, str] = {
     "na1": "americas",
@@ -71,9 +74,17 @@ def _parse_app_rate_limit(header: str) -> tuple[int, int] | None:
         short = by_window.get(1)
         long_ = by_window.get(120)
         if short is None or long_ is None:
+            _log.warning(
+                "X-App-Rate-Limit missing expected windows — using defaults",
+                extra={"header": header, "windows_found": list(by_window.keys())},
+            )
             return None
         return short, long_
     except (ValueError, TypeError):
+        _log.warning(
+            "failed to parse X-App-Rate-Limit header — using defaults",
+            extra={"header": header},
+        )
         return None
 
 
@@ -86,6 +97,7 @@ def _raise_for_status(resp: httpx.Response) -> Any:
         raise AuthError(str(resp.url))
     if resp.status_code == 429:
         retry_after = resp.headers.get("Retry-After")
+        # +1000ms jitter to avoid thundering herd on rate-limit window reset
         retry_ms = int(retry_after) * 1000 + 1000 if retry_after else None
         raise RateLimitError(retry_ms)
     raise ServerError(f"HTTP {resp.status_code}: {resp.text[:200]}")
@@ -139,9 +151,7 @@ class RiotClient:
         url = f"{base}/riot/account/v1/accounts/by-riot-id/{game_name}/{tag_line}"
         return cast(dict[str, Any], await self._get(url))
 
-    async def get_account_by_puuid(
-        self, puuid: str, region: str
-    ) -> dict[str, Any]:
+    async def get_account_by_puuid(self, puuid: str, region: str) -> dict[str, Any]:
         """Resolve a PUUID to an account dict containing 'gameName' and 'tagLine'."""
         routing = PLATFORM_TO_REGION.get(region, "americas")
         base = _API_BASE.format(routing=routing)

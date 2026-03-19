@@ -13,28 +13,47 @@ from lol_pipeline.config import Config
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.redis_client import get_redis
+from redis.exceptions import RedisError
 
 _DELAYED_KEY = "delayed:messages"
 
 
+_BATCH_SIZE = 100
+
+
 async def _tick(r: aioredis.Redis, log: logging.Logger) -> None:
     now_ms = int(time.time() * 1000)
-    members: list[Any] = await r.zrangebyscore(_DELAYED_KEY, 0, now_ms, withscores=False)
-    if not members:
-        return
-    for member in members:
-        try:
-            fields: dict[str, str] = json.loads(member)
-            env = MessageEnvelope.from_redis_fields(fields)
-            await r.xadd(env.source_stream, env.to_redis_fields())  # type: ignore[arg-type]
-            await r.zrem(_DELAYED_KEY, member)
-            log.info(
-                "dispatched delayed message",
-                extra={"stream": env.source_stream, "id": env.id},
-            )
-        except Exception as exc:
-            log.error("failed to dispatch member — removing", extra={"error": str(exc)})
-            await r.zrem(_DELAYED_KEY, member)
+    while True:
+        members: list[Any] = await r.zrangebyscore(
+            _DELAYED_KEY,
+            0,
+            now_ms,
+            start=0,
+            num=_BATCH_SIZE,
+            withscores=False,
+        )
+        if not members:
+            return
+        for member in members:
+            try:
+                fields: dict[str, str] = json.loads(member)
+                env = MessageEnvelope.from_redis_fields(fields)
+            except (json.JSONDecodeError, KeyError, ValueError) as exc:
+                log.error("corrupt delayed member — removing", extra={"error": str(exc)})
+                await r.zrem(_DELAYED_KEY, member)
+                continue
+            try:
+                await r.xadd(env.source_stream, env.to_redis_fields())  # type: ignore[arg-type]
+                await r.zrem(_DELAYED_KEY, member)
+                log.info(
+                    "dispatched delayed message",
+                    extra={"stream": env.source_stream, "id": env.id},
+                )
+            except (RedisError, OSError) as exc:
+                log.error(
+                    "Redis error dispatching — will retry",
+                    extra={"error": str(exc), "id": env.id},
+                )
 
 
 async def main() -> None:

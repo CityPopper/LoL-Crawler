@@ -106,6 +106,69 @@ def _backoff_ms(dlq_attempts: int) -> int:
     return _BACKOFF_MS[idx]
 
 
+async def _handle_transient(
+    r: aioredis.Redis,
+    cfg: Config,
+    msg_id: str,
+    dlq: DLQEnvelope,
+    log: logging.Logger,
+) -> None:
+    fc = dlq.failure_code
+    if dlq.dlq_attempts >= cfg.dlq_max_attempts:
+        await _archive(r, dlq, log)
+    else:
+        delay = (
+            dlq.retry_after_ms
+            if fc == "http_429" and dlq.retry_after_ms
+            else _backoff_ms(dlq.dlq_attempts)
+        )
+        await _requeue_delayed(r, dlq, delay)
+        log.info(
+            "requeued with delay",
+            extra={
+                "id": dlq.id,
+                "failure_code": fc,
+                "delay_ms": delay,
+                "dlq_attempts": dlq.dlq_attempts + 1,
+            },
+        )
+    await r.xack(_IN_STREAM, _GROUP, msg_id)
+
+
+async def _handle_404(
+    r: aioredis.Redis,
+    cfg: Config,
+    msg_id: str,
+    dlq: DLQEnvelope,
+    log: logging.Logger,
+) -> None:
+    log.info("404 — permanent discard", extra={"id": dlq.id, "payload": dlq.payload})
+    await r.xack(_IN_STREAM, _GROUP, msg_id)
+
+
+async def _handle_parse_error(
+    r: aioredis.Redis,
+    cfg: Config,
+    msg_id: str,
+    dlq: DLQEnvelope,
+    log: logging.Logger,
+) -> None:
+    log.warning(
+        "parse_error — archiving for operator review",
+        extra={"id": dlq.id, "payload": dlq.payload},
+    )
+    await _archive(r, dlq, log)
+    await r.xack(_IN_STREAM, _GROUP, msg_id)
+
+
+_HANDLERS = {
+    "http_429": _handle_transient,
+    "http_5xx": _handle_transient,
+    "http_404": _handle_404,
+    "parse_error": _handle_parse_error,
+}
+
+
 async def _process(
     r: aioredis.Redis,
     cfg: Config,
@@ -114,68 +177,33 @@ async def _process(
     dlq: DLQEnvelope,
     log: logging.Logger,
 ) -> None:
-    halted = bool(await r.get("system:halted"))
     fc = dlq.failure_code
 
+    # 403 is always handled immediately, regardless of halt state
     if fc == "http_403":
-        # Always handle 403 regardless of halt state
         await r.set("system:halted", "1")
         log.critical("403 in DLQ — system halted, archiving", extra={"id": dlq.id})
         await _archive(r, dlq, log)
         await r.xack(_IN_STREAM, _GROUP, msg_id)
         return
 
-    if halted:
-        # Leave recoverable entries unACKed while halted; they stay in PEL
+    if await r.get("system:halted"):
         log.info(
             "system halted — leaving DLQ entry in PEL",
             extra={"id": dlq.id, "failure_code": fc},
         )
         return
 
-    if fc in ("http_429", "http_5xx"):
-        if dlq.dlq_attempts >= cfg.dlq_max_attempts:
-            await _archive(r, dlq, log)
-        else:
-            delay = (
-                dlq.retry_after_ms
-                if fc == "http_429" and dlq.retry_after_ms
-                else _backoff_ms(dlq.dlq_attempts)
-            )
-            await _requeue_delayed(r, dlq, delay)
-            log.info(
-                "requeued with delay",
-                extra={
-                    "id": dlq.id,
-                    "failure_code": fc,
-                    "delay_ms": delay,
-                    "dlq_attempts": dlq.dlq_attempts + 1,
-                },
-            )
-        await r.xack(_IN_STREAM, _GROUP, msg_id)
-        return
-
-    if fc == "http_404":
-        log.info("404 — permanent discard", extra={"id": dlq.id, "payload": dlq.payload})
-        await r.xack(_IN_STREAM, _GROUP, msg_id)
-        return
-
-    if fc == "parse_error":
-        log.warning(
-            "parse_error — archiving for operator review",
-            extra={"id": dlq.id, "payload": dlq.payload},
+    handler = _HANDLERS.get(fc)
+    if handler:
+        await handler(r, cfg, msg_id, dlq, log)
+    else:
+        log.error(
+            "unknown failure_code — archiving for operator review",
+            extra={"id": dlq.id, "failure_code": fc},
         )
         await _archive(r, dlq, log)
         await r.xack(_IN_STREAM, _GROUP, msg_id)
-        return
-
-    # unknown failure code — archive so the entry is not silently lost
-    log.error(
-        "unknown failure_code — archiving for operator review",
-        extra={"id": dlq.id, "failure_code": fc},
-    )
-    await _archive(r, dlq, log)
-    await r.xack(_IN_STREAM, _GROUP, msg_id)
 
 
 async def main() -> None:

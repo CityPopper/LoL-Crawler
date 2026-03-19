@@ -45,7 +45,17 @@ class LcuClient:
             raise LcuNotRunningError("Lockfile is empty. Is the League client running?")
 
         parts = content.split(":")
-        self.port = int(parts[2])
+        if len(parts) < 4:
+            raise LcuNotRunningError(
+                f"Malformed lockfile (expected at least 4 colon-separated fields, "
+                f"got {len(parts)}): {content[:80]}"
+            )
+        try:
+            self.port = int(parts[2])
+        except ValueError as exc:
+            raise LcuNotRunningError(
+                f"Malformed lockfile (non-numeric port: {parts[2]!r})"
+            ) from exc
         self.password = parts[3]
 
     @property

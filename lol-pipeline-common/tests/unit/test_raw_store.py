@@ -158,6 +158,33 @@ class TestRawStoreJsonlBundle:
         assert '"first"' in lines[0]
 
 
+class TestRawStoreStreamingDecompression:
+    @pytest.mark.asyncio
+    async def test_compressed_search_uses_streaming(self, r, tmp_path):
+        """Compressed bundle search uses streaming, not full decompress."""
+        platform_dir = tmp_path / "NA1"
+        platform_dir.mkdir()
+        content = "NA1_700\t{\"streaming\": true}\n"
+        cctx = zstd.ZstdCompressor()
+        compressed = cctx.compress(content.encode())
+        (platform_dir / "2024-01.jsonl.zst").write_bytes(compressed)
+
+        store = RawStore(r, data_dir=str(tmp_path))
+
+        # Patch decompress to fail — streaming should not call it
+        original_decompress = zstd.ZstdDecompressor.decompress
+        zstd.ZstdDecompressor.decompress = property(
+            lambda self: (_ for _ in ()).throw(
+                AssertionError("decompress() should not be called")
+            )
+        )
+        try:
+            result = await store.get("NA1_700")
+            assert result == '{"streaming": true}'
+        finally:
+            zstd.ZstdDecompressor.decompress = original_decompress
+
+
 class TestRawStoreBundleEdgeCases:
     @pytest.mark.asyncio
     async def test_search_empty_jsonl_file(self, r, tmp_path):

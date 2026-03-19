@@ -86,23 +86,18 @@ async def _analyze_player(
                     f"participant:{match_id}:{puuid}"
                 )
                 if p:
-                    await r.hincrby(f"player:stats:{puuid}", "total_games", 1)  # type: ignore[misc]
-                    await r.hincrby(  # type: ignore[misc]
-                        f"player:stats:{puuid}", "total_wins", int(p.get("win", "0"))
-                    )
-                    await r.hincrby(  # type: ignore[misc]
-                        f"player:stats:{puuid}", "total_kills", int(p.get("kills", "0"))
-                    )
-                    await r.hincrby(  # type: ignore[misc]
-                        f"player:stats:{puuid}", "total_deaths", int(p.get("deaths", "0"))
-                    )
-                    await r.hincrby(  # type: ignore[misc]
-                        f"player:stats:{puuid}", "total_assists", int(p.get("assists", "0"))
-                    )
+                    stats_key = f"player:stats:{puuid}"
+                    pipe = r.pipeline(transaction=False)
+                    pipe.hincrby(stats_key, "total_games", 1)
+                    pipe.hincrby(stats_key, "total_wins", int(p.get("win", "0")))
+                    pipe.hincrby(stats_key, "total_kills", int(p.get("kills", "0")))
+                    pipe.hincrby(stats_key, "total_deaths", int(p.get("deaths", "0")))
+                    pipe.hincrby(stats_key, "total_assists", int(p.get("assists", "0")))
                     if champ := p.get("champion_name"):
-                        await r.zincrby(f"player:champions:{puuid}", 1, champ)
+                        pipe.zincrby(f"player:champions:{puuid}", 1, champ)
                     if role := p.get("role"):
-                        await r.zincrby(f"player:roles:{puuid}", 1, role)
+                        pipe.zincrby(f"player:roles:{puuid}", 1, role)
+                    await pipe.execute()
                 # Advance cursor per match so a crash mid-loop doesn't cause re-processing
                 await r.set(f"player:stats:cursor:{puuid}", str(score))
                 # Refresh lock TTL to prevent expiry during long processing
@@ -140,7 +135,12 @@ async def main() -> None:
     try:
         autoclaim_ms = cfg.stream_ack_timeout * 1000
         await run_consumer(
-            r, _IN_STREAM, _GROUP, worker_id, _handler, log,
+            r,
+            _IN_STREAM,
+            _GROUP,
+            worker_id,
+            _handler,
+            log,
             autoclaim_min_idle_ms=autoclaim_ms,
         )
     finally:

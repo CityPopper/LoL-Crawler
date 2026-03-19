@@ -28,9 +28,7 @@ def load_existing_game_ids(jsonl_path: Path) -> set[int]:
     return ids
 
 
-def _extract_player_stats(
-    game: dict[str, Any], puuid: str
-) -> dict[str, Any] | None:
+def _extract_player_stats(game: dict[str, Any], puuid: str) -> dict[str, Any] | None:
     """Extract the current player's stats from a game's participants."""
     for p in game.get("participants", []):
         if p.get("puuid") == puuid:
@@ -52,10 +50,12 @@ def _build_participants(game: dict[str, Any]) -> list[dict[str, Any]]:
     """Build a minimal participant list from the game data."""
     result = []
     for p in game.get("participants", []):
-        result.append({
-            "puuid": p.get("puuid", ""),
-            "championId": p.get("championId", 0),
-        })
+        result.append(
+            {
+                "puuid": p.get("puuid", ""),
+                "championId": p.get("championId", 0),
+            }
+        )
     return result
 
 

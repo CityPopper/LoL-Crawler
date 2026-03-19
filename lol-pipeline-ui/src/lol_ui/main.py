@@ -228,10 +228,8 @@ function loadMatches(el, puuid, region, riotId, page) {{
 """
 
 
-def _lcu_stats_section(matches: list[dict[str, Any]]) -> str:
-    """Render LCU unverified stats section for the /stats page."""
-    total = len(matches)
-    wins = sum(1 for m in matches if m.get("win"))
+def _aggregate_by_mode(matches: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+    """Aggregate win/loss counts by game mode."""
     by_mode: dict[str, dict[str, int]] = {}
     for m in matches:
         mode = str(m.get("game_mode", "UNKNOWN"))
@@ -239,6 +237,14 @@ def _lcu_stats_section(matches: list[dict[str, Any]]) -> str:
         by_mode[mode]["t"] += 1
         if m.get("win"):
             by_mode[mode]["w"] += 1
+    return by_mode
+
+
+def _lcu_stats_section(matches: list[dict[str, Any]]) -> str:
+    """Render LCU unverified stats section for the /stats page."""
+    total = len(matches)
+    wins = sum(1 for m in matches if m.get("win"))
+    by_mode = _aggregate_by_mode(matches)
     mode_rows = "".join(
         f"<tr><td>{html.escape(mode)}</td><td>{d['t']}</td>"
         f"<td>{d['w']}</td><td>{d['t'] - d['w']}</td></tr>"
@@ -398,12 +404,14 @@ async def show_players(request: Request) -> HTMLResponse:
         game_name, tag_line, region, seeded_at = fields
         if not game_name or not tag_line:
             continue  # skip players pending name resolution
-        players.append({
-            "game_name": game_name,
-            "tag_line": tag_line,
-            "region": region or "na1",
-            "seeded_at": seeded_at or "",
-        })
+        players.append(
+            {
+                "game_name": game_name,
+                "tag_line": tag_line,
+                "region": region or "na1",
+                "seeded_at": seeded_at or "",
+            }
+        )
 
     players.sort(key=lambda p: p["seeded_at"], reverse=True)
 
@@ -420,7 +428,7 @@ async def show_players(request: Request) -> HTMLResponse:
         safe_name = html.escape(f"{p['game_name']}#{p['tag_line']}")
         seeded = p["seeded_at"][:10] if p["seeded_at"] else "?"
         rows += (
-            f"<tr><td><a href=\"{href}\">{safe_name}</a></td>"
+            f'<tr><td><a href="{href}">{safe_name}</a></td>'
             f"<td>{html.escape(p['region'])}</td><td>{seeded}</td></tr>"
         )
 
@@ -579,13 +587,7 @@ async def show_lcu(request: Request) -> HTMLResponse:
         riot_id = html.escape(str(matches[0].get("riot_id", puuid[:12])))
         total = len(matches)
         wins = sum(1 for m in matches if m.get("win"))
-        by_mode: dict[str, dict[str, int]] = {}
-        for m in matches:
-            mode = str(m.get("game_mode", "UNKNOWN"))
-            by_mode.setdefault(mode, {"t": 0, "w": 0})
-            by_mode[mode]["t"] += 1
-            if m.get("win"):
-                by_mode[mode]["w"] += 1
+        by_mode = _aggregate_by_mode(matches)
         mode_str = html.escape(
             ", ".join(f"{mode} ({d['w']}/{d['t']})" for mode, d in sorted(by_mode.items()))
         )
@@ -627,13 +629,15 @@ _LOG_LEVEL_CSS = {
 _LOG_CSS = """
 <style>
   .log-wrap { font-family: monospace; font-size: 0.82em; }
-  .log-line { display: flex; gap: 0.5rem; padding: 2px 4px; border-bottom: 1px solid #f0f0f0; align-items: baseline; flex-wrap: wrap; }
+  .log-line { display: flex; gap: 0.5rem; padding: 2px 4px;
+    border-bottom: 1px solid #f0f0f0; align-items: baseline; flex-wrap: wrap; }
   .log-critical { background: #ffe0e0; font-weight: bold; }
   .log-error { background: #fff0f0; }
   .log-warning { background: #fffbe6; }
   .log-debug { color: #999; }
   .log-ts { color: #aaa; white-space: nowrap; flex-shrink: 0; }
-  .log-badge { padding: 0 4px; border-radius: 2px; font-size: 0.75em; white-space: nowrap; flex-shrink: 0; }
+  .log-badge { padding: 0 4px; border-radius: 2px;
+    font-size: 0.75em; white-space: nowrap; flex-shrink: 0; }
   .log-badge.log-critical { background: #c00; color: #fff; }
   .log-badge.log-error { background: #e33; color: #fff; }
   .log-badge.log-warning { background: #e80; color: #fff; }
@@ -642,7 +646,8 @@ _LOG_CSS = """
   .log-svc { color: #669; flex-shrink: 0; }
   .log-msg { flex: 1; }
   .log-extra { color: #666; font-size: 0.9em; }
-  .log-controls { margin: 0.5rem 0; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+  .log-controls { margin: 0.5rem 0; display: flex;
+    gap: 0.5rem; align-items: center; flex-wrap: wrap; }
   .log-meta { color: #888; font-size: 0.85em; margin-bottom: 0.3rem; }
   #pause-btn { padding: 0.4rem 1rem; cursor: pointer; }
   #pause-btn.paused { background: #e33; color: #fff; }
@@ -733,7 +738,9 @@ async def show_logs() -> HTMLResponse:
     log_dir_env = os.getenv("LOG_DIR", "")
     if not log_dir_env:
         return HTMLResponse(
-            _page("Logs", "<h2>Logs</h2><p>LOG_DIR not configured. Add it to docker-compose.yml.</p>")
+            _page(
+                "Logs", "<h2>Logs</h2><p>LOG_DIR not configured. Add it to docker-compose.yml.</p>"
+            )
         )
 
     log_dir = Path(log_dir_env)
