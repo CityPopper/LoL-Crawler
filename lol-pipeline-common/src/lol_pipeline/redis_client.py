@@ -26,5 +26,5 @@ async def health_check(r: aioredis.Redis) -> bool:
     """Return True if Redis responds to PING."""
     try:
         return bool(await r.ping())  # type: ignore[misc]
-    except (RedisConnectionError, RedisTimeoutError, OSError):
+    except RedisConnectionError, RedisTimeoutError, OSError:
         return False

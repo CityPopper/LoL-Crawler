@@ -213,7 +213,7 @@ async def main() -> None:
             try:
                 for msg_id, dlq in await _consume_dlq(r, consumer):
                     await _process(r, cfg, consumer, msg_id, dlq, log)
-            except (RedisError, OSError):
+            except RedisError, OSError:
                 log.exception("consume error — retrying in 1s")
                 await asyncio.sleep(1)
         log.info("SIGTERM received — shutting down gracefully")

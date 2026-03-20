@@ -415,8 +415,8 @@ class TestSeedPriority:
         assert entries[0][1]["priority"] == "high"
 
     @pytest.mark.asyncio
-    async def test_seed__sets_priority_key_and_increments_counter(self, r, cfg, log):
-        """Seed sets player:priority:{puuid} and increments system:priority_count."""
+    async def test_seed__sets_priority_key(self, r, cfg, log):
+        """Seed sets player:priority:{puuid} via set_priority()."""
         with respx.mock:
             respx.get(
                 "https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Faker/KR1"
@@ -427,8 +427,7 @@ class TestSeedPriority:
             await riot.close()
 
         assert result == 0
-        assert await r.get("player:priority:test-puuid-0001") == "high"
-        assert await r.get("system:priority_count") == "1"
+        assert await r.get("player:priority:test-puuid-0001") == "1"
 
 
 class TestSeedNameCacheTTL:

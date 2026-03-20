@@ -262,8 +262,7 @@ class TestAnalyzerPriority:
         """After stats computation, clear_priority removes player:priority key."""
         puuid = "test-puuid-0001"
         # Set priority key (simulating what Seed does)
-        await r.set(f"player:priority:{puuid}", "high")
-        await r.set("system:priority_count", "1")
+        await r.set(f"player:priority:{puuid}", "1", ex=86400)
 
         await _add_participant(r, "NA1_1", puuid, 1000, kills=5, deaths=1, assists=3)
         env = _analyze_envelope(puuid)
@@ -275,7 +274,6 @@ class TestAnalyzerPriority:
         assert await r.hget(f"player:stats:{puuid}", "total_games") == "1"
         # Priority should be cleared
         assert await r.get(f"player:priority:{puuid}") is None
-        assert await r.get("system:priority_count") == "0"
 
 
 class TestAnalyzerAckPlacement:
@@ -774,6 +772,87 @@ class TestLockOwnershipRefresh:
         # Stats should be unchanged — no double-counting
         assert await r.hget(f"player:stats:{puuid}", "total_games") == "2"
         assert await r.hget(f"player:stats:{puuid}", "total_kills") == "13"
+
+
+class TestPlayerStatsTTL:
+    """P10-DB-1: player stats/champions/roles/cursor keys get 30-day TTL."""
+
+    _30_DAYS = 30 * 24 * 3600  # 2592000
+
+    @pytest.mark.asyncio
+    async def test_stats_key_has_ttl_after_analysis(self, r, cfg, log):
+        """player:stats:{puuid} gets 30-day TTL after analysis."""
+        puuid = "test-puuid-0001"
+        await _add_participant(r, "NA1_1", puuid, 1000, kills=5, deaths=1, assists=3)
+        env = _analyze_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        await _analyze_player(r, cfg, "my-worker", msg_id, env, log)
+
+        ttl = await r.ttl(f"player:stats:{puuid}")
+        assert 0 < ttl <= self._30_DAYS
+
+    @pytest.mark.asyncio
+    async def test_champions_key_has_ttl_after_analysis(self, r, cfg, log):
+        """player:champions:{puuid} gets 30-day TTL after analysis."""
+        puuid = "test-puuid-0001"
+        await _add_participant(r, "NA1_1", puuid, 1000, champion="Annie")
+        env = _analyze_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        await _analyze_player(r, cfg, "my-worker", msg_id, env, log)
+
+        ttl = await r.ttl(f"player:champions:{puuid}")
+        assert 0 < ttl <= self._30_DAYS
+
+    @pytest.mark.asyncio
+    async def test_roles_key_has_ttl_after_analysis(self, r, cfg, log):
+        """player:roles:{puuid} gets 30-day TTL after analysis."""
+        puuid = "test-puuid-0001"
+        await _add_participant(r, "NA1_1", puuid, 1000, role="SOLO")
+        env = _analyze_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        await _analyze_player(r, cfg, "my-worker", msg_id, env, log)
+
+        ttl = await r.ttl(f"player:roles:{puuid}")
+        assert 0 < ttl <= self._30_DAYS
+
+    @pytest.mark.asyncio
+    async def test_cursor_key_has_ttl_after_analysis(self, r, cfg, log):
+        """player:stats:cursor:{puuid} gets 30-day TTL after analysis."""
+        puuid = "test-puuid-0001"
+        await _add_participant(r, "NA1_1", puuid, 1000, kills=5, deaths=1, assists=3)
+        env = _analyze_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        await _analyze_player(r, cfg, "my-worker", msg_id, env, log)
+
+        ttl = await r.ttl(f"player:stats:cursor:{puuid}")
+        assert 0 < ttl <= self._30_DAYS
+
+    @pytest.mark.asyncio
+    async def test_ttl_refreshed_on_subsequent_analysis(self, r, cfg, log):
+        """TTL is refreshed each time the player is analyzed (active players stay fresh)."""
+        puuid = "test-puuid-0001"
+        await _add_participant(r, "NA1_1", puuid, 1000, kills=5, deaths=1, assists=3)
+        env1 = _analyze_envelope(puuid)
+        msg_id1 = await _setup_message(r, env1)
+        await _analyze_player(r, cfg, "w1", msg_id1, env1, log)
+
+        # Manually reduce TTL to simulate time passing
+        await r.expire(f"player:stats:{puuid}", 100)
+        ttl_before = await r.ttl(f"player:stats:{puuid}")
+        assert ttl_before <= 100
+
+        # Add a new match and re-analyze
+        await _add_participant(r, "NA1_2", puuid, 2000, kills=3, deaths=2, assists=7)
+        env2 = _analyze_envelope(puuid)
+        msg_id2 = await _setup_message(r, env2)
+        await _analyze_player(r, cfg, "w2", msg_id2, env2, log)
+
+        ttl_after = await r.ttl(f"player:stats:{puuid}")
+        assert ttl_after > 100  # TTL was refreshed back to ~30 days
 
 
 class TestDerivedEdgeCases:

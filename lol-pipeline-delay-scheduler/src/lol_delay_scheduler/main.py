@@ -183,7 +183,7 @@ async def main() -> None:
         while not shutdown_event.is_set():
             try:
                 await _tick(r, log)
-            except (RedisError, OSError):
+            except RedisError, OSError:
                 log.exception("Redis error — retrying in 1s")
                 await asyncio.sleep(1)
                 continue

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from typing import Any, cast
 from urllib.parse import quote
 
@@ -11,6 +12,11 @@ import httpx
 import redis.asyncio as aioredis
 
 _log = logging.getLogger("riot_api")
+
+# Configurable rate limit windows — production Riot API keys use 10s/600s,
+# dev keys use 1s/120s.  Read once at module import.
+_SHORT_WINDOW_S = int(os.environ.get("RATE_LIMIT_SHORT_WINDOW_S", "1"))
+_LONG_WINDOW_S = int(os.environ.get("RATE_LIMIT_LONG_WINDOW_S", "120"))
 
 _RATE_LIMIT_KEY_TTL = 3600  # 1 hour — stale limits expire after API key rotation
 
@@ -60,31 +66,46 @@ class ServerError(RiotAPIError):
     """HTTP 5xx — upstream server error."""
 
 
-def _parse_app_rate_limit(header: str) -> tuple[int, int] | None:
+def _parse_app_rate_limit(
+    header: str,
+    *,
+    short_window_s: int | None = None,
+    long_window_s: int | None = None,
+) -> tuple[int, int] | None:
     """Parse the X-App-Rate-Limit header value into (short_limit, long_limit).
 
     Expects the standard Riot format "20:1,100:120" where each entry is
-    "count:window_seconds". Looks specifically for the 1-second and 120-second
-    windows. Returns None if the header is absent, malformed, or missing either
-    window.
+    "count:window_seconds". Looks for windows matching the configured durations
+    (defaulting to module-level ``_SHORT_WINDOW_S`` / ``_LONG_WINDOW_S`` which
+    are themselves env-configurable via ``RATE_LIMIT_SHORT_WINDOW_S`` and
+    ``RATE_LIMIT_LONG_WINDOW_S``).
+
+    Returns None if the header is absent, malformed, or missing either window.
     """
     if not header:
         return None
+    target_short = short_window_s if short_window_s is not None else _SHORT_WINDOW_S
+    target_long = long_window_s if long_window_s is not None else _LONG_WINDOW_S
     try:
         by_window: dict[int, int] = {}
         for entry in header.split(","):
             count_str, window_str = entry.strip().split(":")
             by_window[int(window_str)] = int(count_str)
-        short = by_window.get(1)
-        long_ = by_window.get(120)
+        short = by_window.get(target_short)
+        long_ = by_window.get(target_long)
         if short is None or long_ is None:
             _log.warning(
                 "X-App-Rate-Limit missing expected windows — using defaults",
-                extra={"header": header, "windows_found": list(by_window.keys())},
+                extra={
+                    "header": header,
+                    "windows_found": list(by_window.keys()),
+                    "expected_short": target_short,
+                    "expected_long": target_long,
+                },
             )
             return None
         return short, long_
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         _log.warning(
             "failed to parse X-App-Rate-Limit header — using defaults",
             extra={"header": header},
@@ -110,7 +131,7 @@ def _raise_for_status(resp: httpx.Response) -> Any:
                 else:
                     # +1000ms jitter to avoid thundering herd on rate-limit window reset
                     retry_ms = int(parsed) * 1000 + 1000
-            except (ValueError, TypeError, OverflowError):
+            except ValueError, TypeError, OverflowError:
                 # HTTP-date format or other non-numeric value — use 1s default
                 retry_ms = 1000
         raise RateLimitError(retry_ms)

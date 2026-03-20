@@ -60,10 +60,41 @@ class TestParseAppRateLimit:
         # Output: None
         assert _parse_app_rate_limit("100:120") is None
 
-    def test_unrecognised_windows(self) -> None:
-        # Input:  "500:1,30000:600"  (1-second window present, but 120-second absent)
-        # Output: None — 600-second window is not the 2-minute window
-        assert _parse_app_rate_limit("500:1,30000:600") is None
+    def test_unrecognised_windows__default_config(self) -> None:
+        # Input:  "500:10,30000:600" — neither 1s nor 120s window present
+        # Output: None when using default windows (1s, 120s)
+        assert _parse_app_rate_limit("500:10,30000:600") is None
+
+    def test_prod_key_windows__configured(self) -> None:
+        # Input:  "500:10,30000:600" — production key with 10s and 600s windows
+        #         short_window_s=10, long_window_s=600
+        # Output: (500, 30000)
+        result = _parse_app_rate_limit("500:10,30000:600", short_window_s=10, long_window_s=600)
+        assert result == (500, 30000)
+
+    def test_dev_key_windows__default_config(self) -> None:
+        # Input:  "20:1,100:120" — dev key with 1s and 120s windows
+        #         using default short_window_s=1, long_window_s=120
+        # Output: (20, 100)
+        result = _parse_app_rate_limit("20:1,100:120")
+        assert result == (20, 100)
+
+    def test_mismatched_windows__falls_back_to_found_window(self) -> None:
+        # Input:  "500:10,30000:600" — header has 10s window
+        #         short_window_s=1 (configured for 1s, not 10s)
+        #         long_window_s=600 (matches)
+        # Output: None — short window not found for configured duration
+        result = _parse_app_rate_limit("500:10,30000:600", short_window_s=1, long_window_s=600)
+        assert result is None
+
+    def test_prod_key_with_extra_windows(self) -> None:
+        # Input:  "500:10,30000:600,50:1" — prod key with additional 1s window
+        #         short_window_s=10, long_window_s=600
+        # Output: (500, 30000) — extracts the configured windows correctly
+        result = _parse_app_rate_limit(
+            "500:10,30000:600,50:1", short_window_s=10, long_window_s=600
+        )
+        assert result == (500, 30000)
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +150,40 @@ class TestRiotClientRateLimitStorage:
 
         assert await fake_redis.get("ratelimit:limits:short") == "20"
         assert await fake_redis.get("ratelimit:limits:long") == "100"
+        await fake_redis.aclose()
+
+    @pytest.mark.asyncio
+    async def test_stores_limits_on_200__prod_key_windows(
+        self, fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Input:  200 response with "X-App-Rate-Limit: 500:10,30000:600" header
+        #         RATE_LIMIT_SHORT_WINDOW_S=10, RATE_LIMIT_LONG_WINDOW_S=600
+        # Output: ratelimit:limits:short == "500"
+        #         ratelimit:limits:long  == "30000"
+        monkeypatch.setenv("RATE_LIMIT_SHORT_WINDOW_S", "10")
+        monkeypatch.setenv("RATE_LIMIT_LONG_WINDOW_S", "600")
+        # Force re-read of module-level config
+        import lol_pipeline.riot_api as riot_api_mod
+
+        monkeypatch.setattr(riot_api_mod, "_SHORT_WINDOW_S", 10)
+        monkeypatch.setattr(riot_api_mod, "_LONG_WINDOW_S", 600)
+
+        with respx.mock:
+            respx.get(
+                "https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Faker/KR1"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": "test-puuid", "gameName": "Faker", "tagLine": "KR1"},
+                    headers={"X-App-Rate-Limit": "500:10,30000:600"},
+                )
+            )
+            client = RiotClient("RGAPI-test", r=fake_redis)
+            await client.get_account_by_riot_id("Faker", "KR1", "kr")
+            await client.close()
+
+        assert await fake_redis.get("ratelimit:limits:short") == "500"
+        assert await fake_redis.get("ratelimit:limits:long") == "30000"
         await fake_redis.aclose()
 
     @pytest.mark.asyncio

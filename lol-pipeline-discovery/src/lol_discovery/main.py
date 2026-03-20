@@ -15,7 +15,8 @@ import redis.asyncio as aioredis
 from lol_pipeline.config import Config
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
-from lol_pipeline.priority import priority_count
+from lol_pipeline.priority import has_priority_players
+from lol_pipeline.rate_limiter import wait_for_token
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.riot_api import AuthError, NotFoundError, RiotAPIError, RiotClient
 from lol_pipeline.streams import publish
@@ -55,14 +56,15 @@ async def _is_idle(r: aioredis.Redis) -> bool:
        (not yet delivered) — both zero across all groups on all streams means
        the pipeline has caught up.
 
-    Also returns False when priority players are in-flight (system:priority_count > 0)
-    to avoid promoting discovery players that would compete with seeded players.
+    Also returns False when priority players are in-flight (any player:priority:*
+    key exists) to avoid promoting discovery players that would compete with
+    seeded players.  Uses SCAN-based detection instead of a counter to avoid
+    TTL-expiry drift.
 
     Streams that do not exist yet (ResponseError) or have no consumer groups
     are treated as idle.
     """
-    count = await priority_count(r)
-    if count > 0:
+    if await has_priority_players(r):
         return False
     for stream in _PIPELINE_STREAMS:
         # Layer 1: absolute backlog check via XLEN
@@ -98,6 +100,7 @@ async def _resolve_names(
         return game_name, tag_line
 
     try:
+        await wait_for_token(r)
         account = await riot.get_account_by_puuid(puuid, region)
     except NotFoundError:
         log.warning("account not found by puuid", extra={"puuid": puuid})
@@ -235,7 +238,7 @@ async def main() -> None:
                         extra={"idle": idle, "queue": queue_size},
                     )
                     polls_since_log = 0
-            except (RedisError, OSError):
+            except RedisError, OSError:
                 log.exception("Redis error — retrying in 1s")
                 await asyncio.sleep(1)
                 continue

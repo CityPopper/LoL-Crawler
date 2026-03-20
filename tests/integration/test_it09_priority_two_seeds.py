@@ -6,7 +6,7 @@ import pytest
 import redis.asyncio as aioredis
 
 from helpers import tlog
-from lol_pipeline.priority import clear_priority, priority_count, set_priority
+from lol_pipeline.priority import clear_priority, has_priority_players, set_priority
 
 _PUUID_A = "test-puuid-player-a"
 _PUUID_B = "test-puuid-player-b"
@@ -14,14 +14,13 @@ _PUUID_B = "test-puuid-player-b"
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_two_seeds__priority_count_reaches_two(r: aioredis.Redis) -> None:
-    """Seeding two players in rapid succession raises priority_count to 2."""
+async def test_two_seeds__both_detected(r: aioredis.Redis) -> None:
+    """Seeding two players creates two priority keys, both detected by SCAN."""
     tlog("it09")
 
     await set_priority(r, _PUUID_A)
-    count = await set_priority(r, _PUUID_B)
-    assert count == 2
-    assert await priority_count(r) == 2
+    await set_priority(r, _PUUID_B)
+    assert await has_priority_players(r) is True
 
     # Both keys exist
     assert await r.exists(f"player:priority:{_PUUID_A}") == 1
@@ -30,38 +29,36 @@ async def test_two_seeds__priority_count_reaches_two(r: aioredis.Redis) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_two_seeds__clear_one_drops_to_one(r: aioredis.Redis) -> None:
-    """Clearing one of two priorities decrements count to 1."""
+async def test_two_seeds__clear_one__still_detected(r: aioredis.Redis) -> None:
+    """Clearing one of two priorities still detects remaining key."""
     tlog("it09")
 
     await set_priority(r, _PUUID_A)
     await set_priority(r, _PUUID_B)
-    assert await priority_count(r) == 2
+    assert await has_priority_players(r) is True
 
-    count = await clear_priority(r, _PUUID_A)
-    assert count == 1
-    assert await priority_count(r) == 1
+    await clear_priority(r, _PUUID_A)
 
     # A is gone, B remains
     assert await r.exists(f"player:priority:{_PUUID_A}") == 0
     assert await r.exists(f"player:priority:{_PUUID_B}") == 1
+    assert await has_priority_players(r) is True
 
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_two_seeds__clear_both_drops_to_zero(r: aioredis.Redis) -> None:
-    """Clearing both priorities brings count back to 0."""
+async def test_two_seeds__clear_both__not_detected(r: aioredis.Redis) -> None:
+    """Clearing both priorities means SCAN finds no keys."""
     tlog("it09")
 
     await set_priority(r, _PUUID_A)
     await set_priority(r, _PUUID_B)
-    assert await priority_count(r) == 2
+    assert await has_priority_players(r) is True
 
     await clear_priority(r, _PUUID_A)
-    count = await clear_priority(r, _PUUID_B)
-    assert count == 0
-    assert await priority_count(r) == 0
+    await clear_priority(r, _PUUID_B)
 
     # Both keys gone
     assert await r.exists(f"player:priority:{_PUUID_A}") == 0
     assert await r.exists(f"player:priority:{_PUUID_B}") == 0
+    assert await has_priority_players(r) is False

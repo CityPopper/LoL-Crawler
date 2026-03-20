@@ -302,16 +302,23 @@ class TestParseMember:
 
 class TestIsIdlePriority:
     @pytest.mark.asyncio
-    async def test_is_idle__priority_count_positive__returns_false(self, r):
-        """When system:priority_count > 0, pipeline is NOT idle (priority players in flight)."""
-        await r.set("system:priority_count", "2")
+    async def test_is_idle__priority_keys_exist__returns_false(self, r):
+        """When player:priority:* keys exist, pipeline is NOT idle."""
+        await r.set("player:priority:puuid-1", "1", ex=86400)
+        await r.set("player:priority:puuid-2", "1", ex=86400)
         assert await _is_idle(r) is False
 
     @pytest.mark.asyncio
-    async def test_is_idle__priority_count_zero__checks_streams(self, r):
-        """When system:priority_count is 0, falls through to stream check (idle)."""
-        await r.set("system:priority_count", "0")
-        # No stream exists → idle
+    async def test_is_idle__no_priority_keys__checks_streams(self, r):
+        """When no player:priority:* keys exist, falls through to stream check (idle)."""
+        # No priority keys, no streams → idle
+        assert await _is_idle(r) is True
+
+    @pytest.mark.asyncio
+    async def test_is_idle__stale_counter_ignored(self, r):
+        """A stale system:priority_count key does NOT block idle detection (SCAN-based)."""
+        await r.set("system:priority_count", "99")
+        # No actual player:priority:* keys → should be idle
         assert await _is_idle(r) is True
 
 
@@ -1176,6 +1183,100 @@ class TestPromoteBatchAtomicOrdering:
         assert await r.zscore("discover:players", "puuid-crash:na1") is not None
         # No seeded_at set (pipeline crashed before HSET)
         assert await r.hget("player:puuid-crash", "seeded_at") is None
+
+
+class TestResolveNamesRateLimiting:
+    """P10-CR-7: _resolve_names must call wait_for_token before Riot API calls."""
+
+    @pytest.mark.asyncio
+    async def test_resolve_names__calls_wait_for_token_before_api(self, r, cfg, log):
+        """wait_for_token is called before riot.get_account_by_puuid."""
+        call_order: list[str] = []
+
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-puuid/puuid-ratelim"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "puuid": "puuid-ratelim",
+                        "gameName": "RateLim",
+                        "tagLine": "001",
+                    },
+                )
+            )
+
+            riot = RiotClient("RGAPI-test")
+
+            original_get = riot.get_account_by_puuid
+
+            async def tracking_get(*args, **kwargs):
+                call_order.append("riot_api")
+                return await original_get(*args, **kwargs)
+
+            riot.get_account_by_puuid = tracking_get
+
+            with patch("lol_discovery.main.wait_for_token", new_callable=AsyncMock) as mock_wft:
+
+                async def tracking_wft(*args, **kwargs):
+                    call_order.append("wait_for_token")
+
+                mock_wft.side_effect = tracking_wft
+
+                result = await _resolve_names(r, riot, "puuid-ratelim", "na1", log)
+            await riot.close()
+
+        assert result == ("RateLim", "001")
+        assert "wait_for_token" in call_order, "wait_for_token was never called"
+        assert "riot_api" in call_order, "riot API was never called"
+        wft_idx = call_order.index("wait_for_token")
+        riot_idx = call_order.index("riot_api")
+        assert wft_idx < riot_idx, (
+            f"wait_for_token (idx={wft_idx}) must be called before riot API (idx={riot_idx})"
+        )
+
+    @pytest.mark.asyncio
+    async def test_resolve_names__skips_wait_for_token_when_cached(self, r, log):
+        """When names are in Redis, no API call and no wait_for_token needed."""
+        await r.hset(
+            "player:puuid-cached",
+            mapping={"game_name": "Cached", "tag_line": "001"},
+        )
+        riot = RiotClient("RGAPI-test")
+
+        with patch("lol_discovery.main.wait_for_token", new_callable=AsyncMock) as mock_wft:
+            result = await _resolve_names(r, riot, "puuid-cached", "na1", log)
+        await riot.close()
+
+        assert result == ("Cached", "001")
+        mock_wft.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_resolve_names__wait_for_token_receives_redis_and_config(self, r, log):
+        """wait_for_token is called with the Redis client."""
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-puuid/puuid-args"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "puuid": "puuid-args",
+                        "gameName": "ArgsTest",
+                        "tagLine": "002",
+                    },
+                )
+            )
+            riot = RiotClient("RGAPI-test")
+
+            with patch("lol_discovery.main.wait_for_token", new_callable=AsyncMock) as mock_wft:
+                await _resolve_names(r, riot, "puuid-args", "na1", log)
+            await riot.close()
+
+        mock_wft.assert_called_once()
+        # First positional arg should be the Redis instance
+        assert mock_wft.call_args[0][0] is r
 
 
 class TestPromoteBatchPlayersAll:

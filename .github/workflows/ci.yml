@@ -22,7 +22,7 @@ jobs:
         run: |
           for dir in lol-pipeline-*/; do
             if [ -f "$dir/pyproject.toml" ]; then
-              echo "=== $dir ===" && (cd "$dir" && ruff check src/ && ruff format --check src/)
+              echo "=== $dir ===" && (cd "$dir" && ruff check . && ruff format --check .)
             fi
           done
 
