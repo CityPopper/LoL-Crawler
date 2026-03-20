@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import signal
 from collections.abc import Awaitable, Callable
 
@@ -17,8 +18,29 @@ from lol_pipeline.streams import ack, consume, nack_to_dlq
 # Handler receives (msg_id, envelope); r is captured in the closure.
 MessageHandler = Callable[[str, MessageEnvelope], Awaitable[None]]
 
-_MAX_HANDLER_RETRIES = 3
-_MAX_FAILURE_ENTRIES = 10_000
+_MAX_HANDLER_RETRIES = int(os.getenv("MAX_HANDLER_RETRIES", "3"))
+
+# TTL for Redis-backed retry counters: 7 days.
+_RETRY_KEY_TTL = 604800
+
+
+def _retry_key(stream: str, msg_id: str) -> str:
+    """Build the Redis key for a message's retry counter."""
+    return f"consumer:retry:{stream}:{msg_id}"
+
+
+async def _incr_retry(r: aioredis.Redis, stream: str, msg_id: str) -> int:
+    """Increment the Redis-backed retry counter and return the new value."""
+    key = _retry_key(stream, msg_id)
+    count: int = await r.incr(key)
+    if count == 1:
+        await r.expire(key, _RETRY_KEY_TTL)
+    return count
+
+
+async def _clear_retry(r: aioredis.Redis, stream: str, msg_id: str) -> None:
+    """Delete the Redis-backed retry counter for a message."""
+    await r.delete(_retry_key(stream, msg_id))
 
 
 async def _handle_with_retry(  # noqa: PLR0913
@@ -29,19 +51,18 @@ async def _handle_with_retry(  # noqa: PLR0913
     envelope: MessageEnvelope,
     handler: MessageHandler,
     log: logging.Logger,
-    failures: dict[str, int],
     max_retries: int = _MAX_HANDLER_RETRIES,
 ) -> None:
-    """Call handler; on repeated crashes for the same msg_id, nack to DLQ."""
+    """Call handler; on repeated crashes for the same msg_id, nack to DLQ.
+
+    Retry counts are stored in Redis (``consumer:retry:{stream}:{msg_id}``)
+    so they survive service restarts — poison messages cannot loop forever.
+    """
     try:
         await handler(msg_id, envelope)
-        failures.pop(msg_id, None)
+        await _clear_retry(r, stream, msg_id)
     except Exception as exc:
-        count = failures.get(msg_id, 0) + 1
-        failures[msg_id] = count
-        if len(failures) > _MAX_FAILURE_ENTRIES:
-            oldest = next(iter(failures))
-            del failures[oldest]
+        count = await _incr_retry(r, stream, msg_id)
         if count >= max_retries:
             log.error(
                 "handler crashed %d times — sending to DLQ",
@@ -56,7 +77,7 @@ async def _handle_with_retry(  # noqa: PLR0913
                 original_message_id=msg_id,
             )
             await ack(r, stream, group, msg_id)
-            failures.pop(msg_id, None)
+            await _clear_retry(r, stream, msg_id)
         else:
             log.exception(
                 "handler error (%d/%d) [%s]",
@@ -95,7 +116,6 @@ async def run_consumer(
         loop.add_signal_handler(signal.SIGTERM, _sigterm_handler)
 
     idle_polls = 0
-    handler_failures: dict[str, int] = {}
     while True:
         if shutdown:
             log.info("shutdown flag set — exiting")
@@ -131,7 +151,6 @@ async def run_consumer(
                     envelope,
                     handler,
                     log,
-                    handler_failures,
                 )
         except (RedisError, OSError):
             log.exception("dispatch error — retrying on next consume cycle")

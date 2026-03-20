@@ -85,8 +85,6 @@ class TestParserNormal:
 
         assert await r.hget(f"match:{match_id}", "status") == "parsed"
         assert await r.sismember("match:status:parsed", match_id)
-        participants_count = await r.scard(f"match:participants:{match_id}")
-        assert participants_count == 10
         assert await r.xlen(_OUT_STREAM) == 10
 
     @pytest.mark.asyncio
@@ -117,7 +115,7 @@ class TestParserAram:
         await _parse_match(r, raw_store, cfg, msg_id, env, log)
 
         assert await r.hget(f"match:{match_id}", "game_mode") == "ARAM"
-        assert await r.scard(f"match:participants:{match_id}") == 10
+        assert await r.xlen(_OUT_STREAM) == 10
 
 
 class TestParserRemake:
@@ -254,7 +252,6 @@ class TestParserIdempotent:
         await _parse_match(r, raw_store, cfg, msg_id2, env2, log)
 
         # Sorted set is idempotent but stream:analyze gets new messages (idempotent at consumer)
-        assert await r.scard(f"match:participants:{match_id}") == 10
         score = await r.zscore("player:matches:test-puuid-0001", match_id)
         assert score == 1700000000000.0
 
@@ -465,7 +462,6 @@ class TestParserMalformedData:
 
         await _parse_match(r, raw_store, cfg, msg_id, env, log)
 
-        assert await r.scard(f"match:participants:{match_id}") == 1
         assert await r.xlen(_OUT_STREAM) == 1
         assert await r.hget(f"match:{match_id}", "status") == "parsed"
 
@@ -538,7 +534,7 @@ class TestParserPipeline:
             f"Expected 0 direct hset calls (all via pipeline), got {direct_hset_count}"
         )
         # But data should still be correct
-        assert await r.scard(f"match:participants:{match_id}") == 10
+        assert await r.xlen(_OUT_STREAM) == 10
 
 
 class TestParserMaxlenPolicy:
@@ -660,14 +656,16 @@ class TestMatchDataTTL:
         match_id = "NA1_1234567890"
         env = _parse_envelope(match_id)
         msg_id = await _setup_message(r, env)
-        await raw_store.set(match_id, _load_fixture("match_normal.json"))
+        fixture_raw = _load_fixture("match_normal.json")
+        await raw_store.set(match_id, fixture_raw)
 
         await _parse_match(r, raw_store, cfg, msg_id, env, log)
 
-        # Check all 10 participant keys have TTLs
-        participants = await r.smembers(f"match:participants:{match_id}")
-        assert len(participants) == 10
-        for puuid in participants:
+        # Derive expected puuids from fixture
+        fixture_data = json.loads(fixture_raw)
+        puuids = [p["puuid"] for p in fixture_data["info"]["participants"]]
+        assert len(puuids) == 10
+        for puuid in puuids:
             ttl = await r.ttl(f"participant:{match_id}:{puuid}")
             assert 0 < ttl <= MATCH_DATA_TTL_SECONDS
 
@@ -804,3 +802,56 @@ class TestDiscoverPlayersCap:
     async def test_max_discover_players_default(self):
         """MAX_DISCOVER_PLAYERS defaults to 50000."""
         assert MAX_DISCOVER_PLAYERS == 50000
+
+
+class TestDiscoveryHexistsBatched:
+    """HEXISTS calls for seeded_at checks are batched in a single pipeline round-trip."""
+
+    @pytest.mark.asyncio
+    async def test_hexists_batched_via_pipeline(self, r, cfg, log):
+        """All HEXISTS seeded_at checks use one pipeline, not N individual calls."""
+        raw_store = RawStore(r)
+        match_id = "NA1_1234567890"
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, _load_fixture("match_normal.json"))
+
+        # Track direct hexists calls (should be zero — all via pipeline)
+        direct_hexists_count = 0
+        original_hexists = r.hexists
+
+        async def counting_hexists(*args, **kwargs):
+            nonlocal direct_hexists_count
+            direct_hexists_count += 1
+            return await original_hexists(*args, **kwargs)
+
+        r.hexists = counting_hexists
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        assert direct_hexists_count == 0, (
+            f"Expected 0 direct hexists calls (all via pipeline), got {direct_hexists_count}"
+        )
+        # Discovery should still work correctly — all 10 participants are unseeded
+        assert await r.zcard("discover:players") == 10
+
+    @pytest.mark.asyncio
+    async def test_hexists_batch_respects_seeded_flag(self, r, cfg, log):
+        """Batched HEXISTS correctly skips seeded players in discovery."""
+        raw_store = RawStore(r)
+        match_id = "NA1_1234567890"
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, _load_fixture("match_normal.json"))
+
+        # Pre-seed 3 of the 10 participants
+        for i in range(3):
+            await r.hset(
+                f"player:test-puuid-{i + 1:04d}",
+                mapping={"seeded_at": "2024-01-01T00:00:00+00:00"},
+            )
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        # Only 7 unseeded players should be in discovery
+        assert await r.zcard("discover:players") == 7

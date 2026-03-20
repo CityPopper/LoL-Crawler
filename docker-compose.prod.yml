@@ -1,0 +1,82 @@
+# Production overrides for docker-compose.yml.
+# Usage: podman compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# What this file does vs dev compose:
+#   - Drops user: root  (Dockerfile USER appuser takes effect)
+#   - Drops source-code volume mounts  (baked images only)
+#   - Drops command: overrides  (baked CMD runs)
+#   - Drops PIP_ROOT_USER_ACTION / PIP_DISABLE_PIP_VERSION_CHECK env vars
+#   - Adds --requirepass to Redis
+#   - Sets restart: always for all long-running services
+
+x-prod-defaults: &prod-defaults
+  user: ""          # inherit Dockerfile USER (appuser)
+  restart: always
+  environment:
+    PIP_ROOT_USER_ACTION: ""
+    PIP_DISABLE_PIP_VERSION_CHECK: ""
+
+services:
+
+  redis:
+    restart: always
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD}
+      --appendonly yes
+      --appendfsync everysec
+      --save 900 1
+      --save 300 10
+      --save 60 10000
+      --maxmemory 800mb
+      --maxmemory-policy noeviction
+
+  crawler:
+    <<: *prod-defaults
+    volumes:
+      - ./logs:/logs
+    command: []
+
+  fetcher:
+    <<: *prod-defaults
+    volumes:
+      - ./lol-pipeline-fetcher/match-data:/match-data
+      - ./logs:/logs
+    command: []
+
+  parser:
+    <<: *prod-defaults
+    volumes:
+      - ./lol-pipeline-fetcher/match-data:/match-data:ro
+      - ./logs:/logs
+    command: []
+
+  analyzer:
+    <<: *prod-defaults
+    volumes:
+      - ./logs:/logs
+    command: []
+
+  recovery:
+    <<: *prod-defaults
+    volumes:
+      - ./logs:/logs
+    command: []
+
+  delay-scheduler:
+    <<: *prod-defaults
+    volumes:
+      - ./logs:/logs
+    command: []
+
+  ui:
+    <<: *prod-defaults
+    volumes:
+      - ./logs:/logs
+    command: []
+
+  discovery:
+    <<: *prod-defaults
+    volumes:
+      - ./logs:/logs
+    command: []

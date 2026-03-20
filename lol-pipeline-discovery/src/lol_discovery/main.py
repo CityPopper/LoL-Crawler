@@ -7,6 +7,7 @@ import contextlib
 import logging
 import os
 import signal
+import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -181,6 +182,7 @@ async def _promote_batch(
                     "seeded_at": now_iso,
                 },
             )
+            await pipe.zadd("players:all", {puuid: time.time()})
             await pipe.zrem(_DISCOVER_KEY, member)
             await pipe.execute()
         promoted += 1

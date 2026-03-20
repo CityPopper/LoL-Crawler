@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any, cast
 from urllib.parse import quote
 
@@ -103,9 +104,13 @@ def _raise_for_status(resp: httpx.Response) -> Any:
         retry_ms: int | None = None
         if retry_after:
             try:
-                # +1000ms jitter to avoid thundering herd on rate-limit window reset
-                retry_ms = int(float(retry_after)) * 1000 + 1000
-            except (ValueError, TypeError):
+                parsed = float(retry_after)
+                if not math.isfinite(parsed) or parsed < 0:
+                    retry_ms = 1000
+                else:
+                    # +1000ms jitter to avoid thundering herd on rate-limit window reset
+                    retry_ms = int(parsed) * 1000 + 1000
+            except (ValueError, TypeError, OverflowError):
                 # HTTP-date format or other non-numeric value — use 1s default
                 retry_ms = 1000
         raise RateLimitError(retry_ms)

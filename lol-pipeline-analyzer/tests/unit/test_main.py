@@ -11,7 +11,7 @@ from lol_pipeline.config import Config
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.streams import consume, publish
 
-from lol_analyzer.main import _analyze_player, _process_matches, _refresh_lock, main
+from lol_analyzer.main import _analyze_player, _derived, _process_matches, _refresh_lock, main
 
 _IN_STREAM = "stream:analyze"
 _GROUP = "analyzers"
@@ -774,3 +774,89 @@ class TestLockOwnershipRefresh:
         # Stats should be unchanged — no double-counting
         assert await r.hget(f"player:stats:{puuid}", "total_games") == "2"
         assert await r.hget(f"player:stats:{puuid}", "total_kills") == "13"
+
+
+class TestDerivedEdgeCases:
+    """Edge cases for the _derived() helper function."""
+
+    def test_derived__deaths_zero__kda_uses_max_1(self):
+        """When deaths=0, KDA uses max(deaths, 1) to avoid ZeroDivisionError."""
+        stats = {
+            "total_games": "1",
+            "total_wins": "1",
+            "total_kills": "10",
+            "total_deaths": "0",
+            "total_assists": "5",
+        }
+        result = _derived(stats)
+        # KDA = (10 + 5) / max(0, 1) = 15.0
+        assert result["kda"] == "15.0000"
+
+    def test_derived__total_games_zero__returns_empty(self):
+        """When total_games=0, _derived returns empty dict."""
+        stats = {
+            "total_games": "0",
+            "total_wins": "0",
+            "total_kills": "0",
+            "total_deaths": "0",
+            "total_assists": "0",
+        }
+        result = _derived(stats)
+        assert result == {}
+
+    def test_derived__no_total_games_key__returns_empty(self):
+        """When total_games is missing, defaults to 0 and returns empty dict."""
+        result = _derived({})
+        assert result == {}
+
+    def test_derived__very_large_values__no_exception(self):
+        """Very large stat values do not cause overflow or exceptions."""
+        stats = {
+            "total_games": "999999999",
+            "total_wins": "500000000",
+            "total_kills": "999999999",
+            "total_deaths": "999999999",
+            "total_assists": "999999999",
+        }
+        result = _derived(stats)
+        assert "win_rate" in result
+        assert "kda" in result
+        assert "avg_kills" in result
+        # win_rate should be ~0.5000
+        assert result["win_rate"] == "0.5000"
+        # kda = (999999999 + 999999999) / max(999999999, 1) = 2.0
+        assert result["kda"] == "2.0000"
+
+    def test_derived__all_zeros_except_games__returns_zero_values(self):
+        """When all stats are zero except total_games, all derived values are 0."""
+        stats = {
+            "total_games": "5",
+            "total_wins": "0",
+            "total_kills": "0",
+            "total_deaths": "0",
+            "total_assists": "0",
+        }
+        result = _derived(stats)
+        assert result["win_rate"] == "0.0000"
+        assert result["avg_kills"] == "0.0000"
+        assert result["avg_deaths"] == "0.0000"
+        assert result["avg_assists"] == "0.0000"
+        # kda = (0 + 0) / max(0, 1) = 0.0
+        assert result["kda"] == "0.0000"
+
+    def test_derived__single_game__correct_averages(self):
+        """Single game produces correct per-game averages."""
+        stats = {
+            "total_games": "1",
+            "total_wins": "1",
+            "total_kills": "7",
+            "total_deaths": "3",
+            "total_assists": "11",
+        }
+        result = _derived(stats)
+        assert result["win_rate"] == "1.0000"
+        assert result["avg_kills"] == "7.0000"
+        assert result["avg_deaths"] == "3.0000"
+        assert result["avg_assists"] == "11.0000"
+        # kda = (7 + 11) / max(3, 1) = 6.0
+        assert result["kda"] == "6.0000"

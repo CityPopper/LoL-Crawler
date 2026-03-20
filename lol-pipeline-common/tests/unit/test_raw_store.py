@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import fakeredis.aioredis
 import pytest
 import zstandard as zstd
@@ -290,3 +292,98 @@ class TestRawStoreBundleEdgeCases:
         """exists() returns False when match is in neither Redis nor disk."""
         store = RawStore(r, data_dir=str(tmp_path))
         assert await store.exists("NA1_nonexistent") is False
+
+
+class TestRawStoreAsyncDiskIO:
+    """I2-M3: Disk I/O runs in asyncio.to_thread to avoid blocking the event loop."""
+
+    @pytest.mark.asyncio
+    async def test_exists_uses_to_thread_for_disk_fallback(self, r, tmp_path):
+        """exists() delegates _exists_in_bundles to asyncio.to_thread."""
+        store = RawStore(r, data_dir=str(tmp_path))
+        await store.set("NA1_T1", '{"data": 1}')
+        await r.delete("raw:match:NA1_T1")
+
+        calls = []
+        original_to_thread = __import__("asyncio").to_thread
+
+        async def tracking_to_thread(fn, *args, **kwargs):
+            calls.append(fn.__name__)
+            return await original_to_thread(fn, *args, **kwargs)
+
+        with patch("lol_pipeline.raw_store.asyncio.to_thread", side_effect=tracking_to_thread):
+            result = await store.exists("NA1_T1")
+
+        assert result is True
+        assert "_exists_in_bundles" in calls
+
+    @pytest.mark.asyncio
+    async def test_get_uses_to_thread_for_disk_fallback(self, r, tmp_path):
+        """get() delegates _search_bundles to asyncio.to_thread."""
+        store = RawStore(r, data_dir=str(tmp_path))
+        await store.set("NA1_T2", '{"data": 2}')
+        await r.delete("raw:match:NA1_T2")
+
+        calls = []
+        original_to_thread = __import__("asyncio").to_thread
+
+        async def tracking_to_thread(fn, *args, **kwargs):
+            calls.append(fn.__name__)
+            return await original_to_thread(fn, *args, **kwargs)
+
+        with patch("lol_pipeline.raw_store.asyncio.to_thread", side_effect=tracking_to_thread):
+            result = await store.get("NA1_T2")
+
+        assert result == '{"data": 2}'
+        assert "_search_bundles" in calls
+
+    @pytest.mark.asyncio
+    async def test_set_uses_to_thread_for_bundle_check(self, r, tmp_path):
+        """set() delegates _exists_in_bundles to asyncio.to_thread for dedup check."""
+        store = RawStore(r, data_dir=str(tmp_path))
+
+        calls = []
+        original_to_thread = __import__("asyncio").to_thread
+
+        async def tracking_to_thread(fn, *args, **kwargs):
+            calls.append(fn.__name__)
+            return await original_to_thread(fn, *args, **kwargs)
+
+        with patch("lol_pipeline.raw_store.asyncio.to_thread", side_effect=tracking_to_thread):
+            await store.set("NA1_T3", '{"data": 3}')
+
+        assert "_exists_in_bundles" in calls
+
+    @pytest.mark.asyncio
+    async def test_exists_skips_disk_when_redis_hit(self, r):
+        """exists() returns True from Redis without calling to_thread."""
+        store = RawStore(r)
+        await store.set("NA1_T4", '{"data": 4}')
+
+        calls = []
+
+        async def tracking_to_thread(fn, *args, **kwargs):
+            calls.append(fn.__name__)
+
+        with patch("lol_pipeline.raw_store.asyncio.to_thread", side_effect=tracking_to_thread):
+            result = await store.exists("NA1_T4")
+
+        assert result is True
+        assert len(calls) == 0
+
+    @pytest.mark.asyncio
+    async def test_get_skips_disk_when_redis_hit(self, r):
+        """get() returns data from Redis without calling to_thread."""
+        store = RawStore(r)
+        await store.set("NA1_T5", '{"data": 5}')
+
+        calls = []
+
+        async def tracking_to_thread(fn, *args, **kwargs):
+            calls.append(fn.__name__)
+
+        with patch("lol_pipeline.raw_store.asyncio.to_thread", side_effect=tracking_to_thread):
+            result = await store.get("NA1_T5")
+
+        assert result == '{"data": 5}'
+        assert len(calls) == 0

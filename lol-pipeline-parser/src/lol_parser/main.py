@@ -38,45 +38,71 @@ def _validate(data: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     return data["metadata"], info
 
 
-async def _write_participant(
-    r: aioredis.Redis,
+def _queue_participant(
+    pipe: aioredis.client.Pipeline,
     match_id: str,
     game_start: int,
     p: dict[str, Any],
 ) -> str:
+    """Queue all Redis commands for one participant onto *pipe* (no execute).
+
+    Returns the participant's puuid.
+    """
     puuid: str = p["puuid"]
     items = json.dumps([p.get(k, 0) for k in _ITEM_KEYS])
     participant_key = f"participant:{match_id}:{puuid}"
-    async with r.pipeline(transaction=False) as pipe:
-        pipe.hset(
-            participant_key,
-            mapping={
-                "champion_id": str(p.get("championId", "")),
-                "champion_name": p.get("championName", ""),
-                "team_id": str(p.get("teamId", "")),
-                "team_position": p.get("teamPosition", ""),
-                "role": p.get("role", ""),
-                "win": "1" if p.get("win") else "0",
-                "kills": str(p.get("kills", 0)),
-                "deaths": str(p.get("deaths", 0)),
-                "assists": str(p.get("assists", 0)),
-                "gold_earned": str(p.get("goldEarned", 0)),
-                "total_damage_dealt_to_champions": str(p.get("totalDamageDealtToChampions", 0)),
-                "total_minions_killed": str(p.get("totalMinionsKilled", 0)),
-                "vision_score": str(p.get("visionScore", 0)),
-                "items": items,
-            },
-        )
-        pipe.expire(participant_key, MATCH_DATA_TTL_SECONDS)
-        pipe.sadd(f"match:participants:{match_id}", puuid)
-        pipe.zadd(f"player:matches:{puuid}", {match_id: float(game_start)})
-        riot_name = p.get("riotIdGameName", "")
-        riot_tag = p.get("riotIdTagline", "")
-        if riot_name and riot_tag:
-            pipe.hsetnx(f"player:{puuid}", "game_name", riot_name)
-            pipe.hsetnx(f"player:{puuid}", "tag_line", riot_tag)
-        await pipe.execute()
+    pipe.hset(
+        participant_key,
+        mapping={
+            "champion_id": str(p.get("championId", "")),
+            "champion_name": p.get("championName", ""),
+            "team_id": str(p.get("teamId", "")),
+            "team_position": p.get("teamPosition", ""),
+            "role": p.get("role", ""),
+            "win": "1" if p.get("win") else "0",
+            "kills": str(p.get("kills", 0)),
+            "deaths": str(p.get("deaths", 0)),
+            "assists": str(p.get("assists", 0)),
+            "gold_earned": str(p.get("goldEarned", 0)),
+            "total_damage_dealt_to_champions": str(p.get("totalDamageDealtToChampions", 0)),
+            "total_minions_killed": str(p.get("totalMinionsKilled", 0)),
+            "vision_score": str(p.get("visionScore", 0)),
+            "items": items,
+        },
+    )
+    pipe.expire(participant_key, MATCH_DATA_TTL_SECONDS)
+    pipe.zadd(f"player:matches:{puuid}", {match_id: float(game_start)})
+    riot_name = p.get("riotIdGameName", "")
+    riot_tag = p.get("riotIdTagline", "")
+    if riot_name and riot_tag:
+        pipe.hsetnx(f"player:{puuid}", "game_name", riot_name)
+        pipe.hsetnx(f"player:{puuid}", "tag_line", riot_tag)
     return puuid
+
+
+async def _write_participants(
+    r: aioredis.Redis,
+    match_id: str,
+    game_start: int,
+    participants: list[dict[str, Any]],
+    log: logging.Logger,
+) -> set[str]:
+    """Batch all participant writes into a single pipeline round-trip."""
+    seen: set[str] = set()
+    async with r.pipeline(transaction=False) as pipe:
+        for participant in participants:
+            try:
+                puuid = _queue_participant(pipe, match_id, game_start, participant)
+            except (KeyError, TypeError) as exc:
+                log.warning(
+                    "skipping participant with missing data",
+                    extra={"match_id": match_id, "error": str(exc)},
+                )
+                continue
+            seen.add(puuid)
+        if seen:
+            await pipe.execute()
+    return seen
 
 
 async def _parse_match(
@@ -144,17 +170,7 @@ async def _parse_match(
         pipe.expire(match_key, MATCH_DATA_TTL_SECONDS)
         await pipe.execute()
 
-    seen_puuids: set[str] = set()
-    for participant in info["participants"]:
-        try:
-            puuid = await _write_participant(r, match_id, game_start, participant)
-        except (KeyError, TypeError) as exc:
-            log.warning(
-                "skipping participant with missing data",
-                extra={"match_id": match_id, "error": str(exc)},
-            )
-            continue
-        seen_puuids.add(puuid)
+    seen_puuids = await _write_participants(r, match_id, game_start, info["participants"], log)
 
     for puuid in seen_puuids:
         out = MessageEnvelope(
@@ -170,10 +186,15 @@ async def _parse_match(
     # Only add PUUIDs not already seeded (no seeded_at field in player:{puuid}).
     # Note: backfill above may create player:{puuid} with game_name/tag_line,
     # but those still need discovery to crawl their match history.
+    # Batch all HEXISTS checks in a single pipeline round-trip (avoid N+1).
+    puuid_list = sorted(seen_puuids)
+    async with r.pipeline(transaction=False) as pipe:
+        for puuid in puuid_list:
+            await pipe.hexists(f"player:{puuid}", "seeded_at")  # type: ignore[misc]
+        seeded_results: list[bool] = await pipe.execute()
     discover_scores: dict[str, float] = {}
-    for puuid in seen_puuids:
-        seeded: bool = await r.hexists(f"player:{puuid}", "seeded_at")  # type: ignore[misc]
-        if not seeded:
+    for puuid, already_seeded in zip(puuid_list, seeded_results, strict=True):
+        if not already_seeded:
             discover_scores[f"{puuid}:{region}"] = float(game_start)
     if discover_scores:
         await r.zadd(_DISCOVER_KEY, discover_scores, gt=True)

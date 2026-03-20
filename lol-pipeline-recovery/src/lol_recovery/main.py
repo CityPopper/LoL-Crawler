@@ -10,14 +10,14 @@ import os
 import signal
 import socket
 import time
-from typing import Any
 
 import redis.asyncio as aioredis
 from lol_pipeline.config import Config
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import DLQEnvelope, MessageEnvelope
 from lol_pipeline.redis_client import get_redis
-from redis.exceptions import RedisError, ResponseError
+from lol_pipeline.streams import consume_typed
+from redis.exceptions import RedisError
 
 _IN_STREAM = "stream:dlq"
 _ARCHIVE_STREAM = "stream:dlq:archive"
@@ -29,73 +29,23 @@ _CLAIM_IDLE_MS = 60_000
 _BACKOFF_MS = [5_000, 15_000, 60_000, 300_000]
 
 
-async def _ensure_group(r: aioredis.Redis) -> None:
-    with contextlib.suppress(ResponseError):
-        await r.xgroup_create(_IN_STREAM, _GROUP, id="0", mkstream=True)
-
-
-def _deserialize_dlq_entries(
-    raw_entries: list[Any],
-    log: logging.Logger,
-) -> tuple[list[tuple[str, DLQEnvelope]], list[str]]:
-    """Deserialize raw xreadgroup entries. Returns (valid, corrupt_msg_ids)."""
-    result: list[tuple[str, DLQEnvelope]] = []
-    corrupt: list[str] = []
-    for _, entries in raw_entries or []:
-        for msg_id, fields in entries:
-            try:
-                env = DLQEnvelope.from_redis_fields(fields)
-                result.append((msg_id, env))
-            except (KeyError, json.JSONDecodeError, ValueError, TypeError) as exc:
-                log.warning(
-                    "corrupt DLQ entry — acking and skipping",
-                    extra={"msg_id": msg_id, "error": str(exc)},
-                )
-                corrupt.append(msg_id)
-    return result, corrupt
-
-
 async def _consume_dlq(
     r: aioredis.Redis,
     consumer: str,
     count: int = 10,
     block: int = 5000,
-    log: logging.Logger | None = None,
 ) -> list[tuple[str, DLQEnvelope]]:
-    """Read DLQ entries as DLQEnvelopes, draining own PEL first."""
-    _logger = log or logging.getLogger("recovery")
-    await _ensure_group(r)
-
-    # Drain own PEL first (stranded entries from crash/halt).
-    # Note: Redis 7 returns [["stream", []]] (truthy!) when PEL is empty, so we
-    # must check actual message count rather than the truthiness of the outer list.
-    pending: list[Any] = await r.xreadgroup(_GROUP, consumer, {_IN_STREAM: "0"}, count=count)
-    pel_messages, corrupt_ids = _deserialize_dlq_entries(pending, _logger)
-    for cid in corrupt_ids:
-        await r.xack(_IN_STREAM, _GROUP, cid)
-    if pel_messages:
-        return pel_messages
-
-    # XAUTOCLAIM: reclaim messages stranded by crashed workers (idle > _CLAIM_IDLE_MS).
-    result: Any = await r.xautoclaim(
-        _IN_STREAM, _GROUP, consumer, _CLAIM_IDLE_MS, start_id="0-0", count=count
+    """Read DLQ entries as DLQEnvelopes via consume_typed()."""
+    return await consume_typed(
+        r,
+        _IN_STREAM,
+        _GROUP,
+        consumer,
+        deserializer=DLQEnvelope.from_redis_fields,
+        count=count,
+        block=block,
+        autoclaim_min_idle_ms=_CLAIM_IDLE_MS,
     )
-    claimed_entries: list[tuple[str, dict[str, str]]] = result[1]
-    if claimed_entries:
-        claimed_raw = [(_IN_STREAM, claimed_entries)]
-        claimed_messages, claimed_corrupt = _deserialize_dlq_entries(claimed_raw, _logger)
-        for cid in claimed_corrupt:
-            await r.xack(_IN_STREAM, _GROUP, cid)
-        if claimed_messages:
-            return claimed_messages
-
-    raw: list[Any] = await r.xreadgroup(
-        _GROUP, consumer, {_IN_STREAM: ">"}, count=count, block=block
-    )
-    valid, corrupt_ids = _deserialize_dlq_entries(raw, _logger)
-    for cid in corrupt_ids:
-        await r.xack(_IN_STREAM, _GROUP, cid)
-    return valid
 
 
 async def _archive(

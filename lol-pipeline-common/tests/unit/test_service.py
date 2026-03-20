@@ -9,7 +9,14 @@ import fakeredis.aioredis
 import pytest
 
 from lol_pipeline.models import MessageEnvelope
-from lol_pipeline.service import _handle_with_retry, run_consumer
+from lol_pipeline.service import (
+    _RETRY_KEY_TTL,
+    _clear_retry,
+    _handle_with_retry,
+    _incr_retry,
+    _retry_key,
+    run_consumer,
+)
 from lol_pipeline.streams import ack, consume, publish
 
 
@@ -45,23 +52,21 @@ async def _setup(r, payload=None):
 class TestHandleWithRetry:
     @pytest.mark.asyncio
     async def test_successful_handler_no_dlq(self, r, log):
-        """Successful handler call: no DLQ entry, failure counter cleared."""
+        """Successful handler call: no DLQ entry, retry key cleared."""
         msg_id, envelope = await _setup(r)
-        failures: dict[str, int] = {}
 
         async def handler(mid, env):
             pass  # success
 
-        await _handle_with_retry(r, _STREAM, _GROUP, msg_id, envelope, handler, log, failures, 3)
+        await _handle_with_retry(r, _STREAM, _GROUP, msg_id, envelope, handler, log, 3)
 
         assert await r.xlen("stream:dlq") == 0
-        assert msg_id not in failures
+        assert await r.exists(_retry_key(_STREAM, msg_id)) == 0
 
     @pytest.mark.asyncio
     async def test_persistent_crash_nacks_to_dlq(self, r, log):
         """After max_handler_retries consecutive failures, message is nacked to DLQ and ACKed."""
         msg_id, envelope = await _setup(r)
-        failures: dict[str, int] = {}
 
         async def bad_handler(mid, env):
             raise RuntimeError("boom")
@@ -75,7 +80,6 @@ class TestHandleWithRetry:
                 envelope,
                 bad_handler,
                 log,
-                failures,
                 3,
             )
 
@@ -87,7 +91,6 @@ class TestHandleWithRetry:
     async def test_intermittent_failure_resets_counter(self, r, log):
         """A success after failures resets the failure counter."""
         msg_id, envelope = await _setup(r)
-        failures: dict[str, int] = {}
         call_count = 0
 
         async def flaky_handler(mid, env):
@@ -106,7 +109,6 @@ class TestHandleWithRetry:
                 envelope,
                 flaky_handler,
                 log,
-                failures,
                 3,
             )
 
@@ -119,19 +121,17 @@ class TestHandleWithRetry:
             envelope,
             flaky_handler,
             log,
-            failures,
             3,
         )
 
         assert await r.xlen("stream:dlq") == 0
-        assert msg_id not in failures
+        assert await r.exists(_retry_key(_STREAM, msg_id)) == 0
 
 
-class TestFailuresDictBounded:
+class TestRetryKeyTTL:
     @pytest.mark.asyncio
-    async def test_failures_dict_bounded(self, r, log):
-        """Failures dict does not grow beyond _MAX_FAILURE_ENTRIES."""
-        failures = {f"fake-{i}": 1 for i in range(10_000)}
+    async def test_retry_key_has_ttl(self, r, log):
+        """Redis retry counter key gets a TTL so it does not persist forever."""
         msg_id, envelope = await _setup(r)
 
         async def bad_handler(mid, env):
@@ -145,10 +145,12 @@ class TestFailuresDictBounded:
             envelope,
             bad_handler,
             log,
-            failures,
-            3,
+            5,  # max_retries high enough so we don't DLQ on first failure
         )
-        assert len(failures) <= 10_000
+
+        key = _retry_key(_STREAM, msg_id)
+        ttl = await r.ttl(key)
+        assert 0 < ttl <= _RETRY_KEY_TTL
 
 
 class TestRunConsumer:
@@ -327,3 +329,97 @@ class TestRunConsumer:
         assert await r.get("system:halted") is None
         assert signal.SIGTERM in captured_handlers
         assert call_count >= 1
+
+
+class TestRedisBackedRetryCounter:
+    """B13: Redis-backed retry counter survives service restarts."""
+
+    @pytest.mark.asyncio
+    async def test_counter_survives_simulated_restart(self, r, log):
+        """Retry counter persists in Redis across independent _handle_with_retry calls,
+        simulating a service restart (new in-memory state, same Redis)."""
+        msg_id, envelope = await _setup(r)
+
+        async def bad_handler(mid, env):
+            raise RuntimeError("poison")
+
+        # Simulate first "process lifetime": 2 failures
+        for _ in range(2):
+            await _handle_with_retry(r, _STREAM, _GROUP, msg_id, envelope, bad_handler, log, 3)
+
+        # Counter should be 2 in Redis (not yet DLQ'd)
+        assert await r.xlen("stream:dlq") == 0
+        key = _retry_key(_STREAM, msg_id)
+        assert await r.get(key) == "2"
+
+        # Simulate restart: the 3rd failure (new call, same Redis) triggers DLQ
+        await _handle_with_retry(r, _STREAM, _GROUP, msg_id, envelope, bad_handler, log, 3)
+
+        assert await r.xlen("stream:dlq") == 1
+        # Retry key cleaned up after DLQ
+        assert await r.exists(key) == 0
+
+    @pytest.mark.asyncio
+    async def test_counter_deleted_on_success(self, r, log):
+        """Successful handler call deletes the Redis retry counter."""
+        msg_id, envelope = await _setup(r)
+        call_count = 0
+
+        async def eventually_ok(mid, env):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 1:
+                raise RuntimeError("transient")
+
+        # First call: failure (counter = 1)
+        await _handle_with_retry(r, _STREAM, _GROUP, msg_id, envelope, eventually_ok, log, 3)
+        key = _retry_key(_STREAM, msg_id)
+        assert await r.get(key) == "1"
+
+        # Second call: success — counter should be deleted
+        await _handle_with_retry(r, _STREAM, _GROUP, msg_id, envelope, eventually_ok, log, 3)
+        assert await r.exists(key) == 0
+        assert await r.xlen("stream:dlq") == 0
+
+    @pytest.mark.asyncio
+    async def test_poison_message_nacked_after_max_retries(self, r, log):
+        """A poison message is nacked to DLQ exactly once after max retries."""
+        msg_id, envelope = await _setup(r)
+
+        async def poison(mid, env):
+            raise RuntimeError("always fails")
+
+        # 5 calls with max_retries=3 — DLQ should happen on call 3,
+        # then calls 4-5 should not produce additional DLQ entries
+        # because the key is cleared after DLQ.
+        for _i in range(5):
+            await _handle_with_retry(r, _STREAM, _GROUP, msg_id, envelope, poison, log, 3)
+
+        # DLQ entry created after retry 3, then counter resets,
+        # so retries 4 and 5 start a new counter (not yet at 3 again).
+        dlq_len = await r.xlen("stream:dlq")
+        assert dlq_len == 1
+
+    @pytest.mark.asyncio
+    async def test_incr_retry_sets_ttl_on_first_call(self, r):
+        """_incr_retry sets TTL on first increment, preserves it on subsequent."""
+        count1 = await _incr_retry(r, _STREAM, "msg-ttl-test")
+        assert count1 == 1
+        ttl1 = await r.ttl(_retry_key(_STREAM, "msg-ttl-test"))
+        assert 0 < ttl1 <= _RETRY_KEY_TTL
+
+        count2 = await _incr_retry(r, _STREAM, "msg-ttl-test")
+        assert count2 == 2
+        ttl2 = await r.ttl(_retry_key(_STREAM, "msg-ttl-test"))
+        # TTL should still be positive (not reset or removed)
+        assert ttl2 > 0
+
+    @pytest.mark.asyncio
+    async def test_clear_retry_removes_key(self, r):
+        """_clear_retry deletes the retry counter key from Redis."""
+        await _incr_retry(r, _STREAM, "msg-clear-test")
+        key = _retry_key(_STREAM, "msg-clear-test")
+        assert await r.exists(key) == 1
+
+        await _clear_retry(r, _STREAM, "msg-clear-test")
+        assert await r.exists(key) == 0

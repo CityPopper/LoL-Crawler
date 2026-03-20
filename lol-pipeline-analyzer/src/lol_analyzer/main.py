@@ -88,33 +88,42 @@ async def _process_matches(  # noqa: PLR0913
     lock_ttl_ms: int,
     log: logging.Logger,
 ) -> bool:
-    """Process each match atomically and refresh lock. Returns False if lock lost."""
-    for (_match_id, score), p in zip(new_matches, participant_data, strict=True):
-        if not p:
-            continue
-        stats_key = f"player:stats:{puuid}"
-        async with r.pipeline(transaction=True) as pipe:
+    """Process each match atomically and refresh lock. Returns False if lock lost.
+
+    Uses a single pipeline context manager across all matches to avoid per-match
+    pipeline creation overhead.  Each match's commands are executed as a separate
+    MULTI/EXEC (via ``pipe.execute()``) so the cursor advances atomically with
+    that match's stats, and the lock is refreshed between matches.
+    """
+    stats_key = f"player:stats:{puuid}"
+    cursor_key = f"player:stats:cursor:{puuid}"
+    champs_key = f"player:champions:{puuid}"
+    roles_key = f"player:roles:{puuid}"
+    async with r.pipeline(transaction=True) as pipe:
+        for (_match_id, score), p in zip(new_matches, participant_data, strict=True):
+            if not p:
+                continue
             pipe.hincrby(stats_key, "total_games", 1)
             pipe.hincrby(stats_key, "total_wins", int(p.get("win", "0")))
             pipe.hincrby(stats_key, "total_kills", int(p.get("kills", "0")))
             pipe.hincrby(stats_key, "total_deaths", int(p.get("deaths", "0")))
             pipe.hincrby(stats_key, "total_assists", int(p.get("assists", "0")))
             if champ := p.get("champion_name"):
-                pipe.zincrby(f"player:champions:{puuid}", 1, champ)
+                pipe.zincrby(champs_key, 1, champ)
             if role := p.get("role"):
-                pipe.zincrby(f"player:roles:{puuid}", 1, role)
+                pipe.zincrby(roles_key, 1, role)
             # Cursor in same MULTI/EXEC as stats —
             # atomic: either all commit or none, preventing double-count on crash.
-            pipe.set(f"player:stats:cursor:{puuid}", str(score))
+            pipe.set(cursor_key, str(score))
             await pipe.execute()
-        # Refresh lock outside MULTI/EXEC via Lua ownership check.
-        # If we no longer own the lock, abort to prevent double-counting.
-        if not await _refresh_lock(r, lock_key, worker_id, lock_ttl_ms):
-            log.warning(
-                "lock ownership lost mid-processing — aborting",
-                extra={"puuid": puuid},
-            )
-            return False
+            # Refresh lock outside MULTI/EXEC via Lua ownership check.
+            # If we no longer own the lock, abort to prevent double-counting.
+            if not await _refresh_lock(r, lock_key, worker_id, lock_ttl_ms):
+                log.warning(
+                    "lock ownership lost mid-processing — aborting",
+                    extra={"puuid": puuid},
+                )
+                return False
     return True
 
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Any
 from unittest.mock import AsyncMock
 
 import fakeredis.aioredis
@@ -15,6 +17,7 @@ from lol_pipeline.streams import (
     MATCH_ID_STREAM_MAXLEN,
     ack,
     consume,
+    consume_typed,
     nack_to_dlq,
     publish,
 )
@@ -591,6 +594,71 @@ class TestXautoclaimCorruptMessages:
         mock_r.xack.assert_called_once_with("stream:test", "g", "corrupt-1")
 
 
+class TestXautoclaimCorruptHandlerNotCalled:
+    """Consume with XAUTOCLAIM: corrupt messages are ACKed, handler never invoked."""
+
+    @pytest.mark.asyncio
+    async def test_xautoclaim__all_corrupt__falls_through_to_new_messages(self):
+        """When all XAUTOCLAIM entries are corrupt, consume falls through to new messages."""
+        mock_r = AsyncMock()
+        # PEL drain returns empty
+        mock_r.xreadgroup.side_effect = [
+            [["stream:test", []]],  # PEL drain: empty
+            [["stream:test", []]],  # new messages: also empty
+        ]
+        # XAUTOCLAIM returns two corrupt entries
+        mock_r.xautoclaim.return_value = [
+            "0-0",
+            [
+                ("corrupt-a", {"bad": "fields"}),
+                ("corrupt-b", {"also": "bad"}),
+            ],
+        ]
+
+        msgs = await consume(mock_r, "stream:test", "g", "c", block=0, autoclaim_min_idle_ms=5000)
+
+        # No valid messages returned
+        assert msgs == []
+        # Both corrupt messages were ACKed
+        assert mock_r.xack.call_count == 2
+        mock_r.xack.assert_any_call("stream:test", "g", "corrupt-a")
+        mock_r.xack.assert_any_call("stream:test", "g", "corrupt-b")
+        # Falls through to new messages xreadgroup
+        assert mock_r.xreadgroup.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_xautoclaim__valid_and_corrupt_mixed__only_valid_returned(self):
+        """XAUTOCLAIM returns mix of valid and corrupt; only valid ones reach caller."""
+        mock_r = AsyncMock()
+        mock_r.xreadgroup.return_value = [["stream:test", []]]
+
+        valid_env_1 = _env()
+        valid_env_2 = _env()
+
+        mock_r.xautoclaim.return_value = [
+            "0-0",
+            [
+                ("valid-1", valid_env_1.to_redis_fields()),
+                ("corrupt-1", {"garbage": "data"}),
+                ("valid-2", valid_env_2.to_redis_fields()),
+                ("corrupt-2", {"more": "garbage"}),
+            ],
+        ]
+
+        msgs = await consume(mock_r, "stream:test", "g", "c", block=0, autoclaim_min_idle_ms=5000)
+
+        # Only valid messages returned
+        assert len(msgs) == 2
+        assert msgs[0][0] == "valid-1"
+        assert msgs[0][1].id == valid_env_1.id
+        assert msgs[1][0] == "valid-2"
+        assert msgs[1][1].id == valid_env_2.id
+        # Corrupt messages were ACKed
+        assert mock_r.xack.call_count == 2
+        mock_r.xack.assert_any_call("stream:test", "g", "corrupt-1")
+        mock_r.xack.assert_any_call("stream:test", "g", "corrupt-2")
+
+
 class TestEnsureGroupWeakKeyIsolation:
     """_ensure_group WeakKeyDictionary keeps separate caches per Redis client."""
 
@@ -637,3 +705,148 @@ class TestEnsureGroupWeakKeyIsolation:
         await consume(mock_r, "stream:b", "g2", "c", block=0)  # cached
 
         assert mock_r.xgroup_create.call_count == 2
+
+
+@dataclass
+class _SimpleMsg:
+    """Minimal test type for consume_typed() custom deserializer."""
+
+    name: str
+    value: int
+
+    def to_redis_fields(self) -> dict[str, str]:
+        return {"name": self.name, "value": str(self.value)}
+
+    @classmethod
+    def from_redis_fields(cls, fields: dict[str, Any]) -> _SimpleMsg:
+        return cls(name=fields["name"], value=int(fields["value"]))
+
+
+class TestConsumeTyped:
+    """consume_typed() accepts a custom deserializer and returns typed results."""
+
+    @pytest.mark.asyncio
+    async def test_consume_typed__custom_deserializer(self, r):
+        """consume_typed() uses the provided deserializer instead of MessageEnvelope."""
+        # Publish raw fields matching _SimpleMsg
+        await r.xadd("stream:typed", {"name": "alice", "value": "42"})
+
+        results = await consume_typed(
+            r,
+            "stream:typed",
+            "g",
+            "c",
+            deserializer=_SimpleMsg.from_redis_fields,
+            count=10,
+            block=0,
+        )
+
+        assert len(results) == 1
+        _msg_id, msg = results[0]
+        assert isinstance(msg, _SimpleMsg)
+        assert msg.name == "alice"
+        assert msg.value == 42
+
+    @pytest.mark.asyncio
+    async def test_consume_typed__corrupt_entry_acked_and_skipped(self, r):
+        """Corrupt entries are acked and skipped when using a custom deserializer."""
+        # Add a valid entry
+        await r.xadd("stream:typed", {"name": "bob", "value": "7"})
+        # Add a corrupt entry (missing "value" field)
+        await r.xadd("stream:typed", {"garbage": "data"})
+
+        results = await consume_typed(
+            r,
+            "stream:typed",
+            "g",
+            "c",
+            deserializer=_SimpleMsg.from_redis_fields,
+            count=10,
+            block=0,
+        )
+
+        # Only valid message returned
+        assert len(results) == 1
+        assert results[0][1].name == "bob"
+
+    @pytest.mark.asyncio
+    async def test_consume_typed__returns_empty_on_no_messages(self, r):
+        """consume_typed() returns empty list when no messages are available."""
+        results = await consume_typed(
+            r,
+            "stream:empty",
+            "g",
+            "c",
+            deserializer=_SimpleMsg.from_redis_fields,
+            count=10,
+            block=0,
+        )
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_consume_typed__pel_drain(self):
+        """consume_typed() drains own PEL before reading new messages."""
+        mock_r = AsyncMock()
+
+        valid_fields = {"name": "charlie", "value": "99"}
+        # PEL drain returns the unacked message
+        mock_r.xreadgroup.return_value = [
+            ["stream:typed", [("msg-1", valid_fields)]],
+        ]
+
+        results = await consume_typed(
+            mock_r,
+            "stream:typed",
+            "g",
+            "c",
+            deserializer=_SimpleMsg.from_redis_fields,
+            count=10,
+            block=0,
+        )
+
+        assert len(results) == 1
+        assert results[0][1].name == "charlie"
+        assert results[0][1].value == 99
+
+    @pytest.mark.asyncio
+    async def test_consume_typed__autoclaim_support(self):
+        """consume_typed() supports autoclaim_min_idle_ms parameter."""
+        mock_r = AsyncMock()
+        mock_r.xreadgroup.return_value = [["stream:test", []]]
+
+        valid_fields = {"name": "dana", "value": "5"}
+        mock_r.xautoclaim.return_value = [
+            "0-0",
+            [("claimed-1", valid_fields)],
+        ]
+
+        results = await consume_typed(
+            mock_r,
+            "stream:test",
+            "g",
+            "c",
+            deserializer=_SimpleMsg.from_redis_fields,
+            count=10,
+            block=0,
+            autoclaim_min_idle_ms=5000,
+        )
+
+        assert len(results) == 1
+        assert results[0][1].name == "dana"
+        assert results[0][1].value == 5
+
+
+class TestConsumeUsesConsumeTyped:
+    """consume() delegates to consume_typed() with MessageEnvelope.from_redis_fields."""
+
+    @pytest.mark.asyncio
+    async def test_consume__still_returns_message_envelopes(self, r):
+        """consume() continues to return MessageEnvelope tuples (backward compat)."""
+        env = _env()
+        await publish(r, "stream:test", env)
+        msgs = await consume(r, "stream:test", "g", "c", block=0)
+        assert len(msgs) == 1
+        _, restored = msgs[0]
+        assert isinstance(restored, MessageEnvelope)
+        assert restored.id == env.id
+        assert restored.payload == {"k": "v"}

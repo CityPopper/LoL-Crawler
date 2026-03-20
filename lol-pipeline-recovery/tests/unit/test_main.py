@@ -453,74 +453,79 @@ class TestMainLoopRetry:
 
 
 class TestCorruptDlqEntryHandling:
-    """Corrupt DLQ entries are ACKed and skipped, not re-raised."""
+    """Corrupt DLQ entries are ACKed and skipped via consume_typed delegation."""
 
     @pytest.mark.asyncio
-    async def test_deserialize_dlq_entries__corrupt_json_returns_corrupt_ids(self, log):
-        """Corrupt JSON entry is returned in the corrupt_ids list."""
-        from lol_recovery.main import _deserialize_dlq_entries
+    async def test_consume_dlq__corrupt_entry_acked_and_skipped(self):
+        """Corrupt entry in PEL is ACKed and not returned."""
+        from lol_recovery.main import _consume_dlq
 
-        raw_entries = [
-            (
-                "stream:dlq",
-                [("corrupt-1", {"garbage": "data", "id": "x", "failed_at": "t"})],
-            ),
+        mock_r = AsyncMock()
+        mock_r.xreadgroup.side_effect = [
+            [("stream:dlq", [("corrupt-1", {"garbage": "data"})])],  # PEL
+            [("stream:dlq", [])],  # new messages
         ]
+        mock_r.xautoclaim.return_value = ["0-0", [], []]
 
-        valid, corrupt = _deserialize_dlq_entries(raw_entries, log)
+        entries = await _consume_dlq(mock_r, "test-consumer", count=10, block=0)
 
-        assert valid == []
-        assert corrupt == ["corrupt-1"]
+        assert entries == []
+        mock_r.xack.assert_called_once_with("stream:dlq", "recovery", "corrupt-1")
 
     @pytest.mark.asyncio
-    async def test_deserialize_dlq_entries__invalid_payload_json(self, log):
-        """Entry with malformed JSON in payload field is flagged as corrupt."""
-        from lol_recovery.main import _deserialize_dlq_entries
+    async def test_consume_dlq__invalid_payload_json_acked(self):
+        """Entry with malformed JSON payload is ACKed and not returned."""
+        from lol_recovery.main import _consume_dlq
 
-        # Build a DLQ entry with all fields present but invalid JSON in payload
-        raw_entries = [
-            (
-                "stream:dlq",
-                [
-                    (
-                        "bad-payload-1",
-                        {
-                            "id": "abc",
-                            "source_stream": "stream:dlq",
-                            "type": "dlq",
-                            "payload": "NOT-VALID-JSON{{{",
-                            "attempts": "3",
-                            "max_attempts": "5",
-                            "failure_code": "http_5xx",
-                            "failure_reason": "test",
-                            "failed_by": "fetcher",
-                            "original_stream": "stream:match_id",
-                            "original_message_id": "123-0",
-                            "failed_at": "2024-01-01T00:00:00+00:00",
-                            "enqueued_at": "2024-01-01T00:00:00+00:00",
-                            "dlq_attempts": "0",
-                            "retry_after_ms": "null",
-                            "priority": "normal",
-                        },
-                    )
-                ],
-            ),
+        mock_r = AsyncMock()
+        mock_r.xreadgroup.side_effect = [
+            [
+                (
+                    "stream:dlq",
+                    [
+                        (
+                            "bad-payload-1",
+                            {
+                                "id": "abc",
+                                "source_stream": "stream:dlq",
+                                "type": "dlq",
+                                "payload": "NOT-VALID-JSON{{{",
+                                "attempts": "3",
+                                "max_attempts": "5",
+                                "failure_code": "http_5xx",
+                                "failure_reason": "test",
+                                "failed_by": "fetcher",
+                                "original_stream": "stream:match_id",
+                                "original_message_id": "123-0",
+                                "failed_at": "2024-01-01T00:00:00+00:00",
+                                "enqueued_at": "2024-01-01T00:00:00+00:00",
+                                "dlq_attempts": "0",
+                                "retry_after_ms": "null",
+                                "priority": "normal",
+                            },
+                        )
+                    ],
+                ),
+            ],  # PEL
+            [("stream:dlq", [])],  # new messages
         ]
+        mock_r.xautoclaim.return_value = ["0-0", [], []]
 
-        valid, corrupt = _deserialize_dlq_entries(raw_entries, log)
+        entries = await _consume_dlq(mock_r, "test-consumer", count=10, block=0)
 
-        assert valid == []
-        assert corrupt == ["bad-payload-1"]
+        assert entries == []
+        mock_r.xack.assert_called_once_with("stream:dlq", "recovery", "bad-payload-1")
 
     @pytest.mark.asyncio
-    async def test_deserialize_dlq_entries__mixed_valid_and_corrupt(self, log):
-        """Mix of valid and corrupt entries: valid returned, corrupt IDs listed."""
-        from lol_recovery.main import _deserialize_dlq_entries
+    async def test_consume_dlq__mixed_valid_and_corrupt(self):
+        """Valid entries returned, corrupt entries ACKed and skipped."""
+        from lol_recovery.main import _consume_dlq
 
         dlq = _make_dlq()
         valid_fields = dlq.to_redis_fields()
 
-        raw_entries = [
+        mock_r = AsyncMock()
+        mock_r.xreadgroup.return_value = [
             (
                 "stream:dlq",
                 [
@@ -530,24 +535,29 @@ class TestCorruptDlqEntryHandling:
             ),
         ]
 
-        valid, corrupt = _deserialize_dlq_entries(raw_entries, log)
+        entries = await _consume_dlq(mock_r, "test-consumer", count=10, block=0)
 
-        assert len(valid) == 1
-        assert valid[0][0] == "valid-1"
-        assert corrupt == ["corrupt-1"]
+        assert len(entries) == 1
+        assert entries[0][0] == "valid-1"
+        mock_r.xack.assert_called_once_with("stream:dlq", "recovery", "corrupt-1")
 
     @pytest.mark.asyncio
-    async def test_deserialize_dlq_entries__empty_input(self, log):
-        """Empty or None input returns no valid or corrupt entries."""
-        from lol_recovery.main import _deserialize_dlq_entries
+    async def test_consume_dlq__no_messages_returns_empty(self):
+        """No messages on stream returns empty list."""
+        from lol_recovery.main import _consume_dlq
 
-        valid, corrupt = _deserialize_dlq_entries([], log)
-        assert valid == []
-        assert corrupt == []
+        mock_r = AsyncMock()
+        mock_r.xreadgroup.return_value = [("stream:dlq", [])]
+        mock_r.xautoclaim.return_value = ["0-0", [], []]
 
-        valid2, corrupt2 = _deserialize_dlq_entries(None, log)
-        assert valid2 == []
-        assert corrupt2 == []
+        # Override xreadgroup to return empty for both PEL and new messages
+        mock_r.xreadgroup.side_effect = [
+            [("stream:dlq", [])],  # PEL drain
+            [("stream:dlq", [])],  # new messages
+        ]
+
+        entries = await _consume_dlq(mock_r, "test-consumer", count=10, block=0)
+        assert entries == []
 
     @pytest.mark.asyncio
     async def test_consume_dlq__corrupt_entries_acked_in_pel(self):
@@ -704,6 +714,94 @@ class TestXautoclaim:
         assert entries[0][0] == "pel-1"
         # XAUTOCLAIM should NOT be called when PEL has entries
         mock_r.xautoclaim.assert_not_called()
+
+
+class TestConsumeDlqCorruptInXautoclaim:
+    """Corrupt DLQ entries in XAUTOCLAIM are ACKed and skipped."""
+
+    @pytest.mark.asyncio
+    async def test_consume_dlq__xautoclaim_corrupt_acked_and_skipped(self):
+        """Single corrupt entry from XAUTOCLAIM is ACKed and skipped."""
+        from lol_recovery.main import _consume_dlq
+
+        mock_r = AsyncMock()
+        # PEL drain returns empty
+        mock_r.xreadgroup.side_effect = [
+            [("stream:dlq", [])],  # PEL drain: empty
+            [("stream:dlq", [])],  # new messages: empty
+        ]
+        # XAUTOCLAIM returns one corrupt entry
+        mock_r.xautoclaim.return_value = [
+            "0-0",
+            [("corrupt-claimed-1", {"garbage": "data"})],
+            [],
+        ]
+
+        entries = await _consume_dlq(mock_r, "test-consumer", count=10, block=0)
+
+        assert entries == []
+        mock_r.xack.assert_called_once_with("stream:dlq", "recovery", "corrupt-claimed-1")
+
+    @pytest.mark.asyncio
+    async def test_consume_dlq__xautoclaim_valid_and_corrupt__valid_processed(self):
+        """Mix of valid and corrupt in XAUTOCLAIM: valid returned, corrupt ACKed."""
+        from lol_recovery.main import _consume_dlq
+
+        mock_r = AsyncMock()
+        dlq = _make_dlq()
+        valid_fields = dlq.to_redis_fields()
+
+        # PEL drain returns empty
+        mock_r.xreadgroup.side_effect = [
+            [("stream:dlq", [])],  # PEL drain: empty
+            [("stream:dlq", [])],  # new messages: empty
+        ]
+        # XAUTOCLAIM returns one valid + one corrupt
+        mock_r.xautoclaim.return_value = [
+            "0-0",
+            [
+                ("valid-claimed-1", valid_fields),
+                ("corrupt-claimed-1", {"garbage": "data"}),
+            ],
+            [],
+        ]
+
+        entries = await _consume_dlq(mock_r, "test-consumer", count=10, block=0)
+
+        # Only valid entry returned
+        assert len(entries) == 1
+        assert entries[0][0] == "valid-claimed-1"
+        assert entries[0][1].failure_code == "http_429"
+        # Corrupt entry was ACKed
+        mock_r.xack.assert_called_once_with("stream:dlq", "recovery", "corrupt-claimed-1")
+
+    @pytest.mark.asyncio
+    async def test_consume_dlq__valid_then_corrupt__valid_processed_corrupt_skipped(self):
+        """Valid entry followed by corrupt in PEL: valid processed, corrupt ACKed."""
+        from lol_recovery.main import _consume_dlq
+
+        mock_r = AsyncMock()
+        dlq = _make_dlq()
+        valid_fields = dlq.to_redis_fields()
+
+        # PEL drain returns one valid + one corrupt
+        mock_r.xreadgroup.return_value = [
+            (
+                "stream:dlq",
+                [
+                    ("valid-1", valid_fields),
+                    ("corrupt-1", {"garbage": "data"}),
+                ],
+            ),
+        ]
+
+        entries = await _consume_dlq(mock_r, "test-consumer", count=10, block=0)
+
+        # Only valid entry returned
+        assert len(entries) == 1
+        assert entries[0][0] == "valid-1"
+        # Corrupt entry was ACKed
+        mock_r.xack.assert_called_once_with("stream:dlq", "recovery", "corrupt-1")
 
 
 class TestMainEntryPoint:

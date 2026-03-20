@@ -30,7 +30,95 @@ _OUT_STREAM = "stream:match_id"
 _GROUP = "crawlers"
 
 
-async def _crawl_player(  # noqa: C901, PLR0915
+async def _fetch_match_ids_paginated(
+    r: aioredis.Redis,
+    riot: RiotClient,
+    cfg: Config,
+    puuid: str,
+    region: str,
+    known: set[str],
+    log: logging.Logger,
+) -> int:
+    """Paginate through Riot match-ID API and publish new IDs to stream:match_id.
+
+    Returns the number of newly published match IDs.  Raises Riot API exceptions
+    (NotFoundError, AuthError, RateLimitError, ServerError) to the caller.
+    """
+    start = 0
+    count = 100
+    published = 0
+
+    while True:
+        await wait_for_token(r, limit_per_second=cfg.api_rate_limit_per_second)
+        page: list[str] = await riot.get_match_ids(puuid, region, start=start, count=count)
+        log.debug(
+            "fetched match ids page",
+            extra={"puuid": puuid, "start": start, "returned": len(page)},
+        )
+        if not page:
+            break
+
+        new_ids = [mid for mid in page if mid not in known]
+        log.debug(
+            "match id page filtered",
+            extra={"puuid": puuid, "page_size": len(page), "new": len(new_ids)},
+        )
+        for match_id in new_ids:
+            env = MessageEnvelope(
+                source_stream=_OUT_STREAM,
+                type="match_id",
+                payload={"match_id": match_id, "puuid": puuid, "region": region},
+                max_attempts=cfg.max_attempts,
+            )
+            await publish(r, _OUT_STREAM, env, maxlen=MATCH_ID_STREAM_MAXLEN)
+            published += 1
+
+        # Stop early if a full page was entirely known
+        if len(page) == count and not new_ids:
+            log.debug("full page already known — stopping", extra={"puuid": puuid})
+            break
+        if len(page) < count:
+            break
+        start += count
+
+    return published
+
+
+async def _handle_crawl_error(
+    r: aioredis.Redis,
+    msg_id: str,
+    envelope: MessageEnvelope,
+    exc: NotFoundError | AuthError | RateLimitError | ServerError,
+    puuid: str,
+    log: logging.Logger,
+) -> None:
+    """Handle Riot API errors during crawl — ack/nack/halt as appropriate."""
+    if isinstance(exc, NotFoundError):
+        log.info("player not found (404) — discarding", extra={"puuid": puuid})
+        await ack(r, _IN_STREAM, _GROUP, msg_id)
+        return
+
+    if isinstance(exc, AuthError):
+        await r.set("system:halted", "1")
+        log.critical("Riot API key rejected (403) — system halted", extra={"puuid": puuid})
+        return  # do NOT ack — leave in PEL
+
+    # RateLimitError | ServerError
+    fc = "http_429" if isinstance(exc, RateLimitError) else "http_5xx"
+    ram = exc.retry_after_ms if isinstance(exc, RateLimitError) else None
+    log.error("Riot API error", extra={"error": str(exc), "failure_code": fc, "puuid": puuid})
+    await nack_to_dlq(
+        r,
+        envelope,
+        failure_code=fc,
+        failed_by="crawler",
+        original_message_id=msg_id,
+        retry_after_ms=ram,
+    )
+    await ack(r, _IN_STREAM, _GROUP, msg_id)
+
+
+async def _crawl_player(
     r: aioredis.Redis,
     riot: RiotClient,
     cfg: Config,
@@ -65,67 +153,10 @@ async def _crawl_player(  # noqa: C901, PLR0915
         },
     )
 
-    start = 0
-    count = 100
-    published = 0
-
     try:
-        while True:
-            await wait_for_token(r, limit_per_second=cfg.api_rate_limit_per_second)
-            page: list[str] = await riot.get_match_ids(puuid, region, start=start, count=count)
-            log.debug(
-                "fetched match ids page",
-                extra={"puuid": puuid, "start": start, "returned": len(page)},
-            )
-            if not page:
-                break
-
-            new_ids = [mid for mid in page if mid not in known]
-            log.debug(
-                "match id page filtered",
-                extra={"puuid": puuid, "page_size": len(page), "new": len(new_ids)},
-            )
-            for match_id in new_ids:
-                env = MessageEnvelope(
-                    source_stream=_OUT_STREAM,
-                    type="match_id",
-                    payload={"match_id": match_id, "puuid": puuid, "region": region},
-                    max_attempts=cfg.max_attempts,
-                )
-                await publish(r, _OUT_STREAM, env, maxlen=MATCH_ID_STREAM_MAXLEN)
-                published += 1
-
-            # Stop early if a full page was entirely known
-            if len(page) == count and not new_ids:
-                log.debug("full page already known — stopping", extra={"puuid": puuid})
-                break
-            if len(page) < count:
-                break
-            start += count
-
-    except NotFoundError:
-        log.info("player not found (404) — discarding", extra={"puuid": puuid})
-        await ack(r, _IN_STREAM, _GROUP, msg_id)
-        return
-
-    except AuthError:
-        await r.set("system:halted", "1")
-        log.critical("Riot API key rejected (403) — system halted", extra={"puuid": puuid})
-        return  # do NOT ack — leave in PEL
-
-    except (RateLimitError, ServerError) as exc:
-        fc = "http_429" if isinstance(exc, RateLimitError) else "http_5xx"
-        ram = exc.retry_after_ms if isinstance(exc, RateLimitError) else None
-        log.error("Riot API error", extra={"error": str(exc), "failure_code": fc, "puuid": puuid})
-        await nack_to_dlq(
-            r,
-            envelope,
-            failure_code=fc,
-            failed_by="crawler",
-            original_message_id=msg_id,
-            retry_after_ms=ram,
-        )
-        await ack(r, _IN_STREAM, _GROUP, msg_id)
+        published = await _fetch_match_ids_paginated(r, riot, cfg, puuid, region, known, log)
+    except (NotFoundError, AuthError, RateLimitError, ServerError) as exc:
+        await _handle_crawl_error(r, msg_id, envelope, exc, puuid, log)
         return
 
     now_iso = datetime.now(tz=UTC).isoformat()

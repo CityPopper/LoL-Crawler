@@ -116,6 +116,53 @@ jobs:
       - name: Run contract tests
         run: cd ${{ matrix.service }} && python -m pytest tests/contract -v --tb=short
 
+  integration-tests:
+    name: Integration Tests
+    needs: [test, lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install all service dependencies
+        run: |
+          pip install -e "lol-pipeline-common/[dev]"
+          for dir in lol-pipeline-*/; do
+            if [ "$dir" != "lol-pipeline-common/" ] && [ -f "$dir/pyproject.toml" ]; then
+              pip install -e "$dir[dev]" 2>/dev/null || pip install -e "$dir" || true
+            fi
+          done
+          pip install testcontainers pytest-asyncio pytest-timeout
+      - name: Run integration tests
+        run: python3 -m pytest tests/integration/ -v --timeout=120
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install pip-audit
+        run: pip install pip-audit
+      - name: Audit common package
+        run: |
+          pip install -e "lol-pipeline-common/"
+          pip-audit --skip-editable
+      - name: Audit all service packages
+        run: |
+          FAILED=0
+          for dir in lol-pipeline-*/; do
+            if [ -f "$dir/pyproject.toml" ]; then
+              echo "=== $dir ==="
+              pip install -e "$dir" 2>/dev/null || true
+            fi
+          done
+          pip-audit --skip-editable || FAILED=1
+          exit $FAILED
+
   docker-build:
     name: "Docker Build (${{ matrix.service }})"
     needs: [lint, typecheck, test, contract]

@@ -38,6 +38,9 @@ from lol_pipeline.streams import publish
 
 _STREAM_PUUID = "stream:puuid"
 _PUUID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
+_NAME_CACHE_INDEX = "name_cache:index"
+_NAME_CACHE_MAX = 10_000
+_AUTOSEED_COOLDOWN_S = 300  # 5 minutes
 _log = get_logger("ui")
 
 
@@ -253,6 +256,39 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
 }
 
+/* Spinner */
+@keyframes _spin { to { transform: rotate(360deg); } }
+.spinner {
+  display: inline-block;
+  width: 18px; height: 18px;
+  border: 2px solid var(--color-border);
+  border-top-color: var(--color-info);
+  border-radius: 50%;
+  animation: _spin 0.7s linear infinite;
+  vertical-align: middle;
+  margin-left: var(--space-sm);
+}
+
+/* Dashboard grid */
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-md);
+  margin: var(--space-md) 0;
+}
+@media (min-width: 768px) { .dashboard-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (min-width: 1440px) { .dashboard-grid { grid-template-columns: repeat(3, 1fr); } }
+
+/* Sort controls */
+.sort-controls { display: flex; gap: var(--space-sm); align-items: center;
+                 margin-bottom: var(--space-sm); flex-wrap: wrap; }
+.sort-controls a { padding: var(--space-xs) var(--space-sm); border-radius: var(--radius);
+                   text-decoration: none; color: var(--color-muted);
+                   border: 1px solid var(--color-border); font-size: var(--font-size-sm); }
+.sort-controls a.active { color: var(--color-text); border-color: var(--color-info);
+                           background: rgba(90,158,255,0.1); }
+.sort-controls span { font-size: var(--font-size-sm); color: var(--color-muted); }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important; }
@@ -369,14 +405,40 @@ def _page(title: str, body: str, path: str = "") -> str:
   <style>{_CSS}</style>
 </head>
 <body>
+<a class="skip-link" href="#main-content">Skip to content</a>
 <h1>LoL Pipeline</h1>
 <nav>
   {nav_html}
 </nav>
 <hr>
+<main id="main-content">
 {body}
+</main>
 </body>
 </html>"""
+
+
+_HALT_BANNER = (
+    '<div class="banner banner--error">&#9888; System is HALTED (system:halted is set)</div>'
+)
+
+
+_DLQ_DEFAULT_PER_PAGE = 25
+_DLQ_MAX_PER_PAGE = 50
+
+
+def _make_replay_envelope(dlq: DLQEnvelope, max_attempts: int) -> MessageEnvelope:
+    """Reconstruct a MessageEnvelope from a DLQEnvelope for replay."""
+    original_type = dlq.original_stream.removeprefix("stream:")
+    return MessageEnvelope(
+        source_stream=dlq.original_stream,
+        type=original_type,
+        payload=dlq.payload,
+        max_attempts=max_attempts,
+        enqueued_at=dlq.enqueued_at,
+        dlq_attempts=dlq.dlq_attempts,
+        priority=dlq.priority,
+    )
 
 
 _REGIONS = [
@@ -397,6 +459,8 @@ _REGIONS = [
     "tw2",
     "vn2",
 ]
+
+_REGIONS_SET = frozenset(_REGIONS)
 
 
 def _stats_form(
@@ -539,17 +603,298 @@ async def connection_error_handler(request: Request, exc: ConnectionError) -> HT
     return HTMLResponse(content=body, status_code=503)
 
 
-@app.get("/")
-async def index() -> RedirectResponse:
-    return RedirectResponse("/stats")
+@app.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/", response_class=HTMLResponse)
+async def index(request: Request) -> HTMLResponse:
+    """Home dashboard — system status, stream depths, quick links."""
+    r = request.app.state.r
+
+    async with r.pipeline(transaction=False) as pipe:
+        for s in _STREAM_KEYS:
+            pipe.xlen(s)
+        pipe.zcard("delayed:messages")
+        pipe.get("system:halted")
+        pipe.zcard("players:all")
+        pipe.xlen("stream:dlq")
+        results = await pipe.execute()
+
+    stream_lengths: list[int] = results[: len(_STREAM_KEYS)]
+    delayed: int = results[len(_STREAM_KEYS)]
+    halted = results[len(_STREAM_KEYS) + 1]
+    total_players: int = results[len(_STREAM_KEYS) + 2]
+    dlq_depth: int = results[len(_STREAM_KEYS) + 3]
+
+    halt_html = _HALT_BANNER if halted else ""
+    system_badge = _badge("error", "HALTED") if halted else _badge("success", "Running")
+    dlq_badge = (
+        _badge("error", f"{dlq_depth} errors") if dlq_depth > 0 else _badge("success", "Clean")
+    )
+
+    stream_rows = ""
+    for s, length in zip(_STREAM_KEYS, stream_lengths, strict=True):
+        stream_rows += (
+            f"<tr><td>{s}</td>"
+            f"<td style='text-align:right'>{length}</td>"
+            f"<td>{_depth_badge(s, length)}</td></tr>"
+        )
+    stream_rows += (
+        f"<tr><td>delayed:messages</td>"
+        f"<td style='text-align:right'>{delayed}</td>"
+        f"<td>{_depth_badge('delayed:messages', delayed)}</td></tr>"
+    )
+
+    body = f"""{halt_html}
+<h2>Dashboard</h2>
+<div class="dashboard-grid">
+  <div class="card">
+    <h3 class="card__title">System Status</h3>
+    <div>{system_badge}</div>
+    <p style="margin:var(--space-sm) 0 0">
+      <a href="/streams">View streams &rarr;</a>
+    </p>
+  </div>
+  <div class="card">
+    <h3 class="card__title">Players Tracked</h3>
+    <div class="stat">
+      <span class="stat__value">{total_players}</span>
+      <span class="stat__label">total players</span>
+    </div>
+    <p style="margin:var(--space-sm) 0 0">
+      <a href="/players">Browse players &rarr;</a>
+    </p>
+  </div>
+  <div class="card">
+    <h3 class="card__title">Dead Letter Queue</h3>
+    <div>{dlq_badge}</div>
+    <p style="margin:var(--space-sm) 0 0">
+      <a href="/dlq">View DLQ &rarr;</a>
+    </p>
+  </div>
+</div>
+
+<div class="card">
+  <h3 class="card__title">Stream Depths</h3>
+  <div class="table-scroll">
+  <table class="streams">
+    <tr><th>Key</th><th style="text-align:right">Length</th><th>Status</th></tr>
+    {stream_rows}
+  </table>
+  </div>
+</div>
+
+<div class="card">
+  <h3 class="card__title">Look Up a Player</h3>
+  <p style="color:var(--color-muted);font-size:var(--font-size-sm)">
+    Enter a Riot ID to view stats or auto-seed the player into the pipeline.
+  </p>
+  <form class="form-inline" method="get" action="/stats">
+    <label>Riot ID:
+      <input name="riot_id" placeholder="GameName#TagLine" required>
+    </label>
+    <label>Region:
+      <select name="region">
+        <option value="na1">na1</option>
+        <option value="euw1">euw1</option>
+        <option value="kr">kr</option>
+        <option value="br1">br1</option>
+      </select>
+    </label>
+    <button type="submit">Look Up</button>
+  </form>
+  <p><a href="/stats">All regions &rarr;</a></p>
+</div>
+
+<p style="color:var(--color-muted);font-size:var(--font-size-sm)">
+  Quick links:
+  <a href="/stats">Stats</a> &middot;
+  <a href="/players">Players</a> &middot;
+  <a href="/streams">Streams</a> &middot;
+  <a href="/dlq">DLQ</a> &middot;
+  <a href="/logs">Logs</a>
+</p>
+"""
+    return HTMLResponse(_page("Dashboard", body, path="/"))
+
+
+async def _resolve_and_cache_puuid(
+    r: Any,
+    riot: RiotClient,
+    riot_id: str,
+    game_name: str,
+    tag_line: str,
+    region: str,
+    cfg: Config,
+) -> str | HTMLResponse:
+    """Look up PUUID from cache or Riot API.
+
+    Returns the PUUID string on success, or an HTMLResponse on error.
+    """
+    cache_key = name_cache_key(game_name, tag_line)
+    cached_puuid: str | None = await r.get(cache_key)
+    if cached_puuid:
+        return cached_puuid
+    try:
+        await wait_for_token(r, limit_per_second=cfg.api_rate_limit_per_second)
+        account = await riot.get_account_by_riot_id(game_name, tag_line, region)
+    except NotFoundError:
+        return HTMLResponse(
+            _stats_form(
+                "Player not found. Check the spelling of the Riot ID.",
+                "error",
+                selected_region=region,
+            )
+        )
+    except RateLimitError:
+        return HTMLResponse(
+            _stats_form(
+                "Rate limited. Try again in a few seconds.",
+                "warning",
+                selected_region=region,
+            )
+        )
+    except AuthError:
+        return HTMLResponse(
+            _stats_form(
+                "API key issue. An admin must run <code>just admin system-resume</code>.",
+                "error",
+                selected_region=region,
+            )
+        )
+    except ServerError:
+        return HTMLResponse(
+            _stats_form(
+                "Riot servers temporarily unavailable. Try again later.",
+                "warning",
+                selected_region=region,
+            )
+        )
+    puuid: str = account["puuid"]
+    await r.set(cache_key, puuid, ex=CACHE_TTL_S)
+    now_ts = datetime.now(tz=UTC).timestamp()
+    cache_size = int(await r.zcard(_NAME_CACHE_INDEX))
+    if cache_size >= _NAME_CACHE_MAX:
+        await r.zremrangebyrank(_NAME_CACHE_INDEX, 0, 0)
+    await r.zadd(_NAME_CACHE_INDEX, {cache_key: now_ts})
+    return puuid
+
+
+async def _auto_seed_player(
+    r: Any,
+    puuid: str,
+    game_name: str,
+    tag_line: str,
+    region: str,
+    cfg: Config,
+) -> HTMLResponse:
+    """Auto-seed a player if not yet seeded, returning an appropriate status page."""
+    safe_id = html.escape(f"{game_name}#{tag_line}")
+    if await r.get("system:halted"):
+        return HTMLResponse(
+            _stats_form(
+                f"System halted. No stats yet for {safe_id}.",
+                "error",
+                selected_region=region,
+            )
+        )
+    cooldown_key = f"autoseed:cooldown:{puuid}"
+    if await r.get(cooldown_key):
+        return HTMLResponse(
+            _stats_form(
+                f"{safe_id} was seeded recently — pipeline processing. Check back soon.",
+                "warning",
+                selected_region=region,
+            )
+        )
+    existing_seeded: str | None = await r.hget(f"player:{puuid}", "seeded_at")
+    if existing_seeded:
+        return HTMLResponse(
+            _stats_form(
+                f"{safe_id} was seeded recently — pipeline processing. Check back soon.",
+                "warning",
+                selected_region=region,
+            )
+        )
+    envelope = MessageEnvelope(
+        source_stream=_STREAM_PUUID,
+        type="puuid",
+        payload={
+            "puuid": puuid,
+            "game_name": game_name,
+            "tag_line": tag_line,
+            "region": region,
+        },
+        max_attempts=cfg.max_attempts,
+        priority="high",
+    )
+    await publish(r, _STREAM_PUUID, envelope)
+    await set_priority(r, puuid)
+    now_iso = datetime.now(tz=UTC).isoformat()
+    await r.hset(
+        f"player:{puuid}",
+        mapping={
+            "game_name": game_name,
+            "tag_line": tag_line,
+            "region": region,
+            "seeded_at": now_iso,
+        },
+    )
+    await r.set(cooldown_key, "1", ex=_AUTOSEED_COOLDOWN_S)
+    _log.info("auto-seeded via stats lookup", extra={"puuid": puuid})
+    return HTMLResponse(
+        _stats_form(
+            f"&#10003; Auto-seeded {safe_id} — pipeline processing. Refresh in a minute.",
+            "warning",
+            selected_region=region,
+        )
+    )
+
+
+async def _build_stats_response(
+    r: Any,
+    puuid: str,
+    game_name: str,
+    tag_line: str,
+    region: str,
+    riot_id: str,
+    stats: dict[str, str],
+) -> HTMLResponse:
+    """Read Redis hashes and build the stats HTML response."""
+    priority_key = await r.get(f"player:priority:{puuid}")
+    priority_html = f" {_badge('info', 'Priority')}" if priority_key else ""
+
+    champs: list[tuple[str, float]] = await r.zrevrange(
+        f"player:champions:{puuid}", 0, 9, withscores=True
+    )
+    roles: list[tuple[str, float]] = await r.zrevrange(
+        f"player:roles:{puuid}", 0, -1, withscores=True
+    )
+    api_html = (
+        _stats_table(stats, champs, roles)
+        if stats
+        else "<p class='warning'>No verified API stats yet (pipeline still processing).</p>"
+    )
+    history_html = _match_history_section(puuid, region, riot_id)
+    safe_name = html.escape(f"{game_name}#{tag_line}")
+    heading = f"Stats for {safe_name}{priority_html}"
+    return HTMLResponse(
+        _stats_form(heading, "success", api_html + history_html, selected_region=region)
+    )
 
 
 @app.get("/stats", response_class=HTMLResponse)
-async def show_stats(request: Request) -> HTMLResponse:  # noqa: PLR0911, C901
+async def show_stats(request: Request) -> HTMLResponse:
     riot_id = request.query_params.get("riot_id", "")
     region = request.query_params.get("region", "na1")
-    if region not in _REGIONS:
-        region = "na1"
+    if region not in _REGIONS_SET:
+        safe_region = html.escape(region)
+        return HTMLResponse(
+            _stats_form(f"Invalid region: {safe_region}", "error"),
+            status_code=400,
+        )
 
     if not riot_id:
         return HTMLResponse(_stats_form(selected_region=region))
@@ -566,197 +911,123 @@ async def show_stats(request: Request) -> HTMLResponse:  # noqa: PLR0911, C901
     cfg: Config = request.app.state.cfg
     riot: RiotClient = request.app.state.riot
 
-    cache_key = name_cache_key(game_name, tag_line)
-    cached_puuid: str | None = await r.get(cache_key)
-    if cached_puuid:
-        puuid = cached_puuid
-    else:
-        try:
-            await wait_for_token(r, limit_per_second=cfg.api_rate_limit_per_second)
-            account = await riot.get_account_by_riot_id(game_name, tag_line, region)
-        except NotFoundError:
-            return HTMLResponse(
-                _stats_form(
-                    "Player not found. Check the spelling of the Riot ID.",
-                    "error",
-                    selected_region=region,
-                )
-            )
-        except RateLimitError:
-            return HTMLResponse(
-                _stats_form(
-                    "Rate limited. Try again in a few seconds.",
-                    "warning",
-                    selected_region=region,
-                )
-            )
-        except AuthError:
-            return HTMLResponse(
-                _stats_form(
-                    "API key issue. An admin must run <code>just admin system-resume</code>.",
-                    "error",
-                    selected_region=region,
-                )
-            )
-        except ServerError:
-            return HTMLResponse(
-                _stats_form(
-                    "Riot servers temporarily unavailable. Try again later.",
-                    "warning",
-                    selected_region=region,
-                )
-            )
-        puuid = account["puuid"]
-        await r.set(cache_key, puuid, ex=CACHE_TTL_S)
+    result = await _resolve_and_cache_puuid(r, riot, riot_id, game_name, tag_line, region, cfg)
+    if isinstance(result, HTMLResponse):
+        return result
+    puuid = result
+
     stats: dict[str, str] = await r.hgetall(f"player:stats:{puuid}")
 
-    safe_id = html.escape(riot_id)
-
     if not stats:
-        # Auto-seed: publish to stream:puuid if not halted and not already seeded
-        if await r.get("system:halted"):
-            return HTMLResponse(
-                _stats_form(
-                    f"System halted. No stats yet for {safe_id}.",
-                    "error",
-                    selected_region=region,
-                )
-            )
-        existing_seeded: str | None = await r.hget(f"player:{puuid}", "seeded_at")
-        if existing_seeded:
-            return HTMLResponse(
-                _stats_form(
-                    f"{safe_id} was seeded recently — pipeline processing. Check back soon.",
-                    "warning",
-                    selected_region=region,
-                )
-            )
-        envelope = MessageEnvelope(
-            source_stream=_STREAM_PUUID,
-            type="puuid",
-            payload={
-                "puuid": puuid,
-                "game_name": game_name,
-                "tag_line": tag_line,
-                "region": region,
-            },
-            max_attempts=cfg.max_attempts,
-            priority="high",
-        )
-        await publish(r, _STREAM_PUUID, envelope)
-        await set_priority(r, puuid)
-        now_iso = datetime.now(tz=UTC).isoformat()
-        await r.hset(
-            f"player:{puuid}",
-            mapping={
-                "game_name": game_name,
-                "tag_line": tag_line,
-                "region": region,
-                "seeded_at": now_iso,
-            },
-        )
-        _log.info("auto-seeded via stats lookup", extra={"puuid": puuid})
-        return HTMLResponse(
-            _stats_form(
-                f"&#10003; Auto-seeded {safe_id} — pipeline processing. Refresh in a minute.",
-                "warning",
-                selected_region=region,
-            )
-        )
+        return await _auto_seed_player(r, puuid, game_name, tag_line, region, cfg)
 
-    # Check for active priority
-    priority_key = await r.get(f"player:priority:{puuid}")
-    priority_html = f" {_badge('info', 'Priority')}" if priority_key else ""
-
-    champs: list[tuple[str, float]] = await r.zrevrange(
-        f"player:champions:{puuid}", 0, 9, withscores=True
-    )
-    roles: list[tuple[str, float]] = await r.zrevrange(
-        f"player:roles:{puuid}", 0, -1, withscores=True
-    )
-    api_html = (
-        _stats_table(stats, champs, roles)
-        if stats
-        else ("<p class='warning'>No verified API stats yet (pipeline still processing).</p>")
-    )
-    history_html = _match_history_section(puuid, region, riot_id)
-    safe_name = html.escape(f"{game_name}#{tag_line}")
-    heading = f"Stats for {safe_name}{priority_html}"
-    return HTMLResponse(
-        _stats_form(heading, "success", api_html + history_html, selected_region=region)
-    )
+    return await _build_stats_response(r, puuid, game_name, tag_line, region, riot_id, stats)
 
 
 _PLAYERS_PAGE_SIZE = 25
 
 
+_PLAYERS_SORT_OPTIONS = frozenset({"date", "name", "region"})
+
+_PlayerRow = tuple[str, str, str, str]  # (game_name, tag_line, region, seeded_at)
+
+
+def _apply_player_sort(rows: list[_PlayerRow], sort: str) -> list[_PlayerRow]:
+    """Return rows sorted by the given key; mutates and returns the list."""
+    if sort == "name":
+        rows.sort(key=lambda p: p[0].lower())
+    elif sort == "region":
+        rows.sort(key=lambda p: (p[2].lower(), p[0].lower()))
+    return rows
+
+
+def _render_player_rows(rows: list[_PlayerRow]) -> str:
+    """Render player rows as HTML table rows."""
+    html_rows = ""
+    for game_name, tag_line, region, seeded_at in rows:
+        href = (
+            f"/stats?riot_id={_url_quote(game_name + '#' + tag_line)}"
+            f"&amp;region={html.escape(region)}"
+        )
+        safe_name = html.escape(f"{game_name}#{tag_line}")
+        seeded = html.escape(seeded_at) if seeded_at else "?"
+        html_rows += (
+            f'<tr><td><a href="{href}">{safe_name}</a></td>'
+            f"<td>{html.escape(region)}</td><td>{seeded}</td></tr>"
+        )
+    return html_rows
+
+
 @app.get("/players", response_class=HTMLResponse)
 async def show_players(request: Request) -> HTMLResponse:
     r = request.app.state.r
+    halted = await r.get("system:halted")
+    halt_html = _HALT_BANNER if halted else ""
     try:
         page = int(request.query_params.get("page", "0"))
     except ValueError:
         page = 0
 
-    # Collect player:{puuid} keys only — exclude player:stats:, player:matches:, etc.
-    all_keys: list[str] = []
-    async for key in r.scan_iter(match="player:*", count=200):
-        if key.count(":") == 1:
-            all_keys.append(key)
+    sort = request.query_params.get("sort", "date")
+    if sort not in _PLAYERS_SORT_OPTIONS:
+        sort = "date"
 
-    if not all_keys:
-        body = "<h2>Players</h2>" + _empty_state(
-            "No players seeded yet",
-            "Run <code>just seed GameName#Tag</code> to get started.",
+    total: int = await r.zcard("players:all")
+    if total == 0:
+        body = (
+            halt_html
+            + "<h2>Players</h2>"
+            + _empty_state(
+                "No players seeded yet",
+                "Run <code>just seed GameName#Tag</code> to get started.",
+            )
         )
         return HTMLResponse(_page("Players", body, path="/players"))
 
-    # Fetch all player metadata in a single pipeline round-trip
+    # Always fetch the current page by date order first (ZREVRANGE),
+    # then re-sort in Python when a different sort key is requested.
+    start = page * _PLAYERS_PAGE_SIZE
+    end = start + _PLAYERS_PAGE_SIZE - 1
+    page_puuids: list[str] = await r.zrevrange("players:all", start, end)
+
+    # Fetch player metadata for current page only
     async with r.pipeline(transaction=False) as pipe:
-        for key in all_keys:
-            pipe.hmget(key, ["game_name", "tag_line", "region", "seeded_at"])
+        for puuid in page_puuids:
+            pipe.hmget(f"player:{puuid}", ["game_name", "tag_line", "region", "seeded_at"])
         results: list[list[str | None]] = await pipe.execute()
 
-    players: list[dict[str, str]] = []
-    for fields in results:
-        game_name, tag_line, region, seeded_at = fields
-        if not game_name or not tag_line:
-            continue  # skip players pending name resolution
-        players.append(
-            {
-                "game_name": game_name,
-                "tag_line": tag_line,
-                "region": region or "na1",
-                "seeded_at": seeded_at or "",
-            }
-        )
-
-    players.sort(key=lambda p: p["seeded_at"], reverse=True)
-
-    total = len(players)
-    start = page * _PLAYERS_PAGE_SIZE
-    page_players = players[start : start + _PLAYERS_PAGE_SIZE]
-
-    rows = ""
-    for p in page_players:
-        href = (
-            f"/stats?riot_id={_url_quote(p['game_name'] + '#' + p['tag_line'])}"
-            f"&amp;region={html.escape(p['region'])}"
-        )
-        safe_name = html.escape(f"{p['game_name']}#{p['tag_line']}")
-        seeded = html.escape(p["seeded_at"]) if p["seeded_at"] else "?"
-        rows += (
-            f'<tr><td><a href="{href}">{safe_name}</a></td>'
-            f"<td>{html.escape(p['region'])}</td><td>{seeded}</td></tr>"
-        )
+    # Build list of (game_name, tag_line, region, seeded_at) tuples for sorting
+    player_rows: list[_PlayerRow] = [
+        (g, t, (region or "na1"), (seeded_at or ""))
+        for g, t, region, seeded_at in results
+        if g and t
+    ]
+    _apply_player_sort(player_rows, sort)
+    rows = _render_player_rows(player_rows)
 
     has_prev = page > 0
     has_next = start + _PLAYERS_PAGE_SIZE < total
     total_pages = max(1, (total + _PLAYERS_PAGE_SIZE - 1) // _PLAYERS_PAGE_SIZE)
-    prev_link = f'<a href="/players?page={page - 1}">&larr; Prev</a>' if has_prev else ""
+
+    def _sort_link(key: str, label: str) -> str:
+        cls = ' class="active"' if sort == key else ""
+        return f'<a href="/players?sort={key}&amp;page={page}"{cls}>{label}</a>'
+
+    sort_controls = f"""<div class="sort-controls">
+  <span>Sort:</span>
+  {_sort_link("date", "Date")}
+  {_sort_link("name", "Name")}
+  {_sort_link("region", "Region")}
+</div>"""
+
+    prev_link = (
+        f'<a href="/players?sort={sort}&amp;page={page - 1}">&larr; Prev</a>' if has_prev else ""
+    )
     page_indicator = f"page {page + 1} of {total_pages}"
     sep = "&nbsp;&nbsp;" if has_prev else ""
-    next_link = f'<a href="/players?page={page + 1}">Next &rarr;</a>' if has_next else ""
+    next_link = (
+        f'<a href="/players?sort={sort}&amp;page={page + 1}">Next &rarr;</a>' if has_next else ""
+    )
     sep2 = "&nbsp;&nbsp;" if has_next else ""
     pagination = f"<p>{prev_link}{sep}{page_indicator}{sep2}{next_link}</p>"
 
@@ -778,7 +1049,8 @@ async def show_players(request: Request) -> HTMLResponse:
 </script>
 """
 
-    body = f"""<h2>Players ({total} total, page {page + 1} of {total_pages})</h2>
+    body = f"""{halt_html}<h2>Players ({total} total, page {page + 1} of {total_pages})</h2>
+{sort_controls}
 <input id="player-search" placeholder="Filter players..." type="text">
 <div class="table-scroll">
 <table id="players-table">
@@ -867,6 +1139,7 @@ async def show_streams(request: Request) -> HTMLResponse:
   var paused = false;
   var btn = document.getElementById('streams-pause-btn');
   var container = document.getElementById('streams-container');
+  var spinner = document.getElementById('streams-spinner');
 
   btn.addEventListener('click', function() {
     paused = !paused;
@@ -876,10 +1149,11 @@ async def show_streams(request: Request) -> HTMLResponse:
 
   function refresh() {
     if (paused) return;
+    spinner.style.display = 'inline-block';
     fetch('/streams/fragment')
       .then(function(r) { return r.text(); })
-      .then(function(html) { container.innerHTML = html; })
-      .catch(function() {});
+      .then(function(html) { container.innerHTML = html; spinner.style.display = 'none'; })
+      .catch(function() { spinner.style.display = 'none'; });
   }
 
   setInterval(refresh, 5000);
@@ -894,6 +1168,7 @@ async def show_streams(request: Request) -> HTMLResponse:
 </div>
 <div class="log-controls">
   <button id="streams-pause-btn">Pause</button>
+  <div class="spinner" id="streams-spinner" style="display:none"></div>
   <span class="log-meta">Auto-refresh every 5s</span>
 </div>
 {script}
@@ -903,18 +1178,44 @@ async def show_streams(request: Request) -> HTMLResponse:
 
 @app.get("/dlq", response_class=HTMLResponse)
 async def show_dlq(request: Request) -> HTMLResponse:
-    """Display dead-letter queue entries."""
+    """Display dead-letter queue entries with pagination."""
     r = request.app.state.r
-    entries: list[tuple[str, dict[str, str]]] = await r.xrange("stream:dlq", count=50)
-    if not entries:
-        body = "<h2>Dead Letter Queue</h2>" + _empty_state(
-            "DLQ is empty",
-            "No failed messages. The pipeline is healthy.",
+    halted = await r.get("system:halted")
+    halt_html = _HALT_BANNER if halted else ""
+    try:
+        page = int(request.query_params.get("page", "0"))
+    except ValueError:
+        page = 0
+    try:
+        per_page = min(
+            int(request.query_params.get("per_page", str(_DLQ_DEFAULT_PER_PAGE))), _DLQ_MAX_PER_PAGE
+        )
+    except ValueError:
+        per_page = _DLQ_DEFAULT_PER_PAGE
+    per_page = max(per_page, 1)
+    page = max(page, 0)
+
+    # Fetch one extra to detect next page
+    fetch_count = page * per_page + per_page + 1
+    all_entries: list[tuple[str, dict[str, str]]] = await r.xrange("stream:dlq", count=fetch_count)
+    if not all_entries:
+        body = (
+            halt_html
+            + "<h2>Dead Letter Queue</h2>"
+            + _empty_state(
+                "DLQ is empty",
+                "No failed messages. The pipeline is healthy.",
+            )
         )
         return HTMLResponse(_page("Dead Letter Queue", body, path="/dlq"))
 
+    start = page * per_page
+    page_entries = all_entries[start : start + per_page]
+    has_next = len(all_entries) > start + per_page
+    has_prev = page > 0
+
     rows = ""
-    for entry_id, fields in entries:
+    for entry_id, fields in page_entries:
         try:
             dlq = DLQEnvelope.from_redis_fields(fields)
         except Exception:
@@ -930,24 +1231,69 @@ async def show_dlq(request: Request) -> HTMLResponse:
         if len(raw_payload) > 80:
             payload_preview += "..."
         orig_stream = html.escape(dlq.original_stream or "?")
+        replay_form = (
+            f'<form method="post" action="/dlq/replay/{_url_quote(entry_id)}"'
+            f' style="display:inline">'
+            f'<button type="submit" style="padding:2px 8px;font-size:12px">'
+            f"Replay</button></form>"
+        )
         rows += (
             f"<tr><td>{safe_id}</td><td>{fc_badge}</td>"
             f"<td>{orig_stream}</td><td>{service}</td><td>{attempts}</td>"
-            f"<td><code>{payload_preview}</code></td></tr>"
+            f"<td><code>{payload_preview}</code></td><td>{replay_form}</td></tr>"
         )
 
-    body = f"""<h2>Dead Letter Queue</h2>
-<p>Showing up to 50 entries.
-   Use <code>just admin dlq replay &lt;id&gt;</code> to replay a failed message.</p>
+    prev_link = (
+        f'<a href="/dlq?page={page - 1}&amp;per_page={per_page}">&larr; Prev</a>'
+        if has_prev
+        else ""
+    )
+    next_link = (
+        f'<a href="/dlq?page={page + 1}&amp;per_page={per_page}">Next &rarr;</a>'
+        if has_next
+        else ""
+    )
+    sep = "&nbsp;&nbsp;" if has_prev and has_next else ""
+    page_label = f"page {page + 1}"
+    pagination = (
+        f"<p>{prev_link}{sep}{page_label}{sep}{next_link}</p>" if prev_link or next_link else ""
+    )
+
+    body = f"""{halt_html}<h2>Dead Letter Queue</h2>
+<p>Showing {per_page} entries per page.</p>
 <div class="table-scroll">
 <table>
   <tr><th>Entry ID</th><th>Failure Code</th>
-      <th>Original Stream</th><th>Service</th><th>Attempts</th><th>Payload</th></tr>
+      <th>Original Stream</th><th>Service</th><th>Attempts</th>
+      <th>Payload</th><th>Action</th></tr>
   {rows}
 </table>
 </div>
+{pagination}
 """
     return HTMLResponse(_page("Dead Letter Queue", body, path="/dlq"))
+
+
+@app.post("/dlq/replay/{entry_id:path}")
+async def dlq_replay(request: Request, entry_id: str) -> RedirectResponse:
+    """Replay a single DLQ entry back to its original stream."""
+    r = request.app.state.r
+    cfg: Config = request.app.state.cfg
+    entries: list[tuple[str, dict[str, str]]] = await r.xrange(
+        "stream:dlq", min=entry_id, max=entry_id, count=1
+    )
+    if not entries:
+        return RedirectResponse("/dlq", status_code=303)
+    _eid, fields = entries[0]
+    try:
+        dlq = DLQEnvelope.from_redis_fields(fields)
+    except Exception:
+        _log.warning("corrupt DLQ entry during replay", extra={"entry_id": entry_id})
+        return RedirectResponse("/dlq", status_code=303)
+    envelope = _make_replay_envelope(dlq, cfg.max_attempts)
+    await publish(r, dlq.original_stream, envelope)
+    await r.xdel("stream:dlq", entry_id)
+    return RedirectResponse("/dlq", status_code=303)
 
 
 _MATCH_PAGE_SIZE = 20
@@ -1022,6 +1368,8 @@ async def stats_matches(request: Request) -> HTMLResponse:
         return HTMLResponse("<p class='error'>Invalid PUUID format</p>", status_code=400)
 
     r = request.app.state.r
+    halted = await r.get("system:halted")
+    halt_html = _HALT_BANNER if halted else ""
     start = page * _MATCH_PAGE_SIZE
     stop = start + _MATCH_PAGE_SIZE  # fetch one extra to detect more pages
     # Sorted set score = game_start ms; ZREVRANGEBYSCORE to get newest first
@@ -1044,7 +1392,9 @@ async def stats_matches(request: Request) -> HTMLResponse:
             participant_data: dict[str, str] = pipe_results[i * 2 + 1]
             results.append((match_id, match_data, participant_data))
 
-    return HTMLResponse(_match_history_html(results, puuid, region, riot_id, page, has_more))
+    return HTMLResponse(
+        halt_html + _match_history_html(results, puuid, region, riot_id, page, has_more)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1155,13 +1505,18 @@ async def logs_fragment() -> HTMLResponse:
 
 
 @app.get("/logs", response_class=HTMLResponse)
-async def show_logs() -> HTMLResponse:
+async def show_logs(request: Request) -> HTMLResponse:
+    r = request.app.state.r
+    halted = await r.get("system:halted")
+    halt_html = _HALT_BANNER if halted else ""
+
     log_dir_env = os.getenv("LOG_DIR", "")
     if not log_dir_env:
         return HTMLResponse(
             _page(
                 "Logs",
-                "<h2>Logs</h2><p>LOG_DIR not configured. Add it to docker-compose.yml.</p>",
+                halt_html
+                + "<h2>Logs</h2><p>LOG_DIR not configured. Add it to docker-compose.yml.</p>",
                 path="/logs",
             )
         )
@@ -1172,7 +1527,8 @@ async def show_logs() -> HTMLResponse:
         return HTMLResponse(
             _page(
                 "Logs",
-                f"<h2>Logs</h2><p>No log files found in <code>{html.escape(log_dir_env)}</code>."
+                halt_html
+                + f"<h2>Logs</h2><p>No log files found in <code>{html.escape(log_dir_env)}</code>."
                 " Services may not have started yet.</p>",
                 path="/logs",
             )
@@ -1210,7 +1566,7 @@ async def show_logs() -> HTMLResponse:
 """
 
     body = (
-        f"<h2>Logs</h2>"
+        f"{halt_html}<h2>Logs</h2>"
         f'<div class="log-controls">'
         f'<button id="pause-btn">Pause</button>'
         f'<span class="log-meta">All services: {html.escape(svc_list)} &mdash; '

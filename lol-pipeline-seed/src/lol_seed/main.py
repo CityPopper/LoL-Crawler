@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+import time
 from datetime import UTC, datetime
 
 import redis.asyncio as aioredis
@@ -119,6 +120,7 @@ async def seed(
             "seeded_at": now_iso,
         },
     )
+    await r.zadd("players:all", {puuid: time.time()})
 
     log.info(
         "player seeded",
