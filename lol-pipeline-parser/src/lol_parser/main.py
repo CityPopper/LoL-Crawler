@@ -106,6 +106,7 @@ async def _write_participants(
     # P10-CR-6: Cap player:matches per player to prevent unbounded growth.
     for puuid in seen:
         await r.zremrangebyrank(f"player:matches:{puuid}", 0, -(PLAYER_MATCHES_MAX + 1))
+        await r.expire(f"player:matches:{puuid}", 2592000)  # 30 days
     return seen
 
 
@@ -171,6 +172,7 @@ async def _parse_match(
             },
         )
         pipe.sadd("match:status:parsed", match_id)
+        pipe.expire("match:status:parsed", 7776000)  # 90 days
         pipe.expire(match_key, MATCH_DATA_TTL_SECONDS)
         await pipe.execute()
 

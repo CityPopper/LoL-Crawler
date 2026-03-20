@@ -4,7 +4,7 @@
 
 | Tool | Version | Install |
 |------|---------|---------|
-| Python | 3.12+ | https://python.org or `pyenv install 3.12` |
+| Python | 3.14+ | https://python.org or `pyenv install 3.14` |
 | Podman | 4.x+ | https://podman.io/getting-started/installation (default runtime) |
 | Podman Compose | 1.x+ | `pip install podman-compose` or via Homebrew |
 | just | 1.x+ | https://github.com/casey/just#installation |
@@ -436,8 +436,7 @@ async def test_crawler__successful_crawl__publishes_matches():
        - ./lol-pipeline-common:/common
        - ./lol-pipeline-new-service:/svc
        - ./logs:/logs
-     command: >
-       sh -c "pip install -q -e /common && pip install -q -e /svc && python -m lol_new_service"
+     command: ["python", "-m", "lol_new_service"]
    ```
 
 5. **If consuming a stream:** Create `pacts/` with consumer pact JSON matching the schemas in `lol-pipeline-common/contracts/schemas/`.

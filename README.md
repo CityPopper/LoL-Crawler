@@ -28,7 +28,7 @@ Pipeline state lives in Redis. All config is injected via environment variables.
 
 ## Prerequisites
 
-- [Python 3.12+](https://www.python.org/downloads/)
+- [Python 3.14+](https://www.python.org/downloads/)
 - [Podman](https://podman.io/getting-started/installation) (default) or [Docker](https://docs.docker.com/get-docker/)
 - [just](https://github.com/casey/just#installation)
 
@@ -78,7 +78,7 @@ just admin reseed "Faker#KR1" --region kr   # force re-crawl bypassing cooldown
 
 ## Testing
 
-888 unit tests + 61 contract tests across all services.
+929 unit tests + 61 contract tests across all services.
 
 ```bash
 just test                       # run all unit tests (services tested in parallel)
