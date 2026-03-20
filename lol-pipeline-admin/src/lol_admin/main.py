@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import re
 import sys
 from datetime import UTC, datetime
@@ -83,6 +84,11 @@ def _print_error(msg: str) -> None:
     print(f"[ERROR] {msg}", file=sys.stderr)
 
 
+def _print_info(msg: str) -> None:
+    """Print a neutral informational message."""
+    print(f"[--] {msg}")
+
+
 # Priority stat labels for display ordering
 _STAT_PRIORITY = ["win_rate", "kda", "total_games"]
 _STAT_LABELS: dict[str, str] = {
@@ -108,13 +114,14 @@ def _format_stat_value(key: str, value: str, stats: dict[str, str]) -> str:
     if fmt is None:
         return value
     try:
+        f = float(value)
+        if fmt == "int":
+            return str(int(f))
+        if not math.isfinite(f):
+            return value
         if fmt == "percent":
-            pct = float(value) * 100
-            total = stats.get("total_games", "?")
-            return f"{pct:.1f}%  ({total} games)"
-        if fmt == "float2":
-            return f"{float(value):.2f}"
-        return str(int(float(value)))
+            return f"{f * 100:.1f}%  ({stats.get('total_games', '?')} games)"
+        return f"{f:.2f}"
     except ValueError:
         return value
 
@@ -260,7 +267,7 @@ async def cmd_system_resume(r: aioredis.Redis, args: argparse.Namespace) -> int:
 async def cmd_dlq_list(r: aioredis.Redis, args: argparse.Namespace) -> int:
     entries = await _dlq_entries(r)
     if not entries:
-        print("(empty)")
+        _print_info("DLQ is empty — nothing to display")
         return 0
     if getattr(args, "json", False):
         for entry_id, dlq in entries:
@@ -286,7 +293,7 @@ async def cmd_dlq_replay(r: aioredis.Redis, cfg: Config, args: argparse.Namespac
         return 1
     entries = await _dlq_entries(r)
     if not entries:
-        print("(empty)")
+        _print_info("DLQ is empty — nothing to replay")
         return 0
     targets = entries if args.all else [(e, d) for e, d in entries if e == args.id]
     if not targets:
@@ -311,7 +318,7 @@ async def cmd_dlq_clear(r: aioredis.Redis, args: argparse.Namespace) -> int:
         return 1
     entries = await _dlq_entries(r)
     if not entries:
-        print("(empty)")
+        _print_info("DLQ is empty — nothing to clear")
         return 0
     ids = [e for e, _ in entries]
     await r.xdel(_STREAM_DLQ, *ids)
@@ -325,7 +332,7 @@ async def cmd_replay_parse(r: aioredis.Redis, cfg: Config, args: argparse.Namesp
         return 1
     match_ids: set[str] = await r.smembers("match:status:parsed")  # type: ignore[misc]
     if not match_ids:
-        print("(no parsed matches in match:status:parsed)")
+        _print_info("No parsed matches in match:status:parsed")
         return 0
     for match_id in match_ids:
         region = _region_from_match_id(match_id)
@@ -363,7 +370,7 @@ async def cmd_recalc_priority(r: aioredis.Redis, args: argparse.Namespace) -> in
     count = 0
     async for _key in r.scan_iter(match="player:priority:*", count=100):
         count += 1
-    print(f"player:priority:* keys found: {count}")
+    _print_ok(f"player:priority:* keys found: {count}  (read-only diagnostic — no changes made)")
     return 0
 
 
@@ -387,7 +394,7 @@ async def cmd_recalc_players(r: aioredis.Redis, args: argparse.Namespace) -> int
             continue
         await r.zadd("players:all", {puuid: score})
         count += 1
-    print(f"players:all rebuilt: {count} players indexed")
+    _print_ok(f"players:all rebuilt — {count} players indexed")
     return 0
 
 

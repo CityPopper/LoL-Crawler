@@ -1,7 +1,7 @@
 # TODO — Improvement Proposals (All 21 Agents)
 
-Phase 7 "IRONCLAD", Phase 8 "FACELIFT", Phase 9 "FORTRESS", and Phase 10 (in progress).
-866 unit tests + 61 contract tests. 19-agent review cycle per phase.
+Phase 10 "ILLUMINATE", Phase 11 "APEX".
+920+ unit tests + contract tests. 19-20 agent review cycle per phase.
 
 ---
 
@@ -87,6 +87,56 @@ All B1–B15, C1–C2 items resolved. All I2-C1 through I2-M7 items resolved. Se
 **Against:** Requires 2 extra HTTP calls per page render (version + champion map), plus Redis cache. Adds complexity. Needs fallback for API downtime.
 
 **Decision:** Include in Phase 10 with Redis cache guard (graceful degradation if CDN unreachable).
+
+---
+
+## Phase 11 — "APEX" (Orchestrator Cycle 5, 20-agent review)
+
+### Debated / Rejected
+
+- [x] P11-PM-02-A: `except A, B:` syntax across 9 files — REJECTED. This is valid Python 3.14 syntax (PEP 758 "except without parentheses"). Tests pass. No change needed.
+- [x] P11-ARC-1: `resolve_puuid()` bypasses rate limiter — REJECTED. `resolve_puuid()` calls `RiotClient._get()` which waits for token. Rate limiting is handled by callers. No change needed.
+
+### Critical / Implemented
+
+- [x] P11-PM-03-A: Discovery `_is_idle()` crashes with `int(None)` when Redis returns `lag: None` for empty streams (`discovery/main.py:81`). Fix: `int(g.get("lag") or 0)` and `int(g.get("pending") or 0)`.
+- [x] P11-DEV-2: Worker Dockerfile HEALTHCHECK uses `print()` which always exits 0 — Docker never sees unhealthy containers. Fix: `sys.exit(0 if ... else 1)` in all 7 worker Dockerfiles.
+- [x] P11-DX-4: Pre-commit `ruff format` auto-modifies files instead of failing. Fix: add `--check` flag.
+- [x] P11-DK-3: 12 env vars consumed by code are missing from `.env.example`. Fix: add RATE_LIMIT_SHORT_WINDOW_S, RATE_LIMIT_LONG_WINDOW_S, PRIORITY_KEY_TTL, REDIS_SOCKET_TIMEOUT, REDIS_CONNECT_TIMEOUT, MATCH_DATA_TTL_SECONDS, MAX_DISCOVER_PLAYERS, PLAYER_MATCHES_MAX, MAX_HANDLER_RETRIES, LOG_LEVEL, LOG_DIR to .env.example.
+- [x] P11-TST-3: Admin `_format_stat_value` renders "nan%" and "inf%" for non-finite floats. Fix: `math.isfinite()` guard.
+- [x] P11-GD-4/5: `cmd_recalc_priority`, `cmd_recalc_players`, and DLQ empty-state use bare `print()` instead of `[OK]`/`[--]` prefixes. Fix: use `_print_ok()` and new `_print_info()`.
+- [x] P11-GD-12: Log formatter uses `datetime.now()` (format-time) instead of `record.created` (emit-time); microsecond precision adds noise. Fix: ms precision with Z suffix.
+- [x] P11-RD-1: `#player-search` has no `width: 100%` on mobile — Phase 10 fix was described but not applied to CSS. Fix: add rule.
+- [x] P11-RD-2: Footer uses inline style, blocking responsive padding. Fix: `.site-footer` CSS class.
+- [x] P11-RD-9: `body { margin: 2rem auto }` wastes 64px on 320px screens. Fix: `1rem auto` on mobile.
+- [x] P11-DD-5: Log badge colors use hardcoded hex (`#c00`, `#e33`, `#e80`, `#555`) instead of CSS variables. Fix: map to `--color-error`, `--color-warning`, `--color-muted`.
+- [x] P11-DD-13: Match history load shows plain "Loading..." text with no spinner. Fix: use `.spinner` element.
+- [x] P11-DD-17: Streams table depth column lacks `.text-right` alignment, unlike dashboard's table. Fix: add `class="text-right"` to `<th>` and `<td>`.
+- [x] P11-RD-15: `#streams-pause-btn.paused` has no CSS — pause state invisible. Fix: extend `#pause-btn.paused` rule.
+- [x] P11-DX-6: `hypothesis` missing from 9 of 11 services' dev deps. Fix: add to all pyproject.toml.
+- [x] P11-GD-14: `system:halted` mixed into stream depths table as a fake depth. Fix: separate labeled line.
+
+### High (Not yet implemented)
+
+- [ ] P11-DB-2: `player:{puuid}` hashes have no TTL — unbounded growth for inactive players. Add 30-day EXPIRE in seed, crawler, discovery, parser.
+- [ ] P11-RD-4: Card CTA links (`<a>`) have no 44px touch target. Fix: `.card-link` CSS class.
+- [ ] P11-RD-8: `.form-inline label` 12px text on 16px input. Fix: mobile font-size override.
+- [ ] P11-RD-10: `td, th { padding: 0.4rem 0.8rem }` no mobile reduction. Fix: mobile override.
+- [ ] P11-RD-16: Blanket `.table-scroll td { white-space: nowrap }` forces 80-char DLQ payload cells non-wrapping. Fix: scope to `.col-nowrap` class.
+- [ ] P11-DD-8: CLI uses `[OK]`/`[ERROR]` text — design director prefers checkmark/x-mark symbols. DEFERRED (debate needed: ASCII-safe vs Unicode).
+- [ ] P11-DD-10: Tables missing `<thead>`/`<tbody>` semantic markup on 5 of 6 table instances.
+- [ ] P11-DD-11: Empty state uses `_empty_state()` only on 2 of 8 empty-state scenarios.
+- [ ] P11-DD-15: Pagination inconsistent between Players and DLQ pages (total vs no-total).
+- [ ] P11-DX-2: No `just venv` recipe. Fix: add recipe to create .venv and install all dev deps.
+- [ ] P11-DX-11: 12 env vars bypass `Config` pydantic-settings class — no startup validation. Fix: migrate to Config.
+- [ ] P11-DX-18: CI doesn't cache pip dependencies. Fix: add `cache: 'pip'` to setup-python steps.
+- [ ] P11-GD-1/2/3: DLQ table has no top/bottom border; Attempts column alignment broken; separator widths mismatch. Fix: rewrite `_format_dlq_table` with proper box-drawing borders.
+- [ ] P11-GD-9/10: `just status` mixes `===`, `---`, `---` separator styles. Fix: standardize.
+- [ ] P11-GD-11: `--json` flag is global but help says "supported: stats" only. Fix: move to subparsers or update help.
+
+### Champion Icons (P10-UX-1, deferred from Phase 10)
+
+- [ ] Add `_get_ddragon_version()`, `_get_champion_map()` (Redis cache 24h), `_champion_icon_html()` helper. Render 32px icon in match history table champion column.
 
 ---
 

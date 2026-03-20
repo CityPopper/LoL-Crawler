@@ -18,6 +18,7 @@ from lol_admin.main import (
     _dispatch,
     _dlq_entries,
     _format_dlq_table,
+    _format_stat_value,
     _format_stats_output,
     _make_replay_envelope,
     _region_from_match_id,
@@ -81,11 +82,11 @@ async def _add_dlq_entries(r, count=1):
 class TestDlqList:
     @pytest.mark.asyncio
     async def test_empty_dlq(self, r, capsys):
-        """AC-06-01: dlq list empty → stdout '(empty)', exit 0."""
+        """AC-06-01: dlq list empty → stdout info message, exit 0."""
         args = argparse.Namespace(json=False)
         result = await cmd_dlq_list(r, args)
         assert result == 0
-        assert "(empty)" in capsys.readouterr().out
+        assert "[--]" in capsys.readouterr().out
 
     @pytest.mark.asyncio
     async def test_three_entries(self, r, capsys):
@@ -1451,3 +1452,43 @@ class TestErrorPrefixes:
         assert result == 1
         captured = capsys.readouterr()
         assert captured.err.strip().startswith("[ERROR]")
+
+
+class TestFormatStatValueNanInf:
+    """P11-TST-3: _format_stat_value guards against NaN/Inf inputs."""
+
+    def test_win_rate_nan__returns_raw_value(self):
+        """win_rate='nan' should return 'nan', not 'nan%'."""
+        result = _format_stat_value("win_rate", "nan", {})
+        assert result == "nan"
+
+    def test_win_rate_inf__returns_raw_value(self):
+        """win_rate='inf' should return 'inf', not 'inf%'."""
+        result = _format_stat_value("win_rate", "inf", {})
+        assert result == "inf"
+
+    def test_win_rate_neg_inf__returns_raw_value(self):
+        """win_rate='-inf' should return '-inf'."""
+        result = _format_stat_value("win_rate", "-inf", {})
+        assert result == "-inf"
+
+    def test_kda_nan__returns_raw_value(self):
+        """kda='nan' should return 'nan', not formatted float."""
+        result = _format_stat_value("kda", "nan", {})
+        assert result == "nan"
+
+    def test_kda_inf__returns_raw_value(self):
+        """kda='inf' should return 'inf', not formatted float."""
+        result = _format_stat_value("kda", "inf", {})
+        assert result == "inf"
+
+    def test_total_games_nan__falls_through_to_except(self):
+        """total_games='nan' hits int(float('nan')) -> ValueError -> returns raw."""
+        result = _format_stat_value("total_games", "nan", {})
+        assert result == "nan"
+
+    def test_normal_values_still_format(self):
+        """Normal values are not affected by the guard."""
+        assert _format_stat_value("win_rate", "0.5", {"total_games": "10"}) == "50.0%  (10 games)"
+        assert _format_stat_value("kda", "3.4", {}) == "3.40"
+        assert _format_stat_value("total_games", "42", {}) == "42"
