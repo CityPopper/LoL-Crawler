@@ -58,6 +58,7 @@ async def _archive(
     if match_id:
         await r.hset(f"match:{match_id}", mapping={"status": "failed"})  # type: ignore[misc]
         await r.sadd("match:status:failed", match_id)  # type: ignore[misc]
+        await r.expire("match:status:failed", 7776000)  # 90 days
     log.warning(
         "archived exhausted DLQ entry",
         extra={"id": dlq.id, "failure_code": dlq.failure_code, "dlq_attempts": dlq.dlq_attempts},

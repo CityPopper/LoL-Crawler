@@ -49,6 +49,9 @@ async def _fetch_match_ids_paginated(
     published = 0
 
     while True:
+        if await is_system_halted(r):
+            log.info("system halted — aborting pagination", extra={"puuid": puuid})
+            break
         await wait_for_token(r, limit_per_second=cfg.api_rate_limit_per_second)
         page: list[str] = await riot.get_match_ids(puuid, region, start=start, count=count)
         log.debug(
@@ -161,6 +164,7 @@ async def _crawl_player(
 
     now_iso = datetime.now(tz=UTC).isoformat()
     await r.hset(f"player:{puuid}", mapping={"last_crawled_at": now_iso})  # type: ignore[misc]
+    await r.expire(f"player:{puuid}", 2592000)  # 30 days
     if published == 0:
         await clear_priority(r, puuid)
     log.info(

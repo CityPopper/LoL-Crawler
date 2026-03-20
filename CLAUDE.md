@@ -36,7 +36,7 @@ Platform: macOS. Container runtime: Podman (default). Switch with `RUNTIME=docke
 - [ ] R5: Crawler only clears priority when `published == 0` — if matches stall in pipeline, priority never cleared
 
 ### DevOps
-- [ ] R7: Dockerfiles use `python:3.12-slim` but CI uses 3.14 — runtime/CI parity gap
+- [x] R7: Dockerfiles use `python:3.12-slim` but CI uses 3.14 — runtime/CI parity gap
 
 ---
 

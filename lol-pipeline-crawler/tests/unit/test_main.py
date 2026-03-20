@@ -707,3 +707,56 @@ class TestCrawlerMaxlenPolicy:
             assert call["kwargs"].get("maxlen") is None, (
                 f"Expected maxlen=None for stream:match_id, got {call['kwargs']}"
             )
+
+
+class TestPaginationHaltCheck:
+    """P12-DBG-2: Crawler checks system:halted between pagination pages."""
+
+    @pytest.mark.asyncio
+    async def test_pagination__halted_mid_crawl__stops_early(self, r, cfg, log):
+        """When system:halted is set after page 1, page 2 is never fetched."""
+        env = _puuid_envelope()
+        msg_id = await _setup_message(r, env)
+        page1 = [f"NA1_{i}" for i in range(100)]
+
+        page_fetches = 0
+
+        async def _halt_after_page1(*args, **kwargs):
+            nonlocal page_fetches
+            page_fetches += 1
+            if page_fetches == 1:
+                # After first page fetch, set system:halted
+                await r.set("system:halted", "1")
+                return page1
+            # Second page should never be reached
+            return [f"NA1_P2_{i}" for i in range(50)]
+
+        with (
+            respx.mock,
+            patch("lol_crawler.main.wait_for_token", new_callable=AsyncMock),
+        ):
+            riot = RiotClient("RGAPI-test")
+            riot.get_match_ids = AsyncMock(side_effect=_halt_after_page1)
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        # Only page 1 matches should be published (100), not page 2 (50)
+        assert await r.xlen(_STREAM_OUT) == 100
+        assert page_fetches == 1, "Second page should not have been fetched"
+
+    @pytest.mark.asyncio
+    async def test_pagination__not_halted__fetches_all_pages(self, r, cfg, log):
+        """When system:halted is NOT set, all pages are fetched normally."""
+        env = _puuid_envelope()
+        msg_id = await _setup_message(r, env)
+        page1 = [f"NA1_{i}" for i in range(100)]
+        page2 = [f"NA1_{i}" for i in range(100, 150)]
+
+        with respx.mock:
+            respx.get(_match_ids_url(start=0)).mock(return_value=httpx.Response(200, json=page1))
+            respx.get(_match_ids_url(start=100)).mock(return_value=httpx.Response(200, json=page2))
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        assert await r.xlen(_STREAM_OUT) == 150

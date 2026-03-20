@@ -28,6 +28,7 @@ from lol_ui.main import (
     _STATS_ORDER,
     _badge,
     _badge_html,
+    _champion_icon_html,
     _depth_badge,
     _empty_state,
     _format_stat_value,
@@ -4124,3 +4125,253 @@ class TestSecurityHeaders:
         """P10-SEC-4: Referrer-Policy: no-referrer in every response."""
         resp = self._get_response()
         assert resp.headers.get("Referrer-Policy") == "no-referrer"
+
+
+class TestChampionIconHtml:
+    """P10-UX-1: champion icon rendering."""
+
+    def test_with_version__contains_img_tag(self):
+        result = _champion_icon_html("Zed", "14.1.1")
+        assert "<img " in result
+        assert 'class="champion-icon"' in result
+        assert "ddragon.leagueoflegends.com" in result
+        assert "14.1.1" in result
+        assert "Zed.png" in result
+
+    def test_no_version__returns_empty_string(self):
+        result = _champion_icon_html("Zed", None)
+        assert result == ""
+
+    def test_empty_name__returns_empty_string(self):
+        result = _champion_icon_html("", "14.1.1")
+        assert result == ""
+
+    def test_xss_name__html_escaped(self):
+        result = _champion_icon_html("<script>alert(1)</script>", "14.1.1")
+        assert "<script>" not in result
+        assert html.escape("<script>alert(1)</script>") in result
+
+    def test_onerror_hides_on_failure(self):
+        """Graceful degradation: broken image hides itself."""
+        result = _champion_icon_html("Zed", "14.1.1")
+        assert "onerror=" in result
+        assert "display" in result
+
+    def test_lazy_loading(self):
+        result = _champion_icon_html("Zed", "14.1.1")
+        assert 'loading="lazy"' in result
+
+    def test_css_class_in_stylesheet(self):
+        """P10-UX-1: .champion-icon class must exist in the CSS."""
+        assert ".champion-icon" in _CSS
+
+
+class TestContentSecurityPolicy:
+    """P12-SEC-1: Content-Security-Policy header in every response."""
+
+    def _get_response(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import patch as _patch
+
+        from starlette.testclient import TestClient
+
+        with (
+            _patch("lol_ui.main.Config") as mock_cfg_cls,
+            _patch("lol_ui.main.get_redis") as mock_get_redis,
+            _patch("lol_ui.main.RiotClient") as mock_riot_cls,
+        ):
+            mock_cfg = MagicMock()
+            mock_cfg.redis_url = "redis://localhost:6379/0"
+            mock_cfg.riot_api_key = "RGAPI-test"
+            mock_cfg_cls.return_value = mock_cfg
+
+            mock_redis = AsyncMock()
+            mock_get_redis.return_value = mock_redis
+
+            mock_riot = AsyncMock()
+            mock_riot_cls.return_value = mock_riot
+
+            from lol_ui.main import app
+
+            with TestClient(app) as client:
+                return client.get("/health")
+
+    def test_csp_header_present(self):
+        """CSP header must be present in response."""
+        resp = self._get_response()
+        csp = resp.headers.get("Content-Security-Policy")
+        assert csp is not None, "Content-Security-Policy header missing"
+
+    def test_csp_default_src_self(self):
+        """CSP default-src must be 'self'."""
+        resp = self._get_response()
+        csp = resp.headers.get("Content-Security-Policy", "")
+        assert "default-src 'self'" in csp
+
+    def test_csp_script_src_unsafe_inline(self):
+        """CSP script-src must allow 'unsafe-inline' for inline scripts."""
+        resp = self._get_response()
+        csp = resp.headers.get("Content-Security-Policy", "")
+        assert "script-src 'self' 'unsafe-inline'" in csp
+
+    def test_csp_style_src_unsafe_inline(self):
+        """CSP style-src must allow 'unsafe-inline' for inline styles."""
+        resp = self._get_response()
+        csp = resp.headers.get("Content-Security-Policy", "")
+        assert "style-src 'self' 'unsafe-inline'" in csp
+
+    def test_csp_img_src_allows_ddragon(self):
+        """CSP img-src must allow ddragon.leagueoflegends.com for champion icons."""
+        resp = self._get_response()
+        csp = resp.headers.get("Content-Security-Policy", "")
+        assert "ddragon.leagueoflegends.com" in csp
+
+    def test_csp_connect_src_self(self):
+        """CSP connect-src must be 'self' for AJAX polling."""
+        resp = self._get_response()
+        csp = resp.headers.get("Content-Security-Policy", "")
+        assert "connect-src 'self'" in csp
+
+
+class TestDlqReplayEntryIdValidation:
+    """P12-SEC-7: DLQ replay endpoint validates entry_id format."""
+
+    @pytest.mark.asyncio
+    async def test_dlq_replay__invalid_entry_id__returns_400(self):
+        """Invalid entry_id (not timestamp-sequence) returns 400."""
+        from unittest.mock import MagicMock
+
+        from fastapi import HTTPException
+
+        from lol_ui.main import dlq_replay
+
+        request = MagicMock()
+        request.app.state.r = MagicMock()
+        request.app.state.cfg = MagicMock(max_attempts=5)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await dlq_replay(request, "../../etc/passwd")
+        assert exc_info.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_dlq_replay__path_traversal__returns_400(self):
+        """Path traversal attempt in entry_id returns 400."""
+        from unittest.mock import MagicMock
+
+        from fastapi import HTTPException
+
+        from lol_ui.main import dlq_replay
+
+        request = MagicMock()
+        request.app.state.r = MagicMock()
+        request.app.state.cfg = MagicMock(max_attempts=5)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await dlq_replay(request, "abc-def")
+        assert exc_info.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_dlq_replay__valid_entry_id__accepted(self):
+        """Valid entry_id (e.g. '1234567890-0') passes validation."""
+        from unittest.mock import MagicMock
+
+        import fakeredis.aioredis
+
+        from lol_ui.main import dlq_replay
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        request = MagicMock()
+        request.app.state.r = r
+        request.app.state.cfg = MagicMock(max_attempts=5)
+
+        # Valid format, but no entry exists -> should redirect, not 400
+        resp = await dlq_replay(request, "1234567890-0")
+        assert resp.status_code == 303
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_dlq_replay__script_injection__returns_400(self):
+        """Script injection in entry_id returns 400."""
+        from unittest.mock import MagicMock
+
+        from fastapi import HTTPException
+
+        from lol_ui.main import dlq_replay
+
+        request = MagicMock()
+        request.app.state.r = MagicMock()
+        request.app.state.cfg = MagicMock(max_attempts=5)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await dlq_replay(request, "<script>alert(1)</script>")
+        assert exc_info.value.status_code == 400
+
+
+class TestLogsAsyncIo:
+    """P12-OPT-2: _merged_log_lines called via asyncio.to_thread."""
+
+    @pytest.mark.asyncio
+    async def test_logs_fragment__calls_merged_log_lines_in_thread(self, tmp_path):
+        """logs_fragment wraps _merged_log_lines in asyncio.to_thread."""
+        from lol_ui.main import logs_fragment
+
+        log_file = tmp_path / "svc.log"
+        log_file.write_text(
+            json.dumps({"timestamp": "2026-01-01T00:00:00", "message": "test"}) + "\n"
+        )
+
+        call_tracker: dict[str, object] = {"called": False, "func": None}
+        original_to_thread = __import__("asyncio").to_thread
+
+        async def tracking_to_thread(func, *args, **kwargs):
+            call_tracker["called"] = True
+            call_tracker["func"] = func.__name__ if hasattr(func, "__name__") else str(func)
+            return await original_to_thread(func, *args, **kwargs)
+
+        with (
+            patch.dict("os.environ", {"LOG_DIR": str(tmp_path)}),
+            patch("lol_ui.main.asyncio") as mock_asyncio,
+        ):
+            mock_asyncio.to_thread = tracking_to_thread
+            await logs_fragment()
+
+        assert call_tracker["called"], "asyncio.to_thread was not called in logs_fragment"
+        assert call_tracker["func"] == "_merged_log_lines"
+
+    @pytest.mark.asyncio
+    async def test_show_logs__calls_merged_log_lines_in_thread(self, tmp_path):
+        """show_logs wraps _merged_log_lines in asyncio.to_thread."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_logs
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        log_file = tmp_path / "svc.log"
+        log_file.write_text(
+            json.dumps({"timestamp": "2026-01-01T00:00:00", "message": "test"}) + "\n"
+        )
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+
+        call_tracker: dict[str, object] = {"called": False, "func": None}
+        original_to_thread = __import__("asyncio").to_thread
+
+        async def tracking_to_thread(func, *args, **kwargs):
+            call_tracker["called"] = True
+            call_tracker["func"] = func.__name__ if hasattr(func, "__name__") else str(func)
+            return await original_to_thread(func, *args, **kwargs)
+
+        with (
+            patch.dict("os.environ", {"LOG_DIR": str(tmp_path)}),
+            patch("lol_ui.main.asyncio") as mock_asyncio,
+        ):
+            mock_asyncio.to_thread = tracking_to_thread
+            await show_logs(request)
+
+        assert call_tracker["called"], "asyncio.to_thread was not called in show_logs"
+        assert call_tracker["func"] == "_merged_log_lines"
+        await r.aclose()

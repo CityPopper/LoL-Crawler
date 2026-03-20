@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import collections
 import heapq
 import html
@@ -17,8 +18,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote as _url_quote
 
+import httpx
+import redis.asyncio as aioredis
 import redis.exceptions
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from lol_pipeline.config import Config
 from lol_pipeline.helpers import name_cache_key
@@ -40,6 +43,7 @@ from starlette.responses import Response
 
 _STREAM_PUUID = "stream:puuid"
 _PUUID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
+_STREAM_ENTRY_ID_RE = re.compile(r"^\d+-\d+$")
 _NAME_CACHE_INDEX = "name_cache:index"
 _NAME_CACHE_MAX = 10_000
 _AUTOSEED_COOLDOWN_S = 300  # 5 minutes
@@ -324,6 +328,10 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
 .loading-state { display: flex; align-items: center; gap: var(--space-sm);
   color: var(--color-muted); padding: var(--space-lg); }
 
+/* Champion icons */
+.champion-icon { width: 32px; height: 32px; border-radius: 4px;
+  vertical-align: middle; margin-right: var(--space-xs); }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important; }
@@ -423,6 +431,47 @@ def _empty_state(title: str, body_html: str) -> str:
     return f'<div class="empty-state"><p><strong>{title}</strong></p><p>{body_html}</p></div>'
 
 
+# ---------------------------------------------------------------------------
+# Data Dragon (champion icons)
+# ---------------------------------------------------------------------------
+
+_DDRAGON_VERSION_KEY = "ddragon:version"
+_DDRAGON_TTL_S = 86400  # 24 hours
+
+
+async def _get_ddragon_version(r: aioredis.Redis) -> str | None:
+    """Return the current Data Dragon version, cached in Redis for 24h."""
+    cached = await r.get(_DDRAGON_VERSION_KEY)
+    if cached:
+        return str(cached)
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get("https://ddragon.leagueoflegends.com/api/versions.json")
+            resp.raise_for_status()
+            versions: list[str] = resp.json()
+            version = versions[0]
+            await r.set(_DDRAGON_VERSION_KEY, version, ex=_DDRAGON_TTL_S)
+            return version
+    except Exception:
+        return None
+
+
+def _champion_icon_html(champion_name: str, version: str | None) -> str:
+    """Return an <img> tag for the champion icon, or empty string on failure.
+
+    champion_name is the in-game name (e.g. "MonkeyKing" for Wukong).
+    """
+    if not version or not champion_name:
+        return ""
+    safe_name = html.escape(champion_name)
+    safe_version = html.escape(version)
+    url = f"https://ddragon.leagueoflegends.com/cdn/{safe_version}/img/champion/{safe_name}.png"
+    return (
+        f'<img src="{url}" alt="{safe_name}" class="champion-icon"'
+        f' loading="lazy" onerror="this.style.display=\'none\'">'
+    )
+
+
 def _page(title: str, body: str, path: str = "") -> str:
     nav_links = []
     for href, label in _NAV_ITEMS:
@@ -510,19 +559,23 @@ def _stats_form(
     css_class: str = "",
     stats_html: str = "",
     selected_region: str = "na1",
+    value: str = "",
 ) -> str:
     msg_html = f'<p class="{css_class}">{msg}</p>' if msg else ""
     options = "\n      ".join(
         f'<option value="{r}"{" selected" if r == selected_region else ""}>{r}</option>'
         for r in _REGIONS
     )
+    escaped_value = html.escape(value, quote=True)
     return _page(
         "Player Stats",
         f"""
 <h2>Player Stats</h2>
 {msg_html}
 <form class="form-inline" method="get" action="/stats">
-  <label>Riot ID: <input name="riot_id" placeholder="GameName#TagLine" required></label>
+  <label>Riot ID:
+    <input name="riot_id" placeholder="GameName#TagLine" required value="{escaped_value}">
+  </label>
   <label>Region:
     <select name="region">
       {options}
@@ -633,6 +686,12 @@ async def add_security_headers(request: Request, call_next: Any) -> Response:
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "img-src 'self' ddragon.leagueoflegends.com data:; "
+        "connect-src 'self'"
+    )
     return response
 
 
@@ -798,6 +857,7 @@ async def _resolve_and_cache_puuid(
                 "Player not found. Check the spelling of the Riot ID.",
                 "error",
                 selected_region=region,
+                value=riot_id,
             )
         )
     except RateLimitError:
@@ -806,6 +866,7 @@ async def _resolve_and_cache_puuid(
                 "Rate limited. Try again in a few seconds.",
                 "warning",
                 selected_region=region,
+                value=riot_id,
             )
         )
     except AuthError:
@@ -814,6 +875,7 @@ async def _resolve_and_cache_puuid(
                 "API key issue. An admin must run <code>just admin system-resume</code>.",
                 "error",
                 selected_region=region,
+                value=riot_id,
             )
         )
     except ServerError:
@@ -822,6 +884,7 @@ async def _resolve_and_cache_puuid(
                 "Riot servers temporarily unavailable. Try again later.",
                 "warning",
                 selected_region=region,
+                value=riot_id,
             )
         )
     puuid: str = account["puuid"]
@@ -843,13 +906,15 @@ async def _auto_seed_player(
     cfg: Config,
 ) -> HTMLResponse:
     """Auto-seed a player if not yet seeded, returning an appropriate status page."""
-    safe_id = html.escape(f"{game_name}#{tag_line}")
+    riot_id = f"{game_name}#{tag_line}"
+    safe_id = html.escape(riot_id)
     if await r.get("system:halted"):
         return HTMLResponse(
             _stats_form(
                 f"System halted. No stats yet for {safe_id}.",
                 "error",
                 selected_region=region,
+                value=riot_id,
             )
         )
     cooldown_key = f"autoseed:cooldown:{puuid}"
@@ -859,6 +924,7 @@ async def _auto_seed_player(
                 f"{safe_id} was seeded recently — pipeline processing. Check back soon.",
                 "warning",
                 selected_region=region,
+                value=riot_id,
             )
         )
     existing_seeded: str | None = await r.hget(f"player:{puuid}", "seeded_at")
@@ -868,6 +934,7 @@ async def _auto_seed_player(
                 f"{safe_id} was seeded recently — pipeline processing. Check back soon.",
                 "warning",
                 selected_region=region,
+                value=riot_id,
             )
         )
     envelope = MessageEnvelope(
@@ -904,6 +971,7 @@ async def _auto_seed_player(
             f"&#10003; Auto-seeded {safe_id} — pipeline processing. Refresh in a minute.",
             "warning",
             selected_region=region,
+            value=riot_id,
         )
     )
 
@@ -936,7 +1004,9 @@ async def _build_stats_response(
     safe_name = html.escape(f"{game_name}#{tag_line}")
     heading = f"Stats for {safe_name}{priority_html}"
     return HTMLResponse(
-        _stats_form(heading, "success", api_html + history_html, selected_region=region)
+        _stats_form(
+            heading, "success", api_html + history_html, selected_region=region, value=riot_id
+        )
     )
 
 
@@ -947,7 +1017,7 @@ async def show_stats(request: Request) -> HTMLResponse:
     if region not in _REGIONS_SET:
         safe_region = html.escape(region)
         return HTMLResponse(
-            _stats_form(f"Invalid region: {safe_region}", "error"),
+            _stats_form(f"Invalid region: {safe_region}", "error", value=riot_id),
             status_code=400,
         )
 
@@ -957,7 +1027,10 @@ async def show_stats(request: Request) -> HTMLResponse:
     if "#" not in riot_id:
         return HTMLResponse(
             _stats_form(
-                "Invalid Riot ID — expected GameName#TagLine", "error", selected_region=region
+                "Invalid Riot ID — expected GameName#TagLine",
+                "error",
+                selected_region=region,
+                value=riot_id,
             )
         )
 
@@ -1066,7 +1139,10 @@ async def show_players(request: Request) -> HTMLResponse:
 
     def _sort_link(key: str, label: str) -> str:
         cls = ' class="active"' if sort == key else ""
-        return f'<a href="/players?sort={key}&amp;page={page}"{cls}>{label}</a>'
+        return (
+            f'<a href="/players?sort={key}&amp;page={page}"{cls}'
+            f' aria-label="Sort by {label}">{label}</a>'
+        )
 
     sort_controls = f"""<div class="sort-controls">
   <span>Sort:</span>
@@ -1110,7 +1186,8 @@ async def show_players(request: Request) -> HTMLResponse:
 
     body = f"""{halt_html}<h2>Players ({total} total, page {page + 1} of {total_pages})</h2>
 {sort_controls}
-<input id="player-search" placeholder="Filter players..." type="text">
+<input id="player-search" placeholder="Filter players..." type="text"
+  aria-label="Filter players by name">
 <div class="table-scroll">
 <table id="players-table">
   <thead><tr><th>Riot ID</th><th>Region</th><th>Seeded</th></tr></thead>
@@ -1207,6 +1284,7 @@ async def show_streams(request: Request) -> HTMLResponse:
     paused = !paused;
     btn.textContent = paused ? 'Resume' : 'Pause';
     btn.className = paused ? 'paused' : '';
+    btn.setAttribute('aria-label', paused ? 'Resume auto-refresh' : 'Pause auto-refresh');
   });
 
   function refresh() {
@@ -1229,7 +1307,7 @@ async def show_streams(request: Request) -> HTMLResponse:
 {fragment}
 </div>
 <div class="log-controls">
-  <button id="streams-pause-btn">Pause</button>
+  <button id="streams-pause-btn" aria-label="Pause auto-refresh">Pause</button>
   <div class="spinner" id="streams-spinner" style="display:none"></div>
   <span class="log-meta">Auto-refresh every 5s</span>
 </div>
@@ -1296,7 +1374,8 @@ async def show_dlq(request: Request) -> HTMLResponse:
         replay_form = (
             f'<form method="post" action="/dlq/replay/{_url_quote(entry_id)}"'
             f' style="display:inline">'
-            f'<button type="submit" class="btn-sm">'
+            f'<button type="submit" class="btn-sm"'
+            f' aria-label="Replay DLQ entry {safe_id}">'
             f"Replay</button></form>"
         )
         rows += (
@@ -1339,6 +1418,8 @@ async def show_dlq(request: Request) -> HTMLResponse:
 @app.post("/dlq/replay/{entry_id:path}")
 async def dlq_replay(request: Request, entry_id: str) -> RedirectResponse:
     """Replay a single DLQ entry back to its original stream."""
+    if not _STREAM_ENTRY_ID_RE.match(entry_id):
+        raise HTTPException(status_code=400, detail="Invalid entry ID format")
     r = request.app.state.r
     cfg: Config = request.app.state.cfg
     entries: list[tuple[str, dict[str, str]]] = await r.xrange(
@@ -1368,6 +1449,7 @@ def _match_history_html(
     riot_id: str,
     page: int,
     has_more: bool,
+    version: str | None = None,
 ) -> str:
     """Render match history rows + optional next-page link."""
     if not matches:
@@ -1382,14 +1464,16 @@ def _match_history_html(
         )
         win = participant.get("win") == "1"
         result = _badge("success", "Win") if win else _badge("error", "Loss")
-        champ = html.escape(participant.get("champion_name", "?"))
+        raw_champ = participant.get("champion_name", "?")
+        champ = html.escape(raw_champ)
+        icon = _champion_icon_html(raw_champ, version)
         role = html.escape(participant.get("team_position", participant.get("role", "?")))
         k = participant.get("kills", "0")
         d = participant.get("deaths", "0")
         a = participant.get("assists", "0")
         mode = html.escape(match.get("game_mode", "?"))
         rows += (
-            f"<tr><td>{dt}</td><td>{result}</td><td>{champ}</td><td>{role}</td>"
+            f"<tr><td>{dt}</td><td>{result}</td><td>{icon}{champ}</td><td>{role}</td>"
             f"<td>{k}/{d}/{a}</td><td>{mode}</td></tr>"
         )
     safe_puuid = html.escape(puuid, quote=True)
@@ -1454,8 +1538,9 @@ async def stats_matches(request: Request) -> HTMLResponse:
             participant_data: dict[str, str] = pipe_results[i * 2 + 1]
             results.append((match_id, match_data, participant_data))
 
+    version = await _get_ddragon_version(r)
     return HTMLResponse(
-        halt_html + _match_history_html(results, puuid, region, riot_id, page, has_more)
+        halt_html + _match_history_html(results, puuid, region, riot_id, page, has_more, version)
     )
 
 
@@ -1562,7 +1647,7 @@ async def logs_fragment() -> HTMLResponse:
     if not log_dir_env:
         return HTMLResponse("<p>LOG_DIR not configured.</p>")
     log_dir = Path(log_dir_env)
-    lines = _merged_log_lines(log_dir, _LOG_LINES)
+    lines = await asyncio.to_thread(_merged_log_lines, log_dir, _LOG_LINES)
     return HTMLResponse(_render_log_lines(lines))
 
 
@@ -1596,7 +1681,7 @@ async def show_logs(request: Request) -> HTMLResponse:
             )
         )
 
-    lines = _merged_log_lines(log_dir, _LOG_LINES)
+    lines = await asyncio.to_thread(_merged_log_lines, log_dir, _LOG_LINES)
     svc_list = ", ".join(f.stem for f in log_files)
     log_content = f'<div class="log-wrap" id="log-container">{_render_log_lines(lines)}</div>'
 
@@ -1612,6 +1697,7 @@ async def show_logs(request: Request) -> HTMLResponse:
     paused = !paused;
     btn.textContent = paused ? 'Resume' : 'Pause';
     btn.className = paused ? 'paused' : '';
+    btn.setAttribute('aria-label', paused ? 'Resume auto-refresh' : 'Pause auto-refresh');
   });
 
   function refresh() {
@@ -1630,7 +1716,7 @@ async def show_logs(request: Request) -> HTMLResponse:
     body = (
         f"{halt_html}<h2>Logs</h2>"
         f'<div class="log-controls">'
-        f'<button id="pause-btn">Pause</button>'
+        f'<button id="pause-btn" aria-label="Pause auto-refresh">Pause</button>'
         f'<span class="log-meta">All services: {html.escape(svc_list)} &mdash; '
         f"last {_LOG_LINES} lines, auto-refresh 2s</span>"
         f"</div>"

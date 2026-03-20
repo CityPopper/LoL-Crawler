@@ -120,6 +120,7 @@ async def seed(
             "seeded_at": now_iso,
         },
     )
+    await r.expire(f"player:{puuid}", 2592000)  # 30 days
     await r.zadd("players:all", {puuid: time.time()})
 
     log.info(
