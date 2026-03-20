@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import os
+
 import redis.asyncio as aioredis
 
 _PRIORITY_KEY_PREFIX = "player:priority:"
 _COUNTER_KEY = "system:priority_count"
 
+PRIORITY_KEY_TTL_SECONDS = int(os.getenv("PRIORITY_KEY_TTL", "86400"))
+
 _SET_INCR_LUA = """
 local created = redis.call("SET", KEYS[1], ARGV[1], "NX")
 if created then
     redis.call("INCR", KEYS[2])
+    redis.call("EXPIRE", KEYS[1], ARGV[2])
 end
 return redis.call("GET", KEYS[2])
 """
@@ -25,14 +30,19 @@ return redis.call("GET", KEYS[2])
 """
 
 
-async def set_priority(r: aioredis.Redis, puuid: str) -> int:
-    """Atomically SET player:priority:{puuid} (no TTL) and INCR system:priority_count."""
+async def set_priority(
+    r: aioredis.Redis,
+    puuid: str,
+    ttl: int = PRIORITY_KEY_TTL_SECONDS,
+) -> int:
+    """Atomically SET player:priority:{puuid} with TTL and INCR system:priority_count."""
     result = await r.eval(  # type: ignore[misc]
         _SET_INCR_LUA,
         2,
         f"{_PRIORITY_KEY_PREFIX}{puuid}",
         _COUNTER_KEY,
         "high",
+        str(ttl),
     )
     return int(result)
 

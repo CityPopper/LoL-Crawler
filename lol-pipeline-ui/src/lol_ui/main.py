@@ -24,6 +24,7 @@ from lol_pipeline.helpers import name_cache_key
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import DLQEnvelope, MessageEnvelope
 from lol_pipeline.priority import set_priority
+from lol_pipeline.rate_limiter import wait_for_token
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.resolve import CACHE_TTL_S
 from lol_pipeline.riot_api import (
@@ -131,6 +132,8 @@ input, select {
   font-size: var(--font-size-lg);
   min-height: 44px;
   border-radius: var(--radius);
+  box-sizing: border-box;
+  max-width: 100%;
 }
 button, .btn {
   display: inline-flex; align-items: center; justify-content: center;
@@ -230,7 +233,7 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
 #pause-btn.paused { background: var(--color-error); color: #fff; }
 
 /* Mobile log lines */
-.log-line { flex-direction: column; gap: 2px; }
+.log-line { flex-direction: column; gap: 2px; flex-wrap: nowrap; }
 .log-ts, .log-badge, .log-svc { font-size: 0.75em; }
 
 /* Tablet (768px+) */
@@ -241,6 +244,7 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
   body { padding: 0 1rem; }
   .log-line { flex-direction: row; gap: 0.5rem; flex-wrap: nowrap; }
   .log-ts, .log-badge, .log-svc { font-size: inherit; }
+  .stats-grid { grid-template-columns: repeat(2, 1fr); }
 }
 
 /* Wide desktop (1440px+) */
@@ -568,6 +572,7 @@ async def show_stats(request: Request) -> HTMLResponse:  # noqa: PLR0911, C901
         puuid = cached_puuid
     else:
         try:
+            await wait_for_token(r, limit_per_second=cfg.api_rate_limit_per_second)
             account = await riot.get_account_by_riot_id(game_name, tag_line, region)
         except NotFoundError:
             return HTMLResponse(
@@ -910,7 +915,11 @@ async def show_dlq(request: Request) -> HTMLResponse:
 
     rows = ""
     for entry_id, fields in entries:
-        dlq = DLQEnvelope.from_redis_fields(fields)
+        try:
+            dlq = DLQEnvelope.from_redis_fields(fields)
+        except Exception:
+            _log.warning("skipping corrupt DLQ entry", extra={"entry_id": entry_id})
+            continue
         safe_id = html.escape(entry_id)
         fc_badge = _badge("error", dlq.failure_code)
         service = html.escape(dlq.failed_by or "?")
@@ -920,9 +929,10 @@ async def show_dlq(request: Request) -> HTMLResponse:
         payload_preview = html.escape(truncated)
         if len(raw_payload) > 80:
             payload_preview += "..."
+        orig_stream = html.escape(dlq.original_stream or "?")
         rows += (
             f"<tr><td>{safe_id}</td><td>{fc_badge}</td>"
-            f"<td>{service}</td><td>{attempts}</td>"
+            f"<td>{orig_stream}</td><td>{service}</td><td>{attempts}</td>"
             f"<td><code>{payload_preview}</code></td></tr>"
         )
 
@@ -932,7 +942,7 @@ async def show_dlq(request: Request) -> HTMLResponse:
 <div class="table-scroll">
 <table>
   <tr><th>Entry ID</th><th>Failure Code</th>
-      <th>Service</th><th>Attempts</th><th>Payload</th></tr>
+      <th>Original Stream</th><th>Service</th><th>Attempts</th><th>Payload</th></tr>
   {rows}
 </table>
 </div>

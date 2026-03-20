@@ -481,27 +481,29 @@ class TestCorruptDlqEntryHandling:
         raw_entries = [
             (
                 "stream:dlq",
-                [(
-                    "bad-payload-1",
-                    {
-                        "id": "abc",
-                        "source_stream": "stream:dlq",
-                        "type": "dlq",
-                        "payload": "NOT-VALID-JSON{{{",
-                        "attempts": "3",
-                        "max_attempts": "5",
-                        "failure_code": "http_5xx",
-                        "failure_reason": "test",
-                        "failed_by": "fetcher",
-                        "original_stream": "stream:match_id",
-                        "original_message_id": "123-0",
-                        "failed_at": "2024-01-01T00:00:00+00:00",
-                        "enqueued_at": "2024-01-01T00:00:00+00:00",
-                        "dlq_attempts": "0",
-                        "retry_after_ms": "null",
-                        "priority": "normal",
-                    },
-                )],
+                [
+                    (
+                        "bad-payload-1",
+                        {
+                            "id": "abc",
+                            "source_stream": "stream:dlq",
+                            "type": "dlq",
+                            "payload": "NOT-VALID-JSON{{{",
+                            "attempts": "3",
+                            "max_attempts": "5",
+                            "failure_code": "http_5xx",
+                            "failure_reason": "test",
+                            "failed_by": "fetcher",
+                            "original_stream": "stream:match_id",
+                            "original_message_id": "123-0",
+                            "failed_at": "2024-01-01T00:00:00+00:00",
+                            "enqueued_at": "2024-01-01T00:00:00+00:00",
+                            "dlq_attempts": "0",
+                            "retry_after_ms": "null",
+                            "priority": "normal",
+                        },
+                    )
+                ],
             ),
         ]
 
@@ -593,6 +595,115 @@ class TestCorruptDlqEntryHandling:
         assert entries == []
         # Corrupt entry was ACKed
         mock_r.xack.assert_called_once_with("stream:dlq", "recovery", "corrupt-new-1")
+
+
+class TestXautoclaim:
+    """B10: _consume_dlq uses XAUTOCLAIM to reclaim stranded messages from crashed workers."""
+
+    @pytest.mark.asyncio
+    async def test_consume_dlq__xautoclaim_called_after_pel_drain(self):
+        """XAUTOCLAIM is called between PEL drain and XREADGROUP for new messages."""
+        from lol_recovery.main import _CLAIM_IDLE_MS, _consume_dlq
+
+        mock_r = AsyncMock()
+        dlq = _make_dlq()
+        valid_fields = dlq.to_redis_fields()
+
+        # PEL drain returns empty
+        mock_r.xreadgroup.side_effect = [
+            [("stream:dlq", [])],  # PEL drain: empty
+            [("stream:dlq", [])],  # new messages: empty
+        ]
+        # XAUTOCLAIM returns one claimed message
+        mock_r.xautoclaim.return_value = [
+            "0-0",  # cursor
+            [("claimed-1", valid_fields)],  # claimed entries
+            [],  # deleted IDs
+        ]
+
+        entries = await _consume_dlq(mock_r, "test-consumer", count=10, block=0)
+
+        # Should have called xautoclaim
+        mock_r.xautoclaim.assert_called_once_with(
+            "stream:dlq",
+            "recovery",
+            "test-consumer",
+            _CLAIM_IDLE_MS,
+            start_id="0-0",
+            count=10,
+        )
+        # Should return the claimed entry
+        assert len(entries) == 1
+        assert entries[0][0] == "claimed-1"
+
+    @pytest.mark.asyncio
+    async def test_consume_dlq__xautoclaim_no_results_falls_through_to_new(self):
+        """When XAUTOCLAIM returns no entries, falls through to XREADGROUP for new."""
+        from lol_recovery.main import _consume_dlq
+
+        mock_r = AsyncMock()
+        dlq = _make_dlq()
+        valid_fields = dlq.to_redis_fields()
+
+        # PEL drain returns empty
+        mock_r.xreadgroup.side_effect = [
+            [("stream:dlq", [])],  # PEL drain: empty
+            [("stream:dlq", [("new-1", valid_fields)])],  # new messages
+        ]
+        # XAUTOCLAIM returns nothing
+        mock_r.xautoclaim.return_value = ["0-0", [], []]
+
+        entries = await _consume_dlq(mock_r, "test-consumer", count=10, block=0)
+
+        assert len(entries) == 1
+        assert entries[0][0] == "new-1"
+        # Two xreadgroup calls: PEL drain + new messages
+        assert mock_r.xreadgroup.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_consume_dlq__xautoclaim_corrupt_entries_acked(self):
+        """Corrupt entries from XAUTOCLAIM are ACKed and skipped."""
+        from lol_recovery.main import _consume_dlq
+
+        mock_r = AsyncMock()
+
+        # PEL drain returns empty
+        mock_r.xreadgroup.side_effect = [
+            [("stream:dlq", [])],  # PEL drain: empty
+            [("stream:dlq", [])],  # new messages: empty
+        ]
+        # XAUTOCLAIM returns a corrupt entry
+        mock_r.xautoclaim.return_value = [
+            "0-0",
+            [("corrupt-claimed-1", {"garbage": "data"})],
+            [],
+        ]
+
+        entries = await _consume_dlq(mock_r, "test-consumer", count=10, block=0)
+
+        assert entries == []
+        mock_r.xack.assert_called_once_with("stream:dlq", "recovery", "corrupt-claimed-1")
+
+    @pytest.mark.asyncio
+    async def test_consume_dlq__pel_takes_priority_over_xautoclaim(self):
+        """Own PEL entries are returned before XAUTOCLAIM is even called."""
+        from lol_recovery.main import _consume_dlq
+
+        mock_r = AsyncMock()
+        dlq = _make_dlq()
+        valid_fields = dlq.to_redis_fields()
+
+        # PEL drain returns a valid entry
+        mock_r.xreadgroup.return_value = [
+            ("stream:dlq", [("pel-1", valid_fields)]),
+        ]
+
+        entries = await _consume_dlq(mock_r, "test-consumer", count=10, block=0)
+
+        assert len(entries) == 1
+        assert entries[0][0] == "pel-1"
+        # XAUTOCLAIM should NOT be called when PEL has entries
+        mock_r.xautoclaim.assert_not_called()
 
 
 class TestMainEntryPoint:

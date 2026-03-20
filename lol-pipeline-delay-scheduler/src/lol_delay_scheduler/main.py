@@ -15,11 +15,58 @@ from lol_pipeline.config import Config
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.redis_client import get_redis
+from lol_pipeline.streams import (
+    _DEFAULT_MAXLEN,
+    ANALYZE_STREAM_MAXLEN,
+    MATCH_ID_STREAM_MAXLEN,
+)
 from redis.exceptions import RedisError
 
 _DELAYED_KEY = "delayed:messages"
 
 _BATCH_SIZE = 100
+
+# Per-stream maxlen policy.  Streams not listed here use _DEFAULT_MAXLEN.
+_STREAM_MAXLEN: dict[str, int | None] = {
+    "stream:match_id": MATCH_ID_STREAM_MAXLEN,
+    "stream:analyze": ANALYZE_STREAM_MAXLEN,
+}
+
+
+def _maxlen_for_stream(stream: str) -> int | None:
+    """Return the maxlen policy for *stream* (None = no trimming)."""
+    return _STREAM_MAXLEN.get(stream, _DEFAULT_MAXLEN)
+
+
+# Atomic XADD + ZREM: dispatch a delayed message and remove from the ZSET in one
+# server round-trip.  Prevents duplicate delivery if the process crashes between
+# the two operations.
+#
+# KEYS[1] = target stream, KEYS[2] = delayed:messages ZSET key
+# ARGV[1] = ZSET member to remove
+# ARGV[2] = maxlen for the stream ("0" means no trimming)
+# Remaining ARGV pairs (3..N) = field, value, field, value, ...  for XADD
+_DISPATCH_LUA = """
+local stream = KEYS[1]
+local zkey   = KEYS[2]
+local member = ARGV[1]
+local maxlen = tonumber(ARGV[2])
+
+local n = #ARGV
+local fields = {}
+for i = 3, n, 2 do
+    fields[#fields + 1] = ARGV[i]
+    fields[#fields + 1] = ARGV[i + 1]
+end
+
+if maxlen and maxlen > 0 then
+    redis.call("XADD", stream, "MAXLEN", "~", maxlen, "*", unpack(fields))
+else
+    redis.call("XADD", stream, "*", unpack(fields))
+end
+redis.call("ZREM", zkey, member)
+return 1
+"""
 
 
 async def _tick(r: aioredis.Redis, log: logging.Logger) -> None:
@@ -46,19 +93,20 @@ async def _tick(r: aioredis.Redis, log: logging.Logger) -> None:
                 dispatched += 1
                 continue
             try:
-                # NOTE: XADD-then-ZREM is intentionally non-atomic (at-least-once).
-                # If the process crashes between XADD and ZREM, the message is
-                # duplicated (delivered to the stream but remains in the ZSET for
-                # re-delivery on restart). This is acceptable because all downstream
-                # consumers are idempotent. A Lua script could make this atomic but
-                # adds complexity for marginal benefit.
-                await r.xadd(
+                # Atomic XADD + ZREM via Lua — no duplicate delivery on crash.
+                redis_fields = env.to_redis_fields()
+                ml = _maxlen_for_stream(env.source_stream)
+                flat_args: list[str] = [member, str(ml if ml is not None else 0)]
+                for k, v in redis_fields.items():
+                    flat_args.append(str(k))
+                    flat_args.append(str(v))
+                await r.eval(  # type: ignore[misc]
+                    _DISPATCH_LUA,
+                    2,
                     env.source_stream,
-                    env.to_redis_fields(),  # type: ignore[arg-type]
-                    maxlen=10_000,
-                    approximate=True,
+                    _DELAYED_KEY,
+                    *flat_args,
                 )
-                await r.zrem(_DELAYED_KEY, member)
                 dispatched += 1
                 log.info(
                     "dispatched delayed message",

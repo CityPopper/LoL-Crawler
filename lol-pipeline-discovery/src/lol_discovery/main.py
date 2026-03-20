@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import signal
 from datetime import UTC, datetime
 from typing import Any
@@ -21,6 +22,13 @@ from redis.exceptions import RedisError, ResponseError
 
 _STREAM_PUUID = "stream:puuid"
 _DISCOVER_KEY = "discover:players"
+_PIPELINE_STREAMS = (
+    "stream:puuid",
+    "stream:match_id",
+    "stream:parse",
+    "stream:analyze",
+)
+_MAX_STREAM_BACKLOG = int(os.getenv("MAX_STREAM_BACKLOG", "500"))
 
 
 def _parse_member(member: str) -> tuple[str, str]:
@@ -35,25 +43,41 @@ def _parse_member(member: str) -> tuple[str, str]:
 
 
 async def _is_idle(r: aioredis.Redis) -> bool:
-    """Return True when stream:puuid has no unread or unACKed entries for any consumer group.
+    """Return True when ALL pipeline streams are drained (no pending or lagging messages).
 
-    XLEN counts all entries ever added (including already-consumed ones) so it cannot be
-    used as an idle check.  XINFO GROUPS provides 'pending' (delivered but not yet ACKed)
-    and 'lag' (not yet delivered) — both zero means the pipeline has caught up.
+    Checks stream:puuid, stream:match_id, stream:parse, and stream:analyze.
+
+    Two-layer check:
+    1. XLEN — if any stream has more than MAX_STREAM_BACKLOG messages, the
+       pipeline is backlogged regardless of consumer group state.
+    2. XINFO GROUPS — 'pending' (delivered but not yet ACKed) and 'lag'
+       (not yet delivered) — both zero across all groups on all streams means
+       the pipeline has caught up.
 
     Also returns False when priority players are in-flight (system:priority_count > 0)
     to avoid promoting discovery players that would compete with seeded players.
+
+    Streams that do not exist yet (ResponseError) or have no consumer groups
+    are treated as idle.
     """
     count = await priority_count(r)
     if count > 0:
         return False
-    try:
-        groups: list[Any] = await r.xinfo_groups(_STREAM_PUUID)
-    except ResponseError:
-        return True  # stream or group does not exist yet — nothing to process
-    if not groups:
-        return True  # no consumer groups registered = nothing consuming the stream
-    return all(int(g.get("pending", 0)) == 0 and int(g.get("lag", 0)) == 0 for g in groups)
+    for stream in _PIPELINE_STREAMS:
+        # Layer 1: absolute backlog check via XLEN
+        stream_len: int = await r.xlen(stream)
+        if stream_len > _MAX_STREAM_BACKLOG:
+            return False
+        # Layer 2: consumer group pending/lag check
+        try:
+            groups: list[Any] = await r.xinfo_groups(stream)
+        except ResponseError:
+            continue  # stream does not exist yet — idle for this stream
+        if not groups:
+            continue  # no consumer groups registered — idle for this stream
+        if not all(int(g.get("pending", 0)) == 0 and int(g.get("lag", 0)) == 0 for g in groups):
+            return False
+    return True
 
 
 async def _resolve_names(
@@ -74,10 +98,19 @@ async def _resolve_names(
 
     try:
         account = await riot.get_account_by_puuid(puuid, region)
-        return str(account["gameName"]), str(account["tagLine"])
     except NotFoundError:
         log.warning("account not found by puuid", extra={"puuid": puuid})
         return None
+
+    game_name = account.get("gameName") or ""
+    tag_line = account.get("tagLine") or ""
+    if not game_name or not tag_line:
+        log.warning(
+            "account missing gameName/tagLine (deleted/banned?)",
+            extra={"puuid": puuid},
+        )
+        return None
+    return str(game_name), str(tag_line)
 
 
 async def _promote_batch(
@@ -129,18 +162,27 @@ async def _promote_batch(
             },
             max_attempts=cfg.max_attempts,
         )
+        # I2-H12: Atomic promotion ordering — at-least-once safe.
+        # 1. XADD to stream:puuid FIRST.  If we crash here the player stays
+        #    in discover:players and will be re-promoted on next batch (safe:
+        #    downstream consumers handle duplicate PUUIDs idempotently).
+        # 2. HSET seeded_at + ZREM from discover:players in a single MULTI/EXEC
+        #    pipeline.  If we crash after XADD but before the pipeline, the
+        #    player is re-promoted next cycle — at-least-once, never lost.
         await publish(r, _STREAM_PUUID, envelope)
-        await r.zrem(_DISCOVER_KEY, member)
         now_iso = datetime.now(tz=UTC).isoformat()
-        await r.hset(  # type: ignore[misc]
-            f"player:{puuid}",
-            mapping={
-                "game_name": game_name,
-                "tag_line": tag_line,
-                "region": region,
-                "seeded_at": now_iso,
-            },
-        )
+        async with r.pipeline(transaction=True) as pipe:
+            await pipe.hset(  # type: ignore[misc]
+                f"player:{puuid}",
+                mapping={
+                    "game_name": game_name,
+                    "tag_line": tag_line,
+                    "region": region,
+                    "seeded_at": now_iso,
+                },
+            )
+            await pipe.zrem(_DISCOVER_KEY, member)
+            await pipe.execute()
         promoted += 1
 
     if promoted:
@@ -149,7 +191,7 @@ async def _promote_batch(
 
 
 async def main() -> None:
-    """Discovery loop — runs only when stream:puuid is idle."""
+    """Discovery loop — runs only when all pipeline streams are idle."""
     shutdown_event = asyncio.Event()
 
     log = get_logger("discovery")
@@ -174,6 +216,9 @@ async def main() -> None:
     try:
         while not shutdown_event.is_set():
             try:
+                if await r.get("system:halted"):
+                    log.critical("system halted — exiting")
+                    break
                 idle = await _is_idle(r)
                 if idle:
                     promoted = await _promote_batch(r, cfg, log, riot)

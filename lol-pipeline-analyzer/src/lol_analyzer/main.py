@@ -29,6 +29,17 @@ else
 end
 """
 
+# Atomic lock-refresh: only extend TTL if we still own the lock.
+# Returns 1 if refreshed, 0 if ownership lost.
+_REFRESH_LOCK_LUA = """
+local val = redis.call("GET", KEYS[1])
+if val == ARGV[1] then
+    return redis.call("PEXPIRE", KEYS[1], ARGV[2])
+else
+    return 0
+end
+"""
+
 
 def _derived(stats: dict[str, str]) -> dict[str, str]:
     games = int(stats.get("total_games", "0"))
@@ -47,9 +58,7 @@ def _derived(stats: dict[str, str]) -> dict[str, str]:
     }
 
 
-async def _safe_clear_priority(
-    r: aioredis.Redis, puuid: str, log: logging.Logger
-) -> None:
+async def _safe_clear_priority(r: aioredis.Redis, puuid: str, log: logging.Logger) -> None:
     """Clear priority, logging but swallowing errors so ack() is never skipped."""
     try:
         await clear_priority(r, puuid)
@@ -57,7 +66,59 @@ async def _safe_clear_priority(
         log.exception("clear_priority failed for %s — priority may be stale", puuid)
 
 
-async def _analyze_player(  # noqa: C901
+async def _refresh_lock(r: aioredis.Redis, lock_key: str, worker_id: str, ttl_ms: int) -> bool:
+    """Refresh lock TTL only if we still own it. Returns True if refreshed."""
+    result = await r.eval(  # type: ignore[misc]
+        _REFRESH_LOCK_LUA,
+        1,
+        lock_key,
+        worker_id,
+        ttl_ms,
+    )
+    return bool(result)
+
+
+async def _process_matches(  # noqa: PLR0913
+    r: aioredis.Redis,
+    puuid: str,
+    new_matches: list[tuple[str, float]],
+    participant_data: list[dict[str, str]],
+    lock_key: str,
+    worker_id: str,
+    lock_ttl_ms: int,
+    log: logging.Logger,
+) -> bool:
+    """Process each match atomically and refresh lock. Returns False if lock lost."""
+    for (_match_id, score), p in zip(new_matches, participant_data, strict=True):
+        if not p:
+            continue
+        stats_key = f"player:stats:{puuid}"
+        async with r.pipeline(transaction=True) as pipe:
+            pipe.hincrby(stats_key, "total_games", 1)
+            pipe.hincrby(stats_key, "total_wins", int(p.get("win", "0")))
+            pipe.hincrby(stats_key, "total_kills", int(p.get("kills", "0")))
+            pipe.hincrby(stats_key, "total_deaths", int(p.get("deaths", "0")))
+            pipe.hincrby(stats_key, "total_assists", int(p.get("assists", "0")))
+            if champ := p.get("champion_name"):
+                pipe.zincrby(f"player:champions:{puuid}", 1, champ)
+            if role := p.get("role"):
+                pipe.zincrby(f"player:roles:{puuid}", 1, role)
+            # Cursor in same MULTI/EXEC as stats —
+            # atomic: either all commit or none, preventing double-count on crash.
+            pipe.set(f"player:stats:cursor:{puuid}", str(score))
+            await pipe.execute()
+        # Refresh lock outside MULTI/EXEC via Lua ownership check.
+        # If we no longer own the lock, abort to prevent double-counting.
+        if not await _refresh_lock(r, lock_key, worker_id, lock_ttl_ms):
+            log.warning(
+                "lock ownership lost mid-processing — aborting",
+                extra={"puuid": puuid},
+            )
+            return False
+    return True
+
+
+async def _analyze_player(
     r: aioredis.Redis,
     cfg: Config,
     worker_id: str,
@@ -99,24 +160,19 @@ async def _analyze_player(  # noqa: C901
                     fetch_pipe.hgetall(f"participant:{match_id}:{puuid}")
                 participant_data: list[dict[str, str]] = await fetch_pipe.execute()
 
-            for (_match_id, score), p in zip(new_matches, participant_data, strict=True):
-                if p:
-                    stats_key = f"player:stats:{puuid}"
-                    async with r.pipeline(transaction=True) as pipe:
-                        pipe.hincrby(stats_key, "total_games", 1)
-                        pipe.hincrby(stats_key, "total_wins", int(p.get("win", "0")))
-                        pipe.hincrby(stats_key, "total_kills", int(p.get("kills", "0")))
-                        pipe.hincrby(stats_key, "total_deaths", int(p.get("deaths", "0")))
-                        pipe.hincrby(stats_key, "total_assists", int(p.get("assists", "0")))
-                        if champ := p.get("champion_name"):
-                            pipe.zincrby(f"player:champions:{puuid}", 1, champ)
-                        if role := p.get("role"):
-                            pipe.zincrby(f"player:roles:{puuid}", 1, role)
-                        # Cursor + lock refresh in same MULTI/EXEC as stats —
-                        # atomic: either all commit or none, preventing double-count on crash.
-                        pipe.set(f"player:stats:cursor:{puuid}", str(score))
-                        pipe.pexpire(lock_key, lock_ttl_ms)
-                        await pipe.execute()
+            lock_ok = await _process_matches(
+                r,
+                puuid,
+                new_matches,
+                participant_data,
+                lock_key,
+                worker_id,
+                lock_ttl_ms,
+                log,
+            )
+            if not lock_ok:
+                await ack(r, _IN_STREAM, _GROUP, msg_id)
+                return
             log.info("analyzed", extra={"puuid": puuid, "new_matches": len(new_matches)})
         else:
             log.info("no new matches to process", extra={"puuid": puuid})

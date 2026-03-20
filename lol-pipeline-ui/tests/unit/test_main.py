@@ -691,6 +691,7 @@ class TestAutoSeedPriority:
 
         class FakeCfg:
             max_attempts = 5
+            api_rate_limit_per_second = 20
 
         request = re.Match  # unused, just need a MagicMock
         from unittest.mock import MagicMock
@@ -2068,3 +2069,204 @@ class TestRedisExceptionHandler:
         assert resp.status_code == 503
         body = resp.body.decode()
         assert "Redis" in body
+
+
+class TestDlqCorruptEntries:
+    """B4: /dlq page must not crash on corrupt DLQ entries."""
+
+    @pytest.mark.asyncio
+    async def test_show_dlq__corrupt_entry_skipped__returns_200(self):
+        """A corrupt entry (missing required fields) is skipped; page still returns 200."""
+        import fakeredis.aioredis
+        from lol_pipeline.models import DLQEnvelope
+
+        from lol_ui.main import show_dlq
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        # Add a valid DLQ entry
+        valid = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"match_id": "NA1_good", "region": "na1"},
+            attempts=1,
+            max_attempts=5,
+            failure_code="http_429",
+            failure_reason="rate limited",
+            failed_by="fetcher",
+            original_stream="stream:match_id",
+            original_message_id="orig-good",
+        )
+        await r.xadd("stream:dlq", valid.to_redis_fields())
+
+        # Add a corrupt entry (missing most required fields)
+        await r.xadd("stream:dlq", {"garbage": "data"})
+
+        # Add another valid entry after the corrupt one
+        valid2 = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"match_id": "NA1_good2", "region": "na1"},
+            attempts=2,
+            max_attempts=5,
+            failure_code="http_5xx",
+            failure_reason="server error",
+            failed_by="parser",
+            original_stream="stream:parse",
+            original_message_id="orig-good2",
+        )
+        await r.xadd("stream:dlq", valid2.to_redis_fields())
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+
+        resp = await show_dlq(request)
+        body = resp.body.decode()
+
+        # Should return 200, not 500
+        assert resp.status_code == 200
+        # Both valid entries should appear
+        assert "NA1_good" in body
+        assert "NA1_good2" in body
+        # Should still render as a table
+        assert "<table>" in body
+        # Exactly 2 data rows (corrupt entry skipped)
+        assert body.count("<tr><td>") == 2
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_show_dlq__all_corrupt__shows_empty_table(self):
+        """When all entries are corrupt, page returns 200 with table but no data rows."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_dlq
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        # Add only corrupt entries
+        await r.xadd("stream:dlq", {"bad": "entry1"})
+        await r.xadd("stream:dlq", {"broken": "entry2"})
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+
+        resp = await show_dlq(request)
+        body = resp.body.decode()
+
+        assert resp.status_code == 200
+        assert "Dead Letter Queue" in body
+        # No data rows
+        assert body.count("<tr><td>") == 0
+        await r.aclose()
+
+
+class TestRateLimitBeforeRiotCall:
+    """I2-H7: wait_for_token must be called before every Riot API call in show_stats."""
+
+    @pytest.mark.asyncio
+    async def test_show_stats__calls_wait_for_token_before_riot_api(self):
+        """wait_for_token is called before riot.get_account_by_riot_id."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from lol_ui.main import show_stats
+
+        call_order: list[str] = []
+
+        mock_r = AsyncMock()
+        mock_r.get.return_value = None  # no cached puuid
+        mock_r.hgetall.return_value = {"total_games": "10"}
+        mock_r.zrevrange.return_value = []
+
+        mock_riot = AsyncMock()
+
+        async def tracking_riot_call(*args, **kwargs):
+            call_order.append("riot_api")
+            return {"puuid": "test-puuid-ratelimit"}
+
+        mock_riot.get_account_by_riot_id.side_effect = tracking_riot_call
+
+        mock_cfg = MagicMock()
+        mock_cfg.api_rate_limit_per_second = 20
+
+        request = MagicMock()
+        request.query_params = {"riot_id": "Test#NA1", "region": "na1"}
+        request.app.state.r = mock_r
+        request.app.state.riot = mock_riot
+        request.app.state.cfg = mock_cfg
+
+        with patch("lol_ui.main.wait_for_token", new_callable=AsyncMock) as mock_wft:
+
+            async def tracking_wait(*args, **kwargs):
+                call_order.append("wait_for_token")
+
+            mock_wft.side_effect = tracking_wait
+
+            await show_stats(request)
+
+        assert "wait_for_token" in call_order, "wait_for_token was never called"
+        assert "riot_api" in call_order, "riot API was never called"
+        wft_idx = call_order.index("wait_for_token")
+        riot_idx = call_order.index("riot_api")
+        assert wft_idx < riot_idx, (
+            f"wait_for_token (idx={wft_idx}) must be called before riot API (idx={riot_idx})"
+        )
+
+    @pytest.mark.asyncio
+    async def test_show_stats__wait_for_token_receives_rate_limit_config(self):
+        """wait_for_token is called with the configured api_rate_limit_per_second."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from lol_ui.main import show_stats
+
+        mock_r = AsyncMock()
+        mock_r.get.return_value = None
+        mock_r.hgetall.return_value = {"total_games": "10"}
+        mock_r.zrevrange.return_value = []
+
+        mock_riot = AsyncMock()
+        mock_riot.get_account_by_riot_id.return_value = {"puuid": "test-puuid-cfg"}
+
+        mock_cfg = MagicMock()
+        mock_cfg.api_rate_limit_per_second = 15
+
+        request = MagicMock()
+        request.query_params = {"riot_id": "Test#NA1", "region": "na1"}
+        request.app.state.r = mock_r
+        request.app.state.riot = mock_riot
+        request.app.state.cfg = mock_cfg
+
+        with patch("lol_ui.main.wait_for_token", new_callable=AsyncMock) as mock_wft:
+            await show_stats(request)
+
+        mock_wft.assert_called_once_with(mock_r, limit_per_second=15)
+
+    @pytest.mark.asyncio
+    async def test_show_stats__cached_puuid_skips_wait_for_token(self):
+        """When puuid is in cache, no Riot API call is made, so no rate limiting needed."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from lol_ui.main import show_stats
+
+        mock_r = AsyncMock()
+        mock_r.get.side_effect = lambda key: {
+            "player:name:test#na1": "cached-puuid-123",
+            "player:priority:cached-puuid-123": None,
+            "system:halted": None,
+        }.get(key)
+        mock_r.hgetall.return_value = {"total_games": "10"}
+        mock_r.zrevrange.return_value = []
+
+        request = MagicMock()
+        request.query_params = {"riot_id": "Test#NA1", "region": "na1"}
+        request.app.state.r = mock_r
+        request.app.state.riot = MagicMock()
+        request.app.state.cfg = MagicMock()
+
+        with patch("lol_ui.main.wait_for_token", new_callable=AsyncMock) as mock_wft:
+            await show_stats(request)
+
+        mock_wft.assert_not_called()

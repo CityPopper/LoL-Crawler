@@ -6,6 +6,8 @@ on:
   pull_request:
     branches: [main]
 
+permissions: read-all
+
 jobs:
   lint:
     name: Lint & Format
@@ -48,7 +50,7 @@ jobs:
           for dir in lol-pipeline-*/; do
             if [ -f "$dir/pyproject.toml" ] && [ -d "$dir/src" ]; then
               echo "=== $dir ==="
-              (cd "$dir" && MYPYPATH="$COMMON_SRC" mypy src/ --ignore-missing-imports) || FAILED=1
+              (cd "$dir" && MYPYPATH="$COMMON_SRC" mypy src/) || FAILED=1
             fi
           done
           exit $FAILED
@@ -116,6 +118,7 @@ jobs:
 
   docker-build:
     name: "Docker Build (${{ matrix.service }})"
+    needs: [lint, typecheck, test, contract]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

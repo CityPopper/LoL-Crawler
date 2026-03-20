@@ -488,3 +488,41 @@ class TestSeedPublishBeforeHset:
 
         assert result == 0
         assert call_order == ["publish", "hset_seeded_at"]
+
+
+class TestSeedPriorityBeforePublish:
+    """I2-H1: set_priority() must be called BEFORE publish()."""
+
+    @pytest.mark.asyncio
+    async def test_set_priority_called_before_publish(self, r, cfg, log):
+        """set_priority() runs before publish() so downstream clear_priority() cannot
+        race against a not-yet-set priority key."""
+        call_order: list[str] = []
+
+        original_publish = __import__("lol_pipeline.streams", fromlist=["publish"]).publish
+        original_set_priority = __import__(
+            "lol_pipeline.priority", fromlist=["set_priority"]
+        ).set_priority
+
+        async def tracking_publish(redis, stream, envelope):
+            call_order.append("publish")
+            return await original_publish(redis, stream, envelope)
+
+        async def tracking_set_priority(redis, puuid):
+            call_order.append("set_priority")
+            return await original_set_priority(redis, puuid)
+
+        with (
+            respx.mock,
+            patch("lol_seed.main.publish", side_effect=tracking_publish),
+            patch("lol_seed.main.set_priority", side_effect=tracking_set_priority),
+        ):
+            respx.get(
+                "https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Faker/KR1"
+            ).mock(return_value=_account_response())
+            riot = RiotClient("RGAPI-test")
+            result = await seed(r, riot, cfg, "Faker", "KR1", "kr", log)
+            await riot.close()
+
+        assert result == 0
+        assert call_order == ["set_priority", "publish"]
