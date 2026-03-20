@@ -20,15 +20,13 @@ from lol_ui.main import (
     _CSS,
     _NAV_ITEMS,
     _PUUID_RE,
+    _REGIONS,
     _STATS_ORDER,
-    _aggregate_by_mode,
     _badge,
     _badge_html,
     _depth_badge,
     _empty_state,
     _format_stat_value,
-    _lcu_stats_section,
-    _load_lcu_data,
     _match_history_html,
     _match_history_section,
     _merged_log_lines,
@@ -39,90 +37,6 @@ from lol_ui.main import (
     _stats_table,
     _tail_file,
 )
-
-
-class TestLoadLcuData:
-    def test_missing_directory(self, tmp_path):
-        result = _load_lcu_data(str(tmp_path / "nonexistent"))
-        assert result == {}
-
-    def test_empty_directory(self, tmp_path):
-        result = _load_lcu_data(str(tmp_path))
-        assert result == {}
-
-    def test_valid_jsonl_files(self, tmp_path):
-        f = tmp_path / "puuid1.jsonl"
-        f.write_text(
-            json.dumps({"game_id": 1, "win": True})
-            + "\n"
-            + json.dumps({"game_id": 2, "win": False})
-            + "\n"
-        )
-        result = _load_lcu_data(str(tmp_path))
-        assert "puuid1" in result
-        assert len(result["puuid1"]) == 2
-
-    def test_malformed_jsonl_lines_skipped(self, tmp_path):
-        f = tmp_path / "puuid2.jsonl"
-        f.write_text('{"game_id": 1}\nnot-json\n{"game_id": 2}\n')
-        result = _load_lcu_data(str(tmp_path))
-        assert len(result["puuid2"]) == 2  # malformed line skipped
-
-    def test_empty_jsonl_file_excluded(self, tmp_path):
-        f = tmp_path / "empty.jsonl"
-        f.write_text("")
-        result = _load_lcu_data(str(tmp_path))
-        assert "empty" not in result
-
-    def test_blank_lines_skipped(self, tmp_path):
-        f = tmp_path / "p.jsonl"
-        f.write_text('\n  \n{"game_id": 1}\n\n')
-        result = _load_lcu_data(str(tmp_path))
-        assert len(result["p"]) == 1
-
-    def test_multiple_puuids(self, tmp_path):
-        for name in ["aaa", "bbb", "ccc"]:
-            f = tmp_path / f"{name}.jsonl"
-            f.write_text(json.dumps({"game_id": 1}) + "\n")
-        result = _load_lcu_data(str(tmp_path))
-        assert len(result) == 3
-
-
-class TestLcuStatsSection:
-    def test_empty_matches(self):
-        html_out = _lcu_stats_section([])
-        assert "Total Games" in html_out
-        assert "<td>0</td>" in html_out
-
-    def test_single_match(self):
-        matches = [{"win": True, "game_mode": "CLASSIC"}]
-        html_out = _lcu_stats_section(matches)
-        assert "<td>1</td>" in html_out  # total
-        assert "CLASSIC" in html_out
-
-    def test_multiple_modes(self):
-        matches = [
-            {"win": True, "game_mode": "CLASSIC"},
-            {"win": False, "game_mode": "ARAM"},
-            {"win": True, "game_mode": "CLASSIC"},
-        ]
-        html_out = _lcu_stats_section(matches)
-        assert "CLASSIC" in html_out
-        assert "ARAM" in html_out
-
-    def test_missing_game_mode_uses_unknown(self):
-        matches = [{"win": True}]
-        html_out = _lcu_stats_section(matches)
-        assert "UNKNOWN" in html_out
-
-    def test_uses_badge_for_unverified(self):
-        html_out = _lcu_stats_section([{"win": True, "game_mode": "CLASSIC"}])
-        assert "badge badge--warning" in html_out
-        assert "Unverified" in html_out
-
-    def test_tables_wrapped_in_scroll_div(self):
-        html_out = _lcu_stats_section([{"win": True, "game_mode": "CLASSIC"}])
-        assert html_out.count('class="table-scroll"') == 2
 
 
 class TestMatchHistorySection:
@@ -160,6 +74,13 @@ class TestMatchHistorySection:
         assert "closest('.load-matches')" in html_out
         assert "dataset.puuid" in html_out
 
+    def test_no_innerhtml_for_loading_indicator(self):
+        """SEC-X1: loading indicator uses textContent, not innerHTML."""
+        html_out = _match_history_section("puuid-abc", "na1", "Player#NA1")
+        assert "textContent = 'Loading...'" in html_out
+        # innerHTML must not appear for the loading indicator
+        assert "innerHTML = '<p>Loading" not in html_out
+
 
 class TestPage:
     def test_renders_html_structure(self):
@@ -174,7 +95,6 @@ class TestPage:
         assert "/stats" in result
         assert "/players" in result
         assert "/streams" in result
-        assert "/lcu" in result
         assert "/logs" in result
 
     def test_dark_color_scheme_meta(self):
@@ -382,31 +302,6 @@ class TestStatsTable:
     def test_tables_wrapped_in_scroll_div(self):
         result = _stats_table({"wins": "10"}, [("Zed", 5.0)], [("MID", 3.0)])
         assert result.count('class="table-scroll"') == 3
-
-
-class TestAggregateByMode:
-    def test_empty_matches(self):
-        assert _aggregate_by_mode([]) == {}
-
-    def test_single_mode(self):
-        matches = [{"game_mode": "CLASSIC", "win": True}, {"game_mode": "CLASSIC", "win": False}]
-        result = _aggregate_by_mode(matches)
-        assert result == {"CLASSIC": {"t": 2, "w": 1}}
-
-    def test_multiple_modes(self):
-        matches = [
-            {"game_mode": "CLASSIC", "win": True},
-            {"game_mode": "ARAM", "win": False},
-            {"game_mode": "CLASSIC", "win": True},
-        ]
-        result = _aggregate_by_mode(matches)
-        assert result["CLASSIC"] == {"t": 2, "w": 2}
-        assert result["ARAM"] == {"t": 1, "w": 0}
-
-    def test_missing_game_mode_uses_unknown(self):
-        matches = [{"win": True}]
-        result = _aggregate_by_mode(matches)
-        assert "UNKNOWN" in result
 
 
 class TestMatchHistoryHtml:
@@ -805,7 +700,6 @@ class TestAutoSeedPriority:
         request.app.state.r = r
         request.app.state.cfg = FakeCfg()
         request.app.state.riot = FakeRiot()
-        request.app.state.lcu = {}
 
         await show_stats(request)
 
@@ -889,7 +783,6 @@ class TestAutoSeedOrdering:
             request.app.state.r = mock_r
             request.app.state.cfg = mock_cfg
             request.app.state.riot = mock_riot
-            request.app.state.lcu = {}
 
             await show_stats(request)
 
@@ -1069,23 +962,155 @@ class TestDepthBadge:
 class TestPlayersPageCount:
     """Sprint 2.2: /players shows 'page X of Y' and full ISO timestamps."""
 
-    # These test the show_players output directly via route, but we can test
-    # the formatting logic by checking the generated HTML structure.
-    pass
+    @pytest.mark.asyncio
+    async def test_players__shows_page_indicator(self):
+        """Single page of players shows 'page 1 of 1' indicator."""
+        from unittest.mock import MagicMock
 
+        import fakeredis.aioredis
 
-class TestLcuPlayerLinks:
-    """Sprint 2.4: /lcu links player names to /stats page."""
+        from lol_ui.main import show_players
 
-    # Tested via route-level integration, covered in the show_lcu tests.
-    pass
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.hset(
+            "player:test-puuid",
+            mapping={
+                "game_name": "TestPlayer",
+                "tag_line": "NA1",
+                "region": "na1",
+                "seeded_at": "2026-03-19T12:00:00+00:00",
+            },
+        )
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {"page": "0"}
+
+        resp = await show_players(request)
+        body = resp.body.decode()
+
+        assert "page 1 of 1" in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_players__shows_full_iso_timestamp(self):
+        """seeded_at is rendered as a full ISO string, not truncated."""
+        from unittest.mock import MagicMock
+
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_players
+
+        iso_ts = "2026-03-19T12:34:56+00:00"
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.hset(
+            "player:test-puuid",
+            mapping={
+                "game_name": "TestPlayer",
+                "tag_line": "NA1",
+                "region": "na1",
+                "seeded_at": iso_ts,
+            },
+        )
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {"page": "0"}
+
+        resp = await show_players(request)
+        body = resp.body.decode()
+
+        assert iso_ts in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_players__multipage_shows_correct_indicator(self):
+        """26 players across 2 pages: page=1 shows 'page 2 of 2'."""
+        from unittest.mock import MagicMock
+
+        import fakeredis.aioredis
+
+        from lol_ui.main import _PLAYERS_PAGE_SIZE, show_players
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        for i in range(_PLAYERS_PAGE_SIZE + 1):
+            await r.hset(
+                f"player:puuid-{i}",
+                mapping={
+                    "game_name": f"Player{i}",
+                    "tag_line": "NA1",
+                    "region": "na1",
+                    "seeded_at": "2026-03-19T00:00:00",
+                },
+            )
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {"page": "1"}
+
+        resp = await show_players(request)
+        body = resp.body.decode()
+
+        assert "page 2 of 2" in body
+        await r.aclose()
 
 
 class TestStatsHeading:
     """Sprint 2.1: /stats heading shows Riot ID name only (no PUUID)."""
 
-    # Tested via the show_stats route level.
-    pass
+    @pytest.mark.asyncio
+    async def test_show_stats__heading_shows_riot_id(self):
+        """Heading reads 'Stats for GameName#TagLine' when stats exist."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from lol_ui.main import show_stats
+
+        mock_r = AsyncMock()
+        mock_r.get.return_value = None  # no cache, no halt, no priority
+        mock_r.hgetall.return_value = {"total_games": "10", "win_rate": "0.6"}
+        mock_r.zrevrange.return_value = []
+
+        mock_riot = AsyncMock()
+        mock_riot.get_account_by_riot_id.return_value = {"puuid": "test-puuid-heading"}
+
+        request = MagicMock()
+        request.query_params = {"riot_id": "Faker#KR1", "region": "kr"}
+        request.app.state.r = mock_r
+        request.app.state.riot = mock_riot
+        request.app.state.cfg = MagicMock()
+
+        resp = await show_stats(request)
+        body = resp.body.decode()
+
+        assert "Stats for Faker#KR1" in body
+
+    @pytest.mark.asyncio
+    async def test_show_stats__heading_does_not_contain_puuid(self):
+        """The PUUID is not rendered in the heading paragraph."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from lol_ui.main import show_stats
+
+        test_puuid = "secret-puuid-abc-xyz-999"
+        mock_r = AsyncMock()
+        mock_r.get.return_value = None
+        mock_r.hgetall.return_value = {"total_games": "5"}
+        mock_r.zrevrange.return_value = []
+
+        mock_riot = AsyncMock()
+        mock_riot.get_account_by_riot_id.return_value = {"puuid": test_puuid}
+
+        request = MagicMock()
+        request.query_params = {"riot_id": "TestPlayer#NA1", "region": "na1"}
+        request.app.state.r = mock_r
+        request.app.state.riot = mock_riot
+        request.app.state.cfg = MagicMock()
+
+        resp = await show_stats(request)
+        body = resp.body.decode()
+
+        # PUUID must not appear in the heading message element
+        heading_start = body.find('class="success"')
+        heading_end = body.find("</p>", heading_start) if heading_start != -1 else -1
+        heading = body[heading_start:heading_end] if heading_start != -1 else ""
+        assert test_puuid not in heading
 
 
 class TestStreamsFragment:
@@ -1387,14 +1412,13 @@ class TestNameCacheTTLInUI:
         request.app.state.r = mock_r
         request.app.state.riot = mock_riot
         request.app.state.cfg = MagicMock()
-        request.app.state.lcu = {}
 
         await show_stats(request)
 
         # Verify set was called with cache TTL
-        from lol_pipeline.resolve import _CACHE_TTL_S
+        from lol_pipeline.resolve import CACHE_TTL_S
 
-        mock_r.set.assert_any_call("player:name:test#na1", "test-puuid-ttl", ex=_CACHE_TTL_S)
+        mock_r.set.assert_any_call("player:name:test#na1", "test-puuid-ttl", ex=CACHE_TTL_S)
 
 
 class TestRegionPreservation:
@@ -1471,7 +1495,6 @@ class TestPriorityBadge:
         request.app.state.r = mock_r
         request.app.state.riot = MagicMock()
         request.app.state.cfg = MagicMock()
-        request.app.state.lcu = {}
 
         resp = await show_stats(request)
         body = resp.body.decode()
@@ -1500,7 +1523,6 @@ class TestPriorityBadge:
         request.app.state.r = mock_r
         request.app.state.riot = MagicMock()
         request.app.state.cfg = MagicMock()
-        request.app.state.lcu = {}
 
         resp = await show_stats(request)
         body = resp.body.decode()
@@ -1759,6 +1781,51 @@ class TestStreamsFragmentHtmlEdgeCases:
         await r.aclose()
 
 
+class TestStreamsFragmentPipeline:
+    """P1: _streams_fragment_html uses a single pipeline for all Redis calls."""
+
+    @pytest.mark.asyncio
+    async def test_streams_fragment__uses_pipeline_not_individual_calls(self):
+        """All XLEN/ZCARD/GET calls should go through a pipeline, not individually."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import _streams_fragment_html
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        # Track direct calls on r (not on pipeline)
+        direct_xlen_count = 0
+        direct_get_count = 0
+        original_xlen = r.xlen
+        original_get = r.get
+
+        async def tracking_xlen(*args, **kwargs):
+            nonlocal direct_xlen_count
+            direct_xlen_count += 1
+            return await original_xlen(*args, **kwargs)
+
+        async def tracking_get(*args, **kwargs):
+            nonlocal direct_get_count
+            direct_get_count += 1
+            return await original_get(*args, **kwargs)
+
+        r.xlen = tracking_xlen
+        r.get = tracking_get
+
+        result = await _streams_fragment_html(r)
+
+        # After pipelining, there should be 0 direct xlen and 0 direct get calls
+        assert direct_xlen_count == 0, (
+            f"Expected 0 direct xlen calls (use pipeline), got {direct_xlen_count}"
+        )
+        assert direct_get_count == 0, (
+            f"Expected 0 direct get calls (use pipeline), got {direct_get_count}"
+        )
+        # Result should still be valid HTML
+        assert "stream:puuid" in result
+        assert "delayed:messages" in result
+        await r.aclose()
+
+
 class TestStatsMatchesEdgeCases:
     """Additional /stats/matches route edge cases."""
 
@@ -1917,3 +1984,87 @@ class TestUiEntryPoint:
         call_args = mock_uvicorn.call_args
         assert call_args[1]["host"] == "0.0.0.0"  # noqa: S104
         assert call_args[1]["port"] == 8080
+
+
+class TestRegionsComplete:
+    """R11: _REGIONS must include all 16 platforms from PLATFORM_TO_REGION."""
+
+    def test_regions_contains_all_platform_keys(self):
+        from lol_pipeline.riot_api import PLATFORM_TO_REGION
+
+        for platform in PLATFORM_TO_REGION:
+            assert platform in _REGIONS, f"Missing platform {platform!r} in _REGIONS"
+
+    def test_regions_has_16_entries(self):
+        assert len(_REGIONS) == 16
+
+    def test_regions_includes_sea_platforms(self):
+        for platform in ("ph2", "sg2", "th2", "tw2", "vn2"):
+            assert platform in _REGIONS
+
+    def test_regions_includes_ru_and_tr1(self):
+        assert "ru" in _REGIONS
+        assert "tr1" in _REGIONS
+
+    def test_regions_includes_la1_la2(self):
+        assert "la1" in _REGIONS
+        assert "la2" in _REGIONS
+
+
+class TestRegionDropdownSelectedSpace:
+    """R12: selected attribute must have a leading space in the option tag."""
+
+    def test_selected_has_leading_space(self):
+        result = _stats_form(selected_region="na1")
+        # Must be 'value="na1" selected' (with space), never 'value="na1"selected'
+        assert 'value="na1" selected' in result
+
+    def test_non_selected_no_selected_attr(self):
+        result = _stats_form(selected_region="kr")
+        na1_match = re.search(r'<option value="na1"[^>]*>', result)
+        assert na1_match is not None
+        assert "selected" not in na1_match.group(0)
+
+    def test_all_regions_render_as_options(self):
+        result = _stats_form()
+        for region in _REGIONS:
+            assert f'value="{region}"' in result
+
+
+class TestRedisExceptionHandler:
+    """R13: Redis errors return a 503 HTML page, not a stack trace."""
+
+    @pytest.mark.asyncio
+    async def test_redis_error_handler__returns_503_with_message(self):
+        """Direct test: the exception handler returns 503 with helpful message."""
+        from unittest.mock import MagicMock
+
+        import redis.exceptions
+
+        from lol_ui.main import redis_error_handler
+
+        request = MagicMock()
+        exc = redis.exceptions.RedisError("connection refused")
+
+        resp = await redis_error_handler(request, exc)
+
+        assert resp.status_code == 503
+        body = resp.body.decode()
+        assert "Cannot connect to Redis" in body or "Redis" in body
+        assert "<code>just run</code>" in body
+
+    @pytest.mark.asyncio
+    async def test_connection_error_handler__returns_503(self):
+        """ConnectionError also gets a 503 HTML page."""
+        from unittest.mock import MagicMock
+
+        from lol_ui.main import connection_error_handler
+
+        request = MagicMock()
+        exc = ConnectionError("refused")
+
+        resp = await connection_error_handler(request, exc)
+
+        assert resp.status_code == 503
+        body = resp.body.decode()
+        assert "Redis" in body

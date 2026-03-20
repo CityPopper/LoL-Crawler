@@ -318,42 +318,7 @@ halted) regardless of system state.
 
 ---
 
-## 8. LCU Collector (CLI, one-shot or watch mode)
-
-**Invocation:**
-- `just lcu` — collect once; League client must be open
-- `just lcu-watch` — collect immediately, then repeat every `LCU_POLL_INTERVAL_MINUTES` minutes (default: 5); stops on Ctrl+C
-
-**Configuration:**
-- `LEAGUE_INSTALL_PATH` env var (e.g. `/mnt/c/Riot Games/League of Legends`). If unset, exits with error. If set but client not running, shows historical summary and exits 0.
-- `LCU_POLL_INTERVAL_MINUTES` — default poll interval for `--poll-interval` flag (0 = one-shot). Also controls UI background reload (see §9).
-- `--poll-interval MINUTES` — CLI flag; overrides env var; 0 = one-shot
-
-**Reads:** LCU HTTP API at `https://127.0.0.1:{port}` (port discovered from lockfile at `{LEAGUE_INSTALL_PATH}/lockfile`)
-- `GET /lol-summoner/v1/current-summoner` — puuid, gameName, tagLine
-- `GET /lol-match-history/v1/products/lol/{puuid}/matches?begIndex=N&endIndex=M` — paginated history
-
-**Writes:** `lol-pipeline-lcu/lcu-data/{puuid}.jsonl` (append-only; one match per line)
-
-**Data per match (LcuMatch):**
-- `game_id`, `game_creation` (ms), `game_duration` (seconds)
-- `queue_id`, `game_mode` (e.g. `"URF"`, `"CHERRY"`, `"ARAM"`)
-- `champion_id`, `win`, `kills`, `deaths`, `assists`, `gold_earned`, `damage_to_champions`
-- `puuid`, `riot_id`
-
-**Behavior:**
-1. Read lockfile (`{LEAGUE_INSTALL_PATH}/lockfile`) for port + password
-2. Validate accessibility via `current_summoner()` — on `LcuNotRunningError`, show historical summary and exit 0
-3. Run `_collect_once()`: fetch summoner → load existing IDs → paginate newest-first → append new matches
-4. If `--poll-interval > 0`: sleep N minutes, then repeat `_collect_once()`; on `LcuNotRunningError` during poll, warn and continue to next interval
-
-**Trust model:** Data is **unverified** — collected locally, not cross-checked against Riot's servers. The UI labels it clearly and never mixes its counters with verified API stats.
-
-**Important:** JSONL files are the only record of games from unsupported queue types. Never delete them.
-
----
-
-## 9. Discovery Service
+## 8. Discovery Service
 
 **Reads:**
 - `discover:players` (Sorted Set) — member=`{puuid}:{region}`, score=most-recent `game_start` ms
@@ -386,6 +351,41 @@ halted) regardless of system state.
 
 ---
 
+## 9. Admin Service
+
+**Type:** One-shot CLI tool (not a long-running worker)
+
+**Entry point:** `just admin <command>` (runs via Docker/Podman with `profiles: ["tools"]`)
+
+**Commands:**
+
+| Command | Description |
+|---------|-------------|
+| `stats <GameName#TagLine> [--region]` | Look up player stats from Redis (resolves Riot ID to PUUID first) |
+| `system-halt` | Set `system:halted = "1"` — all consumers stop on next message |
+| `system-resume` | Clear `system:halted` — resume normal operation |
+| `dlq list` | List all entries in `stream:dlq` |
+| `dlq replay [--all \| <id>]` | Replay DLQ entries back to their original streams |
+| `dlq clear --all` | Delete all DLQ entries |
+| `replay-parse --all` | Re-enqueue all parsed matches to `stream:parse` for re-processing |
+| `replay-fetch <match_id>` | Re-enqueue a single match ID to `stream:match_id` |
+| `reseed <GameName#TagLine> [--region]` | Clear cooldown and re-enqueue a player to `stream:puuid` |
+| `recalc-priority` | Recalculate `system:priority_count` by scanning `player:priority:*` keys |
+
+**Reads:**
+- `player:stats:{puuid}` (Hash) — for `stats` command
+- `stream:dlq` (Stream) — for `dlq list` and `dlq replay`
+- `match:status:parsed` (Set) — for `replay-parse`
+- `player:priority:*` (String) — for `recalc-priority`
+
+**Writes:**
+- `system:halted` (String) — `system-halt` / `system-resume`
+- Target streams via XADD — `dlq replay`, `replay-parse`, `replay-fetch`, `reseed`
+- `player:{puuid}` (Hash) — `reseed` clears cooldown fields
+- `system:priority_count` (String) — `recalc-priority`
+
+---
+
 ## 10. Web UI
 
 **Port:** `8080`
@@ -395,11 +395,10 @@ halted) regardless of system state.
 | Route | Description |
 |-------|-------------|
 | `/` | Redirect to `/stats` |
-| `/stats?riot_id=...&region=...` | Player stats — verified API data + unverified LCU data combined + lazy-load match history; auto-seeds player if no data found |
+| `/stats?riot_id=...&region=...` | Player stats — Riot API data + lazy-load match history; auto-seeds player if no data found |
 | `/stats/matches?puuid=...&region=...&riot_id=...&page=N` | Fragment: paginated match history rows (lazy-loaded by `/stats`) |
 | `/players?page=N` | Paginated player list. Uses `SCAN` to find all `player:{puuid}` keys, fetches metadata via pipeline, sorts by `seeded_at` descending (newest first). 25 players per page with prev/next navigation. Each row links to the player's `/stats` page. |
 | `/streams` | Redis stream depths + system halted status + priority player count |
-| `/lcu` | Overview of all collected LCU match history, grouped by player and game mode |
 | `/logs` | Merged structured JSON logs from all services with auto-refresh (2s polling). Reads `*.log` files from `LOG_DIR`, tails last 50 lines per file, merges by timestamp via `heapq.merge`. Includes pause/resume button. |
 | `/logs/fragment` | Fragment: raw log lines HTML for AJAX polling (used by `/logs` auto-refresh) |
 
@@ -407,11 +406,5 @@ halted) regardless of system state.
 
 **Match history lazy-load:** After stats are displayed, a "Load match history" link fetches `/stats/matches` (paginated, 20 per page) without reloading the page. Each page shows date, result, champion, role, K/D/A, and game mode.
 
-**Startup:** Loads all `{LCU_DATA_DIR}/*.jsonl` files into `app.state.lcu` (in-memory).
-
-**Background reload:** If `LCU_POLL_INTERVAL_MINUTES > 0`, an asyncio background task reloads `app.state.lcu` from disk every N minutes automatically. Otherwise, restart the UI container to pick up new data (`just restart ui`).
-
 **Env vars:**
-- `LCU_DATA_DIR` (default `./lcu-data`; set to `/lcu-data` in Docker via volume mount)
-- `LCU_POLL_INTERVAL_MINUTES` (default `0`; set to `5` to auto-reload every 5 minutes)
 - `LOG_DIR` (default unset; set to `/logs` in Docker via `x-service-defaults` environment; required for `/logs` route to function)

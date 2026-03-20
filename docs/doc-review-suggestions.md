@@ -10,13 +10,10 @@ Covers 23 doc files, 11 service READMEs, and cross-references between them.
 | Document | Description | Requesting Agents |
 |----------|-------------|-------------------|
 | `lol-pipeline-discovery/README.md` | Service README does not exist. Every other service has one. Should cover: stream consumption, idle-check algorithm, `DISCOVERY_POLL_INTERVAL_MS`, `DISCOVERY_BATCH_SIZE`, scaling caveats. | Developer, DevEx, QA |
-| `lol-pipeline-lcu/README.md` | Service README does not exist. Should cover: lockfile discovery, WSL2 setup, `LEAGUE_INSTALL_PATH`, `--poll-interval` flag, JSONL format, trust model. | Developer, DevEx |
 | `docs/guides/03-ci-workflow.md` | No documentation of the GitHub Actions CI pipeline (`ci.yml`). Should cover: matrix structure, which jobs run, how to read failures, how to add new services, the `|| true` mypy issue. | DevOps, Developer, DevEx |
 | `CONTRIBUTING.md` | No contribution guide. Needed for: branching strategy, PR process, commit conventions, required checks before merge, how to run the full check suite. | PM, DevEx, Content Writer |
 | `CHANGELOG.md` | No changelog. Phase transitions, breaking changes, and test count milestones are scattered across TODO.md and commit messages. | PM, Content Writer |
 | `docs/architecture/10-discovery.md` | Discovery service only has a section in `02-services.md`. Given the complexity of the idle-check, priority gating (Sprint 5), and fan-out behavior, it warrants its own architecture doc. | Architect |
-| `docs/architecture/11-lcu.md` | LCU Collector is described in `02-services.md` section 8, but the WSL2/Docker bridge, lockfile format, trust model, and JSONL schema would benefit from a dedicated doc. | Architect, Developer |
-| `docs/guides/03-wsl2-setup.md` | WSL2-specific setup (League install path, Docker host networking, lockfile access) is scattered. A focused guide would help onboarding. | DevEx, Debugger |
 
 ---
 
@@ -26,14 +23,14 @@ Covers 23 doc files, 11 service READMEs, and cross-references between them.
 
 1. **Stale test count.** States "366 unit tests + 44 contract tests." TODO.md says "383 unit + 44 contract." Phase 07 says baseline is 393 after placeholder deletion. The README was previously updated to 330, then 366. This number drifts with every session. Consider using a dynamic badge or a single-source count.
 2. **Missing Discovery from pipeline diagram.** Discovery is in the table but not in the ASCII diagram flow. The diagram shows `Discovery` with an arrow to `Crawler` but Discovery actually publishes to `stream:puuid` consumed by Crawler -- the arrow direction is ambiguous.
-3. **Missing `/players` and `/logs` routes in Web UI section.** The text mentions "Players" and "Logs" pages but the route table only says "Pages: Stats, Players, Streams, LCU, Logs." The `/players` and `/logs` routes are not in the 02-services.md route table either.
-4. **`just lcu-watch` behavior.** README says "continuously collect, polling every `LCU_POLL_INTERVAL_MINUTES` (default: 5)" but the LCU default is actually 0 (one-shot). The `--poll-interval` CLI flag defaults to the env var, which defaults to 0.
-5. **Missing `just consolidate` explanation.** Listed in Data Management section but no explanation of what JSONL+zstd archives are or when to use them.
+3. **Missing `/players` and `/logs` routes in Web UI section.** The text mentions "Players" and "Logs" pages but the route table only says "Pages: Stats, Players, Streams, Logs." The `/players` and `/logs` routes are not in the 02-services.md route table either.
+4. **LCU references removed.** The LCU service has been removed from the project. All LCU mentions in the README should be stripped.
+4. **Missing `just consolidate` explanation.** Listed in Data Management section but no explanation of what JSONL+zstd archives are or when to use them.
 
 ### `/mnt/c/Users/WOPR/Desktop/Scraper/ARCHITECTURE.md`
 
 1. **Broken link.** References `docs/phases/07-architect-review.md` in the Architect Review table, but this file does not exist on disk.
-2. **Service count mismatch.** Table says "02 -- Service Contracts" covers "all 7 services" but there are actually 10+ services (Seed, Crawler, Fetcher, Parser, Analyzer, Recovery, Delay Scheduler, Discovery, LCU, UI, Admin).
+2. **Service count mismatch.** Table says "02 -- Service Contracts" covers "all 7 services" but there are actually 11 services (Seed, Crawler, Fetcher, Parser, Analyzer, Recovery, Delay Scheduler, Discovery, UI, Admin, Common).
 3. **Data flow diagram missing Discovery.** The summary diagram shows the main pipeline and DLQ flow but omits Discovery's write to `discover:players` and read to `stream:puuid`.
 
 ### `/mnt/c/Users/WOPR/Desktop/Scraper/TODO.md`
@@ -53,12 +50,10 @@ Covers 23 doc files, 11 service READMEs, and cross-references between them.
 1. **12-Factor "Codebase" row says "Polyrepo."** This is a monorepo. The `08-repo-structure.md` title is "Strategy: Monorepo with Shared Library." This is a direct contradiction.
 2. **"Port binding" row says "Services are workers (no inbound ports)."** The Web UI binds port 8080. This should note the exception.
 3. **Missing `GITHUB_TOKEN` from env var table.** The CLAUDE.md secrets section references it but the env var reference doesn't list it.
-4. **`LCU_POLL_INTERVAL_MINUTES` description says "UI reloads LCU data."** But the same env var also controls the `--poll-interval` default for the LCU collector CLI. The dual purpose is not mentioned.
 
 ### `/mnt/c/Users/WOPR/Desktop/Scraper/docs/architecture/02-services.md`
 
-1. **Missing `/players` and `/logs` routes in Web UI section 10.** The README says these pages exist, but the route table here only lists `/`, `/stats`, `/stats/matches`, `/streams`, `/lcu`.
-2. **Section numbering jump.** Sections go 1-8, then jump to 9 (Discovery) and 10 (Web UI). The LCU Collector is section 8 but listed after 7 (Delay Scheduler). This could be confusing since the numbering does not match the pipeline order.
+1. **Missing `/players` and `/logs` routes in Web UI section 9.** The README says these pages exist, but the route table here only lists `/`, `/stats`, `/stats/matches`, `/streams`.
 3. **Missing Admin CLI contract.** The Admin CLI has no section in this document. While it does not consume streams, its Redis read/write contract should be documented somewhere (what keys it reads, writes, deletes).
 
 ### `/mnt/c/Users/WOPR/Desktop/Scraper/docs/architecture/03-streams.md`
@@ -83,7 +78,7 @@ Covers 23 doc files, 11 service READMEs, and cross-references between them.
 
 ### `/mnt/c/Users/WOPR/Desktop/Scraper/docs/architecture/07-containers.md`
 
-1. **docker-compose.yml snippet is incomplete.** Missing services: UI, Discovery, LCU. The note at the bottom says "See docker-compose.yml at the repo root for authoritative configuration," but the example is significantly incomplete, which could mislead.
+1. **docker-compose.yml snippet is incomplete.** Missing services: UI, Discovery. The note at the bottom says "See docker-compose.yml at the repo root for authoritative configuration," but the example is significantly incomplete, which could mislead.
 2. **References `docker-compose.prod.yml`.** This file has been deleted (git status shows `D docker-compose.prod.yml`). The doc should either note it does not exist yet or remove references until it is recreated (Phase 07 DK-6).
 
 ### `/mnt/c/Users/WOPR/Desktop/Scraper/docs/architecture/08-repo-structure.md`
@@ -139,12 +134,12 @@ Covers 23 doc files, 11 service READMEs, and cross-references between them.
 ### `/mnt/c/Users/WOPR/Desktop/Scraper/docs/guides/01-local-dev.md`
 
 1. **No significant gaps.** Well-structured guide covering venvs, testing, linting, new service creation, IDE tips.
-2. **Minor: "Adding a New Service" checklist does not mention adding to CI matrix (`ci.yml`).** This was a real issue -- LCU was missing from CI until recently.
+2. **Minor: "Adding a New Service" checklist does not mention adding to CI matrix (`ci.yml`).** Should be added to prevent new services from missing CI coverage.
 
 ### `/mnt/c/Users/WOPR/Desktop/Scraper/docs/guides/02-troubleshooting.md`
 
 1. **Redis State Inspection section uses `SCARD "discovered:players"`.** Should be `ZCARD "discover:players"` -- it is a Sorted Set, not a Set, and the key name is inconsistent with other docs.
-2. **Missing section on Docker build failures.** Common issues: stale layers, pip cache, volume mount permissions on WSL2.
+2. **Missing section on container build failures.** Common issues: stale layers, pip cache, volume mount permissions.
 
 ### `/mnt/c/Users/WOPR/Desktop/Scraper/lol-pipeline-admin/README.md`
 
@@ -225,13 +220,13 @@ Covers 23 doc files, 11 service READMEs, and cross-references between them.
 | `discover:players` (04-storage) | `discovered:players` (02-monitoring, 02-troubleshooting) | Check source code |
 | "Polyrepo" (01-overview) | "Monorepo" (08-repo-structure) | Monorepo |
 | "SEED_COOLDOWN_HOURS" (01-testing-plan) | "SEED_COOLDOWN_MINUTES" (README, 01-overview) | `SEED_COOLDOWN_MINUTES` |
-| "all 7 services" (ARCHITECTURE.md) | 10+ services in reality | Update count |
+| "all 7 services" (ARCHITECTURE.md) | 11 services in reality | Update count |
 | Web UI `/` description differs | "Redirect to /stats" (02-services) vs "Home -- seed form" (UI README) | Check source code |
 
 ### Formatting differences
 
 1. **Phase docs** use `Status:` field; other docs do not track status.
-2. **Service READMEs** vary in depth: Crawler has detailed behavior + error table; Discovery and LCU have no README at all; Admin README is 22 lines.
+2. **Service READMEs** vary in depth: Crawler has detailed behavior + error table; Discovery has no README; Admin README is 22 lines.
 3. **Environment variable tables** appear in 4 different locations (README, 01-overview, 07-containers, 01-deployment) with slightly different columns and ordering. Should have one authoritative table with others referencing it.
 
 ### Missing cross-references
@@ -264,7 +259,7 @@ Covers 23 doc files, 11 service READMEs, and cross-references between them.
 ### Developer
 
 1. **Admin CLI README is severely outdated.** Documents commands that don't exist (`system-halt`, `streams`) and omits commands that do (`replay-parse`, `replay-fetch`, `dlq replay`, `reseed`).
-2. **Missing Discovery and LCU service READMEs.** Every service should have a README with behavior, env vars, error handling, and usage examples.
+2. **Missing Discovery service README.** Every service should have a README with behavior, env vars, error handling, and usage examples.
 3. **No API documentation for `lol-pipeline-common` modules.** The README lists modules but does not document function signatures, return types, or usage patterns beyond what is in the architecture docs.
 4. **`your-org` placeholder in Dockerfile examples.** `08-repo-structure.md` and `07-containers.md` reference `github.com/your-org/lol-pipeline-common.git`. Should use actual repo URL or explicitly note placeholders.
 
@@ -280,8 +275,7 @@ Covers 23 doc files, 11 service READMEs, and cross-references between them.
 
 1. **Redis port binding claim is inaccurate.** Security doc says "Port 6379 bound to localhost only in dev" but Docker typically binds to 0.0.0.0 unless the compose file specifies `127.0.0.1:6379:6379`. Phase 07 SEC-4 identifies this as a fix needed.
 2. **PUUID validation gap.** The UI accepts PUUIDs from query parameters without format validation. The security doc claims PUUIDs are "validated by Riot API response" but this is not true for the UI path where a user directly visits `/stats/matches?puuid=...`.
-3. **`.dockerignore` files do not exist.** SEC-3 in Phase 07 identifies this. The security doc should note this current gap.
-4. **`datetime.utcnow()` usage.** The contracts README code example uses the deprecated `datetime.utcnow()`. While not a security issue per se, it is a Python 3.12 deprecation.
+3. **`datetime.utcnow()` usage.** The contracts README code example uses the deprecated `datetime.utcnow()`. While not a security issue per se, it is a Python 3.12 deprecation.
 5. **No dependency vulnerability scanning in CI.** The security doc recommends `pip-audit` and `safety` but neither is integrated. Should be documented as a gap.
 
 ### DevOps
@@ -308,7 +302,7 @@ Covers 23 doc files, 11 service READMEs, and cross-references between them.
 
 ### Debugger
 
-1. **Troubleshooting guide is comprehensive** but missing a section on Docker build/startup failures (common on WSL2: permission issues, volume mounts, pip cache).
+1. **Troubleshooting guide is comprehensive** but missing a section on container build/startup failures (stale layers, pip cache, volume mount permissions).
 2. **No documentation of how to debug the rate limiter Lua script.** If the script misbehaves, developers need to know how to inspect its behavior (e.g., `EVALSHA` directly, check ZRANGE of ratelimit keys).
 3. **No documentation of how to replay a single player end-to-end** for debugging. The troubleshooting guide shows tracing but not replay.
 4. **Missing log level configuration guide.** `LOG_LEVEL` env var is documented in the deployment doc but the troubleshooting guide does not mention setting `LOG_LEVEL=DEBUG` as a diagnostic step.
@@ -323,10 +317,10 @@ Covers 23 doc files, 11 service READMEs, and cross-references between them.
 ### DevEx (Developer Experience)
 
 1. **No onboarding checklist.** A new developer joining the project has no step-by-step guide. The local dev guide assumes familiarity with the project. A "first 30 minutes" guide would help.
-2. **Service README coverage is uneven.** Crawler, Seed, Common, UI, and Admin have READMEs. Discovery and LCU do not. The existing READMEs vary from 22 lines (Admin) to detailed multi-section docs (Crawler).
-3. **Missing "Adding to CI" step in new service checklist.** `02-service-layout.md` and `01-local-dev.md` both have new-service checklists but neither mentions adding the service to `.github/workflows/ci.yml`. This was a real bug (LCU was missing from CI).
+2. **Service README coverage is uneven.** Crawler, Seed, Common, UI, and Admin have READMEs. Discovery does not. The existing READMEs vary from 22 lines (Admin) to detailed multi-section docs (Crawler).
+3. **Missing "Adding to CI" step in new service checklist.** `02-service-layout.md` and `01-local-dev.md` both have new-service checklists but neither mentions adding the service to `.github/workflows/ci.yml`.
 4. **No documentation of the `scripts/` directory.** `update_mocks.py` and `consolidate_match_data.py` are referenced in Justfile commands but have no documentation beyond what `just update-mocks` and `just consolidate` say.
-5. **IDE setup tips are minimal.** Only VSCode and PyCharm are covered. No mention of Cursor, Zed, Neovim, or remote development via WSL2 (which is the actual development environment based on the repo path).
+5. **IDE setup tips are minimal.** Only VSCode and PyCharm are covered. No mention of Cursor, Zed, or Neovim.
 
 ---
 
@@ -345,7 +339,7 @@ Covers 23 doc files, 11 service READMEs, and cross-references between them.
 1. Standardize test count across all docs
 2. Fix `discover:players` / `discovered:players` naming inconsistency
 3. Note `docker-compose.prod.yml` deletion in all referencing docs
-4. Create Discovery and LCU service READMEs
+4. Create Discovery service README
 5. Update admin README with actual commands
 
 ### P2 -- Improve (gaps that slow down development)

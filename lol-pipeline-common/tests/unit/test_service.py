@@ -316,7 +316,7 @@ class TestRunConsumer:
             return []
 
         with (
-            patch("lol_pipeline.service.asyncio.get_event_loop") as mock_loop_fn,
+            patch("lol_pipeline.service.asyncio.get_running_loop") as mock_loop_fn,
             patch("lol_pipeline.service.consume", side_effect=consume_then_fire),
         ):
             mock_loop = mock_loop_fn.return_value

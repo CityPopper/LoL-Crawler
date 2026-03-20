@@ -42,8 +42,9 @@
       "description": "ISO 8601 UTC timestamp of first publish"
     },
     "dlq_attempts": {
-      "type": "string",
-      "default": "0",
+      "type": "integer",
+      "default": 0,
+      "minimum": 0,
       "description": "Number of DLQ round-trips this message has been through"
     },
     "priority": {

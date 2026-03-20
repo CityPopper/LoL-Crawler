@@ -2,8 +2,9 @@
 
 ## Project
 
-LoL Match Intelligence Pipeline — monorepo, Redis Streams, Python 3.12, Docker Compose.
+LoL Match Intelligence Pipeline — monorepo, Redis Streams, Python 3.14, Podman Compose (default) / Docker Compose.
 See `ARCHITECTURE.md` for doc index. See `docs/standards/01-coding-standards.md` for lint/type config.
+Platform: macOS. Container runtime: Podman (default). Switch with `RUNTIME=docker just <cmd>`.
 
 ## Directives
 
@@ -29,9 +30,9 @@ See `ARCHITECTURE.md` for doc index. See `docs/standards/01-coding-standards.md`
 |------|---------|
 | `ARCHITECTURE.md` | Doc index |
 | `docs/standards/01-coding-standards.md` | Lint, type, complexity config |
+| `docs/standards/03-testing-standards.md` | Test speed limits, timeout config, parallelism, agent batch strategy |
 | `lol-pipeline-common/contracts/schemas/` | Canonical Pact v3 schemas |
 | `lol-pipeline-*/pacts/` | Per-service consumer contracts |
-| `lol-pipeline-lcu/lcu-data/` | JSONL match history — **precious, do not delete** |
 | `tests/integration/` | 7 integration tests (IT-01 through IT-07, testcontainers) |
 
 ## Secrets
@@ -42,34 +43,34 @@ See `ARCHITECTURE.md` for doc index. See `docs/standards/01-coding-standards.md`
 
 - Do not modify failing tests without user confirmation
 
-## TODO — Orchestrator Cycle 1 (10-agent review)
+## TODO — Review Cycle 2
 
-### Correctness Bugs
-- [ ] C1: Analyzer — include cursor SET in same MULTI/EXEC as HINCRBY (crash → double-count)
-- [x] C2: Priority — use SET NX in `_SET_INCR_LUA` to prevent double-increment
-- [x] C3: service.py — wrap dispatch loop in try/except (RedisError, OSError)
-- [ ] C4: Discovery main loop — add Redis error handling (try/except + sleep)
-- [ ] C5: Delay Scheduler main loop — add Redis error handling (try/except + sleep)
-
-### Safety / Unbounded Growth
-- [ ] S1: Add maxlen to all 6 direct r.xadd() calls bypassing publish()
-- [ ] S2: Docker — Redis restart: always
-- [ ] S3: Docker — Redis --maxmemory 800mb --maxmemory-policy noeviction
-- [ ] S4: Docker — log rotation (json-file driver, max-size 50m, max-file 5)
-- [ ] S5: Create .dockerignore
-
-### Security
-- [ ] X1: Fix DOM XSS in UI match history JS error handler (innerHTML → textContent)
+### Critical
+- [x] R1: Priority counter drift on TTL expiry — `system:priority_count` never decremented when `player:priority:{puuid}` key expires, permanently blocks discovery
+- [x] R2: Priority counter can go negative — `_DEL_DECR_LUA` needs floor at 0
+- [x] R3: `asyncio.get_event_loop()` deprecated → replace with `asyncio.get_running_loop()` in service.py, discovery, delay-scheduler, recovery (4 files)
 
 ### Code Quality
-- [ ] Q1: Rename _CACHE_TTL_S → CACHE_TTL_S in resolve.py + update importers
-- [ ] Q2: Move `import contextlib` to top-level in discovery + delay-scheduler
-- [ ] Q3: Fix envelope.json dlq_attempts type: "string" → "integer"
-- [ ] Q4: Admin dlq replay — validate args (no id + no --all → error message)
+- [x] R4: Analyzer `ack()` outside try/finally — move inside try block to prevent unACKed messages on clear_priority() failure
+- [ ] R5: Crawler only clears priority when `published == 0` — if matches stall in pipeline, priority never cleared
 
-### Performance
-- [ ] P1: UI _streams_fragment_html — pipeline 9 Redis calls into 1
-- [ ] P2: consume() — cache _ensure_group, skip after first call per (stream, group)
+### DevOps
+- [x] R6: Justfile `localhost/` prefix only works with Podman — `RUNTIME=docker just seed/admin` broken
+- [ ] R7: Dockerfiles use `python:3.12-slim` but CI uses 3.14 — runtime/CI parity gap
+- [x] R8: UI Dockerfile HEALTHCHECK missing `--start-period` — exhausts retries before server starts
+- [x] R9: `{{PROJECT}}_redis_1` container name breaks under Docker Compose v2 (uses `-`, not `_`)
+- [x] R10: Add `COMPOSE_PROJECT_NAME` to .env.example (breaking for users who rename project)
+
+### UI / QA
+- [x] R11: Region dropdown missing 7 of 14 regions (`la1, la2, tr1, ru, ph2, sg2, th2, tw2, vn2`)
+- [x] R12: Region dropdown HTML: missing space before `selected` attribute
+- [x] R13: No Redis error handling in UI routes — ConnectionError → 500 stack trace
+
+### Docs
+- [x] R14: Multiple doc files: `cd Scraper` → `cd LoL-Crawler` (local-dev.md, deployment.md)
+- [x] R15: ARCHITECTURE.md service count "7" → "10"; add Phase 08 to phases table
+- [x] R16: storage.md: `just down -v` → `just reset`; player:name: TTL "none" → "86400s"
+- [x] R17: security.md, monitoring.md, troubleshooting.md: add Podman note alongside Docker commands
 
 ### Tests
-- [ ] Run all tests after changes
+- [x] R18: ~17 missing unit tests (XAUTOCLAIM corrupt msgs, recovery DLQ, admin helpers, crawler priority, delay-scheduler OSError)

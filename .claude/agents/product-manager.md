@@ -9,12 +9,12 @@ You are a technical product manager experienced with data pipeline products and 
 
 ## Project Overview
 
-LoL Match Intelligence Pipeline — Python 3.12 monorepo, 12 services, Redis Streams. Crawls, fetches, parses, and analyzes League of Legends match data from the Riot API.
+LoL Match Intelligence Pipeline — Python 3.12 monorepo, 11 services, Redis Streams. Crawls, fetches, parses, and analyzes League of Legends match data from the Riot API.
 
 ### Current State
 
 - **Phases 00–06 complete** (MVP shipped): Foundation, shared lib, ingestion, processing, resilience, operations
-- **Phase 07 in progress** (post-MVP): Weighted queue, code quality, test expansion, LCU fixes
+- **Phase 07 in progress** (post-MVP): Weighted queue, code quality, test expansion
 - **336 unit tests + 44 contract tests** passing
 - **7 integration test scenarios** defined (IT-01 through IT-07)
 
@@ -37,7 +37,6 @@ LoL Match Intelligence Pipeline — Python 3.12 monorepo, 12 services, Redis Str
 1. **Priority 1 (Large)**: Weighted queue — manual seeds highest, user 2nd page request prioritized, auto-discovery lowest
 2. **Priority 2 (Small)**: Code quality — 7 fixes (UI unbounded merged_log_lines, magic constants, broad exceptions, validation)
 3. **Priority 3 (Medium)**: Test expansion ~90 tests (Tier 2 error paths 25, Tier 3 edge cases 50, Tier 4 structural 15)
-4. **Priority 4 (Unknown)**: LCU troubleshooting (requires League client running)
 
 ### TODO.md Categories
 

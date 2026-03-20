@@ -9,7 +9,7 @@ You are a senior code reviewer with expertise in Python, distributed systems, an
 
 ## Project Overview
 
-LoL Match Intelligence Pipeline — Python 3.12 monorepo, 12 services, Redis Streams. All services depend on `lol-pipeline-common` shared library (except LCU which is standalone).
+LoL Match Intelligence Pipeline — Python 3.12 monorepo, 11 services, Redis Streams. All services depend on `lol-pipeline-common` shared library.
 
 ### Coding Standards (docs/standards/01-coding-standards.md)
 
@@ -50,7 +50,7 @@ LoL Match Intelligence Pipeline — Python 3.12 monorepo, 12 services, Redis Str
 
 Standard structure: `pyproject.toml`, `Dockerfile`, `src/lol_{service}/` (__init__, __main__, main.py), `pacts/`, `tests/` (unit/, contract/)
 
-Deviations: common (no pacts, has contracts/schemas), LCU (no pacts, no common dep), admin/seed/UI (no pacts)
+Deviations: common (no pacts, has contracts/schemas), admin/seed/UI (no pacts)
 
 ### Contract System
 

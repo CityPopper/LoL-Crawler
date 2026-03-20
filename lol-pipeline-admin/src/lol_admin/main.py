@@ -130,6 +130,9 @@ async def cmd_dlq_list(r: aioredis.Redis, args: argparse.Namespace) -> int:
 
 
 async def cmd_dlq_replay(r: aioredis.Redis, cfg: Config, args: argparse.Namespace) -> int:
+    if not args.all and not args.id:
+        print("error: specify a message ID or --all", file=sys.stderr)
+        return 1
     entries = await _dlq_entries(r)
     if not entries:
         print("(empty)")

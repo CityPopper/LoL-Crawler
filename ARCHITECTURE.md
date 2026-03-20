@@ -9,7 +9,7 @@ Detailed documentation lives in `docs/`. Start here for orientation, then follow
 | Doc | Contents |
 |-----|----------|
 | [01 — Overview & 12-Factor](docs/architecture/01-overview.md) | Technology stack, service summary, 12-factor table, env vars |
-| [02 — Service Contracts](docs/architecture/02-services.md) | Input/output contracts for all 7 services |
+| [02 — Service Contracts](docs/architecture/02-services.md) | Input/output contracts for all 10 services |
 | [03 — Streams & Messaging](docs/architecture/03-streams.md) | Stream registry, message envelope, DLQ envelope, delayed message pattern |
 | [04 — Storage](docs/architecture/04-storage.md) | Redis key schema, RawStore abstraction, match status lifecycle |
 | [05 — Rate Limiting](docs/architecture/05-rate-limiting.md) | Dual-window Lua script, acquire_token(), backoff |
@@ -50,7 +50,7 @@ Detailed documentation lives in `docs/`. Start here for orientation, then follow
 | Doc | Contents |
 |-----|----------|
 | [Local Development](docs/guides/01-local-dev.md) | Setup, venv workflow, testing, linting, TDD, adding services, IDE tips |
-| [Troubleshooting](docs/guides/02-troubleshooting.md) | Diagnostic commands, stream/DLQ/lock debugging, LCU issues, nuclear options |
+| [Troubleshooting](docs/guides/02-troubleshooting.md) | Diagnostic commands, stream/DLQ/lock debugging, nuclear options |
 
 ## Implementation Phases
 
@@ -67,6 +67,7 @@ See [docs/phases/README.md](docs/phases/README.md) for the phased delivery plan 
 | [05](docs/phases/05-resilience.md) | Resilience Layer — Recovery, Delay Scheduler |
 | [06](docs/phases/06-operations.md) | Operations — Admin CLI, Justfile, integration tests |
 | [07](docs/phases/07-next-phase.md) | IRONCLAD — Security hardening, code quality, weighted queue |
+| [08](docs/phases/08-ui-overhaul.md) | FACELIFT — UI overhaul |
 
 ---
 

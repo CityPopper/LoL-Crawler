@@ -1,5 +1,7 @@
 # Monitoring & Observability
 
+> **Runtime note:** Commands below use `docker compose`. Replace with `podman compose` when using the default Podman runtime, or use `just` wrappers which auto-detect the runtime.
+
 ## Current Observability Stack
 
 The pipeline uses a simple, file-based observability approach suitable for single-developer local operation.
@@ -114,7 +116,6 @@ docker compose exec redis redis-cli GET system:halted
 | **delay-scheduler** | `delayed:messages` count stays low; past-due messages moved promptly | `delayed:messages` grows with past-due entries |
 | **discovery** | `discover:players` sorted set shrinks during idle periods | Discovery log shows repeated failures |
 | **ui** | HTTP 200 on `http://localhost:8080`; `/streams` page loads | Connection refused on port 8080 |
-| **lcu** | New entries in `lcu-data/{puuid}.jsonl` | LCU connection errors in logs; League client not running |
 
 ---
 
@@ -256,17 +257,14 @@ docker compose logs --tail=50
 ### Disk Usage
 
 ```bash
-# Docker disk usage
-docker system df
+# Container runtime disk usage
+podman system df   # or: docker system df
 
 # Redis data directory size
 du -sh redis-data/
 
 # Match data directory size
 du -sh lol-pipeline-fetcher/match-data/
-
-# LCU data directory size
-du -sh lol-pipeline-lcu/lcu-data/
 
 # Log files
 du -sh logs/
@@ -405,7 +403,6 @@ Key metrics to expose:
 |-----------|-------------|-----------|
 | `redis-data/` | Proportional to Redis memory | Permanent (RDB + AOF) |
 | `match-data/` (if enabled) | ~15-30 KB per match | Permanent; use `just consolidate` to compress |
-| `lcu-data/` | ~2 KB per match | Permanent; append-only |
 | `logs/` | Varies by activity | Rotating: 150 MB max per service, 3 backups |
 
 ### Rate-Limited Throughput

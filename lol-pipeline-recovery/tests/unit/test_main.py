@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import fakeredis.aioredis
 import pytest
@@ -401,7 +401,7 @@ class TestGracefulShutdown:
         def spy_add_signal_handler(sig, callback, *args):
             captured_callbacks.append(callback)
 
-        mock_loop = AsyncMock()
+        mock_loop = MagicMock()
         mock_loop.add_signal_handler.side_effect = spy_add_signal_handler
 
         with (
@@ -409,7 +409,7 @@ class TestGracefulShutdown:
             patch("lol_recovery.main.get_redis", return_value=mock_r),
             patch("lol_recovery.main._consume_dlq", side_effect=fake_consume_dlq),
             patch("lol_recovery.main.asyncio.sleep", new_callable=AsyncMock),
-            patch("lol_recovery.main.asyncio.get_event_loop", return_value=mock_loop),
+            patch("lol_recovery.main.asyncio.get_running_loop", return_value=mock_loop),
         ):
             mock_cfg.return_value = Config(_env_file=None)
             await main()  # should exit cleanly, not loop forever
@@ -434,7 +434,7 @@ class TestMainLoopRetry:
                 raise RedisError("connection lost")
             raise KeyboardInterrupt
 
-        mock_loop = AsyncMock()
+        mock_loop = MagicMock()
         mock_loop.add_signal_handler.return_value = None
 
         with (
@@ -442,7 +442,7 @@ class TestMainLoopRetry:
             patch("lol_recovery.main.get_redis", return_value=mock_r),
             patch("lol_recovery.main._consume_dlq", side_effect=fake_consume_dlq),
             patch("lol_recovery.main.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
-            patch("lol_recovery.main.asyncio.get_event_loop", return_value=mock_loop),
+            patch("lol_recovery.main.asyncio.get_running_loop", return_value=mock_loop),
         ):
             mock_cfg.return_value = Config(_env_file=None)
             with pytest.raises(KeyboardInterrupt):
@@ -450,6 +450,149 @@ class TestMainLoopRetry:
         # Sleep(1) called after RedisError, before retry
         mock_sleep.assert_called_once_with(1)
         assert call_count == 2
+
+
+class TestCorruptDlqEntryHandling:
+    """Corrupt DLQ entries are ACKed and skipped, not re-raised."""
+
+    @pytest.mark.asyncio
+    async def test_deserialize_dlq_entries__corrupt_json_returns_corrupt_ids(self, log):
+        """Corrupt JSON entry is returned in the corrupt_ids list."""
+        from lol_recovery.main import _deserialize_dlq_entries
+
+        raw_entries = [
+            (
+                "stream:dlq",
+                [("corrupt-1", {"garbage": "data", "id": "x", "failed_at": "t"})],
+            ),
+        ]
+
+        valid, corrupt = _deserialize_dlq_entries(raw_entries, log)
+
+        assert valid == []
+        assert corrupt == ["corrupt-1"]
+
+    @pytest.mark.asyncio
+    async def test_deserialize_dlq_entries__invalid_payload_json(self, log):
+        """Entry with malformed JSON in payload field is flagged as corrupt."""
+        from lol_recovery.main import _deserialize_dlq_entries
+
+        # Build a DLQ entry with all fields present but invalid JSON in payload
+        raw_entries = [
+            (
+                "stream:dlq",
+                [(
+                    "bad-payload-1",
+                    {
+                        "id": "abc",
+                        "source_stream": "stream:dlq",
+                        "type": "dlq",
+                        "payload": "NOT-VALID-JSON{{{",
+                        "attempts": "3",
+                        "max_attempts": "5",
+                        "failure_code": "http_5xx",
+                        "failure_reason": "test",
+                        "failed_by": "fetcher",
+                        "original_stream": "stream:match_id",
+                        "original_message_id": "123-0",
+                        "failed_at": "2024-01-01T00:00:00+00:00",
+                        "enqueued_at": "2024-01-01T00:00:00+00:00",
+                        "dlq_attempts": "0",
+                        "retry_after_ms": "null",
+                        "priority": "normal",
+                    },
+                )],
+            ),
+        ]
+
+        valid, corrupt = _deserialize_dlq_entries(raw_entries, log)
+
+        assert valid == []
+        assert corrupt == ["bad-payload-1"]
+
+    @pytest.mark.asyncio
+    async def test_deserialize_dlq_entries__mixed_valid_and_corrupt(self, log):
+        """Mix of valid and corrupt entries: valid returned, corrupt IDs listed."""
+        from lol_recovery.main import _deserialize_dlq_entries
+
+        dlq = _make_dlq()
+        valid_fields = dlq.to_redis_fields()
+
+        raw_entries = [
+            (
+                "stream:dlq",
+                [
+                    ("valid-1", valid_fields),
+                    ("corrupt-1", {"garbage": "data"}),
+                ],
+            ),
+        ]
+
+        valid, corrupt = _deserialize_dlq_entries(raw_entries, log)
+
+        assert len(valid) == 1
+        assert valid[0][0] == "valid-1"
+        assert corrupt == ["corrupt-1"]
+
+    @pytest.mark.asyncio
+    async def test_deserialize_dlq_entries__empty_input(self, log):
+        """Empty or None input returns no valid or corrupt entries."""
+        from lol_recovery.main import _deserialize_dlq_entries
+
+        valid, corrupt = _deserialize_dlq_entries([], log)
+        assert valid == []
+        assert corrupt == []
+
+        valid2, corrupt2 = _deserialize_dlq_entries(None, log)
+        assert valid2 == []
+        assert corrupt2 == []
+
+    @pytest.mark.asyncio
+    async def test_consume_dlq__corrupt_entries_acked_in_pel(self):
+        """Corrupt entries in PEL are ACKed so they don't block processing."""
+        from lol_recovery.main import _consume_dlq
+
+        mock_r = AsyncMock()
+        dlq = _make_dlq()
+        valid_fields = dlq.to_redis_fields()
+
+        # PEL drain returns one corrupt + one valid entry
+        mock_r.xreadgroup.return_value = [
+            (
+                "stream:dlq",
+                [
+                    ("corrupt-1", {"garbage": "data"}),
+                    ("valid-1", valid_fields),
+                ],
+            ),
+        ]
+
+        entries = await _consume_dlq(mock_r, "test-consumer", count=10, block=0)
+
+        # Only valid entry returned
+        assert len(entries) == 1
+        assert entries[0][0] == "valid-1"
+        assert entries[0][1].failure_code == "http_429"
+        # Corrupt entry was ACKed
+        mock_r.xack.assert_called_once_with("stream:dlq", "recovery", "corrupt-1")
+
+    @pytest.mark.asyncio
+    async def test_consume_dlq__corrupt_entries_acked_in_new_messages(self):
+        """Corrupt entries in new messages path are also ACKed."""
+        from lol_recovery.main import _consume_dlq
+
+        mock_r = AsyncMock()
+        # PEL drain returns empty
+        mock_r.xreadgroup.side_effect = [
+            [("stream:dlq", [])],  # PEL drain: empty
+            [("stream:dlq", [("corrupt-new-1", {"garbage": "data"})])],  # new msgs
+        ]
+
+        entries = await _consume_dlq(mock_r, "test-consumer", count=10, block=0)
+
+        assert entries == []
+        # Corrupt entry was ACKed
+        mock_r.xack.assert_called_once_with("stream:dlq", "recovery", "corrupt-new-1")
 
 
 class TestMainEntryPoint:
@@ -469,14 +612,14 @@ class TestMainEntryPoint:
                 raise KeyboardInterrupt
             return []
 
-        mock_loop = AsyncMock()
+        mock_loop = MagicMock()
         mock_loop.add_signal_handler.return_value = None
 
         with (
             patch("lol_recovery.main.Config") as mock_cfg,
             patch("lol_recovery.main.get_redis", return_value=mock_r),
             patch("lol_recovery.main._consume_dlq", side_effect=fake_consume_dlq),
-            patch("lol_recovery.main.asyncio.get_event_loop", return_value=mock_loop),
+            patch("lol_recovery.main.asyncio.get_running_loop", return_value=mock_loop),
         ):
             mock_cfg.return_value = Config(_env_file=None)
             with pytest.raises(KeyboardInterrupt):
@@ -489,14 +632,14 @@ class TestMainEntryPoint:
         monkeypatch.setenv("REDIS_URL", "redis://localhost")
         mock_r = AsyncMock()
 
-        mock_loop = AsyncMock()
+        mock_loop = MagicMock()
         mock_loop.add_signal_handler.return_value = None
 
         with (
             patch("lol_recovery.main.Config") as mock_cfg,
             patch("lol_recovery.main.get_redis", return_value=mock_r),
             patch("lol_recovery.main._consume_dlq", side_effect=KeyboardInterrupt),
-            patch("lol_recovery.main.asyncio.get_event_loop", return_value=mock_loop),
+            patch("lol_recovery.main.asyncio.get_running_loop", return_value=mock_loop),
         ):
             mock_cfg.return_value = Config(_env_file=None)
             with pytest.raises(KeyboardInterrupt):

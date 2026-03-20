@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import fakeredis.aioredis
 import httpx
@@ -384,7 +384,7 @@ class TestGracefulShutdown:
         def spy_add_signal_handler(sig, callback, *args):
             captured_callbacks.append(callback)
 
-        mock_loop = AsyncMock()
+        mock_loop = MagicMock()
         mock_loop.add_signal_handler.side_effect = spy_add_signal_handler
 
         with (
@@ -393,7 +393,7 @@ class TestGracefulShutdown:
             patch("lol_discovery.main.RiotClient") as mock_riot,
             patch("lol_discovery.main._is_idle", side_effect=fake_is_idle),
             patch("lol_discovery.main.asyncio.sleep", new_callable=AsyncMock),
-            patch("lol_discovery.main.asyncio.get_event_loop", return_value=mock_loop),
+            patch("lol_discovery.main.asyncio.get_running_loop", return_value=mock_loop),
         ):
             mock_cfg.return_value = Config(_env_file=None)
             mock_riot.return_value = AsyncMock()
@@ -426,7 +426,7 @@ class TestShutdownEventPattern:
             registered_signals.append(signum)
             callback()  # immediately set to stop the loop
 
-        mock_loop = AsyncMock()
+        mock_loop = MagicMock()
         mock_loop.add_signal_handler.side_effect = spy_add_signal_handler
 
         with (
@@ -434,7 +434,7 @@ class TestShutdownEventPattern:
             patch("lol_discovery.main.get_redis", return_value=mock_r),
             patch("lol_discovery.main.RiotClient") as mock_riot,
             patch("lol_discovery.main.asyncio.sleep", new_callable=AsyncMock),
-            patch("lol_discovery.main.asyncio.get_event_loop", return_value=mock_loop),
+            patch("lol_discovery.main.asyncio.get_running_loop", return_value=mock_loop),
         ):
             mock_cfg.return_value = Config(_env_file=None)
             mock_riot.return_value = AsyncMock()
@@ -460,7 +460,7 @@ class TestMainEntryPoint:
                 raise KeyboardInterrupt
             return False
 
-        mock_loop = AsyncMock()
+        mock_loop = MagicMock()
         mock_loop.add_signal_handler.return_value = None
 
         with (
@@ -469,7 +469,7 @@ class TestMainEntryPoint:
             patch("lol_discovery.main.RiotClient") as mock_riot,
             patch("lol_discovery.main._is_idle", side_effect=fake_is_idle),
             patch("lol_discovery.main.asyncio.sleep", new_callable=AsyncMock),
-            patch("lol_discovery.main.asyncio.get_event_loop", return_value=mock_loop),
+            patch("lol_discovery.main.asyncio.get_running_loop", return_value=mock_loop),
         ):
             mock_cfg.return_value = Config(_env_file=None)
             mock_riot.return_value = AsyncMock()
@@ -483,7 +483,7 @@ class TestMainEntryPoint:
         monkeypatch.setenv("REDIS_URL", "redis://localhost")
         mock_r = AsyncMock()
 
-        mock_loop = AsyncMock()
+        mock_loop = MagicMock()
         mock_loop.add_signal_handler.return_value = None
 
         with (
@@ -492,7 +492,7 @@ class TestMainEntryPoint:
             patch("lol_discovery.main.RiotClient") as mock_riot,
             patch("lol_discovery.main._is_idle", side_effect=KeyboardInterrupt),
             patch("lol_discovery.main.asyncio.sleep", new_callable=AsyncMock),
-            patch("lol_discovery.main.asyncio.get_event_loop", return_value=mock_loop),
+            patch("lol_discovery.main.asyncio.get_running_loop", return_value=mock_loop),
         ):
             mock_cfg.return_value = Config(_env_file=None)
             mock_riot.return_value = AsyncMock()
@@ -517,7 +517,7 @@ class TestMainEntryPoint:
             # Second call: trigger shutdown via KeyboardInterrupt
             raise KeyboardInterrupt
 
-        mock_loop = AsyncMock()
+        mock_loop = MagicMock()
         mock_loop.add_signal_handler.return_value = None
 
         with (
@@ -526,7 +526,7 @@ class TestMainEntryPoint:
             patch("lol_discovery.main.RiotClient") as mock_riot,
             patch("lol_discovery.main._is_idle", side_effect=failing_then_shutdown_is_idle),
             patch("lol_discovery.main.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
-            patch("lol_discovery.main.asyncio.get_event_loop", return_value=mock_loop),
+            patch("lol_discovery.main.asyncio.get_running_loop", return_value=mock_loop),
         ):
             mock_cfg.return_value = Config(_env_file=None)
             mock_riot.return_value = AsyncMock()
@@ -555,7 +555,7 @@ class TestMainEntryPoint:
                 raise OSError("network unreachable")
             raise KeyboardInterrupt
 
-        mock_loop = AsyncMock()
+        mock_loop = MagicMock()
         mock_loop.add_signal_handler.return_value = None
 
         with (
@@ -564,7 +564,7 @@ class TestMainEntryPoint:
             patch("lol_discovery.main.RiotClient") as mock_riot,
             patch("lol_discovery.main._is_idle", side_effect=failing_then_shutdown_is_idle),
             patch("lol_discovery.main.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
-            patch("lol_discovery.main.asyncio.get_event_loop", return_value=mock_loop),
+            patch("lol_discovery.main.asyncio.get_running_loop", return_value=mock_loop),
         ):
             mock_cfg.return_value = Config(_env_file=None)
             mock_riot.return_value = AsyncMock()

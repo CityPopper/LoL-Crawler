@@ -12,6 +12,19 @@ from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.streams import _DEFAULT_MAXLEN, ack, consume, nack_to_dlq, publish
 
 
+@pytest.fixture(autouse=True)
+def _clear_ensured_cache():
+    """Clear the _ensure_group cache before each test to avoid cross-test pollution."""
+    from lol_pipeline.streams import _ensured
+
+    # WeakKeyDictionary: clear all entries
+    for key in list(_ensured):
+        _ensured.pop(key, None)
+    yield
+    for key in list(_ensured):
+        _ensured.pop(key, None)
+
+
 @pytest.fixture
 async def r():
     redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
@@ -183,6 +196,31 @@ class TestEnsureGroup:
         await _ensure_group(r, "stream:test", "g")  # no error
 
 
+class TestEnsureGroupCaching:
+    """P2: _ensure_group is only called once per (stream, group) pair."""
+
+    @pytest.mark.asyncio
+    async def test_ensure_group_called_once_per_pair(self):
+        """After the first consume(), subsequent calls skip _ensure_group."""
+        mock_r = AsyncMock()
+        mock_r.xreadgroup.return_value = [["stream:test", []]]
+
+        # First consume: _ensure_group should be called
+        await consume(mock_r, "stream:cached", "g", "c", block=0)
+        first_call_count = mock_r.xgroup_create.call_count
+
+        # Second consume: _ensure_group should be skipped (cached)
+        await consume(mock_r, "stream:cached", "g", "c", block=0)
+        second_call_count = mock_r.xgroup_create.call_count
+
+        # xgroup_create should only have been called during the first consume
+        assert first_call_count > 0
+        assert second_call_count == first_call_count, (
+            f"xgroup_create called {second_call_count - first_call_count} extra times. "
+            "Expected _ensure_group to be cached after first call."
+        )
+
+
 class TestEnsureGroupErrors:
     @pytest.mark.asyncio
     async def test_unexpected_error_propagates(self):
@@ -334,3 +372,154 @@ class TestNackToDlqErrors:
         env = _env()
         with pytest.raises(RedisError):
             await nack_to_dlq(mock_r, env, "http_429", "fetcher", "123-0")
+
+
+class TestXautoclaimCorruptMessages:
+    """XAUTOCLAIM path handles corrupt and nil entries without crashing."""
+
+    @pytest.mark.asyncio
+    async def test_xautoclaim__corrupt_entry_acked_and_skipped(self):
+        """Corrupt message in XAUTOCLAIM is ACKed and skipped (not re-raised)."""
+        mock_r = AsyncMock()
+        # PEL drain returns empty
+        mock_r.xreadgroup.return_value = [["stream:test", []]]
+        # XAUTOCLAIM returns one corrupt entry (missing required fields)
+        mock_r.xautoclaim.return_value = [
+            "0-0",  # cursor
+            [("corrupt-1", {"garbage": "data"})],  # entries
+        ]
+
+        msgs = await consume(
+            mock_r, "stream:test", "g", "c", block=0, autoclaim_min_idle_ms=5000
+        )
+
+        # No valid messages returned
+        assert msgs == []
+        # Corrupt message was ACKed
+        mock_r.xack.assert_called_once_with("stream:test", "g", "corrupt-1")
+
+    @pytest.mark.asyncio
+    async def test_xautoclaim__json_decode_error_acked_and_skipped(self):
+        """Entry with invalid JSON payload in XAUTOCLAIM is ACKed and skipped."""
+        mock_r = AsyncMock()
+        mock_r.xreadgroup.return_value = [["stream:test", []]]
+        # Entry has all required keys but payload is not valid JSON
+        mock_r.xautoclaim.return_value = [
+            "0-0",
+            [(
+                "bad-json-1",
+                {
+                    "id": "abc",
+                    "source_stream": "stream:test",
+                    "type": "test",
+                    "payload": "NOT-JSON{{{",
+                    "attempts": "0",
+                    "max_attempts": "5",
+                    "enqueued_at": "2024-01-01T00:00:00+00:00",
+                },
+            )],
+        ]
+
+        msgs = await consume(
+            mock_r, "stream:test", "g", "c", block=0, autoclaim_min_idle_ms=5000
+        )
+
+        assert msgs == []
+        mock_r.xack.assert_called_once_with("stream:test", "g", "bad-json-1")
+
+    @pytest.mark.asyncio
+    async def test_xautoclaim__nil_fields_skipped_without_ack(self):
+        """Entries with nil/empty fields (deleted entries) are skipped without ACK."""
+        mock_r = AsyncMock()
+        mock_r.xreadgroup.return_value = [["stream:test", []]]
+        # XAUTOCLAIM returns a deleted entry (nil body = empty dict/None)
+        mock_r.xautoclaim.return_value = [
+            "0-0",
+            [("deleted-1", {}), ("deleted-2", None)],
+        ]
+
+        msgs = await consume(
+            mock_r, "stream:test", "g", "c", block=0, autoclaim_min_idle_ms=5000
+        )
+
+        # No messages returned and no ACK for nil entries
+        assert msgs == []
+        mock_r.xack.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_xautoclaim__mix_valid_corrupt_nil(self):
+        """XAUTOCLAIM with a mix of valid, corrupt, and nil entries returns only valid."""
+        mock_r = AsyncMock()
+        mock_r.xreadgroup.return_value = [["stream:test", []]]
+
+        valid_env = _env()
+        valid_fields = valid_env.to_redis_fields()
+
+        mock_r.xautoclaim.return_value = [
+            "0-0",
+            [
+                ("nil-1", {}),                         # nil - skip
+                ("valid-1", valid_fields),              # valid - return
+                ("corrupt-1", {"garbage": "data"}),     # corrupt - ack + skip
+                ("nil-2", None),                        # nil - skip
+            ],
+        ]
+
+        msgs = await consume(
+            mock_r, "stream:test", "g", "c", block=0, autoclaim_min_idle_ms=5000
+        )
+
+        # Only the valid message is returned
+        assert len(msgs) == 1
+        assert msgs[0][0] == "valid-1"
+        assert msgs[0][1].id == valid_env.id
+        # Only the corrupt one was ACKed (not nil entries)
+        mock_r.xack.assert_called_once_with("stream:test", "g", "corrupt-1")
+
+
+class TestEnsureGroupWeakKeyIsolation:
+    """_ensure_group WeakKeyDictionary keeps separate caches per Redis client."""
+
+    @pytest.mark.asyncio
+    async def test_separate_clients_get_separate_caches(self):
+        """A call on client A does not affect client B's cache."""
+        mock_a = AsyncMock()
+        mock_a.xreadgroup.return_value = [["stream:test", []]]
+
+        mock_b = AsyncMock()
+        mock_b.xreadgroup.return_value = [["stream:test", []]]
+
+        # Consume on client A
+        await consume(mock_a, "stream:test", "g", "c", block=0)
+        assert mock_a.xgroup_create.call_count == 1
+
+        # Consume on client B — should still call xgroup_create (not cached from A)
+        await consume(mock_b, "stream:test", "g", "c", block=0)
+        assert mock_b.xgroup_create.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_xgroup_create_called_once_per_client_stream_group(self):
+        """xgroup_create is called only once per (client, stream, group) even across
+        multiple consume() calls."""
+        mock_r = AsyncMock()
+        mock_r.xreadgroup.return_value = [["stream:test", []]]
+
+        # Three consume() calls on same (client, stream, group)
+        await consume(mock_r, "stream:test", "g", "c", block=0)
+        await consume(mock_r, "stream:test", "g", "c", block=0)
+        await consume(mock_r, "stream:test", "g", "c", block=0)
+
+        assert mock_r.xgroup_create.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_different_stream_group_pairs_each_create(self):
+        """Different (stream, group) pairs on the same client each trigger xgroup_create."""
+        mock_r = AsyncMock()
+        mock_r.xreadgroup.return_value = [["stream:a", []]]
+
+        await consume(mock_r, "stream:a", "g1", "c", block=0)
+        await consume(mock_r, "stream:b", "g2", "c", block=0)
+        await consume(mock_r, "stream:a", "g1", "c", block=0)  # cached
+        await consume(mock_r, "stream:b", "g2", "c", block=0)  # cached
+
+        assert mock_r.xgroup_create.call_count == 2

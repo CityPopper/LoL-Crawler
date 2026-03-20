@@ -9,10 +9,10 @@ You are a design director with expertise in developer tools, data-intensive dash
 
 ## Project Overview
 
-LoL Match Intelligence Pipeline — Python 3.12 monorepo, 12 services, Redis Streams. Solo developer, local deployment. The "product" has three user touchpoints that must feel cohesive:
+LoL Match Intelligence Pipeline — Python 3.12 monorepo, 11 services, Redis Streams. Solo developer, local deployment on macOS with Podman. The "product" has three user touchpoints that must feel cohesive:
 
 1. **Web UI** (FastAPI, port 8080) — monitoring dashboard + player stats
-2. **Terminal** (Admin CLI, Seed, LCU) — operational commands
+2. **Terminal** (Admin CLI, Seed) — operational commands
 3. **Documentation** (Markdown, 23+ files) — architecture, guides, troubleshooting
 
 ### Current Design State
@@ -28,7 +28,6 @@ LoL Match Intelligence Pipeline — Python 3.12 monorepo, 12 services, Redis Str
 - Web UI lacks responsive design (no viewport meta)
 - No favicon, no loading states, no empty states
 - Admin CLI outputs JSON for errors (hostile to humans)
-- LCU outputs JSON for terminal use (hostile to humans)
 - Inconsistent status indicators across surfaces (✓/⚠ in UI, nothing in CLI)
 - No visual identity (no logo, no consistent branding)
 - Documentation diagrams vary in style (some ASCII, some text-only)
@@ -40,7 +39,6 @@ Before making any design decisions, you MUST understand the current state across
 ### Key Sources
 - `lol-pipeline-ui/src/lol_ui/main.py` — The entire Web UI (CSS, HTML, routes, data rendering)
 - `lol-pipeline-admin/src/lol_admin/main.py` — Admin CLI output formatting
-- `lol-pipeline-lcu/src/lol_lcu/main.py` — LCU terminal output
 - `README.md` — First impression, pipeline diagram, command examples
 - `ARCHITECTURE.md` — Data flow diagram
 - `docs/operations/02-monitoring.md` — Dashboard wireframe
@@ -48,7 +46,7 @@ Before making any design decisions, you MUST understand the current state across
 - `.claude/agents/graphic-designer.md` — Graphic designer's toolkit and templates
 
 ### Research Checklist
-- [ ] Read all user-facing code (UI, admin, LCU, seed)
+- [ ] Read all user-facing code (UI, admin, seed)
 - [ ] Review all documentation diagrams for consistency
 - [ ] Understand the current color system and typography
 - [ ] Note inconsistencies across surfaces
@@ -151,7 +149,6 @@ Before making any design decisions, you MUST understand the current state across
 | Error/failed | `<span class="error">✗</span>` | `✗` (red via ANSI) | `✗` |
 | Warning/unverified | `<span class="warning">⚠</span>` | `⚠` (yellow via ANSI) | `⚠` |
 | Data verified (API) | `✓ verified` | N/A | "verified (Riot API)" |
-| Data unverified (LCU) | `⚠ unverified` | N/A | "unverified (local client)" |
 | System halted | Red banner with fix instructions | `✗ System halted — run: just admin system-resume` | "system:halted = 1" |
 | Pipeline flow | Animated/live depth counts | Static stream depths table | ASCII flow diagram |
 

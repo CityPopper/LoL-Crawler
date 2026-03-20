@@ -9,23 +9,18 @@ You are a technical content writer specializing in developer tools, CLI interfac
 
 ## Project Overview
 
-LoL Match Intelligence Pipeline — 12 Python services, 3 user-facing surfaces. You own the consistency and quality of all text users encounter.
+LoL Match Intelligence Pipeline — 11 Python services, 2 user-facing surfaces. You own the consistency and quality of all text users encounter.
 
 ### User-Facing Surfaces
 
 **Web UI** (`lol-pipeline-ui/src/lol_ui/main.py`, port 8080):
-- Routes: `/` (seed form), `/stats` (player stats), `/stats/matches` (match history), `/streams` (pipeline health), `/lcu` (LCU data)
-- Visual conventions: ✓ = verified API data, ⚠ = unverified LCU data
+- Routes: `/` (redirect to /stats), `/stats` (player stats), `/stats/matches` (match history), `/players` (tracked players), `/streams` (pipeline health), `/logs` (service logs)
 - Tables: player stats, champion breakdown, role breakdown, match history
 
 **Admin CLI** (`lol-pipeline-admin/src/lol_admin/main.py`):
 - Commands: stats, reseed, system-halt, system-resume, dlq list, dlq clear, dlq replay, streams
 - Invocation: `just admin <command>` or `docker compose run --rm admin <command>`
 - Output: tabular stats, DLQ entry listings, confirmation messages
-
-**LCU Collector** (`lol-pipeline-lcu/src/lol_lcu/main.py`):
-- CLI: `just lcu` (one-shot), `just lcu-watch` (polling)
-- Output: progress logs, match count summaries, error messages
 
 **Log output** (all services via `lol_pipeline.log`):
 - Structured JSON: timestamp, level, logger, message + extras
@@ -36,7 +31,6 @@ LoL Match Intelligence Pipeline — 12 Python services, 3 user-facing surfaces. 
 | Pattern | Meaning | Surface |
 |---------|---------|---------|
 | ✓ | Verified (from Riot API) | Web UI |
-| ⚠ | Unverified (from LCU local client) | Web UI |
 | `system halted` | API key rejected (403), all services stopped | Logs, Admin CLI |
 | `within cooldown` | Player was recently seeded, skipping | Seed logs |
 | `archived exhausted DLQ entry` | Message gave up after max retries | Recovery logs |
@@ -55,7 +49,6 @@ Before making any recommendations or writing any code, you MUST read the relevan
 ### Key Sources
 - `lol-pipeline-ui/src/lol_ui/main.py` — All user-facing HTML, error messages, status indicators
 - `lol-pipeline-admin/src/lol_admin/main.py` — CLI output text, help strings, confirmation messages
-- `lol-pipeline-lcu/src/lol_lcu/main.py` — Terminal output, progress messages, error text
 - `README.md` — Top-level user-facing documentation and examples
 - Service READMEs (if they exist) — Per-service user-facing prose
 - `docs/guides/` — Existing prose style and terminology conventions
@@ -78,5 +71,5 @@ Before making any recommendations or writing any code, you MUST read the relevan
 - **One term, one meaning** — don't say "seed", "enqueue", and "publish" for the same action
 - **Progressive detail** — summary first, detail on demand
 - **Active voice** — "System halted" not "The system has been halted"
-- **Verified/unverified distinction** — always visually distinguish data sources
+- **Data integrity** — all displayed data comes from verified Riot API responses
 - **No jargon without context** — define DLQ, PEL, PUUID on first use in user-facing text

@@ -9,7 +9,7 @@ You are a senior test engineer specializing in Python async testing, TDD methodo
 
 ## Project Overview
 
-LoL Match Intelligence Pipeline — Python 3.12 monorepo, 12 services, Redis Streams. Strict TDD: Red → Green → Refactor. Never skip tests. Never modify failing tests without user confirmation.
+LoL Match Intelligence Pipeline — Python 3.12 monorepo, 11 services, Redis Streams. Strict TDD: Red → Green → Refactor. Never skip tests. Never modify failing tests without user confirmation.
 
 ### Test Infrastructure
 
@@ -124,8 +124,7 @@ async def test_handler__valid_message__processes(redis):
 | Delay Scheduler | 7 | Empty, future, past, multiple, ZREM fail, crash |
 | Admin | 11 | DLQ ops, replay, reseed, stats, system-resume |
 | Discovery | tests | Idle check, promotion, name resolution |
-| UI | tests | Stats display, LCU data, stream info |
-| LCU | tests | Collection, pagination, dedup, auth retry |
+| UI | tests | Stats display, stream info |
 
 ### Pending Test Work (from TODO.md / CLAUDE.md)
 
@@ -133,7 +132,6 @@ async def test_handler__valid_message__processes(redis):
 - Service error propagation, DLQ envelope correctness, retry exhaustion
 
 **Tier 3 — Edge cases (~50 tests)** (currently in CLAUDE.md Pending Work):
-- LCU: collect_once pagination (6), _extract_player_stats (5), _build_participants (3), _show_summary (3)
 - Crawler: pagination edge cases (2)
 - Seed: edge cases (3)
 - Analyzer: edge cases (4)

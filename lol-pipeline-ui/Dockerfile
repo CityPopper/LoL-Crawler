@@ -19,7 +19,7 @@ COPY lol-pipeline-ui/src/ ./src/
 
 EXPOSE 8080
 
-HEALTHCHECK --interval=10s --timeout=5s --retries=3 \
+HEALTHCHECK --interval=10s --timeout=5s --retries=3 --start-period=30s \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/')"
 
 RUN adduser --disabled-password --no-create-home appuser

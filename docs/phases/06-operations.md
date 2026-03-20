@@ -49,7 +49,7 @@ All commands tested against fakeredis (unit) and verified manually against a run
 - AC-06-12: `just setup` → creates `.env` from `.env.example` if `.env` does not exist; prints instructions; exit code 0.
 - AC-06-13: `just redis` → `docker compose up redis -d` executes; `redis-cli ping` returns PONG within 10 seconds.
 - AC-06-14: `just build` → `docker build` succeeds for all 7 service images; exit code 0.
-- AC-06-15: `just run-all` → all long-running services start (crawler, fetcher, parser, analyzer, recovery, delay-scheduler, ui, discovery, lcu); `docker compose ps` shows 10 containers (9 services + redis) in "Up" state.
+- AC-06-15: `just run-all` → all long-running services start (crawler, fetcher, parser, analyzer, recovery, delay-scheduler, ui, discovery); containers show as "Up" (9 services + redis).
 - AC-06-16: `just stop` → `docker compose down`; `docker compose ps` shows 0 running containers.
 - AC-06-17: `just seed "TestPlayer#NA1"` → seed container runs; exits with code 0 (with a valid API key) or exits non-zero with an error message (with placeholder key); never hangs.
 - AC-06-18: `just scale service=fetcher n=3` → `docker compose ps | grep fetcher` shows 3 fetcher containers.

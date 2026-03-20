@@ -30,7 +30,6 @@ LoL Match Intelligence Pipeline — The Web UI is a FastAPI app serving server-r
 | `/stats/matches` | Match history (AJAX lazy-load) | `stats_matches()` → `_match_history_section()` |
 | `/players` | All tracked players (paginated) | `show_players()` |
 | `/streams` | Pipeline health (stream depths) | `show_streams()` |
-| `/lcu` | Local client match data | `show_lcu()` |
 | `/logs` | Merged service logs (auto-refresh) | `show_logs()` |
 | `/logs/fragment` | AJAX endpoint for log polling | `logs_fragment()` |
 

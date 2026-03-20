@@ -47,6 +47,16 @@ def _derived(stats: dict[str, str]) -> dict[str, str]:
     }
 
 
+async def _safe_clear_priority(
+    r: aioredis.Redis, puuid: str, log: logging.Logger
+) -> None:
+    """Clear priority, logging but swallowing errors so ack() is never skipped."""
+    try:
+        await clear_priority(r, puuid)
+    except Exception:
+        log.exception("clear_priority failed for %s — priority may be stale", puuid)
+
+
 async def _analyze_player(  # noqa: C901
     r: aioredis.Redis,
     cfg: Config,
@@ -118,7 +128,7 @@ async def _analyze_player(  # noqa: C901
         if derived:
             await r.hset(f"player:stats:{puuid}", mapping=derived)  # type: ignore[misc]
 
-        await clear_priority(r, puuid)
+        await _safe_clear_priority(r, puuid, log)
 
     finally:
         result = await r.eval(_RELEASE_LOCK_LUA, 1, lock_key, worker_id)  # type: ignore[misc]

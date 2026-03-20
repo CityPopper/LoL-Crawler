@@ -15,7 +15,7 @@ from lol_pipeline.riot_api import (
     ServerError,
 )
 
-_CACHE_TTL_S = 86400  # 24 hours
+CACHE_TTL_S = 86400  # 24 hours
 
 
 async def resolve_puuid(
@@ -45,7 +45,7 @@ async def resolve_puuid(
     try:
         account = await riot.get_account_by_riot_id(game_name, tag_line, region)
         puuid = str(account["puuid"])
-        await r.set(cache_key, puuid, ex=_CACHE_TTL_S)
+        await r.set(cache_key, puuid, ex=CACHE_TTL_S)
         return puuid
     except NotFoundError:
         log.error(

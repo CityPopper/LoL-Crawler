@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
 import collections
-import contextlib
 import heapq
 import html
 import json
@@ -18,6 +16,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote as _url_quote
 
+import redis.exceptions
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from lol_pipeline.config import Config
@@ -26,7 +25,7 @@ from lol_pipeline.log import get_logger
 from lol_pipeline.models import DLQEnvelope, MessageEnvelope
 from lol_pipeline.priority import set_priority
 from lol_pipeline.redis_client import get_redis
-from lol_pipeline.resolve import _CACHE_TTL_S
+from lol_pipeline.resolve import CACHE_TTL_S
 from lol_pipeline.riot_api import (
     AuthError,
     NotFoundError,
@@ -42,46 +41,8 @@ _log = get_logger("ui")
 
 
 # ---------------------------------------------------------------------------
-# LCU data loading
-# ---------------------------------------------------------------------------
-
-
-def _load_lcu_data(data_dir: str) -> dict[str, list[dict[str, Any]]]:
-    """Load all JSONL files from data_dir into memory keyed by puuid."""
-    result: dict[str, list[dict[str, Any]]] = {}
-    p = Path(data_dir)
-    if not p.exists():
-        return result
-    for f in sorted(p.glob("*.jsonl")):
-        puuid = f.stem
-        matches: list[dict[str, Any]] = []
-        for line in f.read_text().splitlines():
-            stripped = line.strip()
-            if not stripped:
-                continue
-            try:
-                matches.append(json.loads(stripped))
-            except json.JSONDecodeError:
-                _log.warning("corrupt JSON line in %s, skipping", f.name)
-        if matches:
-            result[puuid] = matches
-    return result
-
-
-# ---------------------------------------------------------------------------
 # App lifecycle
 # ---------------------------------------------------------------------------
-
-
-async def _lcu_reload_loop(app: FastAPI, data_dir: str, interval_minutes: int) -> None:
-    """Reload LCU JSONL data from disk every interval_minutes minutes."""
-    while True:
-        await asyncio.sleep(interval_minutes * 60)
-        app.state.lcu = _load_lcu_data(data_dir)
-        _log.info(
-            "lcu data reloaded",
-            extra={"players": len(app.state.lcu), "interval_minutes": interval_minutes},
-        )
 
 
 @asynccontextmanager
@@ -90,22 +51,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.cfg = cfg
     app.state.r = get_redis(cfg.redis_url)
     app.state.riot = RiotClient(cfg.riot_api_key, r=app.state.r)
-    lcu_dir = os.getenv("LCU_DATA_DIR", "./lcu-data")
-    app.state.lcu = _load_lcu_data(lcu_dir)
-    _log.info("lcu data loaded", extra={"players": len(app.state.lcu), "dir": lcu_dir})
-
-    poll_minutes = int(os.getenv("LCU_POLL_INTERVAL_MINUTES", "0"))
-    reload_task: asyncio.Task[None] | None = None
-    if poll_minutes > 0:
-        reload_task = asyncio.create_task(_lcu_reload_loop(app, lcu_dir, poll_minutes))
-        _log.info("lcu reload loop started", extra={"interval_minutes": poll_minutes})
 
     yield
 
-    if reload_task is not None:
-        reload_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await reload_task
     await app.state.r.aclose()
     await app.state.riot.close()
 
@@ -119,7 +67,6 @@ _NAV_ITEMS = [
     ("/players", "Players"),
     ("/streams", "Streams"),
     ("/dlq", "DLQ"),
-    ("/lcu", "LCU"),
     ("/logs", "Logs"),
 ]
 
@@ -428,7 +375,24 @@ def _page(title: str, body: str, path: str = "") -> str:
 </html>"""
 
 
-_REGIONS = ["na1", "euw1", "eun1", "kr", "br1", "jp1", "oc1"]
+_REGIONS = [
+    "na1",
+    "br1",
+    "la1",
+    "la2",
+    "euw1",
+    "eun1",
+    "tr1",
+    "ru",
+    "kr",
+    "jp1",
+    "oc1",
+    "ph2",
+    "sg2",
+    "th2",
+    "tw2",
+    "vn2",
+]
 
 
 def _stats_form(
@@ -439,7 +403,7 @@ def _stats_form(
 ) -> str:
     msg_html = f'<p class="{css_class}">{msg}</p>' if msg else ""
     options = "\n      ".join(
-        f'<option value="{r}"{"selected" if r == selected_region else ""}>{r}</option>'
+        f'<option value="{r}"{" selected" if r == selected_region else ""}>{r}</option>'
         for r in _REGIONS
     )
     return _page(
@@ -518,7 +482,7 @@ def _match_history_section(puuid: str, region: str, riot_id: str) -> str:
 <script>
 function loadMatches(puuid, region, riotId, page) {{
   var container = document.getElementById('match-history-container');
-  container.innerHTML = '<p>Loading...</p>';
+  container.textContent = 'Loading...';
   var url = '/stats/matches?puuid=' + encodeURIComponent(puuid)
     + '&region=' + encodeURIComponent(region)
     + '&riot_id=' + encodeURIComponent(riotId)
@@ -527,7 +491,11 @@ function loadMatches(puuid, region, riotId, page) {{
     .then(function(r) {{ return r.text(); }})
     .then(function(html) {{ container.innerHTML = html; }})
     .catch(function(e) {{
-      container.innerHTML = '<p class="error">Failed to load: ' + (e.message || e) + '</p>';
+      container.textContent = '';
+      var p = document.createElement('p');
+      p.className = 'error';
+      p.textContent = 'Failed to load: ' + (e.message || e);
+      container.appendChild(p);
     }});
 }}
 document.addEventListener('click', function(e) {{
@@ -540,53 +508,31 @@ document.addEventListener('click', function(e) {{
 """
 
 
-def _aggregate_by_mode(matches: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
-    """Aggregate win/loss counts by game mode."""
-    by_mode: dict[str, dict[str, int]] = {}
-    for m in matches:
-        mode = str(m.get("game_mode", "UNKNOWN"))
-        by_mode.setdefault(mode, {"t": 0, "w": 0})
-        by_mode[mode]["t"] += 1
-        if m.get("win"):
-            by_mode[mode]["w"] += 1
-    return by_mode
-
-
-def _lcu_stats_section(matches: list[dict[str, Any]]) -> str:
-    """Render LCU unverified stats section for the /stats page."""
-    total = len(matches)
-    wins = sum(1 for m in matches if m.get("win"))
-    by_mode = _aggregate_by_mode(matches)
-    mode_rows = "".join(
-        f"<tr><td>{html.escape(mode)}</td><td>{d['t']}</td>"
-        f"<td>{d['w']}</td><td>{d['t'] - d['w']}</td></tr>"
-        for mode, d in sorted(by_mode.items())
-    )
-    return f"""
-<h3>Unverified (LCU) {_badge_html("warning", "&#9888; Unverified")}</h3>
-<p class="unverified">Collected from the local League client. May include game modes not
-tracked by the Riot API (ARAM Mayhem, URF, etc.). May overlap with verified data above.</p>
-<div class="table-scroll">
-<table>
-  <tr><th>Total Games</th><th>Wins</th><th>Losses</th></tr>
-  <tr><td>{total}</td><td>{wins}</td><td>{total - wins}</td></tr>
-</table>
-</div>
-<h4>By Game Mode</h4>
-<div class="table-scroll">
-<table>
-  <tr><th>Mode</th><th>Games</th><th>Wins</th><th>Losses</th></tr>
-  {mode_rows or "<tr><td colspan='4'>No data</td></tr>"}
-</table>
-</div>
-"""
-
-
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="LoL Pipeline UI", lifespan=_lifespan)
+
+
+@app.exception_handler(redis.exceptions.RedisError)
+async def redis_error_handler(request: Request, exc: redis.exceptions.RedisError) -> HTMLResponse:
+    """Return a user-friendly 503 page when Redis is unreachable."""
+    body = _page(
+        "Error",
+        "<p>Cannot connect to Redis. Is the stack running? Try: <code>just run</code></p>",
+    )
+    return HTMLResponse(content=body, status_code=503)
+
+
+@app.exception_handler(ConnectionError)
+async def connection_error_handler(request: Request, exc: ConnectionError) -> HTMLResponse:
+    """Return a user-friendly 503 page on connection errors."""
+    body = _page(
+        "Error",
+        "<p>Cannot connect to Redis. Is the stack running? Try: <code>just run</code></p>",
+    )
+    return HTMLResponse(content=body, status_code=503)
 
 
 @app.get("/")
@@ -656,15 +602,12 @@ async def show_stats(request: Request) -> HTMLResponse:  # noqa: PLR0911, C901
                 )
             )
         puuid = account["puuid"]
-        await r.set(cache_key, puuid, ex=_CACHE_TTL_S)
+        await r.set(cache_key, puuid, ex=CACHE_TTL_S)
     stats: dict[str, str] = await r.hgetall(f"player:stats:{puuid}")
-
-    lcu_matches: list[dict[str, Any]] = request.app.state.lcu.get(puuid, [])
-    lcu_html = _lcu_stats_section(lcu_matches) if lcu_matches else ""
 
     safe_id = html.escape(riot_id)
 
-    if not stats and not lcu_matches:
+    if not stats:
         # Auto-seed: publish to stream:puuid if not halted and not already seeded
         if await r.get("system:halted"):
             return HTMLResponse(
@@ -735,7 +678,7 @@ async def show_stats(request: Request) -> HTMLResponse:  # noqa: PLR0911, C901
     safe_name = html.escape(f"{game_name}#{tag_line}")
     heading = f"Stats for {safe_name}{priority_html}"
     return HTMLResponse(
-        _stats_form(heading, "success", api_html + lcu_html + history_html, selected_region=region)
+        _stats_form(heading, "success", api_html + history_html, selected_region=region)
     )
 
 
@@ -857,24 +800,37 @@ _STREAM_KEYS = [
 
 
 async def _streams_fragment_html(r: Any) -> str:
-    """Build the inner HTML for the streams table + status (no page wrapper)."""
+    """Build the inner HTML for the streams table + status (no page wrapper).
+
+    Uses a single Redis pipeline round-trip for all 9 calls (6 XLEN + 1 ZCARD + 2 GET).
+    """
+    async with r.pipeline(transaction=False) as pipe:
+        for s in _STREAM_KEYS:
+            pipe.xlen(s)
+        pipe.zcard("delayed:messages")
+        pipe.get("system:halted")
+        pipe.get("system:priority_count")
+        results = await pipe.execute()
+
+    # Unpack: 6 XLEN results, 1 ZCARD, 2 GETs
+    stream_lengths: list[int] = results[: len(_STREAM_KEYS)]
+    delayed: int = results[len(_STREAM_KEYS)]
+    halted = results[len(_STREAM_KEYS) + 1]
+    priority_count_val = results[len(_STREAM_KEYS) + 2]
+
     rows = ""
-    for s in _STREAM_KEYS:
-        length = await r.xlen(s)
+    for s, length in zip(_STREAM_KEYS, stream_lengths, strict=True):
         status_badge = _depth_badge(s, length)
         rows += f"<tr><td>{s}</td><td>{length}</td><td>{status_badge}</td></tr>"
-    delayed = await r.zcard("delayed:messages")
     delayed_badge = _depth_badge("delayed:messages", delayed)
     rows += f"<tr><td>delayed:messages</td><td>{delayed}</td><td>{delayed_badge}</td></tr>"
 
-    halted = await r.get("system:halted")
     status = (
         '<div class="banner banner--error">&#9888; System is HALTED (system:halted is set)</div>'
         if halted
         else '<div class="banner banner--success">&#10003; System running</div>'
     )
 
-    priority_count_val = await r.get("system:priority_count")
     priority_display = priority_count_val or "0"
 
     return f"""{status}
@@ -1079,61 +1035,6 @@ async def stats_matches(request: Request) -> HTMLResponse:
             results.append((match_id, match_data, participant_data))
 
     return HTMLResponse(_match_history_html(results, puuid, region, riot_id, page, has_more))
-
-
-@app.get("/lcu", response_class=HTMLResponse)
-async def show_lcu(request: Request) -> HTMLResponse:
-    lcu: dict[str, list[dict[str, Any]]] = request.app.state.lcu
-
-    if not lcu:
-        body = f"""
-<h2>LCU Match History {_badge_html("warning", "&#9888; Unverified")}</h2>
-<p>No LCU data collected yet.</p>
-<p>Run <code>just lcu</code> with the League client open, then restart the UI to reload.</p>
-"""
-        return HTMLResponse(_page("LCU", body, path="/lcu"))
-
-    rows = ""
-    for puuid, matches in sorted(lcu.items()):
-        if not matches:
-            continue
-        raw_riot_id = str(matches[0].get("riot_id", puuid[:12]))
-        safe_riot_id = html.escape(raw_riot_id)
-        if "#" in raw_riot_id:
-            stats_href = f"/stats?riot_id={_url_quote(raw_riot_id)}"
-            player_cell = f'<a href="{stats_href}">{safe_riot_id}</a>'
-        else:
-            player_cell = safe_riot_id
-        total = len(matches)
-        wins = sum(1 for m in matches if m.get("win"))
-        by_mode = _aggregate_by_mode(matches)
-        mode_str = html.escape(
-            ", ".join(f"{mode} ({d['w']}/{d['t']})" for mode, d in sorted(by_mode.items()))
-        )
-        rows += (
-            f"<tr>"
-            f"<td>{player_cell}</td>"
-            f"<td>{total}</td>"
-            f"<td>{wins}</td>"
-            f"<td>{total - wins}</td>"
-            f"<td>{mode_str}</td>"
-            f"</tr>"
-        )
-
-    body = f"""
-<h2>LCU Match History {_badge_html("warning", "&#9888; Unverified")}</h2>
-<p class="unverified">Data collected from the local League client. Not verified against the Riot
-API. Includes game modes unavailable in Match-v5 (ARAM Mayhem, URF, One for All, etc.).</p>
-<p>To collect more data: run <code>just lcu</code> with the League client open,
-then restart the UI (<code>just restart ui</code>) to reload.</p>
-<div class="table-scroll">
-<table>
-  <tr><th>Player</th><th>Games</th><th>Wins</th><th>Losses</th><th>Modes (W/T)</th></tr>
-  {rows}
-</table>
-</div>
-"""
-    return HTMLResponse(_page("LCU", body, path="/lcu"))
 
 
 # ---------------------------------------------------------------------------

@@ -9,7 +9,7 @@ You are a developer experience (DevEx) engineer who evaluates how pleasant and e
 
 ## Project Overview
 
-LoL Match Intelligence Pipeline — Python 3.12 monorepo, 12 services, Redis Streams, Docker Compose. Solo developer, local-only deployment on WSL2.
+LoL Match Intelligence Pipeline — Python 3.12 monorepo, 11 services, Redis Streams, Docker Compose. Solo developer, local deployment on macOS with Podman.
 
 ### Developer Touchpoints
 

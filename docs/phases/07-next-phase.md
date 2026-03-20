@@ -76,7 +76,6 @@ Blockers found by QA agent — docs say commands exist but they don't.
 | SEC-3 | Add `.dockerignore` to all 11 services | All service dirs | High |
 | SEC-4 | Bind Redis to `127.0.0.1` in dev compose | `docker-compose.yml` | High |
 | SEC-5 | Discovery must handle AuthError (403) → set `system:halted`, break loop | `lol-pipeline-discovery/src/lol_discovery/main.py` | High |
-| SEC-6 | Redact LCU lockfile password in error messages | `lol-pipeline-lcu/src/lol_lcu/lcu_client.py` | Medium |
 
 ### Code Quality (remaining items)
 
@@ -84,7 +83,6 @@ Blockers found by QA agent — docs say commands exist but they don't.
 |----|-----|------|--------|
 | CQ-1 | UI: bounded `_merged_log_lines` (use `heapq.merge`) | `lol-pipeline-ui/src/lol_ui/main.py` | Pending |
 | CQ-2 | Admin CLI: use `print()` for user-facing errors, not JSON logger | `lol-pipeline-admin/src/lol_admin/main.py` | Pending |
-| CQ-3 | LCU: use `print()` for terminal output, not JSON logger | `lol-pipeline-lcu/src/lol_lcu/main.py` | Pending |
 | CQ-4 | Fix match history JS error: `e` → `(e.message || e)` | `lol-pipeline-ui/src/lol_ui/main.py` | Pending |
 | CQ-5 | Seed: move `hset(seeded_at)` after `publish()` (ordering bug) | `lol-pipeline-seed/src/lol_seed/main.py` | Pending |
 | CQ-6 | Config: add range constraints (`ge=1`) to numeric fields | `lol-pipeline-common/src/lol_pipeline/config.py` | Pending |
@@ -133,7 +131,6 @@ Blockers found by QA agent — docs say commands exist but they don't.
 | ID | Fix | Priority |
 |----|-----|----------|
 | DK-1 | Fix Discovery Dockerfile (broken for prod — no COPY, no pip install) | P0 |
-| DK-2 | Fix LCU Dockerfile (single-stage, no HEALTHCHECK) | P0 |
 | DK-3 | Add HEALTHCHECK to UI Dockerfile | P0 |
 | DK-4 | Run all containers as non-root (`USER appuser`), add `STOPSIGNAL SIGTERM` | P1 |
 | DK-5 | Add `security_opt: [no-new-privileges:true]` + `stop_grace_period: 30s` to compose defaults | P1 |
@@ -284,11 +281,11 @@ system:priority_count       String   int      No TTL (maintained by atomic Lua I
 Phase 7 is **complete** when ALL of the following are true:
 
 1. All P0 doc/CLI fixes merged (P0-1 through P0-34), placeholder tests deleted
-2. All P1 security + code quality fixes merged (27 fixes: SEC-1 through SEC-6, CQ-1 through CQ-20, CQ-23; ≥27 new tests)
+2. All P1 security + code quality fixes merged (25 fixes: SEC-1 through SEC-5, CQ-1, CQ-2, CQ-4 through CQ-20, CQ-23; ≥25 new tests)
 3. Tier 3 tests verified via full test run (50 tests)
 4. Tier 4 structural tests complete (~6 tests)
 5. Docker hardening applied (non-root, STOPSIGNAL, .dockerignore, prod compose, HEALTHCHECKs)
-6. CI unit test matrix covers all 12 services (including UI)
+6. CI unit test matrix covers all 10 services (including UI)
 7. Weighted queue implemented (WQ-1 through WQ-15)
 8. Total unit test count ≥ 467 (baseline: 393 after placeholder deletion + ~27 P1 + ~6 T4 + ~40 WQ)
 9. All 52+ contract tests passing (44 existing + ~8 new priority pacts)
@@ -313,7 +310,6 @@ Phase 7 is **complete** when ALL of the following are true:
 
 | Item | Reason |
 |------|--------|
-| LCU troubleshooting | Requires running League client — unknown scope |
 | Integration tests (IT-08 through IT-11 for priority) | Phase 8 after unit tests validate the feature |
 | Prometheus + Grafana | Scoped tightly for Phase 8; Redis hash metrics sufficient for now |
 | S3 backend for RawStore | Out of MVP scope |
@@ -346,7 +342,7 @@ Phase 7 is **complete** when ALL of the following are true:
 |--------|---------|---------------|
 | Unit tests | 393 (401 minus 8 placeholders — needs verification) | ≥466 |
 | Contract tests | 44 | ~52 |
-| Security vulns fixed | 0 | 6 (SEC-1 through SEC-6) + 1 formal correctness fix (atomic SET+INCR) |
+| Security vulns fixed | 0 | 5 (SEC-1 through SEC-5) + 1 formal correctness fix (atomic SET+INCR) |
 | Docker/CI items | 0 | 13 (DK-1 through DK-13) |
 | Code quality fixes | 0 | 21 (CQ-1 through CQ-20 + CQ-23, incl. schema drift fix + pipeline batching; CQ-21/22 verified no-ops) |
 | Doc/CLI/DevEx fixes | 0 | 34 (P0-1 through P0-34) |

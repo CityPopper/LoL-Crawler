@@ -22,11 +22,13 @@ All application state lives in Redis. No other database.
 | `raw:match:{match_id}`               | String     | none     | Raw match JSON blob; also persisted to disk when `MATCH_DATA_DIR` is set |
 | `discover:players`                   | Sorted Set | none     | member=`{puuid}:{region}`, score=most-recent `game_start` epoch ms; GT update semantics |
 | `delayed:messages`                   | Sorted Set | none     | member=serialized envelope, score=ready epoch ms            |
-| `player:name:{game_name}#{tag_line}` | String     | none     | PUUID cache; maps lowercased Riot ID to PUUID               |
+| `player:name:{game_name}#{tag_line}` | String     | 86400s (24h) | PUUID cache; maps lowercased Riot ID to PUUID               |
 | `ratelimit:short`                    | Sorted Set | 1000ms   | member=`req_id`, score=epoch ms; sliding 1s window          |
 | `ratelimit:long`                     | Sorted Set | 120000ms | member=`req_id`, score=epoch ms; sliding 2min window        |
 | `ratelimit:limits:short`             | String     | none     | Dynamic 1s window limit from Riot API `X-App-Rate-Limit` header |
 | `ratelimit:limits:long`              | String     | none     | Dynamic 2min window limit from Riot API `X-App-Rate-Limit` header |
+| `player:priority:{puuid}`           | String     | 86400s (24h) | Priority marker; set by `set_priority()` (Seed/UI auto-seed) |
+| `system:priority_count`             | String     | none     | Count of active priority players (maintained by atomic Lua INCR/DECR) |
 
 ---
 
@@ -104,35 +106,10 @@ configured in `docker-compose.yml` and `.env.example`).
 
 **Recovery after Redis reset:**
 ```bash
-just down -v        # wipe Redis
+just reset          # wipe Redis
 just up             # start stack — match-data/ still on disk
 # On first access, parser's RawStore.get() reads from disk and repopulates Redis
 ```
-
----
-
-## LCU On-Disk Storage
-
-LCU match history is stored outside Redis as append-only JSONL files. This data is not verified against the Riot API and covers game modes unavailable in Match-v5.
-
-**Location:** `lol-pipeline-lcu/lcu-data/{puuid}.jsonl`
-
-**Format:** One JSON object per line (JSON Lines). Each line is a serialized `LcuMatch`:
-
-```json
-{"game_id": 123456789, "game_creation": 1700000000000, "game_duration": 1800,
- "queue_id": 900, "game_mode": "URF", "champion_id": 91,
- "win": true, "kills": 15, "deaths": 3, "assists": 7,
- "gold_earned": 14000, "damage_to_champions": 45000,
- "puuid": "...", "riot_id": "Faker#KR1"}
-```
-
-**Properties:**
-- Append-only: new matches are appended; existing lines are never modified or deleted
-- Deduplication: the collector loads existing `game_id` values before appending, preventing duplicates across runs
-- UI reads: the Web UI loads all JSONL files into memory at startup (`app.state.lcu`); restart the UI to pick up newly collected data
-
-**Important:** These files are the only historical record for unsupported queue types (rotating modes). Back them up and do not delete them.
 
 ---
 

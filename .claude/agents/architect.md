@@ -9,7 +9,7 @@ You are a senior system architect specializing in distributed systems, event-dri
 
 ## Project Overview
 
-LoL Match Intelligence Pipeline — Python 3.12 monorepo, 12 services connected by Redis Streams, Docker Compose deployment. Designed for 1–10 worker scale on a single VPS.
+LoL Match Intelligence Pipeline — Python 3.12 monorepo, 11 services connected by Redis Streams, Docker Compose deployment. Designed for 1-10 worker scale on a single VPS.
 
 ### Pipeline Flow
 
@@ -18,10 +18,9 @@ Seed → stream:puuid → Crawler → stream:match_id → Fetcher → stream:par
                                                                                 ↕
                                                               Any failure → stream:dlq → Recovery → delayed:messages → Delay Scheduler → source stream
                                                               Discovery (idle fan-out) → stream:puuid
-                                                              LCU (local client, standalone) → JSONL on disk
 ```
 
-### Services (12 total)
+### Services (11 total)
 
 | Service | Role | Input | Output |
 |---------|------|-------|--------|
@@ -34,8 +33,7 @@ Seed → stream:puuid → Crawler → stream:match_id → Fetcher → stream:par
 | Delay Scheduler | Move ready messages back to source streams | delayed:messages ZSET | Original source stream |
 | Discovery | Auto-promote players when pipeline idle | discover:players ZSET | stream:puuid |
 | Admin | CLI ops (stats, dlq, halt/resume, reseed) | CLI args | Redis direct |
-| UI | FastAPI dashboard (port 8080) — stats, streams, LCU | HTTP | HTML |
-| LCU | Collect from local League client | LCU API (port 2999) | JSONL files |
+| UI | FastAPI dashboard (port 8080) — stats, streams, players, logs | HTTP | HTML |
 | Common | Shared library (config, log, redis, models, streams, rate_limiter, raw_store, riot_api) | — | — |
 
 ### Key Architecture Patterns

@@ -23,14 +23,13 @@ Seed → Crawler → Fetcher → Parser → Analyzer
 | Delay Scheduler | Moves rate-limit-delayed messages into target streams  |
 | Discovery       | Promotes discovered players into the pipeline when idle |
 | Web UI          | Seed players and view stats at http://localhost:8080   |
-| LCU Collector   | Collects match history from the local League client (all game modes, including rotating queues not in Match-v5) |
 
-Pipeline state lives in Redis. LCU data is stored on disk as JSONL in `lol-pipeline-lcu/lcu-data/`. All config is injected via environment variables.
+Pipeline state lives in Redis. All config is injected via environment variables.
 
 ## Prerequisites
 
 - [Python 3.12+](https://www.python.org/downloads/)
-- [Docker](https://docs.docker.com/get-docker/)
+- [Podman](https://podman.io/getting-started/installation) (default) or [Docker](https://docs.docker.com/get-docker/)
 - [just](https://github.com/casey/just#installation)
 
 ## Setup
@@ -42,6 +41,8 @@ just build          # builds all Docker images
 ```
 
 ## Run
+
+Podman is the default runtime. To use Docker instead: `RUNTIME=docker just <cmd>`
 
 ```bash
 just up                         # setup + build + run in one step
@@ -63,41 +64,27 @@ just ui             # prints URL and opens browser
 # or navigate to http://localhost:8080
 ```
 
-Pages: **Stats** (look up player stats — Riot API data and LCU data side by side), **Players** (paginated list of all seeded players), **Streams** (stream depths + system status), **LCU** (LCU match history overview), **Logs** (merged service logs with auto-refresh).
+Pages: **Stats** (look up player stats), **Players** (paginated list of all seeded players), **Streams** (stream depths + system status), **DLQ** (dead letter queue browser), **Logs** (merged service logs with auto-refresh).
 
 ## Admin CLI
 
 ```bash
-just admin stats "Faker#KR1"
+just admin stats "Faker#KR1" --region kr
 just admin dlq list
 just admin dlq replay --all
 just admin system-resume         # clear system:halted after key rotation
-just admin reseed "Faker#KR1"   # force re-crawl bypassing cooldown
+just admin reseed "Faker#KR1" --region kr   # force re-crawl bypassing cooldown
 ```
-
-## LCU Match History (Unverified)
-
-Collects match history directly from the running League client — includes game modes not exposed by the Riot Match-v5 API (ARAM Mayhem, URF, One for All, etc.). Data is stored locally as JSONL and is never lost between runs.
-
-```bash
-# With the League client open:
-just lcu                        # collect + append new matches for the logged-in player
-just lcu-watch                  # continuously collect, polling every LCU_POLL_INTERVAL_MINUTES (default: 5)
-just restart ui                 # reload UI to pick up new data
-```
-
-Data is stored in `lol-pipeline-lcu/lcu-data/{puuid}.jsonl`.
-The UI `/lcu` page shows an overview; `/stats` shows API + LCU side by side.
 
 ## Testing
 
-404 unit tests + 44 contract tests across all services.
+541 unit tests + 44 contract tests across all services.
 
 ```bash
 just test                       # run all unit tests (services tested in parallel)
 just test-svc crawler           # run unit tests for a single service
 just contract                   # run PACT contract tests for all services
-just integration                # integration tests (requires Docker for testcontainers)
+just integration                # integration tests (requires Podman/Docker for testcontainers)
 just e2e                        # end-to-end test (requires running stack + valid API key)
 just test-all                   # unit + contract tests combined
 just coverage                   # run all unit tests with coverage report
@@ -130,10 +117,8 @@ Create `.env` (from `.env.example`) and set at minimum:
 | Variable                    | Description                          |
 |-----------------------------|--------------------------------------|
 | `RIOT_API_KEY`              | Riot Games API key (required)        |
-| `REDIS_URL`                 | Redis connection string (default: `redis://redis:6379/0`) |
+| `REDIS_URL`                 | Redis connection string (no code default; `.env.example` sets `redis://redis:6379/0`) |
 | `SEED_COOLDOWN_MINUTES`     | Minutes before a player can be re-seeded (default: `30`) |
 | `API_RATE_LIMIT_PER_SECOND` | Riot API per-second cap (default: `20`) |
-| `LCU_DATA_DIR`              | Path to LCU JSONL data directory (default: `/lcu-data` in Docker) |
-| `LEAGUE_INSTALL_PATH`       | LoL install dir for live LCU collection (WSL2 path, e.g. `/mnt/c/Riot Games/League of Legends`) |
 
 See `docs/architecture/01-overview.md` for the full variable reference.

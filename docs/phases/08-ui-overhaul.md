@@ -23,7 +23,7 @@
 | developer | APPROVE w/ fixes | 8/10 | DLQ route reads wrong field names, _badge needs variant whitelist, payload truncation order wrong, admin --json flag position |
 | security | APPROVE w/ conditions | 8/10 | XSS in onclick handlers (use data-* attrs), _badge variant whitelist, player filter must use textContent not innerHTML |
 | tester | REQUEST CHANGES | 8/10 | Existing tests WILL break (enumerate per sprint), test count targets inconsistent (10 vs 20 vs 30), missing test specs for nav active, /streams/fragment, depth badges |
-| content-writer | REQUEST CHANGES | 8/10 | "Refresh in a minute" unreliable, DLQ column labels ambiguous, "tagline" wrong term, LCU empty state ignores auto-reload, "retry" vs "replay" mismatch |
+| content-writer | REQUEST CHANGES | 8/10 | "Refresh in a minute" unreliable, DLQ column labels ambiguous, "tagline" wrong term, "retry" vs "replay" mismatch |
 | qa-tester | REQUEST CHANGES | 8/10 | _page() has 9 call sites (not 6), show_logs() line ref wrong (793->789), match history Win/Loss missed for _badge(), route count inconsistent |
 | devex | REQUEST CHANGES | 8/10 | CSS-in-f-string won't scale (extract to constant or static file), need just dev-ui hot-reload, show_stats() will breach complexity limit |
 
@@ -332,7 +332,6 @@ Every route that calls `_page()` must pass its path. There are **9 call sites** 
 - `show_players()` (line 403, empty state) — path="/players"
 - `show_players()` (line 458) — path="/players"
 - `show_streams()` (line 498) — path="/streams"
-- `show_lcu()` (lines 604, 638) — path="/lcu"
 - `show_logs()` (lines 780, 789, 836) — path="/logs"
 
 > **[REVIEW FIX]** QA-tester found line 403 (players empty state) was missing, and line 793 was wrong (actual `_page()` call is at 789).
@@ -356,8 +355,6 @@ def _badge(variant: str, text: str) -> str:
 Replace ad-hoc status HTML across all routes with `_badge()` calls:
 - `_stats_table()` line 193: `<span class="success">&#10003;</span>` becomes `_badge("success", "&#10003; Verified")`
 - `show_streams()` line 481-483: system status becomes `_badge("success", "&#10003; Running")` or `_badge("error", "&#10007; HALTED")`
-- `_lcu_stats_section()` line 261: `<span class="unverified">&#9888;</span>` becomes `_badge("warning", "&#9888; Unverified")`
-- `show_lcu()` line 600 and 628: same pattern
 - **[REVIEW FIX]** `_match_history_html()` line 524: `<span class="success">Win</span>` / `<span class="error">Loss</span>` becomes `_badge("success", "Win")` / `_badge("error", "Loss")`
 
 ### 1.6 Table Scroll Wrappers
@@ -366,10 +363,8 @@ Wrap ALL `<table>` elements in `<div class="table-scroll">` for mobile horizonta
 
 **Routes with tables to wrap:**
 - `_stats_table()` (line 194, 196-197, 199-200) — 3 tables (stats, champs, roles)
-- `_lcu_stats_section()` (lines 264-267, 269-272) — 2 tables
 - `show_players()` (line 452-456) — 1 table
 - `show_streams()` (line 493-496) — 1 table
-- `show_lcu()` (lines 633-636) — 1 table
 - `_match_history_html()` (line 546) — 1 table
 
 ### 1.7 XSS Fix: Remove Inline onclick Handlers
@@ -465,11 +460,6 @@ Rebuild each route using the design system components from Sprint 1.
 │  │  └──────────┴──────┘  └────────┴────────────┘ │  │
 │  └────────────────────────────────────────────────┘  │
 │                                                     │
-│  ┌─ card: Unverified (LCU) [badge:warning] ──────┐  │
-│  │  Total: 200  Wins: 110  Losses: 90            │  │
-│  │  By Mode: CLASSIC 150, ARAM 50                │  │
-│  └────────────────────────────────────────────────┘  │
-│                                                     │
 │  ┌─ Match History ────────────────────────────────┐  │
 │  │  [Load match history]  (lazy-load link)        │  │
 │  └────────────────────────────────────────────────┘  │
@@ -539,10 +529,6 @@ def _format_stat_value(key: str, value: str) -> str:
 ```
 
 Apply `_format_stat_value()` in the stats table rendering loop so that `win_rate` of `0.5432` renders as `54.32%`.
-
-**Changes to `_lcu_stats_section()` (line 250):**
-- Wrap in `<div class="card">`
-- Use `_badge("warning", "&#9888; Unverified")` in heading
 
 **Changes to `_match_history_section()` (line 204):**
 - Wrap in `<div class="card">`
@@ -621,16 +607,7 @@ Apply `_format_stat_value()` in the stats table rendering loop so that `win_rate
 - Display `system:priority_count` as a `<div class="stat">` counter
 - Wrap table in `<div class="table-scroll">`
 
-### 2.4 `/lcu` — LCU Match History (lines 594-638)
-
-**Changes to `show_lcu()` (line 594):**
-- Pass `path="/lcu"` to `_page()`
-- Empty state (lines 599-603): use `<div class="empty-state">` with styled `<code>` for the `just lcu` command
-- Wrap table in `<div class="table-scroll">`
-- Link player names to `/stats?riot_id=...` where possible (line 610 — if `riot_id` in match data, build link)
-- Use `_badge("warning", "&#9888; Unverified")` in heading
-
-### 2.5 `/logs` — Log Viewer (lines 775-836)
+### 2.4 `/logs` — Log Viewer (lines 775-836)
 
 **Desktop layout:**
 ```
@@ -697,8 +674,7 @@ Replace light-theme log colors with dark-theme equivalents:
 | S2-5 | All `<table>` wrapped in `<div class="table-scroll">` | Grep confirms |
 | S2-6 | `/streams` has Status column with color-coded badges | Visual check |
 | S2-7 | `/streams` system status uses banner component | Check HTML output |
-| S2-8 | `/lcu` player names link to `/stats` | Check HTML output |
-| S2-9 | Log viewer CSS uses dark-theme colors (no `#ffe0e0`, `#fff0f0`, `#fffbe6`) | Grep `_LOG_CSS` |
+| S2-8 | Log viewer CSS uses dark-theme colors (no `#ffe0e0`, `#fff0f0`, `#fffbe6`) | Grep `_LOG_CSS` |
 | S2-10 | Players page shows full ISO timestamp, page count | Check output |
 | S2-11 | Match history "Load more" styled as button | Check JS/HTML |
 | S2-12 | `_badge()` helper used in all routes | At least 8 call sites |
@@ -761,12 +737,11 @@ Apply to every route's empty/no-data path:
 - `/stats` no data + already seeded: `_empty_state("Still processing", "Check back soon or view <a href=\"/streams\">Streams</a> for pipeline status.")`
 - `/players` empty: `_empty_state("No players yet", "Look up a player on the <a href=\"/stats\">Stats</a> page to auto-seed, or use <code>just seed GameName#Tag</code>.")`
 - `/streams`: never empty (always shows stream keys)
-- `/lcu` empty: `_empty_state("No LCU data collected", "Run <code>just lcu</code> with the League client open. Data reloads automatically every few minutes, or restart the UI to reload immediately.")`
 - `/logs` no LOG_DIR: `_empty_state("LOG_DIR not configured", "Add <code>LOG_DIR=/path/to/logs</code> to docker-compose.yml.")`
 - `/logs` no files: `_empty_state("No log files found", "Services may not have started yet. Check <code>docker compose ps</code>.")`
 - `/stats/matches` empty: `_empty_state("No match history", "The pipeline is still processing. Matches appear after Fetcher + Parser complete.")`
 
-> **[REVIEW FIX]** Content-writer: removed "about a minute" (unreliable timing), added /streams link, fixed LCU guidance to mention auto-reload, verified `just seed` recipe exists in Justfile.
+> **[REVIEW FIX]** Content-writer: removed "about a minute" (unreliable timing), added /streams link, verified `just seed` recipe exists in Justfile.
 
 ### 3.4 Global Halt Banner
 
@@ -903,7 +878,6 @@ All items from Phase 7 "Explicitly Deferred to Phase 8" plus outstanding doc and
 | ID | Item | Source | Details |
 |----|------|--------|---------|
 | D4-8 | Create `lol-pipeline-discovery/README.md` | doc-review #1 | Cover: stream consumption, idle-check algorithm, priority gating, `DISCOVERY_POLL_INTERVAL_MS`, `DISCOVERY_BATCH_SIZE`, scaling caveats |
-| D4-9 | Create `lol-pipeline-lcu/README.md` | doc-review #2 | Cover: lockfile discovery, WSL2 setup, `LEAGUE_INSTALL_PATH`, `--poll-interval`, JSONL format, trust model |
 | D4-10 | Create `docs/guides/03-ci-workflow.md` | doc-review #3 | Cover: CI matrix structure, job descriptions, failure interpretation, adding new services, mypy gate |
 | D4-11 | Create `CONTRIBUTING.md` | doc-review #4 | Cover: branching strategy, PR process, commit conventions, required checks, full check suite, TDD flow |
 | D4-12 | Fix remaining P1 doc suggestions | doc-review P1 | Standardize test count, fix naming inconsistency `discover:players`, note `docker-compose.prod.yml` status, update admin README |
@@ -915,7 +889,7 @@ All items from Phase 7 "Explicitly Deferred to Phase 8" plus outstanding doc and
 
 | ID | Item | Source | Details |
 |----|------|--------|---------|
-| D4-16 | Shared test fixtures (conftest.py) | Phase 7 deferred | Create `tests/conftest.py` at repo root with shared fakeredis fixture, Config fixture, envelope factory. Each service's conftest imports from shared. Reduces duplication across 12 services. |
+| D4-16 | Shared test fixtures (conftest.py) | Phase 7 deferred | Create `tests/conftest.py` at repo root with shared fakeredis fixture, Config fixture, envelope factory. Each service's conftest imports from shared. Reduces duplication across 10 services. |
 | D4-17 | Parallel contract test runner | Phase 7 deferred | Run contract tests in parallel across services using pytest-xdist or Justfile parallelism (`just test-contracts` recipe). Currently sequential. |
 | D4-18 | Integration tests IT-08 through IT-11 for priority | Phase 7 deferred | Write integration tests for the weighted priority queue: IT-08 (priority seed pauses discovery), IT-09 (priority key TTL expiry), IT-10 (atomic counter consistency), IT-11 (DLQ priority preservation). |
 | D4-19 | Coverage enforcement in CI | doc-review | Add `pytest --cov --cov-fail-under=80` to CI for all services, `--cov-fail-under=90` for common. |
@@ -928,7 +902,7 @@ All items from Phase 7 "Explicitly Deferred to Phase 8" plus outstanding doc and
 | S4-2 | Integration test CI job runs IT-01 through IT-07 | CI workflow includes `integration-test` job |
 | S4-3 | Redis ACL config exists with per-service users | `redis-acl.conf` exists; documented in `01-security.md` |
 | S4-4 | `maxmemory` configured in Redis | Check compose files |
-| S4-5 | Discovery and LCU READMEs exist | Files exist with >50 lines each |
+| S4-5 | Discovery README exists | File exists with >50 lines |
 | S4-6 | CI workflow documented in `docs/guides/03-ci-workflow.md` | File exists |
 | S4-7 | `CONTRIBUTING.md` exists | File exists with branching, PR, TDD sections |
 | S4-8 | XADD calls include MAXLEN | Grep `XADD` or `publish` for maxlen parameter |
@@ -1020,7 +994,7 @@ async def show_dlq(request: Request) -> HTMLResponse:
 <a href="/dlq" title="Dead Letter Queue">DLQ</a>
 ```
 
-> **[REVIEW FIX]** UI-UX/content-writer: always show DLQ link (not conditional), add `title` attribute to expand abbreviation. Place after Streams in nav: `Stats | Players | Streams | DLQ | LCU | Logs`.
+> **[REVIEW FIX]** UI-UX/content-writer: always show DLQ link (not conditional), add `title` attribute to expand abbreviation. Place after Streams in nav: `Stats | Players | Streams | DLQ | Logs`.
 
 ### 5.4 Admin CLI `--json` Flag
 
@@ -1039,7 +1013,7 @@ Already fully specified in Sprint 2, section 2.5. This sprint verifies they are 
 |----|------|---------|
 | P5-1 | Pagination touch targets | Ensure pagination buttons on `/players` and match history "Load more" have `min-height: 44px` |
 | P5-2 | System halted banner with fix instruction | Everywhere the halted banner appears, include: "Run `just admin system-resume` to clear." |
-| P5-3 | Code-copy button on LCU empty state | Add a copy-to-clipboard button next to `<code>just lcu</code>` using `data-copy="just lcu"` + event delegation (consistent with Sprint 1.7 XSS fix — no inline `onclick`). JS listener: `document.addEventListener('click', e => { var btn = e.target.closest('[data-copy]'); if (btn) navigator.clipboard.writeText(btn.dataset.copy); })` |
+| P5-3 | Code-copy button on empty states | Add copy-to-clipboard buttons on command examples in empty states using `data-copy="..."` + event delegation (consistent with Sprint 1.7 XSS fix -- no inline `onclick`). JS listener: `document.addEventListener('click', e => { var btn = e.target.closest('[data-copy]'); if (btn) navigator.clipboard.writeText(btn.dataset.copy); })` |
 | P5-4 | Log line wrap on mobile | Ensure `flex-wrap: wrap` on `.log-line` so timestamp+badge wrap cleanly above message on narrow screens |
 | P5-5 | Player search/filter on `/players` | Add a client-side JS filter input above the table that hides non-matching rows |
 | P5-6 | Wide-screen layout at 1440px+ | At 1440px, expand `max-width` to 1200px; on `/stats`, place champions and roles tables side-by-side using CSS grid |
@@ -1055,7 +1029,7 @@ Already fully specified in Sprint 2, section 2.5. This sprint verifies they are 
 | S5-5 | *(Deferred to Phase 9)* | — |
 | S5-6 | Log viewer dark theme has no light-theme artifacts | Visual check: no `#ffe0e0`, `#fff0f0`, `#fffbe6` backgrounds |
 | S5-7 | All pagination controls have 44px+ touch targets | Check CSS |
-| S5-8 | LCU empty state has code-copy functionality | Click `just lcu` code, verify clipboard |
+| S5-8 | Empty states have code-copy functionality | Click command code, verify clipboard |
 | S5-9 | `/players` has client-side search filter | Type in filter, rows hide |
 | S5-10 | Nav includes DLQ link | Check `_page()` nav |
 | S5-11 | All existing tests pass | Full test suite |
@@ -1080,7 +1054,7 @@ Phase 8 is **complete** when ALL of the following are true:
 11. `docker-compose.prod.yml` exists with full production hardening
 12. Integration test CI job runs IT-01 through IT-07
 13. Redis ACL config documented and included in prod compose
-14. Discovery and LCU READMEs exist
+14. Discovery README exists
 15. CI workflow, CONTRIBUTING.md documented
 16. Coverage enforcement in CI (80% services, 90% common)
 17. All existing tests pass + at least 20 new tests for UI components and routes
@@ -1101,7 +1075,6 @@ Phase 8 is **complete** when ALL of the following are true:
 | `redis-acl.conf` | 4 | New file — per-service ACLs |
 | `.github/workflows/ci.yml` | 4 | Integration test job, coverage gates, image scanning |
 | `lol-pipeline-discovery/README.md` | 4 | New file |
-| `lol-pipeline-lcu/README.md` | 4 | New file |
 | `docs/guides/03-ci-workflow.md` | 4 | New file |
 | `CONTRIBUTING.md` | 4 | New file |
 | `docs/architecture/10-discovery.md` | 4 | New file |
@@ -1129,8 +1102,8 @@ Phase 8 is **complete** when ALL of the following are true:
 | CSS hardcoded colors | ~15 literals | 0 (all via CSS vars) |
 | Responsive breakpoints | 0 | 4 (320, 768, 1024, 1440) |
 | Empty state designs | 0 | 8+ (every route) |
-| UI routes | 6 (`/`, `/stats`, `/players`, `/streams`, `/lcu`, `/logs`) | 8 (+ `/dlq`, `/streams/fragment`) |
+| UI routes | 5 (`/`, `/stats`, `/players`, `/streams`, `/logs`) | 7 (+ `/dlq`, `/streams/fragment`) |
 | Auto-refresh pages | 1 (`/logs`) | 2 (+ `/streams`) |
 | Component helpers | 0 | 4 (`_badge()`, `_empty_state()`, `_sort_stats()`, table-scroll wrappers) |
-| New documentation files | 0 | 6 (Discovery README, LCU README, CI guide, CONTRIBUTING, Discovery arch, prod compose) |
+| New documentation files | 0 | 5 (Discovery README, CI guide, CONTRIBUTING, Discovery arch, prod compose) |
 | New tests (est.) | 0 | ~25 (UI components + DLQ route + priority badge + empty states + XSS data-attr) |

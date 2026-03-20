@@ -6,10 +6,9 @@ import redis.asyncio as aioredis
 
 _PRIORITY_KEY_PREFIX = "player:priority:"
 _COUNTER_KEY = "system:priority_count"
-_TTL_SECONDS = 86400  # 24 hours
 
 _SET_INCR_LUA = """
-local created = redis.call("SET", KEYS[1], ARGV[1], "NX", "EX", ARGV[2])
+local created = redis.call("SET", KEYS[1], ARGV[1], "NX")
 if created then
     redis.call("INCR", KEYS[2])
 end
@@ -17,22 +16,23 @@ return redis.call("GET", KEYS[2])
 """
 
 _DEL_DECR_LUA = """
-if redis.call("del", KEYS[1]) == 1 then
-    redis.call("decr", KEYS[2])
+if redis.call("DEL", KEYS[1]) == 1 then
+    if tonumber(redis.call("GET", KEYS[2]) or "0") > 0 then
+        redis.call("DECR", KEYS[2])
+    end
 end
-return redis.call("get", KEYS[2])
+return redis.call("GET", KEYS[2])
 """
 
 
 async def set_priority(r: aioredis.Redis, puuid: str) -> int:
-    """Atomically SET player:priority:{puuid} with TTL and INCR system:priority_count."""
+    """Atomically SET player:priority:{puuid} (no TTL) and INCR system:priority_count."""
     result = await r.eval(  # type: ignore[misc]
         _SET_INCR_LUA,
         2,
         f"{_PRIORITY_KEY_PREFIX}{puuid}",
         _COUNTER_KEY,
         "high",
-        _TTL_SECONDS,
     )
     return int(result)
 

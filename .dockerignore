@@ -1,12 +1,45 @@
-.git
+# Version control
+.git/
+.github/
+
+# Secrets (keep .env.example)
 .env
+
+# Data directories
 redis-data/
 logs/
-**/__pycache__
-**/.venv
-**/match-data
-lol-pipeline-lcu/lcu-data/
-*.pyc
-.mypy_cache
-.pytest_cache
-.ruff_cache
+lcu-data-archive/
+lol-pipeline-fetcher/match-data/
+
+# Python artifacts
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.egg-info/
+**/.venv/
+**/venv/
+**/env/
+
+# Tool caches
+**/.mypy_cache/
+**/.pytest_cache/
+**/.ruff_cache/
+**/.coverage
+**/*.log
+
+# OS artifacts
+.DS_Store
+
+# Screenshots
+screenshots/
+
+# Tests (not needed in prod images)
+**/tests/
+
+# Root-level docs (not needed in images)
+README.md
+ARCHITECTURE.md
+CLAUDE.md
+MEMORY.md
+TODO.md
+docs/

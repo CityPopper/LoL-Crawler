@@ -2,9 +2,7 @@
 
 ## Overview
 
-Every service runs as a Docker container. The Delay Scheduler is also a container. Redis
-runs as a container in dev and as a managed service in prod. There are no host-level
-dependencies beyond Docker.
+Every service runs as a container (Podman by default; Docker available via `RUNTIME=docker`). The Delay Scheduler is also a container. Redis runs as a container in dev and as a managed service in prod. There are no host-level dependencies beyond Podman or Docker.
 
 ---
 
@@ -77,9 +75,12 @@ CMD ["python", "-m", "service"]
 | Discovery         | `lol-pipeline/discovery`            | `python -m lol_discovery`        |
 | Admin CLI         | `lol-pipeline/admin`                | `python -m lol_admin`            |
 | Web UI            | `lol-pipeline/ui`                   | `python -m lol_ui` (port 8080)   |
-| LCU Collector     | `lol-pipeline/lcu`                  | `python -m lol_lcu`              |
 
 ---
+
+## Compose File (Local Dev)
+
+The project uses Podman Compose by default. Run with Docker via `RUNTIME=docker just <cmd>`.
 
 ## docker-compose.yml (Local Dev)
 
@@ -209,7 +210,7 @@ services:
 ```
 
 > **Note:** The example above is illustrative. See `docker-compose.yml` at the repo root
-> for the authoritative configuration including all services (ui, discovery, lcu, seed, admin).
+> for the authoritative configuration including all services (ui, discovery, seed, admin).
 
 ---
 
@@ -219,7 +220,8 @@ Because services are stateless, they scale horizontally by running more containe
 
 ```bash
 # Run 3 fetcher workers in parallel
-docker compose up --scale fetcher=3
+podman compose up --scale fetcher=3
+# or: RUNTIME=docker just scale fetcher 3
 
 # Or in prod (Docker Swarm / k8s):
 # replicas: 3  (in the service spec)
@@ -256,17 +258,17 @@ In prod, `REDIS_URL` points at the managed instance. Everything else is the same
 ## Running the Seed (one-shot)
 
 ```bash
-# With docker compose
-docker compose run --rm seed "Faker#KR1"
-
-# Justfile shortcut
+# Via Justfile (uses Podman by default)
 just seed "Faker#KR1"
+
+# Directly with podman compose
+podman compose run --rm seed "Faker#KR1"
 ```
 
 ## Running Admin Commands
 
 ```bash
-docker compose run --rm admin dlq list
-docker compose run --rm admin stats "Faker#KR1"
-docker compose run --rm admin dlq replay --all
+just admin dlq list
+just admin stats "Faker#KR1"
+just admin dlq replay --all
 ```

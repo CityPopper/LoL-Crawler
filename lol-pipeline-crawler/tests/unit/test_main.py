@@ -115,6 +115,55 @@ class TestCrawlPriority:
         assert await r.get("system:priority_count") == "0"
 
 
+class TestCrawlPriorityPreservation:
+    """Priority key behavior depends on whether new matches were published."""
+
+    @pytest.mark.asyncio
+    async def test_crawl__matches_found__priority_not_cleared(self, r, cfg, log):
+        """When published > 0, clear_priority() is NOT called — priority key remains."""
+        puuid = "test-puuid-0001"
+        # Set a priority key to verify it is NOT cleared
+        await r.set(f"player:priority:{puuid}", "high")
+        await r.set("system:priority_count", "1")
+
+        env = _puuid_envelope(puuid=puuid)
+        msg_id = await _setup_message(r, env)
+
+        with respx.mock:
+            respx.get(_match_ids_url()).mock(
+                return_value=httpx.Response(200, json=["NA1_NEW_1", "NA1_NEW_2"])
+            )
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        # Matches were published, so priority must be preserved
+        assert await r.xlen(_STREAM_OUT) == 2
+        assert await r.get(f"player:priority:{puuid}") == "high"
+        assert await r.get("system:priority_count") == "1"
+
+    @pytest.mark.asyncio
+    async def test_crawl__no_matches__priority_cleared(self, r, cfg, log):
+        """When published == 0, clear_priority() IS called — priority key removed."""
+        puuid = "test-puuid-0001"
+        await r.set(f"player:priority:{puuid}", "high")
+        await r.set("system:priority_count", "1")
+
+        env = _puuid_envelope(puuid=puuid)
+        msg_id = await _setup_message(r, env)
+
+        with respx.mock:
+            respx.get(_match_ids_url()).mock(return_value=httpx.Response(200, json=[]))
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        # No matches published, so priority must be cleared
+        assert await r.xlen(_STREAM_OUT) == 0
+        assert await r.get(f"player:priority:{puuid}") is None
+        assert await r.get("system:priority_count") == "0"
+
+
 class TestCrawlPagination:
     @pytest.mark.asyncio
     async def test_single_page_100_matches(self, r, cfg, log):

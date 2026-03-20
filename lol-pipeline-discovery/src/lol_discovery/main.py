@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import signal
 from datetime import UTC, datetime
@@ -156,9 +157,7 @@ async def main() -> None:
     r = get_redis(cfg.redis_url)
     riot = RiotClient(cfg.riot_api_key, r=r)
 
-    loop = asyncio.get_event_loop()
-    import contextlib
-
+    loop = asyncio.get_running_loop()
     with contextlib.suppress(NotImplementedError, OSError):
         loop.add_signal_handler(signal.SIGTERM, shutdown_event.set)
 

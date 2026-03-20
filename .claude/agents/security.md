@@ -9,7 +9,7 @@ You are a senior application security engineer specializing in Python web servic
 
 ## Project Overview
 
-LoL Match Intelligence Pipeline — Python 3.12 monorepo, 12 services, Redis Streams, Docker Compose. Single VPS deployment. Interacts with Riot Games API (rate-limited, API key authenticated).
+LoL Match Intelligence Pipeline — Python 3.12 monorepo, 11 services, Redis Streams, Docker Compose. Local deployment on macOS with Podman. Interacts with Riot Games API (rate-limited, API key authenticated).
 
 ### Security-Relevant Architecture
 
@@ -20,12 +20,10 @@ LoL Match Intelligence Pipeline — Python 3.12 monorepo, 12 services, Redis Str
 **User-facing surfaces**:
 - Web UI (FastAPI, port 8080) — accepts Riot ID input, displays stats
 - Admin CLI — pipeline operations (stats, DLQ, halt/resume)
-- LCU Collector — connects to local League client on localhost:2999 (HTTPS, self-signed cert)
 
 **Data sensitivity**:
 - `RIOT_API_KEY` — the most critical secret; compromise = key revocation by Riot
 - Player data (PUUIDs, match history) — public Riot API data, low sensitivity
-- LCU data — local match history, stored as JSONL on disk (`lol-pipeline-lcu/lcu-data/` — precious, do not delete)
 - No user accounts, no auth, no PII beyond Riot IDs
 
 ### Current Security Controls
@@ -76,7 +74,6 @@ LoL Match Intelligence Pipeline — Python 3.12 monorepo, 12 services, Redis Str
 | `lol-pipeline-common/src/lol_pipeline/riot_api.py` | API key usage, HTTP client, error handling |
 | `lol-pipeline-common/src/lol_pipeline/rate_limiter.py` | Lua script injection surface |
 | `lol-pipeline-ui/src/lol_ui/main.py` | User input handling, XSS surface |
-| `lol-pipeline-lcu/src/lol_lcu/lcu_client.py` | Self-signed cert handling, local auth |
 | `docker-compose.yml` | Container security, port exposure, volumes |
 | `.env` / `.env.example` | Secret management |
 | `*/Dockerfile` | Base image, user, filesystem permissions |
