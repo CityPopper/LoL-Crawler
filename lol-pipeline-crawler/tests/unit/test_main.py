@@ -164,6 +164,76 @@ class TestCrawlPriorityPreservation:
         assert await r.get("system:priority_count") == "0"
 
 
+class TestCrawlPriorityClearCallBehavior:
+    """clear_priority call depends on whether new matches were published."""
+
+    @pytest.mark.asyncio
+    async def test_crawl__published_gt_zero__clear_priority_not_called(self, r, cfg, log):
+        """When published > 0, clear_priority() must NOT be called."""
+        puuid = "test-puuid-0001"
+        await r.set(f"player:priority:{puuid}", "high")
+        env = _puuid_envelope(puuid=puuid)
+        msg_id = await _setup_message(r, env)
+
+        with (
+            respx.mock,
+            patch("lol_crawler.main.clear_priority", new_callable=AsyncMock) as mock_clear,
+        ):
+            respx.get(_match_ids_url()).mock(
+                return_value=httpx.Response(200, json=["NA1_NEW_X", "NA1_NEW_Y"])
+            )
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        # Matches were published, so clear_priority must NOT have been called
+        mock_clear.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_crawl__published_eq_zero__clear_priority_called(self, r, cfg, log):
+        """When published == 0, clear_priority() must be called with (r, puuid)."""
+        puuid = "test-puuid-0001"
+        await r.set(f"player:priority:{puuid}", "high")
+        env = _puuid_envelope(puuid=puuid)
+        msg_id = await _setup_message(r, env)
+
+        with (
+            respx.mock,
+            patch("lol_crawler.main.clear_priority", new_callable=AsyncMock) as mock_clear,
+        ):
+            respx.get(_match_ids_url()).mock(return_value=httpx.Response(200, json=[]))
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        # No matches published, so clear_priority must have been called
+        mock_clear.assert_called_once_with(r, puuid)
+
+    @pytest.mark.asyncio
+    async def test_crawl__all_known_matches__clear_priority_called(self, r, cfg, log):
+        """All returned match IDs already known (dedup) → published=0 → clear_priority called."""
+        puuid = "test-puuid-0001"
+        env = _puuid_envelope(puuid=puuid)
+        msg_id = await _setup_message(r, env)
+
+        # Pre-populate known matches
+        known_ids = ["NA1_KNOWN_1", "NA1_KNOWN_2"]
+        for mid in known_ids:
+            await r.zadd(f"player:matches:{puuid}", {mid: 1000.0})
+
+        with (
+            respx.mock,
+            patch("lol_crawler.main.clear_priority", new_callable=AsyncMock) as mock_clear,
+        ):
+            respx.get(_match_ids_url()).mock(return_value=httpx.Response(200, json=known_ids))
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        # All matches known → published=0 → clear_priority called
+        mock_clear.assert_called_once_with(r, puuid)
+
+
 class TestCrawlPagination:
     @pytest.mark.asyncio
     async def test_single_page_100_matches(self, r, cfg, log):

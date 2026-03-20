@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import sys
+from datetime import datetime
 from typing import Any
 
 import redis.asyncio as aioredis
@@ -66,14 +68,23 @@ def _region_from_match_id(match_id: str) -> str:
     return prefix if prefix in PLATFORM_TO_REGION else "na1"
 
 
+def _sanitize(value: str) -> str:
+    """Strip control characters (ANSI escapes, etc.) from user-supplied strings."""
+    return re.sub(r"[\x00-\x1f\x7f-\x9f]", "", value)
+
+
 async def _resolve_puuid(
     riot: RiotClient,
     riot_id: str,
     region: str,
     r: aioredis.Redis | None = None,
 ) -> str | None:
+    safe_riot_id = _sanitize(riot_id)
     if "#" not in riot_id:
-        print(f"error: invalid Riot ID — expected GameName#TagLine: {riot_id}", file=sys.stderr)
+        print(
+            f"error: invalid Riot ID — expected GameName#TagLine: {safe_riot_id}",
+            file=sys.stderr,
+        )
         return None
     game_name, tag_line = riot_id.split("#", 1)
     if r is None:
@@ -83,7 +94,7 @@ async def _resolve_puuid(
             account = await riot.get_account_by_riot_id(game_name, tag_line, region)
             return str(account["puuid"])
         except NotFoundError:
-            print(f"error: player not found: {riot_id}", file=sys.stderr)
+            print(f"error: player not found: {safe_riot_id}", file=sys.stderr)
             return None
     return await resolve_puuid(r, riot, game_name, tag_line, region, _log)
 
@@ -101,13 +112,29 @@ async def cmd_stats(
         return 1
     stats: dict[str, str] = await r.hgetall(f"player:stats:{puuid}")  # type: ignore[misc]
     if not stats:
-        rid = args.riot_id
-        print(f"error: player not found in Redis (not yet analyzed): {rid}", file=sys.stderr)
+        safe_rid = _sanitize(args.riot_id)
+        print(
+            f"error: player not found in Redis (not yet analyzed): {safe_rid}",
+            file=sys.stderr,
+        )
         return 1
     game_name, tag_line = args.riot_id.split("#", 1)
-    print(f"Stats for {game_name}#{tag_line} ({puuid[:12]}...):")
-    for key in sorted(stats):
-        print(f"  {key}: {stats[key]}")
+    if getattr(args, "json", False):
+        record = {
+            "game_name": _sanitize(game_name),
+            "tag_line": _sanitize(tag_line),
+            "region": args.region,
+            "win_rate": stats.get("win_rate"),
+            "kda": stats.get("kda"),
+            "total_games": stats.get("total_games"),
+        }
+        print(json.dumps(record))
+    else:
+        safe_name = _sanitize(game_name)
+        safe_tag = _sanitize(tag_line)
+        print(f"Stats for {safe_name}#{safe_tag} ({puuid[:12]}...):")
+        for key in sorted(stats):
+            print(f"  {key}: {stats[key]}")
     return 0
 
 
@@ -238,6 +265,30 @@ async def cmd_recalc_priority(r: aioredis.Redis, args: argparse.Namespace) -> in
     return 0
 
 
+async def cmd_recalc_players(r: aioredis.Redis, args: argparse.Namespace) -> int:
+    """Rebuild players:all sorted set from existing player:{puuid} hashes.
+
+    One-time migration/repair tool. Uses SCAN to find all player:{puuid} keys,
+    reads seeded_at from each, and populates the players:all ZSET.
+    """
+    count = 0
+    async for key in r.scan_iter(match="player:*", count=200):
+        if key.count(":") != 1:
+            continue
+        puuid = key.removeprefix("player:")
+        seeded_at: str | None = await r.hget(key, "seeded_at")  # type: ignore[misc]
+        if not seeded_at:
+            continue
+        try:
+            score = datetime.fromisoformat(seeded_at).timestamp()
+        except ValueError:
+            continue
+        await r.zadd("players:all", {puuid: score})
+        count += 1
+    print(f"players:all rebuilt: {count} players indexed")
+    return 0
+
+
 async def cmd_reseed(
     r: aioredis.Redis, riot: RiotClient, cfg: Config, args: argparse.Namespace
 ) -> int:
@@ -264,7 +315,7 @@ async def cmd_reseed(
     )
     await set_priority(r, puuid)
     entry_id = await publish(r, _STREAM_PUUID, envelope)
-    print(f"reseeded {args.riot_id} → {_STREAM_PUUID} ({entry_id})")
+    print(f"reseeded {_sanitize(args.riot_id)} → {_STREAM_PUUID} ({entry_id})")
     return 0
 
 
@@ -275,6 +326,12 @@ async def cmd_reseed(
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="lol_admin", description="LoL pipeline admin CLI")
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="output results as JSON (supported: stats)",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("stats", help="show player stats")
@@ -311,6 +368,11 @@ def _build_parser() -> argparse.ArgumentParser:
         " (run with pipeline halted via 'just halt' to avoid SCAN races)",
     )
 
+    sub.add_parser(
+        "recalc-players",
+        help="rebuild players:all sorted set from existing player:{puuid} hashes",
+    )
+
     return parser
 
 
@@ -334,6 +396,7 @@ _CMD_DISPATCH = {
     "replay-fetch": lambda r, riot, cfg, args: cmd_replay_fetch(r, cfg, args),
     "reseed": cmd_reseed,
     "recalc-priority": lambda r, riot, cfg, args: cmd_recalc_priority(r, args),
+    "recalc-players": lambda r, riot, cfg, args: cmd_recalc_players(r, args),
 }
 
 

@@ -19,6 +19,7 @@ dev = [
     "respx",
     "freezegun",
     "testcontainers",
+    "pytest-timeout",
     "pytest-xdist",
     "lupa",
     "pact-python>=2.0.0",
@@ -34,6 +35,7 @@ where = ["src"]
 testpaths = ["tests/unit"]
 addopts = ""
 asyncio_mode = "auto"
+timeout = 10
 
 [tool.ruff]
 target-version = "py312"

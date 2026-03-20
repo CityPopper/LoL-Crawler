@@ -13,9 +13,27 @@ from lol_pipeline.config import Config
 from lol_pipeline.models import MessageEnvelope
 from redis.exceptions import RedisError
 
-from lol_delay_scheduler.main import _tick, main
+from lol_delay_scheduler.main import (
+    _circuit_open,
+    _is_circuit_open,
+    _member_failures,
+    _record_failure,
+    _record_success,
+    _tick,
+    main,
+)
 
 _DELAYED_KEY = "delayed:messages"
+
+
+@pytest.fixture(autouse=True)
+def _reset_circuit_state():
+    """Clear module-level failure tracking between tests."""
+    _member_failures.clear()
+    _circuit_open.clear()
+    yield
+    _member_failures.clear()
+    _circuit_open.clear()
 
 
 @pytest.fixture
@@ -586,6 +604,70 @@ class TestDelaySchedulerMaxlenDispatch:
         assert await r.xlen("stream:puuid") == 1
 
 
+class TestTickOSErrorDuringLuaScript:
+    """_tick OSError during Lua script execution: logged, service continues."""
+
+    @pytest.mark.asyncio
+    async def test_tick__oserror_during_zrangebyscore__propagates(self, r, log):
+        """OSError on zrangebyscore (top-level) propagates — caught by main() loop."""
+        env = _delayed_envelope()
+        past_ms = int(time.time() * 1000) - 1
+        await _add_delayed(r, env, past_ms)
+
+        original_zrangebyscore = r.zrangebyscore
+
+        async def failing_zrangebyscore(*args, **kwargs):
+            raise OSError("connection reset by peer")
+
+        r.zrangebyscore = failing_zrangebyscore
+
+        # _tick itself raises OSError — caught by main() loop
+        with pytest.raises(OSError, match="connection reset by peer"):
+            await _tick(r, log)
+
+        r.zrangebyscore = original_zrangebyscore
+
+    @pytest.mark.asyncio
+    async def test_main__tick_raises_oserror__logged_and_continues(self, monkeypatch):
+        """OSError from _tick in main() loop is logged and retried, not a crash."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_r = AsyncMock()
+        call_count = 0
+
+        async def fake_tick(*args):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise OSError("Lua script connection broken")
+            raise KeyboardInterrupt
+
+        sleep_args: list[float] = []
+
+        async def tracking_sleep(seconds, *args, **kwargs):
+            sleep_args.append(seconds)
+
+        mock_loop = MagicMock()
+        mock_loop.add_signal_handler.return_value = None
+
+        with (
+            patch("lol_delay_scheduler.main.Config") as mock_cfg,
+            patch("lol_delay_scheduler.main.get_redis", return_value=mock_r),
+            patch("lol_delay_scheduler.main._tick", side_effect=fake_tick),
+            patch("lol_delay_scheduler.main.asyncio.sleep", side_effect=tracking_sleep),
+            patch("lol_delay_scheduler.main.asyncio.get_running_loop", return_value=mock_loop),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            with pytest.raises(KeyboardInterrupt):
+                await main()
+
+        # _tick was called twice (first errored, second raised KeyboardInterrupt)
+        assert call_count == 2
+        # The error path sleeps 1s before retrying
+        assert 1 in sleep_args
+        mock_r.aclose.assert_called_once()
+
+
 class TestMainEntryPoint:
     """Tests for main() bootstrap and teardown."""
 
@@ -636,3 +718,175 @@ class TestMainEntryPoint:
             with pytest.raises(KeyboardInterrupt):
                 await main()
         mock_r.aclose.assert_called_once()
+
+
+class TestRecordFailureAndSuccess:
+    """I2-M4: _record_failure increments counter; _record_success clears it."""
+
+    def test_record_failure_increments_counter(self, log):
+        _record_failure("member-a", log)
+        assert _member_failures["member-a"] == 1
+        _record_failure("member-a", log)
+        assert _member_failures["member-a"] == 2
+
+    def test_record_success_clears_counter(self, log):
+        _record_failure("member-b", log)
+        _record_failure("member-b", log)
+        _record_success("member-b")
+        assert "member-b" not in _member_failures
+
+    def test_record_success_clears_circuit(self, log):
+        for _ in range(10):
+            _record_failure("member-c", log)
+        assert "member-c" in _circuit_open
+        _record_success("member-c")
+        assert "member-c" not in _circuit_open
+        assert "member-c" not in _member_failures
+
+    def test_circuit_opens_after_max_failures(self, log):
+        for _ in range(9):
+            _record_failure("member-d", log)
+        assert "member-d" not in _circuit_open
+        _record_failure("member-d", log)  # 10th failure
+        assert "member-d" in _circuit_open
+
+    def test_record_success_on_unknown_member_is_noop(self):
+        _record_success("never-seen")
+        assert "never-seen" not in _member_failures
+
+
+class TestIsCircuitOpen:
+    """I2-M4: _is_circuit_open checks TTL on circuit-open members."""
+
+    def test_not_open_when_absent(self):
+        assert _is_circuit_open("unknown") is False
+
+    def test_open_when_recently_added(self):
+        _circuit_open["member-e"] = time.monotonic()
+        assert _is_circuit_open("member-e") is True
+
+    def test_reopens_after_ttl_expired(self):
+        # Simulate circuit opened 301 seconds ago
+        _circuit_open["member-f"] = time.monotonic() - 301
+        assert _is_circuit_open("member-f") is False
+        # Entry should be removed
+        assert "member-f" not in _circuit_open
+
+    def test_still_open_before_ttl(self):
+        _circuit_open["member-g"] = time.monotonic() - 200
+        assert _is_circuit_open("member-g") is True
+
+
+class TestCircuitBreakerIntegration:
+    """I2-M4: End-to-end circuit breaker behaviour in _tick."""
+
+    @pytest.mark.asyncio
+    async def test_circuit_open_skips_member(self, r, log):
+        """A circuit-open member is skipped by _tick; stays in ZSET."""
+        env = _delayed_envelope()
+        past_ms = int(time.time() * 1000) - 1
+        await _add_delayed(r, env, past_ms)
+
+        # Get the member string from the ZSET
+        members = await r.zrange(_DELAYED_KEY, 0, -1)
+        member = members[0]
+
+        # Open the circuit for this member
+        _circuit_open[member] = time.monotonic()
+
+        await _tick(r, log)
+
+        # Member should still be in ZSET (skipped)
+        assert await r.zcard(_DELAYED_KEY) == 1
+        assert await r.xlen("stream:match_id") == 0
+
+    @pytest.mark.asyncio
+    async def test_failures_tracked_on_eval_error(self, r, log):
+        """Dispatch failures increment the per-member failure counter."""
+        env = _delayed_envelope()
+        past_ms = int(time.time() * 1000) - 1
+        await _add_delayed(r, env, past_ms)
+
+        members = await r.zrange(_DELAYED_KEY, 0, -1)
+        member = members[0]
+
+        original_eval = r.eval
+
+        async def failing_eval(*args, **kwargs):
+            raise RedisError("connection lost")
+
+        r.eval = failing_eval
+
+        await _tick(r, log)
+
+        r.eval = original_eval
+        assert _member_failures[member] == 1
+        assert await r.zcard(_DELAYED_KEY) == 1
+
+    @pytest.mark.asyncio
+    async def test_success_clears_failure_count(self, r, log):
+        """Successful dispatch clears the failure counter."""
+        env = _delayed_envelope()
+        past_ms = int(time.time() * 1000) - 1
+        await _add_delayed(r, env, past_ms)
+
+        members = await r.zrange(_DELAYED_KEY, 0, -1)
+        member = members[0]
+
+        # Pre-seed some failures
+        _member_failures[member] = 5
+
+        await _tick(r, log)
+
+        assert member not in _member_failures
+        assert await r.zcard(_DELAYED_KEY) == 0
+
+    @pytest.mark.asyncio
+    async def test_circuit_opens_after_10_consecutive_failures(self, r, log):
+        """After 10 consecutive eval failures, the circuit opens and member is skipped."""
+        env = _delayed_envelope()
+        past_ms = int(time.time() * 1000) - 1
+        await _add_delayed(r, env, past_ms)
+
+        members = await r.zrange(_DELAYED_KEY, 0, -1)
+        member = members[0]
+
+        original_eval = r.eval
+
+        async def failing_eval(*args, **kwargs):
+            raise RedisError("connection lost")
+
+        r.eval = failing_eval
+
+        # Run 10 ticks to accumulate failures
+        for _ in range(10):
+            await _tick(r, log)
+
+        assert member in _circuit_open
+
+        # 11th tick should skip the member entirely (circuit open)
+        await _tick(r, log)
+
+        r.eval = original_eval
+        # Member still in ZSET since it was skipped
+        assert await r.zcard(_DELAYED_KEY) == 1
+
+    @pytest.mark.asyncio
+    async def test_circuit_reopens_after_ttl(self, r, log):
+        """After circuit TTL expires, member is retried."""
+        env = _delayed_envelope()
+        past_ms = int(time.time() * 1000) - 1
+        await _add_delayed(r, env, past_ms)
+
+        members = await r.zrange(_DELAYED_KEY, 0, -1)
+        member = members[0]
+
+        # Open circuit with expired TTL
+        _circuit_open[member] = time.monotonic() - 301
+
+        await _tick(r, log)
+
+        # Circuit should have expired, member should have been dispatched
+        assert await r.zcard(_DELAYED_KEY) == 0
+        assert await r.xlen("stream:match_id") == 1
+        assert member not in _circuit_open

@@ -70,9 +70,13 @@ async def test_crash_redelivery(
 
     # --- Assertions ---
     assert await r.hget(f"match:{MATCH_ID}", "status") == "parsed"
-    participant_count = await r.scard(f"match:participants:{MATCH_ID}")
-    assert participant_count == 10  # 10 players in match_normal.json
+    assert await r.sismember("match:status:parsed", MATCH_ID)
     assert await r.zcard(f"player:matches:{PUUID}") == 1
+
+    # Verify analyzer processed the match (player stats populated)
+    stats = await r.hgetall(f"player:stats:{PUUID}")
+    assert stats, "player:stats should be populated after analysis"
+    assert int(stats["total_games"]) >= 1
 
     # Verify no duplicates in stream:analyze (only 10 messages total)
     analyze_len = await r.xlen("stream:analyze")

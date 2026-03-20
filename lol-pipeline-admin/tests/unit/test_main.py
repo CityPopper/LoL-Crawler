@@ -23,6 +23,7 @@ from lol_admin.main import (
     cmd_dlq_clear,
     cmd_dlq_list,
     cmd_dlq_replay,
+    cmd_recalc_players,
     cmd_recalc_priority,
     cmd_replay_fetch,
     cmd_replay_parse,
@@ -501,6 +502,56 @@ class TestUserFacingErrorsUsePrint:
         assert "NoHash" in captured.err
 
 
+class TestSanitizeOutput:
+    """Terminal injection: control characters in user input must be stripped before printing."""
+
+    @pytest.mark.asyncio
+    async def test_resolve_puuid__strips_ansi_escape_from_invalid_id(self, r, capsys):
+        """ANSI escape sequences in riot_id are stripped from stderr output."""
+        malicious = "Evil\x1b[31mRed\x1b[0mText"
+        riot = RiotClient("RGAPI-test")
+        result = await _resolve_puuid(riot, malicious, "na1", r)
+        await riot.close()
+        assert result is None
+        captured = capsys.readouterr()
+        # The ESC control byte (\x1b) should be stripped; printable remnants are safe
+        assert "\x1b" not in captured.err
+        assert "Evil[31mRed[0mText" in captured.err
+
+    @pytest.mark.asyncio
+    async def test_resolve_puuid__strips_control_chars_from_not_found(self, capsys):
+        """Control characters in riot_id stripped from 'player not found' message."""
+        malicious = "Bad\x07Name#\x1b[2JTag"
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1"
+                "/accounts/by-riot-id/Bad%07Name/%1B%5B2JTag"
+            ).mock(return_value=httpx.Response(404))
+            riot = RiotClient("RGAPI-test")
+            result = await _resolve_puuid(riot, malicious, "na1", r=None)
+            await riot.close()
+        assert result is None
+        captured = capsys.readouterr()
+        assert "\x07" not in captured.err
+        assert "\x1b" not in captured.err
+        assert "BadName#[2JTag" in captured.err
+
+    def test_sanitize_strips_all_c0_and_c1_control_chars(self):
+        """_sanitize removes C0 (0x00-0x1F) and C1 (0x7F-0x9F) control characters."""
+        from lol_admin.main import _sanitize
+
+        # C0 controls
+        assert _sanitize("hello\x00world") == "helloworld"
+        assert _sanitize("\x1b[31mred\x1b[0m") == "[31mred[0m"
+        assert _sanitize("bell\x07here") == "bellhere"
+        assert _sanitize("\ttab\nnewline\rreturn") == "tabnewlinereturn"
+        # C1 controls
+        assert _sanitize("hi\x7fthere") == "hithere"
+        assert _sanitize("test\x9fend") == "testend"
+        # Clean string passes through unchanged
+        assert _sanitize("Player#NA1") == "Player#NA1"
+
+
 class TestRegionFromMatchId:
     """Tests for _region_from_match_id helper."""
 
@@ -539,6 +590,18 @@ class TestRegionFromMatchId:
     def test_oc1_prefix__returns_oc1(self):
         """OC1_77777 → 'oc1'."""
         assert _region_from_match_id("OC1_77777") == "oc1"
+
+    def test_empty_string__defaults_to_na1(self):
+        """Empty string → split returns [''], lowered to '', falls back to 'na1'."""
+        assert _region_from_match_id("") == "na1"
+
+    def test_just_underscore__defaults_to_na1(self):
+        """Single underscore → prefix is '', not a known platform, falls back to 'na1'."""
+        assert _region_from_match_id("_12345") == "na1"
+
+    def test_multiple_underscores__uses_first_segment(self):
+        """NA1_123_456 → prefix is 'na1', which is valid."""
+        assert _region_from_match_id("NA1_123_456") == "na1"
 
 
 class TestResolvePuuidNoRedis:
@@ -585,6 +648,43 @@ class TestResolvePuuidNoRedis:
         assert result is None
         captured = capsys.readouterr()
         assert "invalid Riot ID" in captured.err
+
+
+class TestResolvePuuidWithRedisErrors:
+    """_resolve_puuid error paths when Redis is available but player is not found."""
+
+    @pytest.mark.asyncio
+    async def test_resolve_puuid__redis_available__player_not_found__returns_none(self, r):
+        """resolve_puuid via Redis path: player not in cache, API 404 → returns None."""
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Ghost/NA1"
+            ).mock(return_value=httpx.Response(404))
+            riot = RiotClient("RGAPI-test")
+            result = await _resolve_puuid(riot, "Ghost#NA1", "na1", r)
+            await riot.close()
+        assert result is None
+        # Cache should not be populated for a 404
+        assert await r.get("player:name:ghost#na1") is None
+
+    @pytest.mark.asyncio
+    async def test_resolve_puuid__redis_available__api_success__returns_puuid(self, r):
+        """resolve_puuid via Redis path: not cached, API success → returns puuid, caches it."""
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Found/NA1"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": "found-puuid", "gameName": "Found", "tagLine": "NA1"},
+                )
+            )
+            riot = RiotClient("RGAPI-test")
+            result = await _resolve_puuid(riot, "Found#NA1", "na1", r)
+            await riot.close()
+        assert result == "found-puuid"
+        # Should be cached
+        assert await r.get("player:name:found#na1") == "found-puuid"
 
 
 class TestDlqClearNoAll:
@@ -874,3 +974,252 @@ class TestMainRedisConnectionError:
         assert result == 1
         mock_r.aclose.assert_awaited_once()
         mock_riot.close.assert_awaited_once()
+
+
+class TestStatsJson:
+    """--json flag outputs a JSON object instead of human-readable text."""
+
+    @pytest.mark.asyncio
+    async def test_stats_json__outputs_valid_json(self, r, cfg, capsys):
+        """--json: stats command prints a single JSON object to stdout."""
+        puuid = "test-puuid-json"
+        await r.hset(
+            f"player:stats:{puuid}",
+            mapping={"total_games": "20", "win_rate": "0.7000", "kda": "3.50"},
+        )
+
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Faker/KR1"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": puuid, "gameName": "Faker", "tagLine": "KR1"},
+                )
+            )
+            riot = RiotClient("RGAPI-test")
+            args = argparse.Namespace(riot_id="Faker#KR1", region="na1", json=True)
+            result = await cmd_stats(r, riot, cfg, args)
+            await riot.close()
+
+        assert result == 0
+        output = capsys.readouterr().out
+        record = json.loads(output)
+        assert record["game_name"] == "Faker"
+        assert record["tag_line"] == "KR1"
+        assert record["region"] == "na1"
+        assert record["total_games"] == "20"
+        assert record["win_rate"] == "0.7000"
+        assert record["kda"] == "3.50"
+
+    @pytest.mark.asyncio
+    async def test_stats_json__no_human_text(self, r, cfg, capsys):
+        """--json: stdout contains no 'Stats for' header line."""
+        puuid = "test-puuid-json2"
+        await r.hset(
+            f"player:stats:{puuid}",
+            mapping={"total_games": "5", "win_rate": "0.4000"},
+        )
+
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Test/NA1"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": puuid, "gameName": "Test", "tagLine": "NA1"},
+                )
+            )
+            riot = RiotClient("RGAPI-test")
+            args = argparse.Namespace(riot_id="Test#NA1", region="na1", json=True)
+            result = await cmd_stats(r, riot, cfg, args)
+            await riot.close()
+
+        assert result == 0
+        output = capsys.readouterr().out
+        assert "Stats for" not in output
+        # Confirm it is valid JSON with expected keys
+        record = json.loads(output)
+        assert set(record.keys()) == {
+            "game_name",
+            "tag_line",
+            "region",
+            "win_rate",
+            "kda",
+            "total_games",
+        }
+
+    @pytest.mark.asyncio
+    async def test_stats_no_json_flag__outputs_human_text(self, r, cfg, capsys):
+        """Without --json, stats prints human-readable 'Stats for ...' header."""
+        puuid = "test-puuid-human"
+        await r.hset(
+            f"player:stats:{puuid}",
+            mapping={"total_games": "8", "win_rate": "0.5000"},
+        )
+
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Human/NA1"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": puuid, "gameName": "Human", "tagLine": "NA1"},
+                )
+            )
+            riot = RiotClient("RGAPI-test")
+            args = argparse.Namespace(riot_id="Human#NA1", region="na1", json=False)
+            result = await cmd_stats(r, riot, cfg, args)
+            await riot.close()
+
+        assert result == 0
+        output = capsys.readouterr().out
+        assert "Stats for Human#NA1" in output
+        assert "total_games" in output
+
+    def test_build_parser__json_flag_defaults_false(self):
+        """_build_parser produces --json flag that defaults to False."""
+        from lol_admin.main import _build_parser
+
+        parser = _build_parser()
+        args = parser.parse_args(["stats", "Faker#KR1"])
+        assert args.json is False
+
+    def test_build_parser__json_flag_can_be_set(self):
+        """_build_parser --json flag sets json=True when provided."""
+        from lol_admin.main import _build_parser
+
+        parser = _build_parser()
+        args = parser.parse_args(["--json", "stats", "Faker#KR1"])
+        assert args.json is True
+
+    @pytest.mark.asyncio
+    async def test_stats_json__missing_fields_are_none(self, r, cfg, capsys):
+        """--json: fields absent from Redis appear as null in JSON output."""
+        puuid = "test-puuid-partial"
+        # Only set total_games; kda and win_rate absent
+        await r.hset(f"player:stats:{puuid}", mapping={"total_games": "3"})
+
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Part/NA1"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": puuid, "gameName": "Part", "tagLine": "NA1"},
+                )
+            )
+            riot = RiotClient("RGAPI-test")
+            args = argparse.Namespace(riot_id="Part#NA1", region="na1", json=True)
+            result = await cmd_stats(r, riot, cfg, args)
+            await riot.close()
+
+        assert result == 0
+        record = json.loads(capsys.readouterr().out)
+        assert record["total_games"] == "3"
+        assert record["kda"] is None
+        assert record["win_rate"] is None
+
+    @pytest.mark.asyncio
+    async def test_main_json_flag__passed_through_to_args(self, monkeypatch):
+        """main(['admin', '--json', 'stats', 'Faker#KR1']) sets args.json=True."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_dispatch = AsyncMock(return_value=0)
+        with (
+            patch("lol_admin.main._dispatch", mock_dispatch),
+            patch("lol_admin.main.get_redis") as mock_redis,
+            patch("lol_admin.main.RiotClient") as mock_riot,
+        ):
+            mock_redis.return_value = AsyncMock()
+            mock_riot.return_value = AsyncMock()
+            result = await main(["admin", "--json", "stats", "Faker#KR1"])
+        assert result == 0
+        args = mock_dispatch.call_args[0][3]
+        assert args.json is True
+        assert args.command == "stats"
+        assert args.riot_id == "Faker#KR1"
+
+
+class TestRecalcPlayers:
+    """recalc-players rebuilds players:all from existing player:{puuid} hashes."""
+
+    @pytest.mark.asyncio
+    async def test_recalc_players__indexes_existing_players(self, r, capsys):
+        """Players with seeded_at get indexed in players:all."""
+        await r.hset(
+            "player:puuid-one",
+            mapping={
+                "game_name": "PlayerOne",
+                "tag_line": "001",
+                "region": "na1",
+                "seeded_at": "2026-03-19T12:00:00+00:00",
+            },
+        )
+        await r.hset(
+            "player:puuid-two",
+            mapping={
+                "game_name": "PlayerTwo",
+                "tag_line": "002",
+                "region": "euw1",
+                "seeded_at": "2026-03-18T06:00:00+00:00",
+            },
+        )
+        args = argparse.Namespace()
+        result = await cmd_recalc_players(r, args)
+        assert result == 0
+        assert await r.zcard("players:all") == 2
+        assert await r.zscore("players:all", "puuid-one") is not None
+        assert await r.zscore("players:all", "puuid-two") is not None
+        output = capsys.readouterr().out
+        assert "2 players indexed" in output
+
+    @pytest.mark.asyncio
+    async def test_recalc_players__skips_player_without_seeded_at(self, r, capsys):
+        """Players missing seeded_at are not indexed."""
+        await r.hset(
+            "player:puuid-no-seed",
+            mapping={"game_name": "NoSeed", "tag_line": "001", "region": "na1"},
+        )
+        args = argparse.Namespace()
+        result = await cmd_recalc_players(r, args)
+        assert result == 0
+        assert await r.zcard("players:all") == 0
+        assert "0 players indexed" in capsys.readouterr().out
+
+    @pytest.mark.asyncio
+    async def test_recalc_players__skips_non_player_keys(self, r, capsys):
+        """player:stats:*, player:matches:* etc. are ignored."""
+        await r.hset("player:stats:puuid-x", mapping={"total_games": "10"})
+        await r.hset("player:matches:puuid-x", mapping={"NA1_1": "123"})
+        await r.hset(
+            "player:puuid-x",
+            mapping={
+                "game_name": "RealPlayer",
+                "tag_line": "001",
+                "seeded_at": "2026-01-01T00:00:00+00:00",
+            },
+        )
+        args = argparse.Namespace()
+        result = await cmd_recalc_players(r, args)
+        assert result == 0
+        assert await r.zcard("players:all") == 1
+        assert "1 players indexed" in capsys.readouterr().out
+
+    @pytest.mark.asyncio
+    async def test_recalc_players__dispatches_via_cli(self, monkeypatch):
+        """recalc-players command dispatches correctly via main()."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_dispatch = AsyncMock(return_value=0)
+        with (
+            patch("lol_admin.main._dispatch", mock_dispatch),
+            patch("lol_admin.main.get_redis") as mock_redis,
+            patch("lol_admin.main.RiotClient") as mock_riot,
+        ):
+            mock_redis.return_value = AsyncMock()
+            mock_riot.return_value = AsyncMock()
+            result = await main(["admin", "recalc-players"])
+        assert result == 0
+        args = mock_dispatch.call_args[0][3]
+        assert args.command == "recalc-players"

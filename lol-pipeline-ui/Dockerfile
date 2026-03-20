@@ -17,6 +17,10 @@ COPY --from=builder /usr/local/lib/python3.12/site-packages \
 COPY --from=builder /usr/local/bin /usr/local/bin
 COPY lol-pipeline-ui/src/ ./src/
 
+COPY lol-pipeline-common/ /common/
+COPY lol-pipeline-ui/ /svc/
+RUN pip install --no-cache-dir -q -e /common -e /svc
+
 EXPOSE 8080
 
 HEALTHCHECK --interval=10s --timeout=5s --retries=3 --start-period=30s \

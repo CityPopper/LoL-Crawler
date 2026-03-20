@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 from collections.abc import Iterable
@@ -114,14 +115,14 @@ class RawStore:
         """Return True if the raw blob is stored in Redis or on disk."""
         if bool(await self._r.exists(f"{_KEY_PREFIX}{match_id}")):
             return True
-        return self._exists_in_bundles(match_id)
+        return await asyncio.to_thread(self._exists_in_bundles, match_id)
 
     async def get(self, match_id: str) -> str | None:
         """Return raw JSON string; tries Redis first, then disk (repopulates Redis on hit)."""
         data: str | None = await self._r.get(f"{_KEY_PREFIX}{match_id}")
         if data is not None:
             return data
-        data = self._search_bundles(match_id)
+        data = await asyncio.to_thread(self._search_bundles, match_id)
         if data is not None:
             # Write-back: repopulate Redis so subsequent reads are fast
             await self._r.set(f"{_KEY_PREFIX}{match_id}", data, nx=True, ex=_TTL_SECONDS)
@@ -136,7 +137,7 @@ class RawStore:
             return
         # Redis SET NX is the atomic coordinator: only the winner writes to disk.
         # Also check bundles for the Redis-restart case (key gone, disk has it).
-        if not was_set or self._exists_in_bundles(match_id):
+        if not was_set or await asyncio.to_thread(self._exists_in_bundles, match_id):
             return
         try:
             bp.parent.mkdir(parents=True, exist_ok=True)

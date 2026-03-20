@@ -526,3 +526,46 @@ class TestSeedPriorityBeforePublish:
 
         assert result == 0
         assert call_order == ["set_priority", "publish"]
+
+
+class TestSeedPlayersAll:
+    """Seed adds the player to the players:all sorted set."""
+
+    @pytest.mark.asyncio
+    async def test_seed__zadd_players_all(self, r, cfg, log):
+        """After successful seed, players:all ZSET contains the PUUID with a numeric score."""
+        with respx.mock:
+            respx.get(
+                "https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Faker/KR1"
+            ).mock(return_value=_account_response())
+
+            riot = RiotClient("RGAPI-test")
+            result = await seed(r, riot, cfg, "Faker", "KR1", "kr", log)
+            await riot.close()
+
+        assert result == 0
+        score = await r.zscore("players:all", "test-puuid-0001")
+        assert score is not None
+        # Score should be a recent epoch timestamp (within last 10 seconds)
+        import time
+
+        assert abs(score - time.time()) < 10
+
+    @pytest.mark.asyncio
+    async def test_seed__skipped_by_cooldown__no_zadd(self, r, cfg, log):
+        """When seed is skipped due to cooldown, players:all is NOT written."""
+        from datetime import timedelta
+
+        now = datetime.now(tz=UTC)
+        puuid = "test-puuid-0001"
+        ten_min_ago = (now - timedelta(minutes=10)).isoformat()
+        await r.hset(f"player:{puuid}", mapping={"seeded_at": ten_min_ago})
+        await r.set("player:name:faker#kr1", puuid)
+
+        with respx.mock:
+            riot = RiotClient("RGAPI-test")
+            result = await seed(r, riot, cfg, "Faker", "KR1", "kr", log)
+            await riot.close()
+
+        assert result == 0
+        assert await r.zscore("players:all", puuid) is None

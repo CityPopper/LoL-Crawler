@@ -1176,3 +1176,47 @@ class TestPromoteBatchAtomicOrdering:
         assert await r.zscore("discover:players", "puuid-crash:na1") is not None
         # No seeded_at set (pipeline crashed before HSET)
         assert await r.hget("player:puuid-crash", "seeded_at") is None
+
+
+class TestPromoteBatchPlayersAll:
+    """Promotion adds player to the players:all sorted set."""
+
+    @pytest.mark.asyncio
+    async def test_promote__adds_to_players_all(self, r, cfg, log):
+        """After promoting a player, players:all ZSET contains the PUUID."""
+        await r.hset(
+            "player:puuid-index",
+            mapping={"game_name": "Indexed", "tag_line": "001"},
+        )
+        await r.zadd("discover:players", {"puuid-index:na1": 1700000000000.0})
+
+        riot = RiotClient("RGAPI-test")
+        promoted = await _promote_batch(r, cfg, log, riot)
+        await riot.close()
+
+        assert promoted == 1
+        score = await r.zscore("players:all", "puuid-index")
+        assert score is not None
+        import time
+
+        assert abs(score - time.time()) < 10
+
+    @pytest.mark.asyncio
+    async def test_promote__skipped_player_not_in_players_all(self, r, cfg, log):
+        """Already-seeded players are skipped and NOT added to players:all."""
+        await r.hset(
+            "player:puuid-existing",
+            mapping={
+                "game_name": "Existing",
+                "tag_line": "001",
+                "seeded_at": "2024-01-01T00:00:00+00:00",
+            },
+        )
+        await r.zadd("discover:players", {"puuid-existing:na1": 1700000000000.0})
+
+        riot = RiotClient("RGAPI-test")
+        promoted = await _promote_batch(r, cfg, log, riot)
+        await riot.close()
+
+        assert promoted == 0
+        assert await r.zscore("players:all", "puuid-existing") is None

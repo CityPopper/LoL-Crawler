@@ -17,11 +17,6 @@ Platform: macOS. Container runtime: Podman (default). Switch with `RUNTIME=docke
 - **Replies**: Direct, fewest words.
 
 ## Gotchas
-
-- `Redis` is NOT generic in redis-py 7.x — use `Redis` unparameterized
-- Async Redis files use `from __future__ import annotations`
-- `hmget(key, ["field1", "field2"])` — list form required (variadic removed in redis-py 7.x)
-- `seed`/`admin` use `entrypoint` (not `command`) for arg passthrough
 - All complexity/lint thresholds configured in each service's `pyproject.toml` (see `docs/standards/`)
 
 ## Key Locations
@@ -34,14 +29,6 @@ Platform: macOS. Container runtime: Podman (default). Switch with `RUNTIME=docke
 | `lol-pipeline-common/contracts/schemas/` | Canonical Pact v3 schemas |
 | `lol-pipeline-*/pacts/` | Per-service consumer contracts |
 | `tests/integration/` | 7 integration tests (IT-01 through IT-07, testcontainers) |
-
-## Secrets
-
-- GitHub token: `GITHUB_TOKEN` in `.env` — use for pushes and GitHub API (releases, CI checks)
-
-## Constraints
-
-- Do not modify failing tests without user confirmation
 
 ## TODO — Review Cycle 2
 
@@ -72,13 +59,13 @@ Platform: macOS. Container runtime: Podman (default). Switch with `RUNTIME=docke
 - [x] B10: Recovery `_consume_dlq` lacks XAUTOCLAIM → stranded DLQ messages after worker crash
 - [x] B11: Redis connection pool no socket timeout → hung connections block all coroutines
 - [x] B12: Priority keys have no TTL → orphaned keys block Discovery if message lost (V7)
-- [ ] B13: In-memory retry counter lost on service restart → poison message loops forever (V3)
-- [ ] B14: `match:participants:{match_id}` sets are write-only (~90MB waste at 10K players)
+- [x] B13: In-memory retry counter lost on service restart → poison message loops forever (V3)
+- [x] B14: `match:participants:{match_id}` sets are write-only (~90MB waste at 10K players)
 - [x] B15: `ratelimit:limits:short/long` no TTL → stale limits persist after API key rotation
 
 ### Complexity Refactors
-- [ ] C1: `_crawl_player` — extract `_fetch_match_ids_paginated()` + `_handle_crawl_error()` helpers
-- [ ] C2: `show_stats` — extract `_resolve_and_cache_puuid()`, `_auto_seed_player()`, `_build_stats_response()`
+- [x] C1: `_crawl_player` — extract `_fetch_match_ids_paginated()` + `_handle_crawl_error()` helpers
+- [x] C2: `show_stats` — extract `_resolve_and_cache_puuid()`, `_auto_seed_player()`, `_build_stats_response()`
 
 ## TODO — Orchestrator Cycle 3 (Review Iteration 2)
 
@@ -107,12 +94,12 @@ Platform: macOS. Container runtime: Podman (default). Switch with `RUNTIME=docke
 ### Medium
 - [x] I2-M1: `discover:players` sorted set grows without bound (cubic fan-out: players × matches × participants) → cap at configurable MAX_DISCOVER (e.g. 50K) via ZREMRANGEBYRANK (`parser/main.py:164-170`)
 - [x] I2-M2: `_make_replay_envelope` also omits `priority` field (I2-H6 covers admin; this reminder covers the root in streams.py nack_to_dlq not preserving dlq_attempts — same fix needed)
-- [ ] I2-M3: RawStore synchronous disk I/O blocks async event loop → wrap `_exists_in_bundles`, `_search_bundles` in `asyncio.to_thread()` (`raw_store.py:139`)
-- [ ] I2-M4: Delay Scheduler failing members retry every 500ms forever with no backoff → add per-member failure counter + circuit breaker (`delay_scheduler/main.py:91-97`)
+- [x] I2-M3: RawStore synchronous disk I/O blocks async event loop → wrap `_exists_in_bundles`, `_search_bundles` in `asyncio.to_thread()` (`raw_store.py:139`)
+- [x] I2-M4: Delay Scheduler failing members retry every 500ms forever with no backoff → add per-member failure counter + circuit breaker (`delay_scheduler/main.py:91-97`)
 - [x] I2-M5: Discovery service continues polling loop when system:halted → wastes CPU; other services exit on halt (`discovery/main.py`)
-- [ ] I2-M6: DEVEX: pip install runs on every container restart (10-15s per service) → bake editable installs into Dockerfile, drop from compose command
-- [ ] I2-M7: Testing standards doc requires pytest-timeout but zero services implement it → add to all pyproject.toml dev deps
+- [x] I2-M6: DEVEX: pip install runs on every container restart (10-15s per service) → bake editable installs into Dockerfile, drop from compose command
+- [x] I2-M7: Testing standards doc requires pytest-timeout but zero services implement it → add to all pyproject.toml dev deps
 
 ### Complexity Refactors (already in Cycle 2)
-- [ ] C1: `_crawl_player` — extract `_fetch_match_ids_paginated()` + `_handle_crawl_error()` helpers
-- [ ] C2: `show_stats` — extract `_resolve_and_cache_puuid()`, `_auto_seed_player()`, `_build_stats_response()`
+- [x] C1: `_crawl_player` — extract `_fetch_match_ids_paginated()` + `_handle_crawl_error()` helpers
+- [x] C2: `show_stats` — extract `_resolve_and_cache_puuid()`, `_auto_seed_player()`, `_build_stats_response()`

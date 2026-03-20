@@ -5,16 +5,16 @@ from __future__ import annotations
 import json
 import logging
 import weakref
+from collections.abc import Callable
 from typing import Any
 
 import redis.asyncio as aioredis
 from redis.exceptions import ResponseError
 
+from lol_pipeline.constants import STREAM_DLQ
 from lol_pipeline.models import DLQEnvelope, MessageEnvelope
 
 _log = logging.getLogger("streams")
-
-_DLQ_STREAM = "stream:dlq"
 
 
 _DEFAULT_MAXLEN = 10_000
@@ -65,18 +65,19 @@ async def _ensure_group(r: aioredis.Redis, stream: str, group: str) -> None:
     pairs.add(key)
 
 
-async def _deserialize_entries(
+async def _deserialize_entries_typed[T](
     r: aioredis.Redis,
     stream: str,
     group: str,
     raw_entries: list[Any],
-) -> list[tuple[str, MessageEnvelope]]:
-    """Deserialize raw xreadgroup entries, acking corrupt messages."""
-    result: list[tuple[str, MessageEnvelope]] = []
+    deserializer: Callable[[dict[str, Any]], T],
+) -> list[tuple[str, T]]:
+    """Deserialize raw xreadgroup entries with a custom deserializer, acking corrupt messages."""
+    result: list[tuple[str, T]] = []
     for _, entries in raw_entries or []:
         for msg_id, fields in entries:
             try:
-                env = MessageEnvelope.from_redis_fields(fields)
+                env = deserializer(fields)
                 result.append((msg_id, env))
             except (KeyError, json.JSONDecodeError, ValueError, TypeError) as exc:
                 _log.warning(
@@ -87,19 +88,21 @@ async def _deserialize_entries(
     return result
 
 
-async def consume(
+async def consume_typed[T](  # noqa: PLR0913
     r: aioredis.Redis,
     stream: str,
     group: str,
     consumer: str,
+    deserializer: Callable[[dict[str, Any]], T],
     count: int = 10,
     block: int = 5000,
     autoclaim_min_idle_ms: int | None = None,
-) -> list[tuple[str, MessageEnvelope]]:
-    """Read up to count messages from stream via consumer group.
+) -> list[tuple[str, T]]:
+    """Read up to *count* messages from *stream* via consumer group, deserializing
+    each entry with the provided *deserializer* callable.
 
     On each call, first drains this consumer's own PEL (messages delivered but
-    not yet acked — e.g. stranded after a crash or system halt).  Then, if
+    not yet acked -- e.g. stranded after a crash or system halt).  Then, if
     ``autoclaim_min_idle_ms`` is set, runs XAUTOCLAIM to reclaim messages idle
     longer than that threshold from ANY consumer in the group (handles dead
     workers).  Only after both are empty does it block-wait for new messages.
@@ -113,7 +116,7 @@ async def consume(
     # Note: Redis 7 returns [["stream", []]] (truthy!) when PEL is empty, so we
     # must check actual message count rather than the truthiness of the outer list.
     pending: list[Any] = await r.xreadgroup(group, consumer, {stream: "0"}, count=count)
-    pel_messages = await _deserialize_entries(r, stream, group, pending)
+    pel_messages = await _deserialize_entries_typed(r, stream, group, pending, deserializer)
     if pel_messages:
         return pel_messages
 
@@ -124,12 +127,12 @@ async def consume(
             stream, group, consumer, autoclaim_min_idle_ms, start_id="0-0", count=count
         )
         claimed_entries = result[1]  # xautoclaim returns [cursor, entries]
-        claimed: list[tuple[str, MessageEnvelope]] = []
+        claimed: list[tuple[str, T]] = []
         for msg_id, fields in claimed_entries:
             if not fields:  # skip deleted entries (nil bodies)
                 continue
             try:
-                env = MessageEnvelope.from_redis_fields(fields)
+                env = deserializer(fields)
                 claimed.append((msg_id, env))
             except (KeyError, json.JSONDecodeError, ValueError, TypeError) as exc:
                 _log.warning(
@@ -142,7 +145,33 @@ async def consume(
 
     # PEL is empty — block-wait for new messages.
     raw: list[Any] = await r.xreadgroup(group, consumer, {stream: ">"}, count=count, block=block)
-    return await _deserialize_entries(r, stream, group, raw)
+    return await _deserialize_entries_typed(r, stream, group, raw, deserializer)
+
+
+async def consume(
+    r: aioredis.Redis,
+    stream: str,
+    group: str,
+    consumer: str,
+    count: int = 10,
+    block: int = 5000,
+    autoclaim_min_idle_ms: int | None = None,
+) -> list[tuple[str, MessageEnvelope]]:
+    """Read up to count messages from stream via consumer group.
+
+    Convenience wrapper around :func:`consume_typed` that deserializes entries
+    as :class:`MessageEnvelope`.  See :func:`consume_typed` for full semantics.
+    """
+    return await consume_typed(
+        r,
+        stream,
+        group,
+        consumer,
+        deserializer=MessageEnvelope.from_redis_fields,
+        count=count,
+        block=block,
+        autoclaim_min_idle_ms=autoclaim_min_idle_ms,
+    )
 
 
 async def ack(r: aioredis.Redis, stream: str, group: str, msg_id: str) -> None:
@@ -162,7 +191,7 @@ async def nack_to_dlq(
     """Write a DLQEnvelope to stream:dlq without ACKing the source message."""
     dlq = DLQEnvelope(
         id=envelope.id,
-        source_stream=_DLQ_STREAM,
+        source_stream=STREAM_DLQ,
         type="dlq",
         payload=envelope.payload,
         attempts=envelope.attempts,
@@ -178,4 +207,4 @@ async def nack_to_dlq(
         priority=envelope.priority,
     )
     fields: dict[str, Any] = dlq.to_redis_fields()
-    await r.xadd(_DLQ_STREAM, fields, maxlen=50_000, approximate=True)  # type: ignore[arg-type]
+    await r.xadd(STREAM_DLQ, fields, maxlen=50_000, approximate=True)  # type: ignore[arg-type]

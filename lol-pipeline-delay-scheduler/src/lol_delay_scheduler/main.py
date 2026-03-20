@@ -25,6 +25,8 @@ from redis.exceptions import RedisError
 _DELAYED_KEY = "delayed:messages"
 
 _BATCH_SIZE = 100
+_MAX_MEMBER_FAILURES = 10
+_CIRCUIT_OPEN_TTL_S = 300  # 5 minutes
 
 # Per-stream maxlen policy.  Streams not listed here use _DEFAULT_MAXLEN.
 _STREAM_MAXLEN: dict[str, int | None] = {
@@ -32,10 +34,47 @@ _STREAM_MAXLEN: dict[str, int | None] = {
     "stream:analyze": ANALYZE_STREAM_MAXLEN,
 }
 
+# Per-member failure tracking (module-level, survives across ticks).
+_member_failures: dict[str, int] = {}
+# Circuit-open members: member → time.monotonic() when circuit was opened.
+_circuit_open: dict[str, float] = {}
+
 
 def _maxlen_for_stream(stream: str) -> int | None:
     """Return the maxlen policy for *stream* (None = no trimming)."""
     return _STREAM_MAXLEN.get(stream, _DEFAULT_MAXLEN)
+
+
+def _is_circuit_open(member: str) -> bool:
+    """Return True if *member* is in the circuit-open set and TTL has not expired."""
+    opened_at = _circuit_open.get(member)
+    if opened_at is None:
+        return False
+    if time.monotonic() - opened_at >= _CIRCUIT_OPEN_TTL_S:
+        # TTL expired — allow a single retry
+        del _circuit_open[member]
+        return False
+    return True
+
+
+def _record_failure(member: str, log: logging.Logger) -> None:
+    """Increment failure count; open circuit after _MAX_MEMBER_FAILURES."""
+    count = _member_failures.get(member, 0) + 1
+    _member_failures[member] = count
+    if count >= _MAX_MEMBER_FAILURES:
+        _circuit_open[member] = time.monotonic()
+        log.warning(
+            "circuit opened for member after %d failures — skipping for %ds",
+            count,
+            _CIRCUIT_OPEN_TTL_S,
+            extra={"member_preview": member[:80]},
+        )
+
+
+def _record_success(member: str) -> None:
+    """Clear failure state on successful dispatch."""
+    _member_failures.pop(member, None)
+    _circuit_open.pop(member, None)
 
 
 # Atomic XADD + ZREM: dispatch a delayed message and remove from the ZSET in one
@@ -84,12 +123,15 @@ async def _tick(r: aioredis.Redis, log: logging.Logger) -> None:
             return
         dispatched = 0
         for member in members:
+            if _is_circuit_open(member):
+                continue
             try:
                 fields: dict[str, str] = json.loads(member)
                 env = MessageEnvelope.from_redis_fields(fields)
             except (json.JSONDecodeError, KeyError, ValueError) as exc:
                 log.error("corrupt delayed member — removing", extra={"error": str(exc)})
                 await r.zrem(_DELAYED_KEY, member)
+                _record_success(member)
                 dispatched += 1
                 continue
             try:
@@ -107,12 +149,14 @@ async def _tick(r: aioredis.Redis, log: logging.Logger) -> None:
                     _DELAYED_KEY,
                     *flat_args,
                 )
+                _record_success(member)
                 dispatched += 1
                 log.info(
                     "dispatched delayed message",
                     extra={"stream": env.source_stream, "id": env.id},
                 )
             except (RedisError, OSError) as exc:
+                _record_failure(member, log)
                 log.error(
                     "Redis error dispatching — will retry",
                     extra={"error": str(exc), "id": env.id},

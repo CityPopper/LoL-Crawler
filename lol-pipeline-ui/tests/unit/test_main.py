@@ -16,11 +16,15 @@ from lol_pipeline.riot_api import (
 )
 
 from lol_ui.main import (
+    _AUTOSEED_COOLDOWN_S,
     _BADGE_VARIANTS,
     _CSS,
+    _NAME_CACHE_INDEX,
+    _NAME_CACHE_MAX,
     _NAV_ITEMS,
     _PUUID_RE,
     _REGIONS,
+    _REGIONS_SET,
     _STATS_ORDER,
     _badge,
     _badge_html,
@@ -982,6 +986,7 @@ class TestPlayersPageCount:
                 "seeded_at": "2026-03-19T12:00:00+00:00",
             },
         )
+        await r.zadd("players:all", {"test-puuid": 1710835200.0})
         request = MagicMock()
         request.app.state.r = r
         request.query_params = {"page": "0"}
@@ -1012,6 +1017,7 @@ class TestPlayersPageCount:
                 "seeded_at": iso_ts,
             },
         )
+        await r.zadd("players:all", {"test-puuid": 1710835200.0})
         request = MagicMock()
         request.app.state.r = r
         request.query_params = {"page": "0"}
@@ -1042,6 +1048,7 @@ class TestPlayersPageCount:
                     "seeded_at": "2026-03-19T00:00:00",
                 },
             )
+            await r.zadd("players:all", {f"puuid-{i}": 1710835200.0 + i})
         request = MagicMock()
         request.app.state.r = r
         request.query_params = {"page": "1"}
@@ -1583,6 +1590,7 @@ class TestDlqBrowser:
 
         request = MagicMock()
         request.app.state.r = r
+        request.query_params = {}
 
         resp = await show_dlq(request)
         body = resp.body.decode()
@@ -1621,6 +1629,7 @@ class TestDlqBrowser:
 
         request = MagicMock()
         request.app.state.r = r
+        request.query_params = {}
 
         resp = await show_dlq(request)
         body = resp.body.decode()
@@ -1664,6 +1673,7 @@ class TestDlqBrowserEdgeCases:
 
         request = MagicMock()
         request.app.state.r = r
+        request.query_params = {}
 
         resp = await show_dlq(request)
         body = resp.body.decode()
@@ -1700,6 +1710,7 @@ class TestDlqBrowserEdgeCases:
 
         request = MagicMock()
         request.app.state.r = r
+        request.query_params = {}
 
         resp = await show_dlq(request)
         body = resp.body.decode()
@@ -1709,16 +1720,16 @@ class TestDlqBrowserEdgeCases:
         await r.aclose()
 
     @pytest.mark.asyncio
-    async def test_show_dlq__shows_up_to_50_entries(self):
-        """DLQ page caps at 50 entries."""
+    async def test_show_dlq__shows_up_to_max_per_page_entries(self):
+        """DLQ page caps at per_page entries (default 25)."""
         import fakeredis.aioredis
         from lol_pipeline.models import DLQEnvelope
 
-        from lol_ui.main import show_dlq
+        from lol_ui.main import _DLQ_DEFAULT_PER_PAGE, show_dlq
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
-        for i in range(55):
+        for i in range(_DLQ_DEFAULT_PER_PAGE + 5):
             dlq = DLQEnvelope(
                 source_stream="stream:dlq",
                 type="dlq",
@@ -1737,13 +1748,14 @@ class TestDlqBrowserEdgeCases:
 
         request = MagicMock()
         request.app.state.r = r
+        request.query_params = {}
 
         resp = await show_dlq(request)
         body = resp.body.decode()
 
         # Count the number of <tr> rows in the table (minus header)
         row_count = body.count("<tr><td>")
-        assert row_count == 50
+        assert row_count == _DLQ_DEFAULT_PER_PAGE
         await r.aclose()
 
 
@@ -1936,6 +1948,7 @@ class TestPlayerSearch:
                 "seeded_at": "2026-03-19T00:00:00",
             },
         )
+        await r.zadd("players:all", {"test-puuid": 1710835200.0})
 
         from unittest.mock import MagicMock
 
@@ -1948,6 +1961,118 @@ class TestPlayerSearch:
 
         assert 'id="player-search"' in body
         assert 'placeholder="Filter players..."' in body
+        await r.aclose()
+
+
+class TestPlayersAllZset:
+    """Performance: /players uses players:all ZSET instead of SCAN."""
+
+    @pytest.mark.asyncio
+    async def test_players__uses_zrevrange_not_scan(self):
+        """show_players reads from players:all ZSET, not scan_iter."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_players
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        # Add player to players:all ZSET and set up hash
+        await r.zadd("players:all", {"puuid-zset": 1710835200.0})
+        await r.hset(
+            "player:puuid-zset",
+            mapping={
+                "game_name": "ZsetPlayer",
+                "tag_line": "001",
+                "region": "na1",
+                "seeded_at": "2026-03-19T00:00:00",
+            },
+        )
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {"page": "0"}
+
+        resp = await show_players(request)
+        body = resp.body.decode()
+
+        # Player from ZSET should appear
+        assert "ZsetPlayer#001" in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_players__player_in_hash_but_not_zset__not_shown(self):
+        """Player hashes without a players:all entry are NOT shown."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_players
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        # Only set up hash, NOT players:all
+        await r.hset(
+            "player:puuid-orphan",
+            mapping={
+                "game_name": "OrphanPlayer",
+                "tag_line": "001",
+                "region": "na1",
+                "seeded_at": "2026-03-19T00:00:00",
+            },
+        )
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {"page": "0"}
+
+        resp = await show_players(request)
+        body = resp.body.decode()
+
+        # Should show empty state since players:all is empty
+        assert "No players seeded yet" in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_players__ordered_most_recent_first(self):
+        """Players are shown most recently seeded first (highest score in ZSET)."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_players
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.zadd("players:all", {"puuid-old": 1000.0, "puuid-new": 2000.0})
+        await r.hset(
+            "player:puuid-old",
+            mapping={
+                "game_name": "OldPlayer",
+                "tag_line": "001",
+                "region": "na1",
+                "seeded_at": "2024-01-01T00:00:00",
+            },
+        )
+        await r.hset(
+            "player:puuid-new",
+            mapping={
+                "game_name": "NewPlayer",
+                "tag_line": "002",
+                "region": "na1",
+                "seeded_at": "2026-03-19T00:00:00",
+            },
+        )
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {"page": "0"}
+
+        resp = await show_players(request)
+        body = resp.body.decode()
+
+        # NewPlayer should appear before OldPlayer
+        new_pos = body.index("NewPlayer")
+        old_pos = body.index("OldPlayer")
+        assert new_pos < old_pos
         await r.aclose()
 
 
@@ -2121,6 +2246,7 @@ class TestDlqCorruptEntries:
 
         request = MagicMock()
         request.app.state.r = r
+        request.query_params = {}
 
         resp = await show_dlq(request)
         body = resp.body.decode()
@@ -2153,6 +2279,7 @@ class TestDlqCorruptEntries:
 
         request = MagicMock()
         request.app.state.r = r
+        request.query_params = {}
 
         resp = await show_dlq(request)
         body = resp.body.decode()
@@ -2270,3 +2397,1508 @@ class TestRateLimitBeforeRiotCall:
             await show_stats(request)
 
         mock_wft.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Security: Name cache index (bounded cache size)
+# ---------------------------------------------------------------------------
+
+
+class TestNameCacheIndex:
+    """SEC: name cache index tracks entries and caps at _NAME_CACHE_MAX."""
+
+    @pytest.mark.asyncio
+    async def test_resolve_adds_entry_to_name_cache_index(self):
+        """After resolving a PUUID, the cache key is tracked in name_cache:index."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_stats
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        class FakeRiot:
+            async def get_account_by_riot_id(self, gn, tl, region):
+                return {"puuid": "idx-puuid-1"}
+
+        class FakeCfg:
+            max_attempts = 5
+            api_rate_limit_per_second = 20
+
+        request = MagicMock()
+        request.query_params = {"riot_id": "IndexTest#NA1", "region": "na1"}
+        request.app.state.r = r
+        request.app.state.cfg = FakeCfg()
+        request.app.state.riot = FakeRiot()
+
+        # Pre-set stats so auto-seed path is not entered
+        await r.hset("player:stats:idx-puuid-1", mapping={"total_games": "1"})
+
+        with patch("lol_ui.main.wait_for_token", new_callable=AsyncMock):
+            await show_stats(request)
+
+        # The name_cache:index should have one entry
+        index_size = await r.zcard(_NAME_CACHE_INDEX)
+        assert index_size == 1
+
+        members = await r.zrange(_NAME_CACHE_INDEX, 0, -1)
+        assert len(members) == 1
+        assert "player:name:" in members[0]
+
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_name_cache_index_evicts_oldest_when_full(self):
+        """When cache index reaches _NAME_CACHE_MAX, the oldest entry is evicted."""
+        from unittest.mock import AsyncMock
+
+        import fakeredis.aioredis
+
+        from lol_ui.main import _resolve_and_cache_puuid
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        # Pre-fill index to _NAME_CACHE_MAX entries
+        for i in range(_NAME_CACHE_MAX):
+            await r.zadd(_NAME_CACHE_INDEX, {f"player:name:user{i}#tag": float(i)})
+
+        assert await r.zcard(_NAME_CACHE_INDEX) == _NAME_CACHE_MAX
+
+        class FakeRiot:
+            async def get_account_by_riot_id(self, gn, tl, region):
+                return {"puuid": "new-puuid"}
+
+        class FakeCfg:
+            api_rate_limit_per_second = 20
+
+        with patch("lol_ui.main.wait_for_token", new_callable=AsyncMock):
+            result = await _resolve_and_cache_puuid(
+                r, FakeRiot(), "NewRiotId#NA1", "NewRiotId", "NA1", "na1", FakeCfg()
+            )
+
+        assert result == "new-puuid"
+        # Size should still be _NAME_CACHE_MAX (oldest evicted, new one added)
+        assert await r.zcard(_NAME_CACHE_INDEX) == _NAME_CACHE_MAX
+
+        # The oldest entry (score=0.0, "player:name:user0#tag") should be gone
+        members = await r.zrange(_NAME_CACHE_INDEX, 0, 0)
+        assert members[0] != "player:name:user0#tag"
+
+        await r.aclose()
+
+    def test_name_cache_max_is_10000(self):
+        """_NAME_CACHE_MAX constant is 10,000."""
+        assert _NAME_CACHE_MAX == 10_000
+
+    def test_name_cache_index_key(self):
+        """_NAME_CACHE_INDEX key is 'name_cache:index'."""
+        assert _NAME_CACHE_INDEX == "name_cache:index"
+
+
+# ---------------------------------------------------------------------------
+# Security: Region validation returns 400
+# ---------------------------------------------------------------------------
+
+
+class TestRegionValidation400:
+    """SEC: Invalid region returns 400 Bad Request, not silent fallback."""
+
+    @pytest.mark.asyncio
+    async def test_invalid_region__returns_400(self):
+        """show_stats with unknown region returns 400 status code."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from lol_ui.main import show_stats
+
+        mock_r = AsyncMock()
+
+        request = MagicMock()
+        request.query_params = {"riot_id": "Test#NA1", "region": "BOGUS"}
+        request.app.state.r = mock_r
+
+        resp = await show_stats(request)
+        assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_invalid_region__error_message_in_body(self):
+        """400 response contains the invalid region name in the error."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from lol_ui.main import show_stats
+
+        mock_r = AsyncMock()
+
+        request = MagicMock()
+        request.query_params = {"riot_id": "", "region": "xyzregion"}
+        request.app.state.r = mock_r
+
+        resp = await show_stats(request)
+        body = resp.body.decode()
+
+        assert resp.status_code == 400
+        assert "Invalid region" in body
+        assert "xyzregion" in body
+
+    @pytest.mark.asyncio
+    async def test_invalid_region__html_escaped(self):
+        """XSS in region parameter is HTML-escaped in the 400 response."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from lol_ui.main import show_stats
+
+        mock_r = AsyncMock()
+
+        request = MagicMock()
+        request.query_params = {"riot_id": "", "region": "<script>alert(1)</script>"}
+        request.app.state.r = mock_r
+
+        resp = await show_stats(request)
+        body = resp.body.decode()
+
+        assert resp.status_code == 400
+        assert "<script>" not in body
+        assert html.escape("<script>alert(1)</script>") in body
+
+    @pytest.mark.asyncio
+    async def test_valid_region__no_400(self):
+        """Valid regions do not trigger 400."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from lol_ui.main import show_stats
+
+        mock_r = AsyncMock()
+
+        for region in ("na1", "kr", "euw1"):
+            request = MagicMock()
+            request.query_params = {"riot_id": "", "region": region}
+            request.app.state.r = mock_r
+
+            resp = await show_stats(request)
+            assert resp.status_code == 200, f"Region {region} should be valid"
+
+    def test_regions_set_matches_regions_list(self):
+        """_REGIONS_SET is a frozenset matching _REGIONS list."""
+        assert _REGIONS_SET == frozenset(_REGIONS)
+        assert len(_REGIONS_SET) == len(_REGIONS)
+
+
+# ---------------------------------------------------------------------------
+# Security: Auto-seed cooldown
+# ---------------------------------------------------------------------------
+
+
+class TestAutoSeedCooldown:
+    """SEC: Auto-seed has per-player cooldown to prevent abuse."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not _LUPA_AVAILABLE, reason="lupa required for Lua scripts")
+    async def test_auto_seed__sets_cooldown_key(self):
+        """After auto-seeding, a cooldown key is set with 5-minute TTL."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_stats
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        class FakeRiot:
+            async def get_account_by_riot_id(self, gn, tl, region):
+                return {"puuid": "cooldown-puuid-1"}
+
+        class FakeCfg:
+            max_attempts = 5
+            api_rate_limit_per_second = 20
+
+        request = MagicMock()
+        request.query_params = {"riot_id": "CooldownTest#NA1", "region": "na1"}
+        request.app.state.r = r
+        request.app.state.cfg = FakeCfg()
+        request.app.state.riot = FakeRiot()
+
+        with patch("lol_ui.main.wait_for_token", new_callable=AsyncMock):
+            await show_stats(request)
+
+        # Cooldown key should be set
+        cooldown = await r.get("autoseed:cooldown:cooldown-puuid-1")
+        assert cooldown == "1"
+
+        # TTL should be around 300 seconds
+        ttl = await r.ttl("autoseed:cooldown:cooldown-puuid-1")
+        assert 0 < ttl <= _AUTOSEED_COOLDOWN_S
+
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_auto_seed__blocked_by_cooldown(self):
+        """When cooldown key exists, auto-seed is skipped."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from lol_ui.main import show_stats
+
+        mock_r = AsyncMock()
+        mock_r.get.side_effect = lambda key: {
+            "player:name:blocked#na1": "blocked-puuid-123",
+            "system:halted": None,
+            "player:priority:blocked-puuid-123": None,
+            "autoseed:cooldown:blocked-puuid-123": "1",
+        }.get(key)
+        mock_r.hgetall.return_value = {}  # no stats, triggers auto-seed path
+        mock_r.hget.return_value = None  # no seeded_at
+
+        request = MagicMock()
+        request.query_params = {"riot_id": "Blocked#NA1", "region": "na1"}
+        request.app.state.r = mock_r
+        request.app.state.riot = MagicMock()
+        request.app.state.cfg = MagicMock()
+
+        resp = await show_stats(request)
+        body = resp.body.decode()
+
+        # Should get the "seeded recently" message, not the "Auto-seeded" message
+        assert "seeded recently" in body
+        assert "Auto-seeded" not in body
+
+    @pytest.mark.asyncio
+    async def test_auto_seed__no_cooldown__proceeds(self):
+        """When no cooldown key exists, auto-seed proceeds normally."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from lol_ui.main import show_stats
+
+        mock_r = AsyncMock()
+        mock_r.get.side_effect = lambda key: {
+            "player:name:proceed#na1": "proceed-puuid-456",
+            "system:halted": None,
+            "player:priority:proceed-puuid-456": None,
+            "autoseed:cooldown:proceed-puuid-456": None,
+        }.get(key)
+        mock_r.hgetall.return_value = {}  # no stats
+        mock_r.hget.return_value = None  # no seeded_at
+        mock_r.set.return_value = True
+
+        request = MagicMock()
+        request.query_params = {"riot_id": "Proceed#NA1", "region": "na1"}
+        request.app.state.r = mock_r
+        request.app.state.riot = MagicMock()
+        request.app.state.cfg = MagicMock()
+
+        with patch("lol_ui.main.publish", new_callable=AsyncMock):
+            with patch("lol_ui.main.set_priority", new_callable=AsyncMock):
+                resp = await show_stats(request)
+
+        body = resp.body.decode()
+        assert "Auto-seeded" in body
+
+    def test_autoseed_cooldown_constant(self):
+        """_AUTOSEED_COOLDOWN_S is 300 seconds (5 minutes)."""
+        assert _AUTOSEED_COOLDOWN_S == 300
+
+
+# ---------------------------------------------------------------------------
+# Streams fragment: halt banner, priority count, normal case
+# ---------------------------------------------------------------------------
+
+
+class TestStreamsFragmentHtmlHaltBanner:
+    """_streams_fragment_html renders halt banner when system:halted is set."""
+
+    @pytest.mark.asyncio
+    async def test_streams_fragment_html__halted__shows_halt_banner(self):
+        """When system:halted is set, HTML contains HALTED banner with error class."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import _streams_fragment_html
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.set("system:halted", "auth_403")
+
+        result = await _streams_fragment_html(r)
+
+        assert "HALTED" in result
+        assert "banner--error" in result
+        assert "System running" not in result
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_streams_fragment_html__priority_count_nonzero__displays_count(self):
+        """When system:priority_count > 0, the count is rendered in <strong> tags."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import _streams_fragment_html
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.set("system:priority_count", "7")
+
+        result = await _streams_fragment_html(r)
+
+        assert "Priority players in-flight" in result
+        assert "<strong>7</strong>" in result
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_streams_fragment_html__normal__no_halt_shows_running(self):
+        """When neither halted nor priority set, shows running banner and priority 0."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import _streams_fragment_html
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        result = await _streams_fragment_html(r)
+
+        assert "System running" in result
+        assert "banner--success" in result
+        assert "HALTED" not in result
+        assert "<strong>0</strong>" in result
+        # All stream keys should be present
+        assert "stream:puuid" in result
+        assert "stream:match_id" in result
+        assert "stream:parse" in result
+        assert "stream:analyze" in result
+        assert "stream:dlq" in result
+        await r.aclose()
+
+
+# ---------------------------------------------------------------------------
+# DLQ: original_stream, failure_code, dlq_attempts verification
+# ---------------------------------------------------------------------------
+
+
+class TestDlqEntryFields:
+    """DLQ entry renders original_stream, failure_code, and dlq_attempts."""
+
+    @pytest.mark.asyncio
+    async def test_show_dlq__entry_shows_original_stream(self):
+        """DLQ entry displays original_stream (not source_stream) in table."""
+        import fakeredis.aioredis
+        from lol_pipeline.models import DLQEnvelope
+
+        from lol_ui.main import show_dlq
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"match_id": "NA1_999"},
+            attempts=2,
+            max_attempts=5,
+            failure_code="http_5xx",
+            failure_reason="internal server error",
+            failed_by="parser",
+            original_stream="stream:parse",
+            original_message_id="orig-999",
+            dlq_attempts=3,
+        )
+        await r.xadd("stream:dlq", dlq.to_redis_fields())
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {}
+
+        resp = await show_dlq(request)
+        body = resp.body.decode()
+
+        # original_stream, not source_stream, should appear
+        assert "stream:parse" in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_show_dlq__entry_shows_failure_code_as_badge(self):
+        """DLQ entry displays failure_code in an error badge."""
+        import fakeredis.aioredis
+        from lol_pipeline.models import DLQEnvelope
+
+        from lol_ui.main import show_dlq
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"match_id": "NA1_fc"},
+            attempts=1,
+            max_attempts=5,
+            failure_code="parse_error",
+            failure_reason="invalid JSON",
+            failed_by="parser",
+            original_stream="stream:match_id",
+            original_message_id="orig-fc",
+        )
+        await r.xadd("stream:dlq", dlq.to_redis_fields())
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {}
+
+        resp = await show_dlq(request)
+        body = resp.body.decode()
+
+        assert "parse_error" in body
+        assert 'class="badge badge--error"' in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_show_dlq__entry_shows_dlq_attempts(self):
+        """DLQ entry renders the dlq_attempts count in the table."""
+        import fakeredis.aioredis
+        from lol_pipeline.models import DLQEnvelope
+
+        from lol_ui.main import show_dlq
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"match_id": "NA1_att"},
+            attempts=4,
+            max_attempts=5,
+            failure_code="http_429",
+            failure_reason="rate limited",
+            failed_by="fetcher",
+            original_stream="stream:match_id",
+            original_message_id="orig-att",
+            dlq_attempts=5,
+        )
+        await r.xadd("stream:dlq", dlq.to_redis_fields())
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {}
+
+        resp = await show_dlq(request)
+        body = resp.body.decode()
+
+        # dlq_attempts=5 should appear in the Attempts column
+        assert ">5<" in body or "<td>5</td>" in body
+        await r.aclose()
+
+
+# ---------------------------------------------------------------------------
+# /stats/matches: valid PUUID with matches, pagination
+# ---------------------------------------------------------------------------
+
+
+class TestStatsMatchesWithData:
+    """Tests for /stats/matches with actual match data and pagination."""
+
+    @pytest.mark.asyncio
+    async def test_stats_matches__valid_puuid_with_matches__returns_html(self):
+        """Valid PUUID with match data returns match history HTML."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import stats_matches
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.zadd(
+            "player:matches:validpuuid",
+            {"NA1_100": 1700000000000.0, "NA1_200": 1700001000000.0},
+        )
+        await r.hset(
+            "match:NA1_100",
+            mapping={"game_start": "1700000000000", "game_mode": "CLASSIC"},
+        )
+        await r.hset(
+            "match:NA1_200",
+            mapping={"game_start": "1700001000000", "game_mode": "ARAM"},
+        )
+        await r.hset(
+            "participant:NA1_100:validpuuid",
+            mapping={
+                "win": "1",
+                "champion_name": "Jinx",
+                "kills": "12",
+                "deaths": "3",
+                "assists": "8",
+            },
+        )
+        await r.hset(
+            "participant:NA1_200:validpuuid",
+            mapping={
+                "win": "0",
+                "champion_name": "Zed",
+                "kills": "5",
+                "deaths": "7",
+                "assists": "2",
+            },
+        )
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.query_params = {
+            "puuid": "validpuuid",
+            "region": "na1",
+            "riot_id": "Player#NA1",
+            "page": "0",
+        }
+        request.app.state.r = r
+
+        resp = await stats_matches(request)
+        body = resp.body.decode()
+
+        assert resp.status_code == 200
+        assert "Jinx" in body
+        assert "Zed" in body
+        assert "12/3/8" in body
+        assert "5/7/2" in body
+        assert "Win" in body
+        assert "Loss" in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_stats_matches__pagination_page1_skips_first_page(self):
+        """Page 1 skips the first _MATCH_PAGE_SIZE entries."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import _MATCH_PAGE_SIZE, stats_matches
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        # Create _MATCH_PAGE_SIZE + 5 matches to span 2 pages
+        total = _MATCH_PAGE_SIZE + 5
+        for i in range(total):
+            mid = f"NA1_{i:04d}"
+            ts = 1700000000000.0 + i * 1000
+            await r.zadd("player:matches:pagepuuid", {mid: ts})
+            await r.hset(
+                f"match:{mid}",
+                mapping={"game_start": str(int(ts)), "game_mode": "CLASSIC"},
+            )
+            await r.hset(
+                f"participant:{mid}:pagepuuid",
+                mapping={
+                    "win": "1",
+                    "champion_name": f"Champ{i}",
+                    "kills": "1",
+                    "deaths": "0",
+                    "assists": "0",
+                },
+            )
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.query_params = {
+            "puuid": "pagepuuid",
+            "region": "na1",
+            "riot_id": "P#1",
+            "page": "1",
+        }
+        request.app.state.r = r
+
+        resp = await stats_matches(request)
+        body = resp.body.decode()
+
+        assert resp.status_code == 200
+        # Page 1 should have exactly 5 matches (the remaining after page 0)
+        row_count = body.count("<tr><td>")
+        assert row_count == 5
+        # Should NOT contain "Load more" since these are the last matches
+        assert "Load more" not in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_stats_matches__page0_with_more__shows_load_more(self):
+        """Page 0 with more than _MATCH_PAGE_SIZE matches shows Load more link."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import _MATCH_PAGE_SIZE, stats_matches
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        total = _MATCH_PAGE_SIZE + 1
+        for i in range(total):
+            mid = f"NA1_P{i:04d}"
+            ts = 1700000000000.0 + i * 1000
+            await r.zadd("player:matches:morepuuid", {mid: ts})
+            await r.hset(
+                f"match:{mid}",
+                mapping={"game_start": str(int(ts)), "game_mode": "CLASSIC"},
+            )
+            await r.hset(
+                f"participant:{mid}:morepuuid",
+                mapping={
+                    "win": "1",
+                    "champion_name": "X",
+                    "kills": "0",
+                    "deaths": "0",
+                    "assists": "0",
+                },
+            )
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.query_params = {
+            "puuid": "morepuuid",
+            "region": "na1",
+            "riot_id": "More#1",
+            "page": "0",
+        }
+        request.app.state.r = r
+
+        resp = await stats_matches(request)
+        body = resp.body.decode()
+
+        assert resp.status_code == 200
+        assert "Load more" in body
+        await r.aclose()
+
+
+# ---------------------------------------------------------------------------
+# _tail_file: large files, exact n lines
+# ---------------------------------------------------------------------------
+
+
+class TestTailFileLargeAndExact:
+    """Edge cases for _tail_file byte-seek logic with large files."""
+
+    def test_tail_file__exactly_n_lines__returns_all(self, tmp_path):
+        """File with exactly n lines returns all n lines."""
+        f = tmp_path / "exact.log"
+        lines = [f"line{i}" for i in range(5)]
+        f.write_text("\n".join(lines) + "\n")
+        result = _tail_file(f, 5)
+        assert len(result) == 5
+        assert result[0] == "line0"
+        assert result[4] == "line4"
+
+    def test_tail_file__large_file__returns_last_n_via_byte_seek(self, tmp_path):
+        """File much larger than n lines returns exactly last n via byte-seek."""
+        f = tmp_path / "large.log"
+        # Write 200 lines — each line is large enough to trigger byte-seek
+        all_lines = [f"long_structured_log_line_number_{i:04d}_payload" for i in range(200)]
+        f.write_text("\n".join(all_lines) + "\n")
+        result = _tail_file(f, 10)
+        assert len(result) == 10
+        assert result[-1] == "long_structured_log_line_number_0199_payload"
+        assert result[0] == "long_structured_log_line_number_0190_payload"
+
+    def test_tail_file__single_line__returns_that_line(self, tmp_path):
+        """File with a single line returns that line."""
+        f = tmp_path / "single.log"
+        f.write_text("only-line\n")
+        result = _tail_file(f, 5)
+        assert result == ["only-line"]
+
+    def test_tail_file__no_trailing_newline__returns_lines(self, tmp_path):
+        """File without trailing newline still returns all lines."""
+        f = tmp_path / "notrail.log"
+        f.write_text("line1\nline2\nline3")
+        result = _tail_file(f, 10)
+        assert len(result) == 3
+        assert result[-1] == "line3"
+
+
+# ---------------------------------------------------------------------------
+# Phase 9: Global halt banner on all pages
+# ---------------------------------------------------------------------------
+
+
+class TestHaltBannerPlayers:
+    """Phase 9: /players shows halt banner when system:halted is set."""
+
+    @pytest.mark.asyncio
+    async def test_players__shows_halt_banner_when_halted(self):
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_players
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.set("system:halted", "1")
+        await r.zadd("players:all", {"puuid-1": 1000.0})
+        await r.hset(
+            "player:puuid-1",
+            mapping={
+                "game_name": "Test",
+                "tag_line": "1",
+                "region": "na1",
+                "seeded_at": "2026-01-01T00:00:00",
+            },
+        )
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {"page": "0"}
+
+        resp = await show_players(request)
+        body = resp.body.decode()
+
+        assert "HALTED" in body
+        assert "banner--error" in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_players__no_halt_banner_when_not_halted(self):
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_players
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {"page": "0"}
+
+        resp = await show_players(request)
+        body = resp.body.decode()
+
+        assert "HALTED" not in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_players__empty__shows_halt_banner_when_halted(self):
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_players
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.set("system:halted", "1")
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {"page": "0"}
+
+        resp = await show_players(request)
+        body = resp.body.decode()
+
+        assert "HALTED" in body
+        assert "banner--error" in body
+        await r.aclose()
+
+
+class TestHaltBannerDlq:
+    """Phase 9: /dlq shows halt banner when system:halted is set."""
+
+    @pytest.mark.asyncio
+    async def test_dlq__shows_halt_banner_when_halted(self):
+        import fakeredis.aioredis
+        from lol_pipeline.models import DLQEnvelope
+
+        from lol_ui.main import show_dlq
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.set("system:halted", "1")
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"match_id": "NA1_h1"},
+            attempts=1,
+            max_attempts=5,
+            failure_code="http_429",
+            failure_reason="rate limited",
+            failed_by="fetcher",
+            original_stream="stream:match_id",
+            original_message_id="orig-h1",
+        )
+        await r.xadd("stream:dlq", dlq.to_redis_fields())
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {}
+
+        resp = await show_dlq(request)
+        body = resp.body.decode()
+
+        assert "HALTED" in body
+        assert "banner--error" in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_dlq__no_halt_banner_when_not_halted(self):
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_dlq
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {}
+
+        resp = await show_dlq(request)
+        body = resp.body.decode()
+
+        assert "HALTED" not in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_dlq__empty__shows_halt_banner_when_halted(self):
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_dlq
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.set("system:halted", "1")
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {}
+
+        resp = await show_dlq(request)
+        body = resp.body.decode()
+
+        assert "HALTED" in body
+        assert "banner--error" in body
+        await r.aclose()
+
+
+class TestHaltBannerLogs:
+    """Phase 9: /logs shows halt banner when system:halted is set."""
+
+    @pytest.mark.asyncio
+    async def test_logs__shows_halt_banner_when_halted(self):
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_logs
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.set("system:halted", "1")
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+
+        with patch.dict("os.environ", {"LOG_DIR": ""}):
+            resp = await show_logs(request)
+        body = resp.body.decode()
+
+        assert "HALTED" in body
+        assert "banner--error" in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_logs__no_halt_banner_when_not_halted(self):
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_logs
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+
+        with patch.dict("os.environ", {"LOG_DIR": ""}):
+            resp = await show_logs(request)
+        body = resp.body.decode()
+
+        assert "HALTED" not in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_logs__with_files__shows_halt_banner_when_halted(self, tmp_path):
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_logs
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.set("system:halted", "1")
+
+        log_file = tmp_path / "svc.log"
+        log_file.write_text(
+            json.dumps({"timestamp": "2026-01-01T00:00:00", "message": "test"}) + "\n"
+        )
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+
+        with patch.dict("os.environ", {"LOG_DIR": str(tmp_path)}):
+            resp = await show_logs(request)
+        body = resp.body.decode()
+
+        assert "HALTED" in body
+        assert "banner--error" in body
+        await r.aclose()
+
+
+class TestHaltBannerStatsMatches:
+    """Phase 9: /stats/matches shows halt banner when system:halted is set."""
+
+    @pytest.mark.asyncio
+    async def test_stats_matches__shows_halt_banner_when_halted(self):
+        import fakeredis.aioredis
+
+        from lol_ui.main import stats_matches
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.set("system:halted", "1")
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.query_params = {
+            "puuid": "validpuuid",
+            "region": "na1",
+            "riot_id": "T#1",
+            "page": "0",
+        }
+        request.app.state.r = r
+
+        resp = await stats_matches(request)
+        body = resp.body.decode()
+
+        assert "HALTED" in body
+        assert "banner--error" in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_stats_matches__no_halt_banner_when_not_halted(self):
+        import fakeredis.aioredis
+
+        from lol_ui.main import stats_matches
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.query_params = {
+            "puuid": "validpuuid",
+            "region": "na1",
+            "riot_id": "T#1",
+            "page": "0",
+        }
+        request.app.state.r = r
+
+        resp = await stats_matches(request)
+        body = resp.body.decode()
+
+        assert "HALTED" not in body
+        await r.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Phase 9: DLQ inline replay button + POST endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestDlqReplayButton:
+    """Phase 9: Each DLQ entry has an inline Replay button."""
+
+    @pytest.mark.asyncio
+    async def test_show_dlq__each_entry_has_replay_button(self):
+        import fakeredis.aioredis
+        from lol_pipeline.models import DLQEnvelope
+
+        from lol_ui.main import show_dlq
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"match_id": "NA1_rb1"},
+            attempts=1,
+            max_attempts=5,
+            failure_code="http_429",
+            failure_reason="rate limited",
+            failed_by="fetcher",
+            original_stream="stream:match_id",
+            original_message_id="orig-rb1",
+        )
+        await r.xadd("stream:dlq", dlq.to_redis_fields())
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {}
+
+        resp = await show_dlq(request)
+        body = resp.body.decode()
+
+        assert "Replay" in body
+        assert 'action="/dlq/replay/' in body
+        assert 'method="post"' in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_show_dlq__action_column_header(self):
+        import fakeredis.aioredis
+        from lol_pipeline.models import DLQEnvelope
+
+        from lol_ui.main import show_dlq
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"match_id": "NA1_ac"},
+            attempts=1,
+            max_attempts=5,
+            failure_code="http_429",
+            failure_reason="rate limited",
+            failed_by="fetcher",
+            original_stream="stream:match_id",
+            original_message_id="orig-ac",
+        )
+        await r.xadd("stream:dlq", dlq.to_redis_fields())
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {}
+
+        resp = await show_dlq(request)
+        body = resp.body.decode()
+
+        assert "<th>Action</th>" in body
+        await r.aclose()
+
+
+class TestDlqReplayEndpoint:
+    """Phase 9: POST /dlq/replay/{entry_id} replays a DLQ entry."""
+
+    @pytest.mark.asyncio
+    async def test_dlq_replay__replays_entry_to_original_stream(self):
+        import fakeredis.aioredis
+        from lol_pipeline.models import DLQEnvelope
+
+        from lol_ui.main import dlq_replay
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"match_id": "NA1_rp1", "region": "na1"},
+            attempts=2,
+            max_attempts=5,
+            failure_code="http_429",
+            failure_reason="rate limited",
+            failed_by="fetcher",
+            original_stream="stream:match_id",
+            original_message_id="orig-rp1",
+            dlq_attempts=1,
+            priority="high",
+        )
+        entry_id = await r.xadd("stream:dlq", dlq.to_redis_fields())
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.app.state.cfg = MagicMock(max_attempts=5)
+
+        resp = await dlq_replay(request, entry_id)
+
+        # Should redirect to /dlq
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/dlq"
+
+        # DLQ entry should be deleted
+        remaining = await r.xrange("stream:dlq")
+        assert len(remaining) == 0
+
+        # Original stream should have the replayed message
+        replayed = await r.xrange("stream:match_id")
+        assert len(replayed) == 1
+        fields = replayed[0][1]
+        assert fields["source_stream"] == "stream:match_id"
+        assert fields["type"] == "match_id"
+        assert fields["priority"] == "high"
+        assert fields["dlq_attempts"] == "1"
+        payload = json.loads(fields["payload"])
+        assert payload["match_id"] == "NA1_rp1"
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_dlq_replay__nonexistent_entry_redirects(self):
+        import fakeredis.aioredis
+
+        from lol_ui.main import dlq_replay
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.app.state.cfg = MagicMock(max_attempts=5)
+
+        resp = await dlq_replay(request, "0-0")
+
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/dlq"
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_dlq_replay__corrupt_entry_redirects(self):
+        import fakeredis.aioredis
+
+        from lol_ui.main import dlq_replay
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        entry_id = await r.xadd("stream:dlq", {"garbage": "data"})
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.app.state.cfg = MagicMock(max_attempts=5)
+
+        resp = await dlq_replay(request, entry_id)
+
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/dlq"
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_dlq_replay__preserves_envelope_fields(self):
+        """Replayed envelope preserves enqueued_at, dlq_attempts, priority."""
+        import fakeredis.aioredis
+        from lol_pipeline.models import DLQEnvelope
+
+        from lol_ui.main import dlq_replay
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"puuid": "p1", "region": "kr"},
+            attempts=3,
+            max_attempts=5,
+            failure_code="http_5xx",
+            failure_reason="server error",
+            failed_by="parser",
+            original_stream="stream:parse",
+            original_message_id="orig-pres",
+            enqueued_at="2026-01-01T00:00:00+00:00",
+            dlq_attempts=2,
+            priority="normal",
+        )
+        entry_id = await r.xadd("stream:dlq", dlq.to_redis_fields())
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.app.state.cfg = MagicMock(max_attempts=10)
+
+        await dlq_replay(request, entry_id)
+
+        replayed = await r.xrange("stream:parse")
+        assert len(replayed) == 1
+        fields = replayed[0][1]
+        assert fields["enqueued_at"] == "2026-01-01T00:00:00+00:00"
+        assert fields["dlq_attempts"] == "2"
+        assert fields["priority"] == "normal"
+        assert fields["source_stream"] == "stream:parse"
+        assert fields["type"] == "parse"
+        assert fields["max_attempts"] == "10"
+        await r.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Phase 9: DLQ pagination
+# ---------------------------------------------------------------------------
+
+
+class TestDlqPagination:
+    """Phase 9: /dlq supports page and per_page query params."""
+
+    @pytest.mark.asyncio
+    async def test_dlq__default_page_shows_first_25(self):
+        import fakeredis.aioredis
+        from lol_pipeline.models import DLQEnvelope
+
+        from lol_ui.main import _DLQ_DEFAULT_PER_PAGE, show_dlq
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        for i in range(30):
+            dlq = DLQEnvelope(
+                source_stream="stream:dlq",
+                type="dlq",
+                payload={"match_id": f"NA1_{i}"},
+                attempts=1,
+                max_attempts=5,
+                failure_code="http_429",
+                failure_reason="rate limited",
+                failed_by="fetcher",
+                original_stream="stream:match_id",
+                original_message_id=f"orig-{i}",
+            )
+            await r.xadd("stream:dlq", dlq.to_redis_fields())
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {}
+
+        resp = await show_dlq(request)
+        body = resp.body.decode()
+
+        row_count = body.count("<tr><td>")
+        assert row_count == _DLQ_DEFAULT_PER_PAGE
+        assert "Next" in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_dlq__page1_shows_remaining(self):
+        import fakeredis.aioredis
+        from lol_pipeline.models import DLQEnvelope
+
+        from lol_ui.main import show_dlq
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        for i in range(30):
+            dlq = DLQEnvelope(
+                source_stream="stream:dlq",
+                type="dlq",
+                payload={"match_id": f"NA1_{i}"},
+                attempts=1,
+                max_attempts=5,
+                failure_code="http_429",
+                failure_reason="rate limited",
+                failed_by="fetcher",
+                original_stream="stream:match_id",
+                original_message_id=f"orig-{i}",
+            )
+            await r.xadd("stream:dlq", dlq.to_redis_fields())
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {"page": "1"}
+
+        resp = await show_dlq(request)
+        body = resp.body.decode()
+
+        # 30 entries, page 0 shows 25, page 1 shows 5
+        row_count = body.count("<tr><td>")
+        assert row_count == 5
+        assert "Prev" in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_dlq__custom_per_page(self):
+        import fakeredis.aioredis
+        from lol_pipeline.models import DLQEnvelope
+
+        from lol_ui.main import show_dlq
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        for i in range(15):
+            dlq = DLQEnvelope(
+                source_stream="stream:dlq",
+                type="dlq",
+                payload={"match_id": f"NA1_{i}"},
+                attempts=1,
+                max_attempts=5,
+                failure_code="http_429",
+                failure_reason="rate limited",
+                failed_by="fetcher",
+                original_stream="stream:match_id",
+                original_message_id=f"orig-{i}",
+            )
+            await r.xadd("stream:dlq", dlq.to_redis_fields())
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {"per_page": "10"}
+
+        resp = await show_dlq(request)
+        body = resp.body.decode()
+
+        row_count = body.count("<tr><td>")
+        assert row_count == 10
+        assert "Next" in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_dlq__per_page_capped_at_50(self):
+        import fakeredis.aioredis
+        from lol_pipeline.models import DLQEnvelope
+
+        from lol_ui.main import _DLQ_MAX_PER_PAGE, show_dlq
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        for i in range(60):
+            dlq = DLQEnvelope(
+                source_stream="stream:dlq",
+                type="dlq",
+                payload={"match_id": f"NA1_{i}"},
+                attempts=1,
+                max_attempts=5,
+                failure_code="http_429",
+                failure_reason="rate limited",
+                failed_by="fetcher",
+                original_stream="stream:match_id",
+                original_message_id=f"orig-{i}",
+            )
+            await r.xadd("stream:dlq", dlq.to_redis_fields())
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {"per_page": "100"}
+
+        resp = await show_dlq(request)
+        body = resp.body.decode()
+
+        row_count = body.count("<tr><td>")
+        assert row_count == _DLQ_MAX_PER_PAGE
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_dlq__prev_next_links_include_per_page(self):
+        import fakeredis.aioredis
+        from lol_pipeline.models import DLQEnvelope
+
+        from lol_ui.main import show_dlq
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        for i in range(15):
+            dlq = DLQEnvelope(
+                source_stream="stream:dlq",
+                type="dlq",
+                payload={"match_id": f"NA1_{i}"},
+                attempts=1,
+                max_attempts=5,
+                failure_code="http_429",
+                failure_reason="rate limited",
+                failed_by="fetcher",
+                original_stream="stream:match_id",
+                original_message_id=f"orig-{i}",
+            )
+            await r.xadd("stream:dlq", dlq.to_redis_fields())
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {"page": "1", "per_page": "5"}
+
+        resp = await show_dlq(request)
+        body = resp.body.decode()
+
+        assert "per_page=5" in body
+        assert "Prev" in body
+        assert "Next" in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_dlq__page_shows_per_page_info(self):
+        import fakeredis.aioredis
+        from lol_pipeline.models import DLQEnvelope
+
+        from lol_ui.main import show_dlq
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"match_id": "NA1_pp"},
+            attempts=1,
+            max_attempts=5,
+            failure_code="http_429",
+            failure_reason="rate limited",
+            failed_by="fetcher",
+            original_stream="stream:match_id",
+            original_message_id="orig-pp",
+        )
+        await r.xadd("stream:dlq", dlq.to_redis_fields())
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {}
+
+        resp = await show_dlq(request)
+        body = resp.body.decode()
+
+        assert "entries per page" in body
+        await r.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Phase 9: _make_replay_envelope
+# ---------------------------------------------------------------------------
+
+
+class TestMakeReplayEnvelope:
+    """Phase 9: _make_replay_envelope reconstructs MessageEnvelope from DLQ."""
+
+    def test_reconstructs_envelope_from_dlq(self):
+        from lol_pipeline.models import DLQEnvelope
+
+        from lol_ui.main import _make_replay_envelope
+
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"match_id": "NA1_re1", "region": "na1"},
+            attempts=3,
+            max_attempts=5,
+            failure_code="http_429",
+            failure_reason="rate limited",
+            failed_by="fetcher",
+            original_stream="stream:match_id",
+            original_message_id="orig-re1",
+            enqueued_at="2026-01-01T00:00:00+00:00",
+            dlq_attempts=2,
+            priority="high",
+        )
+
+        envelope = _make_replay_envelope(dlq, max_attempts=10)
+
+        assert envelope.source_stream == "stream:match_id"
+        assert envelope.type == "match_id"
+        assert envelope.payload == {"match_id": "NA1_re1", "region": "na1"}
+        assert envelope.max_attempts == 10
+        assert envelope.enqueued_at == "2026-01-01T00:00:00+00:00"
+        assert envelope.dlq_attempts == 2
+        assert envelope.priority == "high"
+
+    def test_type_derived_from_original_stream(self):
+        from lol_pipeline.models import DLQEnvelope
+
+        from lol_ui.main import _make_replay_envelope
+
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"puuid": "p1"},
+            attempts=1,
+            max_attempts=5,
+            failure_code="http_5xx",
+            failure_reason="server error",
+            failed_by="parser",
+            original_stream="stream:parse",
+            original_message_id="orig-tp",
+        )
+
+        envelope = _make_replay_envelope(dlq, max_attempts=5)
+
+        assert envelope.type == "parse"
+        assert envelope.source_stream == "stream:parse"

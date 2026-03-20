@@ -62,4 +62,5 @@ screenshots/
 # Match data — large output files don't belong in git
 lol-pipeline-fetcher/match-data/**/*.json
 lol-pipeline-fetcher/match-data/**/*.jsonl
-!lol-pipeline-fetcher/match-data/**/.gitkeep
+!lol-pipeline-fetcher/match-data/**/.gitkeep.hypothesis/
+*/.hypothesis/
