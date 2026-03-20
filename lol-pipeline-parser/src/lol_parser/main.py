@@ -16,7 +16,7 @@ from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.raw_store import RawStore
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.service import run_consumer
-from lol_pipeline.streams import ANALYZE_STREAM_MAXLEN, ack, nack_to_dlq, publish
+from lol_pipeline.streams import ANALYZE_STREAM_MAXLEN, ack, nack_to_dlq
 
 _IN_STREAM = "stream:parse"
 _OUT_STREAM = "stream:analyze"
@@ -104,9 +104,13 @@ async def _write_participants(
         if seen:
             await pipe.execute()
     # P10-CR-6: Cap player:matches per player to prevent unbounded growth.
-    for puuid in seen:
-        await r.zremrangebyrank(f"player:matches:{puuid}", 0, -(PLAYER_MATCHES_MAX + 1))
-        await r.expire(f"player:matches:{puuid}", 2592000)  # 30 days
+    # P13-OPT-6: Batch all trim + expire ops into one pipeline round-trip.
+    if seen:
+        async with r.pipeline(transaction=False) as trim_pipe:
+            for puuid in seen:
+                trim_pipe.zremrangebyrank(f"player:matches:{puuid}", 0, -(PLAYER_MATCHES_MAX + 1))
+                trim_pipe.expire(f"player:matches:{puuid}", 2592000)  # 30 days
+            await trim_pipe.execute()
     return seen
 
 
@@ -178,14 +182,23 @@ async def _parse_match(
 
     seen_puuids = await _write_participants(r, match_id, game_start, info["participants"], log)
 
-    for puuid in seen_puuids:
-        out = MessageEnvelope(
-            source_stream=_OUT_STREAM,
-            type="analyze",
-            payload={"puuid": puuid},
-            max_attempts=cfg.max_attempts,
-        )
-        await publish(r, _OUT_STREAM, out, maxlen=ANALYZE_STREAM_MAXLEN)
+    # P13-OPT-7: Batch all analyze publishes into one pipeline round-trip.
+    if seen_puuids:
+        async with r.pipeline(transaction=False) as pub_pipe:
+            for puuid in seen_puuids:
+                out = MessageEnvelope(
+                    source_stream=_OUT_STREAM,
+                    type="analyze",
+                    payload={"puuid": puuid},
+                    max_attempts=cfg.max_attempts,
+                )
+                pub_pipe.xadd(
+                    _OUT_STREAM,
+                    out.to_redis_fields(),  # type: ignore[arg-type]
+                    maxlen=ANALYZE_STREAM_MAXLEN,
+                    approximate=True,
+                )
+            await pub_pipe.execute()
 
     # Discover co-players: ZADD with GT so score only increases (newest game wins).
     # Member encodes "puuid:region" so discovery service has full context.

@@ -387,3 +387,43 @@ class TestRawStoreAsyncDiskIO:
 
         assert result == '{"data": 5}'
         assert len(calls) == 0
+
+
+class TestRawStoreTtlConfigurable:
+    """P13-INT-4: RAW_STORE_TTL_SECONDS env var controls the Redis key TTL."""
+
+    @pytest.mark.asyncio
+    async def test_set_uses_ttl_seconds(self, r):
+        """set() stores the key with a non-zero TTL."""
+        store = RawStore(r)
+        await store.set("NA1_TTL1", '{"data": 1}')
+        ttl = await r.ttl("raw:match:NA1_TTL1")
+        # TTL should be positive (key will expire)
+        assert ttl > 0
+
+    @pytest.mark.asyncio
+    async def test_get_writeback_uses_ttl_seconds(self, r, tmp_path):
+        """get() Redis write-back uses a positive TTL."""
+        match_id = "NA1_TTL2"
+        bundle = tmp_path / "NA1" / "2099-01.jsonl"
+        bundle.parent.mkdir(parents=True, exist_ok=True)
+        bundle.write_text(f'{match_id}\t{{"data": 2}}\n', encoding="utf-8")
+
+        store = RawStore(r, data_dir=str(tmp_path))
+        result = await store.get(match_id)
+        assert result is not None
+
+        ttl = await r.ttl(f"raw:match:{match_id}")
+        assert ttl > 0
+
+    def test_ttl_seconds_env_var(self, monkeypatch):
+        """_TTL_SECONDS reads from RAW_STORE_TTL_SECONDS env var."""
+        import importlib
+
+        import lol_pipeline.raw_store as raw_store_mod
+
+        monkeypatch.setenv("RAW_STORE_TTL_SECONDS", "999")
+        importlib.reload(raw_store_mod)
+        assert raw_store_mod._TTL_SECONDS == 999
+        monkeypatch.delenv("RAW_STORE_TTL_SECONDS", raising=False)
+        importlib.reload(raw_store_mod)

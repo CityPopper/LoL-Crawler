@@ -65,6 +65,13 @@ async def _ensure_group(r: aioredis.Redis, stream: str, group: str) -> None:
     pairs.add(key)
 
 
+def _invalidate_ensured(r: aioredis.Redis, stream: str, group: str) -> None:
+    """Remove (stream, group) from the _ensured cache after a NOGROUP error."""
+    pairs = _ensured.get(r)
+    if pairs is not None:
+        pairs.discard((stream, group))
+
+
 async def _deserialize_entries_typed[T](
     r: aioredis.Redis,
     stream: str,
@@ -115,7 +122,14 @@ async def consume_typed[T](  # noqa: PLR0913
     # Drain own PEL first (id="0" returns already-delivered, unacked messages).
     # Note: Redis 7 returns [["stream", []]] (truthy!) when PEL is empty, so we
     # must check actual message count rather than the truthiness of the outer list.
-    pending: list[Any] = await r.xreadgroup(group, consumer, {stream: "0"}, count=count)
+    try:
+        pending: list[Any] = await r.xreadgroup(group, consumer, {stream: "0"}, count=count)
+    except ResponseError as exc:
+        if "NOGROUP" in str(exc):
+            # Redis restarted and the consumer group is gone — invalidate the cache
+            # so _ensure_group recreates it on the next call instead of being skipped.
+            _invalidate_ensured(r, stream, group)
+        raise
     pel_messages = await _deserialize_entries_typed(r, stream, group, pending, deserializer)
     if pel_messages:
         return pel_messages

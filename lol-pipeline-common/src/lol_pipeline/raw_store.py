@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import os
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,7 +14,10 @@ import redis.asyncio as aioredis
 import zstandard as zstd
 
 _KEY_PREFIX = "raw:match:"
-_TTL_SECONDS = 86400  # 24 h — prevents OOM under noeviction policy
+# Configurable TTL for raw blobs.  Default 24h.  Set RAW_STORE_TTL_SECONDS to
+# align with MATCH_DATA_TTL_SECONDS (7d) in production so replay-parse still
+# finds raw blobs within the parsed-data retention window.
+_TTL_SECONDS: int = int(os.getenv("RAW_STORE_TTL_SECONDS", "86400"))
 _log = logging.getLogger("raw_store")
 
 

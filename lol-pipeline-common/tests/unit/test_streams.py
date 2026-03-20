@@ -315,6 +315,81 @@ class TestEnsureGroupErrors:
             await _ensure_group(mock_r, "stream:test", "g")
 
 
+class TestNogroupCacheInvalidation:
+    """P13-DBG-3: NOGROUP ResponseError from xreadgroup clears the _ensured cache."""
+
+    @pytest.mark.asyncio
+    async def test_nogroup_error_clears_cache(self):
+        """After a NOGROUP xreadgroup error the cache entry is discarded."""
+        from lol_pipeline.streams import _ensured
+
+        mock_r = AsyncMock()
+        # First call: xgroup_create succeeds (BUSYGROUP suppressed)
+        mock_r.xgroup_create.side_effect = ResponseError("BUSYGROUP already exists")
+        # xreadgroup raises NOGROUP (Redis restarted, group gone)
+        mock_r.xreadgroup.side_effect = ResponseError(
+            "NOGROUP No such consumer group 'g' for key name 'stream:test'"
+        )
+
+        with pytest.raises(ResponseError, match="NOGROUP"):
+            await consume(mock_r, "stream:test", "g", "c", block=0)
+
+        # Cache must be cleared so next consume() re-creates the group
+        pairs = _ensured.get(mock_r)
+        assert pairs is None or ("stream:test", "g") not in pairs
+
+    @pytest.mark.asyncio
+    async def test_nogroup_error_reraises(self):
+        """NOGROUP ResponseError propagates to caller even after clearing cache."""
+        mock_r = AsyncMock()
+        mock_r.xgroup_create.side_effect = ResponseError("BUSYGROUP already exists")
+        mock_r.xreadgroup.side_effect = ResponseError("NOGROUP No such consumer group")
+
+        with pytest.raises(ResponseError, match="NOGROUP"):
+            await consume(mock_r, "stream:test", "g", "c", block=0)
+
+    @pytest.mark.asyncio
+    async def test_non_nogroup_response_error_does_not_clear_cache(self):
+        """Non-NOGROUP ResponseError from xreadgroup leaves the cache intact."""
+        from lol_pipeline.streams import _ensured
+
+        mock_r = AsyncMock()
+        # Successful group creation
+        mock_r.xgroup_create.return_value = "OK"
+        # xreadgroup raises a different ResponseError
+        mock_r.xreadgroup.side_effect = ResponseError("WRONGTYPE wrong kind of value")
+
+        with pytest.raises(ResponseError, match="WRONGTYPE"):
+            await consume(mock_r, "stream:test", "g", "c", block=0)
+
+        # Cache should still contain the entry (not cleared for unrelated errors)
+        pairs = _ensured.get(mock_r)
+        assert pairs is not None and ("stream:test", "g") in pairs
+
+    @pytest.mark.asyncio
+    async def test_invalidate_ensured_removes_entry(self):
+        """_invalidate_ensured removes the (stream, group) from cache."""
+        from lol_pipeline.streams import _ensured, _invalidate_ensured
+
+        mock_r = AsyncMock()
+        _ensured[mock_r] = {("stream:a", "g"), ("stream:b", "h")}
+
+        _invalidate_ensured(mock_r, "stream:a", "g")
+
+        pairs = _ensured.get(mock_r)
+        assert pairs is not None
+        assert ("stream:a", "g") not in pairs
+        assert ("stream:b", "h") in pairs  # other entry untouched
+
+    @pytest.mark.asyncio
+    async def test_invalidate_ensured_no_error_when_not_cached(self):
+        """_invalidate_ensured is a no-op when the client has no cache entry."""
+        from lol_pipeline.streams import _invalidate_ensured
+
+        mock_r = AsyncMock()
+        _invalidate_ensured(mock_r, "stream:x", "g")  # should not raise
+
+
 class TestPublishErrors:
     @pytest.mark.asyncio
     async def test_publish__xadd_raises__propagates(self):

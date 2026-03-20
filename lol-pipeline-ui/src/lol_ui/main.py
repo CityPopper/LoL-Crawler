@@ -645,15 +645,39 @@ def _match_history_section(puuid: str, region: str, riot_id: str) -> str:
 <script>
 function loadMatches(puuid, region, riotId, page) {{
   var container = document.getElementById('match-history-container');
-  container.innerHTML = '<div class="loading-state">'
-    + '<span class="spinner"></span> Loading match history\u2026</div>';
+  var isFirst = page === 0;
+  if (isFirst) {{
+    container.innerHTML = '<div class="loading-state">'
+      + '<span class="spinner"></span> Loading match history\u2026</div>';
+  }} else {{
+    var btn = container.querySelector('.load-matches');
+    if (btn) {{ btn.textContent = 'Loading\u2026'; btn.style.pointerEvents = 'none'; }}
+  }}
   var url = '/stats/matches?puuid=' + encodeURIComponent(puuid)
     + '&region=' + encodeURIComponent(region)
     + '&riot_id=' + encodeURIComponent(riotId)
     + '&page=' + page;
   fetch(url, {{headers: {{'Accept': 'text/html'}}}})
     .then(function(r) {{ return r.text(); }})
-    .then(function(html) {{ container.innerHTML = html; }})
+    .then(function(html) {{
+      if (isFirst) {{
+        container.innerHTML = html;
+      }} else {{
+        var tmp = document.createElement('div');
+        tmp.innerHTML = html;
+        var existingTbl = container.querySelector('table');
+        var newTbl = tmp.querySelector('table');
+        if (existingTbl && newTbl) {{
+          Array.from(newTbl.rows).slice(1).forEach(function(row) {{
+            existingTbl.appendChild(row.cloneNode(true));
+          }});
+        }}
+        var oldLink = container.querySelector('.load-matches');
+        if (oldLink) {{ oldLink.closest('p').remove(); }}
+        var newLink = tmp.querySelector('.load-matches');
+        if (newLink) {{ container.appendChild(newLink.closest('p')); }}
+      }}
+    }})
     .catch(function(e) {{
       container.textContent = '';
       var p = document.createElement('p');
@@ -1293,7 +1317,13 @@ async def show_streams(request: Request) -> HTMLResponse:
     fetch('/streams/fragment')
       .then(function(r) { return r.text(); })
       .then(function(html) { container.innerHTML = html; spinner.style.display = 'none'; })
-      .catch(function() { spinner.style.display = 'none'; });
+      .catch(function(e) {
+        spinner.style.display = 'none';
+        var msg = document.createElement('p');
+        msg.className = 'error';
+        msg.textContent = 'Failed to refresh streams: ' + (e.message || 'network error');
+        container.prepend(msg);
+      });
   }
 
   setInterval(refresh, 5000);
@@ -1705,7 +1735,12 @@ async def show_logs(request: Request) -> HTMLResponse:
     fetch('/logs/fragment')
       .then(function(r) { return r.text(); })
       .then(function(html) { container.innerHTML = html; })
-      .catch(function() {});
+      .catch(function(e) {
+        var msg = document.createElement('p');
+        msg.className = 'error';
+        msg.textContent = 'Failed to refresh logs: ' + (e.message || 'network error');
+        container.prepend(msg);
+      });
   }
 
   timer = setInterval(refresh, 2000);

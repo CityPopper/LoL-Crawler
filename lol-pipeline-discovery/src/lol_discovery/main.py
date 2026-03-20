@@ -185,6 +185,7 @@ async def _promote_batch(
                     "seeded_at": now_iso,
                 },
             )
+            await pipe.expire(f"player:{puuid}", 2592000)  # 30 days
             await pipe.zadd("players:all", {puuid: time.time()})
             await pipe.zrem(_DISCOVER_KEY, member)
             await pipe.execute()
