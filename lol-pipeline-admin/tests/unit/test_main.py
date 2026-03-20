@@ -16,6 +16,8 @@ from lol_pipeline.riot_api import RiotClient
 
 from lol_admin.main import (
     _dispatch,
+    _dlq_entries,
+    _make_replay_envelope,
     _region_from_match_id,
     _resolve_puuid,
     cmd_dlq_clear,
@@ -458,6 +460,31 @@ class TestRecalcPriority:
         output = capsys.readouterr().out
         assert "recalculated: 3" in output
 
+    @pytest.mark.asyncio
+    async def test_recalc_priority__warns_when_not_halted(self, r, capsys):
+        """I2-H13: recalc-priority prints warning to stderr when system is not halted."""
+        await r.set("player:priority:puuid-1", "high")
+        args = argparse.Namespace()
+        result = await cmd_recalc_priority(r, args)
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "Warning" in captured.err
+        assert "pipeline halted" in captured.err
+        # Should still complete successfully
+        assert await r.get("system:priority_count") == "1"
+
+    @pytest.mark.asyncio
+    async def test_recalc_priority__no_warning_when_halted(self, r, capsys):
+        """I2-H13: recalc-priority does NOT warn when system:halted is set."""
+        await r.set("system:halted", "1")
+        await r.set("player:priority:puuid-1", "high")
+        args = argparse.Namespace()
+        result = await cmd_recalc_priority(r, args)
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "Warning" not in captured.err
+        assert await r.get("system:priority_count") == "1"
+
 
 class TestUserFacingErrorsUsePrint:
     """CQ-2: user-facing errors should go to stderr via print(), not JSON logger."""
@@ -574,3 +601,276 @@ class TestDlqClearNoAll:
         assert "--all is required" in captured.err
         # DLQ should be unchanged
         assert await r.xlen(_DLQ_STREAM) == 2
+
+
+class TestDlqEntriesCorruptSkip:
+    """B4: corrupt DLQ entries must be skipped, not crash the caller."""
+
+    @pytest.mark.asyncio
+    async def test_corrupt_entry_skipped__valid_entries_returned(self, r):
+        """Mixed valid + corrupt entries → only valid ones returned."""
+        # Add a valid entry
+        dlq = _make_dlq(match_id="NA1_good")
+        await r.xadd(_DLQ_STREAM, dlq.to_redis_fields())
+
+        # Add a corrupt entry (missing required 'id' field)
+        await r.xadd(_DLQ_STREAM, {"garbage": "data"})
+
+        # Add another valid entry
+        dlq2 = _make_dlq(match_id="NA1_also_good")
+        await r.xadd(_DLQ_STREAM, dlq2.to_redis_fields())
+
+        entries = await _dlq_entries(r)
+        assert len(entries) == 2
+        payloads = [e.payload["match_id"] for _, e in entries]
+        assert "NA1_good" in payloads
+        assert "NA1_also_good" in payloads
+
+    @pytest.mark.asyncio
+    async def test_all_corrupt__returns_empty(self, r):
+        """All entries corrupt → returns empty list, no crash."""
+        await r.xadd(_DLQ_STREAM, {"bad": "entry"})
+        await r.xadd(_DLQ_STREAM, {"also": "bad"})
+
+        entries = await _dlq_entries(r)
+        assert entries == []
+
+    @pytest.mark.asyncio
+    async def test_corrupt_entry_with_bad_json_payload__skipped(self, r):
+        """Entry with invalid JSON in payload field → skipped."""
+        dlq = _make_dlq(match_id="NA1_valid")
+        await r.xadd(_DLQ_STREAM, dlq.to_redis_fields())
+
+        # Entry with all fields present but payload is invalid JSON
+        bad_fields = dlq.to_redis_fields()
+        bad_fields["payload"] = "not-valid-json{{"
+        await r.xadd(_DLQ_STREAM, bad_fields)
+
+        entries = await _dlq_entries(r)
+        assert len(entries) == 1
+        assert entries[0][1].payload["match_id"] == "NA1_valid"
+
+    @pytest.mark.asyncio
+    async def test_dlq_list_with_corrupt_entry__still_works(self, r, capsys):
+        """cmd_dlq_list with mixed valid/corrupt → prints valid, returns 0."""
+        dlq = _make_dlq(match_id="NA1_ok")
+        await r.xadd(_DLQ_STREAM, dlq.to_redis_fields())
+        await r.xadd(_DLQ_STREAM, {"corrupt": "true"})
+
+        args = argparse.Namespace()
+        result = await cmd_dlq_list(r, args)
+        assert result == 0
+        lines = [x for x in capsys.readouterr().out.strip().split("\n") if x]
+        assert len(lines) == 1
+        record = json.loads(lines[0])
+        assert record["failure_code"] == "http_429"
+
+
+class TestMakeReplayEnvelopePreservesMetadata:
+    """B5: _make_replay_envelope must preserve enqueued_at and dlq_attempts."""
+
+    def test_preserves_enqueued_at(self):
+        """Replay envelope uses the original enqueued_at, not current time."""
+        original_time = "2024-06-15T12:00:00+00:00"
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"match_id": "NA1_1", "region": "na1"},
+            attempts=3,
+            max_attempts=5,
+            failure_code="http_429",
+            failure_reason="rate limited",
+            failed_by="fetcher",
+            original_stream="stream:match_id",
+            original_message_id="msg-001",
+            enqueued_at=original_time,
+        )
+        envelope = _make_replay_envelope(dlq, max_attempts=5)
+        assert envelope.enqueued_at == original_time
+
+    def test_preserves_dlq_attempts(self):
+        """Replay envelope carries forward dlq_attempts from DLQ envelope."""
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"match_id": "NA1_2", "region": "na1"},
+            attempts=3,
+            max_attempts=5,
+            failure_code="http_5xx",
+            failure_reason="server error",
+            failed_by="fetcher",
+            original_stream="stream:match_id",
+            original_message_id="msg-002",
+            dlq_attempts=4,
+        )
+        envelope = _make_replay_envelope(dlq, max_attempts=5)
+        assert envelope.dlq_attempts == 4
+
+    def test_preserves_both_enqueued_at_and_dlq_attempts(self):
+        """Both fields are preserved together in a single replay envelope."""
+        original_time = "2024-01-01T00:00:00+00:00"
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"match_id": "NA1_3", "region": "na1"},
+            attempts=2,
+            max_attempts=5,
+            failure_code="http_429",
+            failure_reason="rate limited",
+            failed_by="fetcher",
+            original_stream="stream:parse",
+            original_message_id="msg-003",
+            enqueued_at=original_time,
+            dlq_attempts=7,
+        )
+        envelope = _make_replay_envelope(dlq, max_attempts=10)
+        assert envelope.enqueued_at == original_time
+        assert envelope.dlq_attempts == 7
+        assert envelope.source_stream == "stream:parse"
+        assert envelope.type == "parse"
+        assert envelope.max_attempts == 10
+
+    def test_preserves_priority(self):
+        """I2-H6: Replay envelope preserves priority from original DLQ envelope."""
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"match_id": "NA1_4", "region": "na1"},
+            attempts=1,
+            max_attempts=5,
+            failure_code="http_429",
+            failure_reason="rate limited",
+            failed_by="fetcher",
+            original_stream="stream:match_id",
+            original_message_id="msg-004",
+            priority="high",
+        )
+        envelope = _make_replay_envelope(dlq, max_attempts=5)
+        assert envelope.priority == "high"
+
+    def test_preserves_normal_priority(self):
+        """Replay envelope preserves normal priority (default) correctly."""
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"match_id": "NA1_5", "region": "na1"},
+            attempts=1,
+            max_attempts=5,
+            failure_code="http_5xx",
+            failure_reason="server error",
+            failed_by="fetcher",
+            original_stream="stream:parse",
+            original_message_id="msg-005",
+            priority="normal",
+        )
+        envelope = _make_replay_envelope(dlq, max_attempts=5)
+        assert envelope.priority == "normal"
+
+
+class TestReseedHighPriority:
+    """I2-H8: cmd_reseed must use high priority and set_priority(), matching Seed service."""
+
+    @pytest.mark.asyncio
+    async def test_reseed__uses_high_priority(self, r, cfg):
+        """Reseed envelope has priority='high', not default 'normal'."""
+        puuid = "test-puuid-high"
+        await r.hset(
+            f"player:{puuid}",
+            mapping={"seeded_at": "2024-01-01", "last_crawled_at": "2024-01-01"},
+        )
+
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Hi/NA1"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": puuid, "gameName": "Hi", "tagLine": "NA1"},
+                )
+            )
+            riot = RiotClient("RGAPI-test")
+            args = argparse.Namespace(riot_id="Hi#NA1", region="na1")
+            result = await cmd_reseed(r, riot, cfg, args)
+            await riot.close()
+
+        assert result == 0
+        # Read back the envelope from stream:puuid and verify priority
+        entries = await r.xrange("stream:puuid", "-", "+")
+        assert len(entries) == 1
+        from lol_pipeline.models import MessageEnvelope
+
+        env = MessageEnvelope.from_redis_fields(entries[0][1])
+        assert env.priority == "high"
+
+    @pytest.mark.asyncio
+    async def test_reseed__sets_priority_key(self, r, cfg):
+        """Reseed sets player:priority:{puuid} via set_priority()."""
+        puuid = "test-puuid-prio"
+        await r.hset(
+            f"player:{puuid}",
+            mapping={"seeded_at": "2024-01-01", "last_crawled_at": "2024-01-01"},
+        )
+
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Prio/NA1"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": puuid, "gameName": "Prio", "tagLine": "NA1"},
+                )
+            )
+            riot = RiotClient("RGAPI-test")
+            args = argparse.Namespace(riot_id="Prio#NA1", region="na1")
+            result = await cmd_reseed(r, riot, cfg, args)
+            await riot.close()
+
+        assert result == 0
+        # Verify priority key was set
+        prio_val = await r.get(f"player:priority:{puuid}")
+        assert prio_val == "high"
+
+
+class TestMainRedisConnectionError:
+    """I2-H9: Redis connection errors produce friendly messages, not raw tracebacks."""
+
+    @pytest.mark.asyncio
+    async def test_main__redis_error_during_dispatch__returns_1(self, monkeypatch, capsys):
+        """RedisError during command dispatch prints friendly message, returns 1."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        from redis.exceptions import ConnectionError as RedisConnectionError
+
+        mock_dispatch = AsyncMock(side_effect=RedisConnectionError("Connection refused"))
+        mock_r = AsyncMock()
+        mock_riot = AsyncMock()
+        with (
+            patch("lol_admin.main._dispatch", mock_dispatch),
+            patch("lol_admin.main.get_redis", return_value=mock_r),
+            patch("lol_admin.main.RiotClient", return_value=mock_riot),
+        ):
+            result = await main(["admin", "system-halt"])
+        assert result == 1
+        captured = capsys.readouterr()
+        assert "Cannot connect to Redis" in captured.err
+        assert "just run" in captured.err
+
+    @pytest.mark.asyncio
+    async def test_main__redis_error_during_dispatch__closes_connections(self, monkeypatch, capsys):
+        """Even on RedisError, connections are properly closed via finally block."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        from redis.exceptions import RedisError
+
+        mock_dispatch = AsyncMock(side_effect=RedisError("Redis unavailable"))
+        mock_r = AsyncMock()
+        mock_riot = AsyncMock()
+        with (
+            patch("lol_admin.main._dispatch", mock_dispatch),
+            patch("lol_admin.main.get_redis", return_value=mock_r),
+            patch("lol_admin.main.RiotClient", return_value=mock_riot),
+        ):
+            result = await main(["admin", "system-resume"])
+        assert result == 1
+        mock_r.aclose.assert_awaited_once()
+        mock_riot.close.assert_awaited_once()

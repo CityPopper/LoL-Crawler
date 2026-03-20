@@ -28,14 +28,14 @@ async def r():
 
 class TestSetPriority:
     @pytest.mark.asyncio
-    async def test_set_priority__creates_key_without_ttl(self, r):
-        """set_priority creates player:priority:{puuid} without a TTL."""
+    async def test_set_priority__creates_key_with_ttl(self, r):
+        """set_priority creates player:priority:{puuid} with a TTL (B12)."""
         await set_priority(r, "puuid-abc")
 
         val = await r.get("player:priority:puuid-abc")
         assert val == "high"
         ttl = await r.ttl("player:priority:puuid-abc")
-        assert ttl == -1  # no expiry — TTL removed to prevent counter drift
+        assert ttl > 0  # has expiry — prevents orphaned keys blocking Discovery
 
     @pytest.mark.asyncio
     async def test_set_priority__increments_counter(self, r):
@@ -122,18 +122,50 @@ class TestPriorityCounterFloor:
         assert count == 0  # must NOT be -1
 
 
-class TestNoTTLOnPriorityKeys:
-    """R1: player:priority:{puuid} must NOT have a TTL to prevent counter drift."""
+class TestPriorityKeyTTL:
+    """B12: player:priority:{puuid} has a TTL to prevent orphaned keys blocking Discovery."""
 
     @pytest.mark.asyncio
-    async def test_set_priority__key_has_no_ttl(self, r):
-        """set_priority creates key WITHOUT TTL — expiry caused counter drift."""
+    async def test_set_priority__key_has_ttl(self, r):
+        """set_priority creates key WITH TTL — prevents orphaned keys (B12)."""
         await set_priority(r, "puuid-abc")
 
         val = await r.get("player:priority:puuid-abc")
         assert val == "high"
         ttl = await r.ttl("player:priority:puuid-abc")
-        assert ttl == -1  # no expiry
+        assert 0 < ttl <= 86400  # default 24h TTL
+
+
+class TestPriorityKeyTTLValue:
+    """B12: TTL can be customised and defaults to 24h."""
+
+    @pytest.mark.asyncio
+    async def test_set_priority__default_ttl_is_86400(self, r):
+        """Default TTL is 86400 seconds (24 hours)."""
+        await set_priority(r, "puuid-ttl")
+        ttl = await r.ttl("player:priority:puuid-ttl")
+        # Allow some tolerance for test execution time
+        assert 86390 <= ttl <= 86400
+
+    @pytest.mark.asyncio
+    async def test_set_priority__custom_ttl(self, r):
+        """Custom TTL is applied when passed explicitly."""
+        await set_priority(r, "puuid-custom", ttl=3600)
+        ttl = await r.ttl("player:priority:puuid-custom")
+        assert 3590 <= ttl <= 3600
+
+    @pytest.mark.asyncio
+    async def test_set_priority__duplicate_does_not_reset_ttl(self, r):
+        """Calling set_priority twice with same PUUID does not reset the TTL."""
+        await set_priority(r, "puuid-dup-ttl", ttl=100)
+        # First call sets TTL around 100
+        ttl1 = await r.ttl("player:priority:puuid-dup-ttl")
+        assert 90 <= ttl1 <= 100
+        # Second call (SET NX fails, no EXPIRE) — TTL stays
+        await set_priority(r, "puuid-dup-ttl", ttl=5000)
+        ttl2 = await r.ttl("player:priority:puuid-dup-ttl")
+        # Should still be close to original TTL, NOT 5000
+        assert ttl2 <= 100
 
 
 class TestPriorityCount:

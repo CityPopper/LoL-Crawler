@@ -12,6 +12,7 @@ import redis.asyncio as aioredis
 import zstandard as zstd
 
 _KEY_PREFIX = "raw:match:"
+_TTL_SECONDS = 86400  # 24 h — prevents OOM under noeviction policy
 _log = logging.getLogger("raw_store")
 
 
@@ -123,13 +124,13 @@ class RawStore:
         data = self._search_bundles(match_id)
         if data is not None:
             # Write-back: repopulate Redis so subsequent reads are fast
-            await self._r.set(f"{_KEY_PREFIX}{match_id}", data, nx=True)
+            await self._r.set(f"{_KEY_PREFIX}{match_id}", data, nx=True, ex=_TTL_SECONDS)
             return data
         return None
 
     async def set(self, match_id: str, data: str) -> None:
         """Write raw JSON blob to Redis and disk. No-op if already stored."""
-        was_set = await self._r.set(f"{_KEY_PREFIX}{match_id}", data, nx=True)
+        was_set = await self._r.set(f"{_KEY_PREFIX}{match_id}", data, nx=True, ex=_TTL_SECONDS)
         bp = self._bundle_path(match_id)
         if bp is None:
             return

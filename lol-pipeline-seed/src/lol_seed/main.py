@@ -104,8 +104,10 @@ async def seed(
         max_attempts=cfg.max_attempts,
         priority="high",
     )
-    entry_id = await publish(r, _STREAM, envelope)
+    # Set priority before publishing so clear_priority() by downstream
+    # services cannot race against a not-yet-set priority key.
     await set_priority(r, puuid)
+    entry_id = await publish(r, _STREAM, envelope)
 
     now_iso = datetime.now(tz=UTC).isoformat()
     await r.hset(  # type: ignore[misc]

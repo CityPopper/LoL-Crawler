@@ -12,9 +12,13 @@ import redis.asyncio as aioredis
 from lol_pipeline.config import Config
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import DLQEnvelope, MessageEnvelope
+from lol_pipeline.priority import set_priority
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.resolve import resolve_puuid
 from lol_pipeline.riot_api import PLATFORM_TO_REGION, RiotClient
+from lol_pipeline.streams import publish
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import RedisError
 
 _log = get_logger("admin")
 
@@ -30,11 +34,17 @@ _STREAM_DLQ = "stream:dlq"
 
 
 async def _dlq_entries(r: aioredis.Redis) -> list[tuple[str, DLQEnvelope]]:
-    """Return (stream_entry_id, DLQEnvelope) pairs from stream:dlq."""
+    """Return (stream_entry_id, DLQEnvelope) pairs from stream:dlq.
+
+    Corrupt entries are logged and skipped instead of crashing the caller.
+    """
     raw: list[Any] = await r.xrange(_STREAM_DLQ, "-", "+")
     result: list[tuple[str, DLQEnvelope]] = []
     for entry_id, fields in raw:
-        result.append((entry_id, DLQEnvelope.from_redis_fields(fields)))
+        try:
+            result.append((entry_id, DLQEnvelope.from_redis_fields(fields)))
+        except (KeyError, ValueError, TypeError) as exc:
+            _log.warning("skipping corrupt DLQ entry %s: %s", entry_id, exc)
     return result
 
 
@@ -45,6 +55,9 @@ def _make_replay_envelope(dlq: DLQEnvelope, max_attempts: int) -> MessageEnvelop
         type=original_type,
         payload=dlq.payload,
         max_attempts=max_attempts,
+        enqueued_at=dlq.enqueued_at,
+        dlq_attempts=dlq.dlq_attempts,
+        priority=dlq.priority,
     )
 
 
@@ -120,7 +133,8 @@ async def cmd_dlq_list(r: aioredis.Redis, args: argparse.Namespace) -> int:
             "entry_id": entry_id,
             "id": dlq.id,
             "failure_code": dlq.failure_code,
-            "source_stream": dlq.source_stream,
+            "original_stream": dlq.original_stream,
+            "failed_by": dlq.failed_by,
             "attempts": dlq.attempts,
             "dlq_attempts": dlq.dlq_attempts,
             "enqueued_at": dlq.enqueued_at,
@@ -204,7 +218,18 @@ async def cmd_replay_fetch(r: aioredis.Redis, cfg: Config, args: argparse.Namesp
 
 
 async def cmd_recalc_priority(r: aioredis.Redis, args: argparse.Namespace) -> int:
-    """Recalculate system:priority_count by scanning actual player:priority:* keys."""
+    """Recalculate system:priority_count by scanning actual player:priority:* keys.
+
+    Should be run with the pipeline halted (``just halt``) to avoid SCAN races
+    with active writers that can cause the counted value to diverge from reality.
+    """
+    halted = await r.get("system:halted")
+    if not halted:
+        print(
+            "Warning: recalc-priority should be run with the pipeline halted"
+            " (just halt). Continuing anyway...",
+            file=sys.stderr,
+        )
     count = 0
     async for _key in r.scan_iter(match="player:priority:*", count=100):
         count += 1
@@ -224,7 +249,7 @@ async def cmd_reseed(
     # Clear cooldown fields so the next Seed run is not blocked
     await r.hdel(f"player:{puuid}", "seeded_at", "last_crawled_at")  # type: ignore[misc]
 
-    # Publish directly to stream:puuid
+    # Publish directly to stream:puuid (high priority, matching Seed service)
     envelope = MessageEnvelope(
         source_stream=_STREAM_PUUID,
         type="puuid",
@@ -235,13 +260,10 @@ async def cmd_reseed(
             "region": args.region,
         },
         max_attempts=cfg.max_attempts,
+        priority="high",
     )
-    entry_id = await r.xadd(
-        _STREAM_PUUID,
-        envelope.to_redis_fields(),  # type: ignore[arg-type]
-        maxlen=10_000,
-        approximate=True,
-    )
+    await set_priority(r, puuid)
+    entry_id = await publish(r, _STREAM_PUUID, envelope)
     print(f"reseeded {args.riot_id} → {_STREAM_PUUID} ({entry_id})")
     return 0
 
@@ -284,7 +306,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_rs.add_argument("--region", default="na1")
 
     sub.add_parser(
-        "recalc-priority", help="recalculate system:priority_count from actual priority keys"
+        "recalc-priority",
+        help="recalculate system:priority_count from actual priority keys"
+        " (run with pipeline halted via 'just halt' to avoid SCAN races)",
     )
 
     return parser
@@ -343,11 +367,25 @@ async def main(argv: list[str]) -> int:
     args = parser.parse_args(argv[1:])
 
     cfg = Config()
-    r = get_redis(cfg.redis_url)
-    riot = RiotClient(cfg.riot_api_key)
+    try:
+        r = get_redis(cfg.redis_url)
+        riot = RiotClient(cfg.riot_api_key)
+    except (RedisConnectionError, RedisError) as exc:
+        print(
+            f"Error: Cannot connect to Redis. Is the stack running? Try: just run ({exc})",
+            file=sys.stderr,
+        )
+        return 1
 
     try:
         return await _dispatch(r, riot, cfg, args)
+    except (RedisConnectionError, RedisError) as exc:
+        print(
+            "Error: Cannot connect to Redis. Is the stack running? Try: just run",
+            file=sys.stderr,
+        )
+        _log.debug("Redis connection error: %s", exc)
+        return 1
     finally:
         await r.aclose()
         await riot.close()

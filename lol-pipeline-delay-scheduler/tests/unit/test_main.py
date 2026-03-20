@@ -263,17 +263,17 @@ class TestDelaySchedulerRedisErrors:
         past_ms = int(time.time() * 1000) - 1
         await _add_delayed(r, env, past_ms)
 
-        original_xadd = r.xadd
+        original_eval = r.eval
 
-        async def failing_xadd(*args, **kwargs):
+        async def failing_eval(*args, **kwargs):
             raise RedisError("connection lost")
 
-        r.xadd = failing_xadd
+        r.eval = failing_eval
 
         await _tick(r, log)
 
-        r.xadd = original_xadd
-        # Member should still be in sorted set since XADD failed
+        r.eval = original_eval
+        # Member should still be in sorted set since eval (XADD+ZREM) failed
         assert await r.zcard(_DELAYED_KEY) == 1
 
 
@@ -435,31 +435,31 @@ class TestXaddOSErrorContinuesProcessing:
     """OSError during individual XADD in _tick does not crash the loop."""
 
     @pytest.mark.asyncio
-    async def test_oserror_on_xadd__member_preserved_in_zset(self, r, log):
-        """When XADD raises OSError for a member, it stays in delayed:messages for retry."""
+    async def test_oserror_on_eval__member_preserved_in_zset(self, r, log):
+        """When eval (atomic XADD+ZREM) raises OSError, member stays in ZSET for retry."""
         env = _delayed_envelope()
         past_ms = int(time.time() * 1000) - 1
         await _add_delayed(r, env, past_ms)
 
-        original_xadd = r.xadd
+        original_eval = r.eval
 
-        async def failing_xadd(*args, **kwargs):
+        async def failing_eval(*args, **kwargs):
             raise OSError("broken pipe")
 
-        r.xadd = failing_xadd
+        r.eval = failing_eval
 
         # _tick should NOT raise — it catches (RedisError, OSError) per-member
         await _tick(r, log)
 
-        r.xadd = original_xadd
-        # Member should still be in sorted set since XADD failed
+        r.eval = original_eval
+        # Member should still be in sorted set since eval failed
         assert await r.zcard(_DELAYED_KEY) == 1
         # Nothing was dispatched to the target stream
         assert await r.xlen("stream:match_id") == 0
 
     @pytest.mark.asyncio
-    async def test_oserror_on_one_member__other_members_not_blocked(self, r, log):
-        """When XADD fails for one member, the batch loop still processes others.
+    async def test_oserror_on_all_members__all_preserved(self, r, log):
+        """When eval fails for all members, all remain in ZSET for retry.
 
         Because the error is caught per-member and the 'dispatched' count reflects
         only successful dispatches, the loop exits when dispatched==0 for a batch
@@ -471,23 +471,23 @@ class TestXaddOSErrorContinuesProcessing:
         await _add_delayed(r, env1, now_ms - 2000)
         await _add_delayed(r, env2, now_ms - 1000)
 
-        original_xadd = r.xadd
+        original_eval = r.eval
 
-        async def always_failing_xadd(*args, **kwargs):
+        async def always_failing_eval(*args, **kwargs):
             raise OSError("broken pipe")
 
-        r.xadd = always_failing_xadd
+        r.eval = always_failing_eval
 
         # Should not raise
         await _tick(r, log)
 
-        r.xadd = original_xadd
-        # Both remain since all XADDs failed
+        r.eval = original_eval
+        # Both remain since all evals failed
         assert await r.zcard(_DELAYED_KEY) == 2
 
     @pytest.mark.asyncio
     async def test_oserror_on_first__second_still_dispatched(self, r, log):
-        """When XADD fails for the first member but succeeds for the second,
+        """When eval fails for the first member but succeeds for the second,
         the second member is dispatched and removed from the ZSET."""
         now_ms = int(time.time() * 1000)
         env_fail = _delayed_envelope(stream="stream:fail_target", match_id="NA1_fail")
@@ -495,25 +495,95 @@ class TestXaddOSErrorContinuesProcessing:
         await _add_delayed(r, env_fail, now_ms - 2000)
         await _add_delayed(r, env_ok, now_ms - 1000)
 
-        original_xadd = r.xadd
+        original_eval = r.eval
         call_count = 0
 
-        async def selective_failing_xadd(stream, *args, **kwargs):
+        async def selective_failing_eval(script, numkeys, *args, **kwargs):
             nonlocal call_count
             call_count += 1
-            if stream == "stream:fail_target":
+            # args[0] is the target stream (KEYS[1])
+            if args[0] == "stream:fail_target":
                 raise OSError("broken pipe")
-            return await original_xadd(stream, *args, **kwargs)
+            return await original_eval(script, numkeys, *args, **kwargs)
 
-        r.xadd = selective_failing_xadd
+        r.eval = selective_failing_eval
 
         await _tick(r, log)
 
-        r.xadd = original_xadd
+        r.eval = original_eval
         # The failing one stays, the successful one is removed
         assert await r.zcard(_DELAYED_KEY) == 1
         assert await r.xlen("stream:match_id") == 1
         assert await r.xlen("stream:fail_target") == 0
+
+
+class TestMaxlenForStream:
+    """I2-H3/H4: _maxlen_for_stream returns the correct per-stream policy."""
+
+    def test_match_id_returns_none(self):
+        from lol_delay_scheduler.main import _maxlen_for_stream
+
+        assert _maxlen_for_stream("stream:match_id") is None
+
+    def test_analyze_returns_50k(self):
+        from lol_delay_scheduler.main import _maxlen_for_stream
+
+        assert _maxlen_for_stream("stream:analyze") == 50_000
+
+    def test_puuid_returns_default(self):
+        from lol_delay_scheduler.main import _maxlen_for_stream
+
+        assert _maxlen_for_stream("stream:puuid") == 10_000
+
+    def test_parse_returns_default(self):
+        from lol_delay_scheduler.main import _maxlen_for_stream
+
+        assert _maxlen_for_stream("stream:parse") == 10_000
+
+    def test_unknown_stream_returns_default(self):
+        from lol_delay_scheduler.main import _maxlen_for_stream
+
+        assert _maxlen_for_stream("stream:unknown") == 10_000
+
+
+class TestDelaySchedulerMaxlenDispatch:
+    """I2-H3: delay scheduler dispatches to stream:match_id without MAXLEN trimming."""
+
+    @pytest.mark.asyncio
+    async def test_dispatch_to_match_id__no_trimming(self, r, log):
+        """Messages dispatched to stream:match_id should not be trimmed."""
+        env = _delayed_envelope(stream="stream:match_id")
+        past_ms = int(time.time() * 1000) - 1
+        await _add_delayed(r, env, past_ms)
+
+        await _tick(r, log)
+
+        assert await r.zcard(_DELAYED_KEY) == 0
+        assert await r.xlen("stream:match_id") == 1
+
+    @pytest.mark.asyncio
+    async def test_dispatch_to_analyze__uses_50k_maxlen(self, r, log):
+        """Messages dispatched to stream:analyze use maxlen=50_000."""
+        env = _delayed_envelope(stream="stream:analyze")
+        past_ms = int(time.time() * 1000) - 1
+        await _add_delayed(r, env, past_ms)
+
+        await _tick(r, log)
+
+        assert await r.zcard(_DELAYED_KEY) == 0
+        assert await r.xlen("stream:analyze") == 1
+
+    @pytest.mark.asyncio
+    async def test_dispatch_to_puuid__uses_default_maxlen(self, r, log):
+        """Messages dispatched to stream:puuid use default maxlen (10_000)."""
+        env = _delayed_envelope(stream="stream:puuid")
+        past_ms = int(time.time() * 1000) - 1
+        await _add_delayed(r, env, past_ms)
+
+        await _tick(r, log)
+
+        assert await r.zcard(_DELAYED_KEY) == 0
+        assert await r.xlen("stream:puuid") == 1
 
 
 class TestMainEntryPoint:

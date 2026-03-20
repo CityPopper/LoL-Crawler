@@ -23,6 +23,7 @@ _IN_STREAM = "stream:dlq"
 _ARCHIVE_STREAM = "stream:dlq:archive"
 _DELAYED_KEY = "delayed:messages"
 _GROUP = "recovery"
+_CLAIM_IDLE_MS = 60_000
 
 # Exponential backoff delays (ms) indexed by dlq_attempts
 _BACKOFF_MS = [5_000, 15_000, 60_000, 300_000]
@@ -74,6 +75,19 @@ async def _consume_dlq(
         await r.xack(_IN_STREAM, _GROUP, cid)
     if pel_messages:
         return pel_messages
+
+    # XAUTOCLAIM: reclaim messages stranded by crashed workers (idle > _CLAIM_IDLE_MS).
+    result: Any = await r.xautoclaim(
+        _IN_STREAM, _GROUP, consumer, _CLAIM_IDLE_MS, start_id="0-0", count=count
+    )
+    claimed_entries: list[tuple[str, dict[str, str]]] = result[1]
+    if claimed_entries:
+        claimed_raw = [(_IN_STREAM, claimed_entries)]
+        claimed_messages, claimed_corrupt = _deserialize_dlq_entries(claimed_raw, _logger)
+        for cid in claimed_corrupt:
+            await r.xack(_IN_STREAM, _GROUP, cid)
+        if claimed_messages:
+            return claimed_messages
 
     raw: list[Any] = await r.xreadgroup(
         _GROUP, consumer, {_IN_STREAM: ">"}, count=count, block=block

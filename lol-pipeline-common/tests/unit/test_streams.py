@@ -6,10 +6,18 @@ from unittest.mock import AsyncMock
 
 import fakeredis.aioredis
 import pytest
-from redis.exceptions import RedisError
+from redis.exceptions import RedisError, ResponseError
 
 from lol_pipeline.models import MessageEnvelope
-from lol_pipeline.streams import _DEFAULT_MAXLEN, ack, consume, nack_to_dlq, publish
+from lol_pipeline.streams import (
+    _DEFAULT_MAXLEN,
+    ANALYZE_STREAM_MAXLEN,
+    MATCH_ID_STREAM_MAXLEN,
+    ack,
+    consume,
+    nack_to_dlq,
+    publish,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -97,6 +105,54 @@ class TestPublishMaxlen:
         assert msg_id is not None
         length = await r.xlen("stream:test")
         assert length == 1
+
+
+class TestPublishMaxlenNone:
+    """I2-H3: publish() with maxlen=None omits MAXLEN from XADD (no trimming)."""
+
+    @pytest.mark.asyncio
+    async def test_publish_maxlen_none__no_maxlen_kwarg(self):
+        """When maxlen=None, xadd is called without maxlen or approximate."""
+        mock_r = AsyncMock()
+        mock_r.xadd.return_value = "1-0"
+        env = _env()
+        await publish(mock_r, "stream:test", env, maxlen=None)
+        call_kwargs = mock_r.xadd.call_args
+        assert "maxlen" not in call_kwargs[1]
+        assert "approximate" not in call_kwargs[1]
+
+    @pytest.mark.asyncio
+    async def test_publish_maxlen_none__still_adds_to_stream(self, r):
+        """publish() with maxlen=None adds to stream and is consumable."""
+        env = _env()
+        msg_id = await publish(r, "stream:test", env, maxlen=None)
+        assert msg_id is not None
+        length = await r.xlen("stream:test")
+        assert length == 1
+
+    @pytest.mark.asyncio
+    async def test_publish_maxlen_none__no_trimming(self, r):
+        """Stream grows unbounded when maxlen=None (no approximate trim)."""
+        for _i in range(50):
+            env = _env()
+            await publish(r, "stream:unbounded", env, maxlen=None)
+        assert await r.xlen("stream:unbounded") == 50
+
+
+class TestStreamMaxlenConstants:
+    """I2-H3/H4: exported constants for per-stream maxlen policy."""
+
+    def test_match_id_stream_maxlen_is_none(self):
+        """stream:match_id should have no trimming."""
+        assert MATCH_ID_STREAM_MAXLEN is None
+
+    def test_analyze_stream_maxlen_is_50k(self):
+        """stream:analyze should have 50_000 maxlen."""
+        assert ANALYZE_STREAM_MAXLEN == 50_000
+
+    def test_default_maxlen_unchanged(self):
+        """Default maxlen remains 10_000."""
+        assert _DEFAULT_MAXLEN == 10_000
 
 
 class TestConsume:
@@ -232,6 +288,29 @@ class TestEnsureGroupErrors:
         with pytest.raises(ConnectionError, match="redis down"):
             await _ensure_group(mock_r, "stream:test", "g")
 
+    @pytest.mark.asyncio
+    async def test_busygroup_error__suppressed(self):
+        """BUSYGROUP ResponseError is suppressed (group already exists)."""
+        from lol_pipeline.streams import _ensure_group
+
+        mock_r = AsyncMock()
+        mock_r.xgroup_create.side_effect = ResponseError(
+            "BUSYGROUP Consumer Group name already exists"
+        )
+        await _ensure_group(mock_r, "stream:test", "g")  # should not raise
+
+    @pytest.mark.asyncio
+    async def test_non_busygroup_response_error__re_raised(self):
+        """Non-BUSYGROUP ResponseError (e.g. WRONGTYPE, OOM) is re-raised."""
+        from lol_pipeline.streams import _ensure_group
+
+        mock_r = AsyncMock()
+        mock_r.xgroup_create.side_effect = ResponseError(
+            "WRONGTYPE Operation against a key holding the wrong kind of value"
+        )
+        with pytest.raises(ResponseError, match="WRONGTYPE"):
+            await _ensure_group(mock_r, "stream:test", "g")
+
 
 class TestPublishErrors:
     @pytest.mark.asyncio
@@ -363,6 +442,47 @@ class TestNackToDlqPriorityAndEnqueuedAt:
         assert fields["priority"] == "normal"
 
 
+class TestNackToDlqDlqAttempts:
+    """I2-C1: nack_to_dlq must propagate dlq_attempts from the source envelope."""
+
+    @pytest.mark.asyncio
+    async def test_nack_to_dlq__preserves_nonzero_dlq_attempts(self, r):
+        """DLQ envelope inherits dlq_attempts from the source MessageEnvelope."""
+        env = MessageEnvelope(
+            source_stream="stream:match_id",
+            type="match_id",
+            payload={"match_id": "NA1_555"},
+            max_attempts=5,
+            dlq_attempts=3,
+        )
+        await nack_to_dlq(
+            r,
+            env,
+            failure_code="http_5xx",
+            failed_by="fetcher",
+            original_message_id="100-0",
+        )
+        entries = await r.xrange("stream:dlq")
+        assert len(entries) == 1
+        fields = entries[0][1]
+        assert fields["dlq_attempts"] == "3"
+
+    @pytest.mark.asyncio
+    async def test_nack_to_dlq__default_dlq_attempts_is_zero(self, r):
+        """When source envelope has default dlq_attempts=0, DLQ envelope also gets 0."""
+        env = _env()
+        await nack_to_dlq(
+            r,
+            env,
+            failure_code="http_429",
+            failed_by="fetcher",
+            original_message_id="200-0",
+        )
+        entries = await r.xrange("stream:dlq")
+        fields = entries[0][1]
+        assert fields["dlq_attempts"] == "0"
+
+
 class TestNackToDlqErrors:
     @pytest.mark.asyncio
     async def test_nack_to_dlq__xadd_raises__propagates(self):
@@ -389,9 +509,7 @@ class TestXautoclaimCorruptMessages:
             [("corrupt-1", {"garbage": "data"})],  # entries
         ]
 
-        msgs = await consume(
-            mock_r, "stream:test", "g", "c", block=0, autoclaim_min_idle_ms=5000
-        )
+        msgs = await consume(mock_r, "stream:test", "g", "c", block=0, autoclaim_min_idle_ms=5000)
 
         # No valid messages returned
         assert msgs == []
@@ -406,23 +524,23 @@ class TestXautoclaimCorruptMessages:
         # Entry has all required keys but payload is not valid JSON
         mock_r.xautoclaim.return_value = [
             "0-0",
-            [(
-                "bad-json-1",
-                {
-                    "id": "abc",
-                    "source_stream": "stream:test",
-                    "type": "test",
-                    "payload": "NOT-JSON{{{",
-                    "attempts": "0",
-                    "max_attempts": "5",
-                    "enqueued_at": "2024-01-01T00:00:00+00:00",
-                },
-            )],
+            [
+                (
+                    "bad-json-1",
+                    {
+                        "id": "abc",
+                        "source_stream": "stream:test",
+                        "type": "test",
+                        "payload": "NOT-JSON{{{",
+                        "attempts": "0",
+                        "max_attempts": "5",
+                        "enqueued_at": "2024-01-01T00:00:00+00:00",
+                    },
+                )
+            ],
         ]
 
-        msgs = await consume(
-            mock_r, "stream:test", "g", "c", block=0, autoclaim_min_idle_ms=5000
-        )
+        msgs = await consume(mock_r, "stream:test", "g", "c", block=0, autoclaim_min_idle_ms=5000)
 
         assert msgs == []
         mock_r.xack.assert_called_once_with("stream:test", "g", "bad-json-1")
@@ -438,9 +556,7 @@ class TestXautoclaimCorruptMessages:
             [("deleted-1", {}), ("deleted-2", None)],
         ]
 
-        msgs = await consume(
-            mock_r, "stream:test", "g", "c", block=0, autoclaim_min_idle_ms=5000
-        )
+        msgs = await consume(mock_r, "stream:test", "g", "c", block=0, autoclaim_min_idle_ms=5000)
 
         # No messages returned and no ACK for nil entries
         assert msgs == []
@@ -458,16 +574,14 @@ class TestXautoclaimCorruptMessages:
         mock_r.xautoclaim.return_value = [
             "0-0",
             [
-                ("nil-1", {}),                         # nil - skip
-                ("valid-1", valid_fields),              # valid - return
-                ("corrupt-1", {"garbage": "data"}),     # corrupt - ack + skip
-                ("nil-2", None),                        # nil - skip
+                ("nil-1", {}),  # nil - skip
+                ("valid-1", valid_fields),  # valid - return
+                ("corrupt-1", {"garbage": "data"}),  # corrupt - ack + skip
+                ("nil-2", None),  # nil - skip
             ],
         ]
 
-        msgs = await consume(
-            mock_r, "stream:test", "g", "c", block=0, autoclaim_min_idle_ms=5000
-        )
+        msgs = await consume(mock_r, "stream:test", "g", "c", block=0, autoclaim_min_idle_ms=5000)
 
         # Only the valid message is returned
         assert len(msgs) == 1

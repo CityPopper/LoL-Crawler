@@ -217,6 +217,71 @@ class TestRiotClientRateLimitStorage:
         await fake_redis.aclose()
 
 
+class TestRateLimitKeyTTL:
+    """B15: ratelimit:limits:short/long keys have a TTL to expire stale limits."""
+
+    @pytest.fixture
+    def fake_redis(self) -> fakeredis.aioredis.FakeRedis:
+        return fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+    @pytest.mark.asyncio
+    async def test_stored_limits_have_ttl(self, fake_redis: fakeredis.aioredis.FakeRedis) -> None:
+        """B15: ratelimit:limits:short and :long have a 1-hour TTL after being set."""
+        with respx.mock:
+            respx.get(
+                "https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Faker/KR1"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": "test-puuid", "gameName": "Faker", "tagLine": "KR1"},
+                    headers={"X-App-Rate-Limit": "20:1,100:120"},
+                )
+            )
+            client = RiotClient("RGAPI-test", r=fake_redis)
+            await client.get_account_by_riot_id("Faker", "KR1", "kr")
+            await client.close()
+
+        short_ttl = await fake_redis.ttl("ratelimit:limits:short")
+        long_ttl = await fake_redis.ttl("ratelimit:limits:long")
+        # TTL should be close to 3600 (1 hour), allowing tolerance for execution
+        assert 3590 <= short_ttl <= 3600
+        assert 3590 <= long_ttl <= 3600
+        await fake_redis.aclose()
+
+    @pytest.mark.asyncio
+    async def test_ttl_refreshed_on_subsequent_calls(
+        self, fake_redis: fakeredis.aioredis.FakeRedis
+    ) -> None:
+        """B15: Each successful API call refreshes the TTL on limit keys."""
+        with respx.mock:
+            route = respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Test/NA1"
+            )
+            route.side_effect = [
+                httpx.Response(
+                    200,
+                    json={"puuid": "puuid1", "gameName": "Test", "tagLine": "NA1"},
+                    headers={"X-App-Rate-Limit": "20:1,100:120"},
+                ),
+                httpx.Response(
+                    200,
+                    json={"puuid": "puuid1", "gameName": "Test", "tagLine": "NA1"},
+                    headers={"X-App-Rate-Limit": "20:1,100:120"},
+                ),
+            ]
+            client = RiotClient("RGAPI-test", r=fake_redis)
+            await client.get_account_by_riot_id("Test", "NA1", "na1")
+            # Manually reduce TTL to simulate time passing
+            await fake_redis.expire("ratelimit:limits:short", 100)
+            await client.get_account_by_riot_id("Test", "NA1", "na1")
+            await client.close()
+
+        # After second call, TTL should be refreshed back to ~3600
+        short_ttl = await fake_redis.ttl("ratelimit:limits:short")
+        assert short_ttl > 100  # Was refreshed, not still at 100
+        await fake_redis.aclose()
+
+
 # ---------------------------------------------------------------------------
 # Error handling
 # ---------------------------------------------------------------------------
@@ -372,6 +437,44 @@ class TestRateLimitErrorDetails:
             with pytest.raises(RateLimitError) as exc_info:
                 await client.get_account_by_riot_id("X", "Y", "na1")
             assert exc_info.value.retry_after_ms is None
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_429_with_http_date_retry_after__uses_default(self) -> None:
+        """429 with HTTP-date Retry-After (non-integer) falls back to default retry_after_ms."""
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/X/Y"
+            ).mock(
+                return_value=httpx.Response(
+                    429,
+                    headers={"Retry-After": "Thu, 19 Mar 2026 12:00:00 GMT"},
+                )
+            )
+            client = RiotClient("RGAPI-test")
+            with pytest.raises(RateLimitError) as exc_info:
+                await client.get_account_by_riot_id("X", "Y", "na1")
+            # Should not crash; should use a sensible default (1000ms)
+            assert exc_info.value.retry_after_ms == 1000
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_429_with_float_retry_after__parses_correctly(self) -> None:
+        """429 with float-like Retry-After (e.g. '1.5') parses to integer ms."""
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/X/Y"
+            ).mock(
+                return_value=httpx.Response(
+                    429,
+                    headers={"Retry-After": "1.5"},
+                )
+            )
+            client = RiotClient("RGAPI-test")
+            with pytest.raises(RateLimitError) as exc_info:
+                await client.get_account_by_riot_id("X", "Y", "na1")
+            # int(float("1.5")) = 1 → 1*1000 + 1000 = 2000
+            assert exc_info.value.retry_after_ms == 2000
             await client.close()
 
     @pytest.mark.asyncio

@@ -56,12 +56,12 @@ class TestRawStoreRedis:
         assert await store.get("NA1_nonexistent") is None
 
     @pytest.mark.asyncio
-    async def test_no_ttl(self, r):
-        """Raw store keys should not expire (TTL = -1)."""
+    async def test_ttl_set(self, r):
+        """Raw store keys expire after 24 h to prevent OOM (B1)."""
         store = RawStore(r)
         await store.set("NA1_100", "data")
         ttl = await r.ttl("raw:match:NA1_100")
-        assert ttl == -1
+        assert ttl == 86400
 
 
 class TestRawStoreDisk:

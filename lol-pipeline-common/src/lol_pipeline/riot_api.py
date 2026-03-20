@@ -11,6 +11,8 @@ import redis.asyncio as aioredis
 
 _log = logging.getLogger("riot_api")
 
+_RATE_LIMIT_KEY_TTL = 3600  # 1 hour — stale limits expire after API key rotation
+
 PLATFORM_TO_REGION: dict[str, str] = {
     "na1": "americas",
     "br1": "americas",
@@ -98,8 +100,14 @@ def _raise_for_status(resp: httpx.Response) -> Any:
         raise AuthError(str(resp.url))
     if resp.status_code == 429:
         retry_after = resp.headers.get("Retry-After")
-        # +1000ms jitter to avoid thundering herd on rate-limit window reset
-        retry_ms = int(retry_after) * 1000 + 1000 if retry_after else None
+        retry_ms: int | None = None
+        if retry_after:
+            try:
+                # +1000ms jitter to avoid thundering herd on rate-limit window reset
+                retry_ms = int(float(retry_after)) * 1000 + 1000
+            except (ValueError, TypeError):
+                # HTTP-date format or other non-numeric value — use 1s default
+                retry_ms = 1000
         raise RateLimitError(retry_ms)
     raise ServerError(f"HTTP {resp.status_code}: {resp.text[:200]}")
 
@@ -135,12 +143,8 @@ class RiotClient:
             limits = _parse_app_rate_limit(resp.headers.get("X-App-Rate-Limit", ""))
             if limits:
                 short, long_ = limits
-                await self._r.mset(
-                    {
-                        "ratelimit:limits:short": str(short),
-                        "ratelimit:limits:long": str(long_),
-                    }
-                )
+                await self._r.set("ratelimit:limits:short", str(short), ex=_RATE_LIMIT_KEY_TTL)
+                await self._r.set("ratelimit:limits:long", str(long_), ex=_RATE_LIMIT_KEY_TTL)
         return data
 
     async def get_account_by_riot_id(

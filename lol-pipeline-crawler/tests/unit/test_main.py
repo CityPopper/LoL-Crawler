@@ -475,6 +475,56 @@ class TestCrawlErrors:
         assert await r.xlen(_STREAM_OUT) == 0
 
 
+class TestCrawlNotFound:
+    """NotFoundError (404) — player doesn't exist, discard permanently."""
+
+    @pytest.mark.asyncio
+    async def test_404_acks_and_does_not_dlq(self, r, cfg, log):
+        """404 → ACK the message, no DLQ entry, no last_crawled_at set."""
+        env = _puuid_envelope()
+        msg_id = await _setup_message(r, env)
+
+        with respx.mock:
+            respx.get(_match_ids_url(start=0)).mock(return_value=httpx.Response(404))
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        # No DLQ entry — permanent error, retrying won't help
+        assert await r.xlen("stream:dlq") == 0
+        # No output messages
+        assert await r.xlen(_STREAM_OUT) == 0
+        # last_crawled_at NOT set (crawl did not succeed)
+        assert await r.hget("player:test-puuid-0001", "last_crawled_at") is None
+        # Message was ACKed (removed from PEL)
+        pending = await r.xpending(_STREAM_IN, _GROUP)
+        assert pending["pending"] == 0
+
+    @pytest.mark.asyncio
+    async def test_404_on_page2_does_not_set_last_crawled(self, r, cfg, log):
+        """404 on page 2 → partial matches published but no last_crawled_at."""
+        env = _puuid_envelope()
+        msg_id = await _setup_message(r, env)
+        page1 = [f"NA1_{i}" for i in range(100)]
+
+        with respx.mock:
+            respx.get(_match_ids_url(start=0)).mock(return_value=httpx.Response(200, json=page1))
+            respx.get(_match_ids_url(start=100)).mock(return_value=httpx.Response(404))
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        # Page 1 matches were published before the 404
+        assert await r.xlen(_STREAM_OUT) == 100
+        # No DLQ entry
+        assert await r.xlen("stream:dlq") == 0
+        # last_crawled_at NOT set
+        assert await r.hget("player:test-puuid-0001", "last_crawled_at") is None
+        # Message was ACKed
+        pending = await r.xpending(_STREAM_IN, _GROUP)
+        assert pending["pending"] == 0
+
+
 class TestCrawlEdgeCases:
     """Tier 3 — Crawler edge case tests."""
 
@@ -559,3 +609,37 @@ class TestMainEntryPoint:
             with pytest.raises(KeyboardInterrupt):
                 await main()
         mock_r.aclose.assert_called_once()
+
+
+class TestCrawlerMaxlenPolicy:
+    """I2-H3: crawler publishes to stream:match_id with maxlen=None (no trimming)."""
+
+    @pytest.mark.asyncio
+    async def test_publish_to_match_id_uses_no_maxlen(self, r, cfg, log):
+        """publish() for stream:match_id is called with maxlen=None."""
+        env = _puuid_envelope()
+        msg_id = await _setup_message(r, env)
+
+        publish_calls: list[dict] = []
+        original_publish = publish
+
+        async def tracking_publish(*args, **kwargs):
+            publish_calls.append({"args": args, "kwargs": kwargs})
+            return await original_publish(*args, **kwargs)
+
+        with (
+            respx.mock,
+            patch("lol_crawler.main.publish", side_effect=tracking_publish),
+        ):
+            respx.get(_match_ids_url()).mock(
+                return_value=httpx.Response(200, json=["NA1_NEW_1", "NA1_NEW_2"])
+            )
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        assert len(publish_calls) == 2
+        for call in publish_calls:
+            assert call["kwargs"].get("maxlen") is None, (
+                f"Expected maxlen=None for stream:match_id, got {call['kwargs']}"
+            )

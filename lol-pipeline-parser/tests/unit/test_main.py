@@ -14,7 +14,12 @@ from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.raw_store import RawStore
 from lol_pipeline.streams import consume, publish
 
-from lol_parser.main import _parse_match, main
+from lol_parser.main import (
+    MATCH_DATA_TTL_SECONDS,
+    MAX_DISCOVER_PLAYERS,
+    _parse_match,
+    main,
+)
 
 _IN_STREAM = "stream:parse"
 _OUT_STREAM = "stream:analyze"
@@ -527,13 +532,71 @@ class TestParserPipeline:
 
         await _parse_match(r, raw_store, cfg, msg_id, env, log)
 
-        # Only the match:{id} hset should be called directly on r (not per-participant)
-        # Participant writes go through pipeline, so direct hset count should be 1
-        assert direct_hset_count == 1, (
-            f"Expected 1 direct hset (match metadata), got {direct_hset_count}"
+        # Both match metadata and participant writes go through pipelines (I2-H11),
+        # so zero direct hset calls should occur on the Redis client itself.
+        assert direct_hset_count == 0, (
+            f"Expected 0 direct hset calls (all via pipeline), got {direct_hset_count}"
         )
         # But data should still be correct
         assert await r.scard(f"match:participants:{match_id}") == 10
+
+
+class TestParserMaxlenPolicy:
+    """I2-H4: parser publishes to stream:analyze with maxlen=50_000."""
+
+    @pytest.mark.asyncio
+    async def test_publish_to_analyze_uses_50k_maxlen(self, r, cfg, log):
+        """publish() for stream:analyze is called with maxlen=50_000."""
+        raw_store = RawStore(r)
+        match_id = "NA1_MAXLEN"
+        data = {
+            "metadata": {"matchId": match_id, "participants": ["puuid-ml"]},
+            "info": {
+                "gameStartTimestamp": 1700000000000,
+                "gameDuration": 900,
+                "gameMode": "CLASSIC",
+                "gameType": "MATCHED_GAME",
+                "gameVersion": "14.1.1",
+                "queueId": 420,
+                "platformId": "NA1",
+                "participants": [
+                    {
+                        "puuid": "puuid-ml",
+                        "championId": 1,
+                        "championName": "Annie",
+                        "teamId": 100,
+                        "teamPosition": "MID",
+                        "role": "SOLO",
+                        "win": True,
+                        "kills": 5,
+                        "deaths": 2,
+                        "assists": 3,
+                        "goldEarned": 10000,
+                        "totalDamageDealtToChampions": 15000,
+                        "totalMinionsKilled": 100,
+                        "visionScore": 10,
+                    }
+                ],
+            },
+        }
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, json.dumps(data))
+
+        publish_calls: list[dict] = []
+        original_publish = publish
+
+        async def tracking_publish(*args, **kwargs):
+            publish_calls.append({"args": args, "kwargs": kwargs})
+            return await original_publish(*args, **kwargs)
+
+        with patch("lol_parser.main.publish", side_effect=tracking_publish):
+            await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        assert len(publish_calls) == 1
+        assert publish_calls[0]["kwargs"].get("maxlen") == 50_000, (
+            f"Expected maxlen=50_000 for stream:analyze, got {publish_calls[0]['kwargs']}"
+        )
 
 
 class TestMainEntryPoint:
@@ -571,3 +634,173 @@ class TestMainEntryPoint:
             with pytest.raises(KeyboardInterrupt):
                 await main()
         mock_r.aclose.assert_called_once()
+
+
+class TestMatchDataTTL:
+    """I2-C3: match:{match_id} and participant:{match_id}:{puuid} keys get TTL."""
+
+    @pytest.mark.asyncio
+    async def test_match_key_has_ttl(self, r, cfg, log):
+        """match:{match_id} hash gets MATCH_DATA_TTL_SECONDS TTL after parsing."""
+        raw_store = RawStore(r)
+        match_id = "NA1_1234567890"
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, _load_fixture("match_normal.json"))
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        ttl = await r.ttl(f"match:{match_id}")
+        assert 0 < ttl <= MATCH_DATA_TTL_SECONDS
+
+    @pytest.mark.asyncio
+    async def test_participant_keys_have_ttl(self, r, cfg, log):
+        """participant:{match_id}:{puuid} hashes get MATCH_DATA_TTL_SECONDS TTL."""
+        raw_store = RawStore(r)
+        match_id = "NA1_1234567890"
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, _load_fixture("match_normal.json"))
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        # Check all 10 participant keys have TTLs
+        participants = await r.smembers(f"match:participants:{match_id}")
+        assert len(participants) == 10
+        for puuid in participants:
+            ttl = await r.ttl(f"participant:{match_id}:{puuid}")
+            assert 0 < ttl <= MATCH_DATA_TTL_SECONDS
+
+    @pytest.mark.asyncio
+    async def test_ttl_constant_defaults_to_7_days(self):
+        """MATCH_DATA_TTL_SECONDS defaults to 604800 (7 days)."""
+        assert MATCH_DATA_TTL_SECONDS == 604800
+
+
+class TestAtomicMatchWrite:
+    """I2-H11: match HSET + SADD + EXPIRE are atomic (transactional pipeline)."""
+
+    @pytest.mark.asyncio
+    async def test_match_hset_and_sadd_both_written(self, r, cfg, log):
+        """Both match:{id} hash and match:status:parsed set are written atomically."""
+        raw_store = RawStore(r)
+        match_id = "NA1_1234567890"
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, _load_fixture("match_normal.json"))
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        # Both must exist (atomic write ensures consistency)
+        assert await r.hget(f"match:{match_id}", "status") == "parsed"
+        assert await r.sismember("match:status:parsed", match_id)
+        ttl = await r.ttl(f"match:{match_id}")
+        assert ttl > 0
+
+    @pytest.mark.asyncio
+    async def test_match_write_uses_transaction(self, r, cfg, log):
+        """The match metadata write uses transaction=True pipeline."""
+        raw_store = RawStore(r)
+        match_id = "NA1_ATOMIC"
+        data = {
+            "metadata": {"matchId": match_id, "participants": ["puuid-atomic"]},
+            "info": {
+                "gameStartTimestamp": 1700000000000,
+                "gameDuration": 900,
+                "gameMode": "CLASSIC",
+                "gameType": "MATCHED_GAME",
+                "gameVersion": "14.1.1",
+                "queueId": 420,
+                "platformId": "NA1",
+                "participants": [
+                    {
+                        "puuid": "puuid-atomic",
+                        "championId": 1,
+                        "championName": "Annie",
+                        "teamId": 100,
+                        "teamPosition": "MID",
+                        "role": "SOLO",
+                        "win": True,
+                        "kills": 5,
+                        "deaths": 2,
+                        "assists": 3,
+                        "goldEarned": 10000,
+                        "totalDamageDealtToChampions": 15000,
+                        "totalMinionsKilled": 100,
+                        "visionScore": 10,
+                    }
+                ],
+            },
+        }
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, json.dumps(data))
+
+        pipeline_calls = []
+        original_pipeline = r.pipeline
+
+        def tracking_pipeline(**kwargs):
+            pipeline_calls.append(kwargs)
+            return original_pipeline(**kwargs)
+
+        r.pipeline = tracking_pipeline
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        # At least one pipeline call should use transaction=True (the match metadata write)
+        assert any(call.get("transaction") is True for call in pipeline_calls), (
+            f"Expected at least one transactional pipeline call, got {pipeline_calls}"
+        )
+
+
+class TestDiscoverPlayersCap:
+    """I2-M1: discover:players sorted set is capped at MAX_DISCOVER_PLAYERS."""
+
+    @pytest.mark.asyncio
+    async def test_discover_set_trimmed_after_zadd(self, r, cfg, log):
+        """discover:players is trimmed to MAX_DISCOVER_PLAYERS after ZADD."""
+        raw_store = RawStore(r)
+        match_id = "NA1_1234567890"
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, _load_fixture("match_normal.json"))
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        count = await r.zcard("discover:players")
+        assert count <= MAX_DISCOVER_PLAYERS
+
+    @pytest.mark.asyncio
+    async def test_discover_cap_trims_lowest_scores(self, r, cfg, log, monkeypatch):
+        """When discover:players exceeds cap, lowest-scored entries are removed."""
+        # Set a tiny cap so we can test trimming
+        monkeypatch.setattr("lol_parser.main.MAX_DISCOVER_PLAYERS", 5)
+
+        # Pre-populate discover:players with 5 entries (older timestamps)
+        old_scores = {f"old-puuid-{i}:na1": float(1600000000000 + i) for i in range(5)}
+        await r.zadd("discover:players", old_scores, gt=True)
+        assert await r.zcard("discover:players") == 5
+
+        # Parse a match that adds 10 new discovery entries (newer timestamps)
+        raw_store = RawStore(r)
+        match_id = "NA1_1234567890"
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, _load_fixture("match_normal.json"))
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        # After trimming, should have at most 5 entries
+        count = await r.zcard("discover:players")
+        assert count <= 5
+
+        # The remaining entries should be the ones with highest scores (newest)
+        remaining = await r.zrange("discover:players", 0, -1, withscores=True)
+        for _member, score in remaining:
+            # All remaining entries should have the newer timestamp (1700000000000)
+            assert score >= 1700000000000.0
+
+    @pytest.mark.asyncio
+    async def test_max_discover_players_default(self):
+        """MAX_DISCOVER_PLAYERS defaults to 50000."""
+        assert MAX_DISCOVER_PLAYERS == 50000

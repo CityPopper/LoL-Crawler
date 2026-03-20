@@ -5,95 +5,42 @@ Phase 7 "IRONCLAD" and Phase 8 "FACELIFT" are **complete**.
 
 ---
 
-## Immediate Code Fixes
+## Critical Bugs (Orchestrator Cycle 2)
 
-These are concrete bugs and code-quality issues discovered by reading the source.
+### Critical
+- [ ] B1: `raw:match:*` no TTL + `maxmemory-policy noeviction` = pipeline OOM at ~50K matches (`raw_store.py:126`)
+- [ ] B2: Discovery `_resolve_names` crashes on missing `gameName`/`tagLine` for deleted/banned accounts → infinite crash loop (`discovery/main.py`)
 
-- **DLQ round-trip loses priority** — `lol-pipeline-recovery/src/lol_recovery/main.py:110-119`
-  - `_requeue_delayed` constructs a new `MessageEnvelope` but does not copy `dlq.priority` to the envelope. High-priority messages lose their priority status after a DLQ retry.
-  - Fix: add `priority=dlq.priority` to the `MessageEnvelope(...)` constructor call at line 110.
+### High
+- [ ] B3: `_raise_for_status` crashes on non-integer Retry-After header (HTTP-date format) (`riot_api.py:102`)
+- [ ] B4: Admin + UI DLQ pages crash on any corrupt DLQ entry (`admin/main.py`, `ui/main.py`)
+- [ ] B5: Admin `_make_replay_envelope` resets `enqueued_at` and `dlq_attempts=0` — loses metadata (`admin/main.py`)
+- [ ] B6: Crawler missing `NotFoundError` (404) handler → unnecessary DLQ cycles for non-existent accounts
+- [ ] B7: CI `docker-build` not gated on lint/typecheck/test — broken builds can publish images
+- [ ] B8: Worker Dockerfiles missing `--start-period=60s` on HEALTHCHECK — 9 services restart prematurely
+- [ ] B9: CI `mypy --ignore-missing-imports` overrides `strict=true` — hides real type errors
 
-- **Recovery resets attempts to 0 on requeue** — `lol-pipeline-recovery/src/lol_recovery/main.py:116`
-  - `attempts=0` unconditionally resets the message's attempt counter, losing the history of how many times it was tried before hitting the DLQ.
-  - Fix: preserve `attempts=dlq.attempts` so the original attempt count carries through.
+### Medium
+- [ ] B10: Redis connection pool has no socket timeout → hung connections block all coroutines
+- [ ] B11: Priority keys have no TTL → orphaned keys permanently block Discovery if message lost in transit
+- [ ] B12: In-memory retry counter lost on service restart → poison messages loop forever (formal invariant V3)
+- [ ] B13: `match:participants:{match_id}` sets are write-only, never read (~90MB waste at 10K players)
+- [ ] B14: `ratelimit:limits:short/long` keys have no TTL → stale limits persist after API key rotation
+- [ ] B15: Recovery `_consume_dlq` lacks XAUTOCLAIM → stranded DLQ messages after worker crash
 
-- **Recovery has no handler for `handler_crash` failure code** — `lol-pipeline-recovery/src/lol_recovery/main.py:185-190`
-  - `service.py:54` sends messages to DLQ with `failure_code="handler_crash"`, but Recovery's `_HANDLERS` dict has no entry for it. These messages are immediately archived without any retry attempt.
-  - Fix: add `"handler_crash": _handle_transient` to the `_HANDLERS` dict so they get exponential backoff retries.
+### Complexity Refactors
+- [ ] C1: `_crawl_player` — extract `_fetch_match_ids_paginated()` + `_handle_crawl_error()` helpers
+- [ ] C2: `show_stats` — extract `_resolve_and_cache_puuid()`, `_auto_seed_player()`, `_build_stats_response()`
 
-- **Analyzer pipeline not awaited as context manager** — `lol-pipeline-analyzer/src/lol_analyzer/main.py:94`
-  - `pipe = r.pipeline(transaction=True)` without `async with`. If `pipe.execute()` raises, the pipeline connection is leaked.
-  - Fix: use `async with r.pipeline(transaction=True) as pipe:` matching the pattern used in Parser and UI.
+## New Findings (Orchestrator Cycle 3 — Review Iteration 2)
 
-- **`_format_stat_value` does not handle NaN/Inf** — `lol-pipeline-ui/src/lol_ui/main.py:334-349`
-  - `float(value)` succeeds for `"nan"`, `"inf"`, `"-inf"` but produces meaningless display strings like `"nan%"` or `"inf%"`.
-  - Fix: after `float()` conversion, check `math.isfinite()` and return a fallback like `"N/A"` for non-finite values.
+### Critical (NEW)
+- [ ] I2-C1: `nack_to_dlq` never passes `dlq_attempts` → DLQ exhaustion mechanism completely broken + backoff always 5s
+- [ ] I2-C2: Discovery idle check only watches `stream:puuid` → promotes players into backlogged pipeline
+- [ ] I2-C3: `match:{match_id}` + `participant:` hashes no TTL → unbounded Redis growth (~1.5GB+ at 10K players)
 
-- **Unreachable `return None` after `with` block** — `lol-pipeline-common/src/lol_pipeline/raw_store.py:107`
-  - `_search_compressed_bundle` has a `return None` after the `with` statement that is dead code (the `with` block always returns via `_find_in_lines`).
-  - Fix: remove the unreachable `return None`.
-
-- **Delay Scheduler XADD+ZREM not atomic** — `lol-pipeline-delay-scheduler/src/lol_delay_scheduler/main.py:50-51`
-  - If the process crashes between `XADD` and `ZREM`, the delayed message is duplicated (delivered to the stream but remains in the ZSET for re-delivery).
-  - Fix: use a Lua script that performs both `XADD` and `ZREM` atomically.
-
-- **`publish()` missing MAXLEN** — `lol-pipeline-common/src/lol_pipeline/streams.py:27`
-  - `r.xadd(stream, fields)` has no `maxlen` parameter, so streams grow unbounded indefinitely.
-  - Fix: add `maxlen` parameter with approximate trimming: `r.xadd(stream, fields, maxlen=10000, approximate=True)`.
-
-- **`_badge` XSS risk with caller-supplied text** — `lol-pipeline-ui/src/lol_ui/main.py:365-373`
-  - The `text` parameter is documented as "raw HTML (caller must escape user data)" but the contract is fragile. Multiple callers pass computed strings directly.
-  - Fix: auto-escape `text` inside `_badge()` and use a separate `_badge_html()` for cases where raw HTML entities are intentional (e.g., `&#10003;`).
-
-- **DRY: `_name_cache_key` duplicated in 3 places** — `seed/main.py:39`, `admin/main.py:55`, `ui/main.py:596`
-  - All define `f"player:name:{game_name.lower()}#{tag_line.lower()}"`. Extract to `lol_pipeline.constants` or a shared helper.
-
-- **DRY: `_resolve_puuid` duplicated in 3 places** — `seed/main.py:43`, `admin/main.py:59`, `ui/main.py:596-636`
-  - All implement PUUID resolution with cache check + Riot API fallback. Extract to `lol_pipeline.resolve`.
-  - Subtask 1: Create `lol_pipeline/resolve.py` with unified `resolve_puuid()`
-  - Subtask 2: Refactor seed, admin, UI to use it; update tests
-
-- **DRY: `system:halted` check duplicated in every handler** — `crawler/main.py:34`, `fetcher/main.py:35`, `parser/main.py:84`, `analyzer/main.py:57`
-  - Move halt-check into `service.py:run_consumer` before dispatching handler.
-
-- **DRY: seeded_at hset pattern duplicated** — `seed/main.py:161-169`, `ui/main.py:678-686`, `discovery/main.py:137-145`
-  - All write identical `player:{puuid}` mappings. Extract to shared function.
-
-- **No TTL on `player:name:` cache keys** — `seed/main.py:64`, `admin/main.py:77`, `ui/main.py:636`
-  - `r.set(cache_key, puuid)` with no expiry. Name changes cached forever. Add `ex=86400` (24h).
-
-- **Discovery uses two separate HGET calls** — `discovery/main.py:72-73`
-  - Two round-trips (`hget game_name`, `hget tag_line`). Use `hmget(f"player:{puuid}", ["game_name", "tag_line"])` for one round-trip.
-
-- **Recovery has no SIGTERM via asyncio** — `lol-pipeline-recovery/src/lol_recovery/main.py:230-247`
-  - No graceful shutdown handler (unlike discovery/delay-scheduler). Add `asyncio.Event` shutdown flag with `loop.add_signal_handler`.
-
-- **`_crawl_player` complexity** — `crawler/main.py:26` has `noqa: C901, PLR0915`
-  - Extract API pagination into `_fetch_match_ids_paginated()` helper.
-  - Subtask 1: Extract pagination loop to helper function
-  - Subtask 2: Extract error handling to `_handle_crawl_error()`
-
-- **`show_stats` complexity** — `ui/main.py:577` has `noqa: PLR0911, C901` (11 return paths)
-  - Extract `_resolve_and_cache_puuid()`, `_auto_seed_player()`, `_build_stats_response()`.
-  - Subtask 1: Extract resolve+cache into helper
-  - Subtask 2: Extract auto-seed logic into helper
-  - Subtask 3: Extract stats rendering into helper
-
-- **Priority counter drift on TTL expiry (CRITICAL)** — `lol-pipeline-common/src/lol_pipeline/priority.py:9-17`
-  - When `player:priority:{puuid}` key expires via TTL, `system:priority_count` is never decremented. Over time this counter grows permanently, causing `_is_idle()` in discovery to always return False, **blocking discovery indefinitely**.
-  - Fix: In `_DEL_DECR_LUA`, after the DEL check fails (key already expired), still attempt to DECR if count > 0. Or remove TTL entirely and rely solely on explicit `clear_priority()` calls.
-
-- **Priority counter can go negative** — `lol-pipeline-common/src/lol_pipeline/priority.py:19-24`
-  - `_DEL_DECR_LUA` can DECR below 0 if called when counter is already 0.
-  - Fix: Add floor in Lua: only DECR if `tonumber(redis.call("get", KEYS[2]) or 0) > 0`.
-
-- **`asyncio.get_event_loop()` deprecated in Python 3.12+** — `service.py:93`, `delay-scheduler/main.py:85`, `discovery/main.py:159`, `recovery/main.py:242`
-  - All SIGTERM handlers use deprecated `asyncio.get_event_loop()`. Should use `asyncio.get_running_loop()` which is safe inside `async def main()` running under `asyncio.run()`.
-  - Fix: Replace `asyncio.get_event_loop()` with `asyncio.get_running_loop()` in all 4 files.
-
-- **Analyzer `ack()` outside try/finally** — `lol-pipeline-analyzer/src/lol_analyzer/main.py:128`
-  - If `clear_priority()` raises, the ack is skipped and message stays in PEL for redelivery. Safe due to idempotency, but priority is never cleared.
-  - Fix: Move `ack()` inside the try block, or wrap `clear_priority()` in its own try/except.
+### High (NEW)
+- [ ] I2-H1 through I2-H15 [see CLAUDE.md for details]
 
 ---
 

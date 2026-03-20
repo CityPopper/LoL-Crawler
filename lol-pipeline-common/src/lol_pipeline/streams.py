@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import weakref
@@ -20,6 +19,11 @@ _DLQ_STREAM = "stream:dlq"
 
 _DEFAULT_MAXLEN = 10_000
 
+# Per-stream maxlen overrides.  Import these from consuming services to keep
+# the policy in one place.
+MATCH_ID_STREAM_MAXLEN: int | None = None  # bursty production, rate-limited consumption
+ANALYZE_STREAM_MAXLEN: int = 50_000  # 10x amplification from parser
+
 # Cache of (stream, group) pairs for which _ensure_group has already succeeded.
 # Uses a WeakKeyDictionary keyed on the Redis client so that different connections
 # (e.g., in tests) don't share state and entries are cleaned up when the client is GC'd.
@@ -32,10 +36,16 @@ async def publish(
     r: aioredis.Redis,
     stream: str,
     envelope: MessageEnvelope,
-    maxlen: int = _DEFAULT_MAXLEN,
+    maxlen: int | None = _DEFAULT_MAXLEN,
 ) -> str:
-    """XADD envelope to stream with approximate trimming; return the Redis entry ID."""
+    """XADD envelope to stream with approximate trimming; return the Redis entry ID.
+
+    When *maxlen* is ``None`` the stream is never trimmed (use for bursty
+    streams where trimming would silently drop undelivered messages).
+    """
     fields: dict[str, Any] = envelope.to_redis_fields()
+    if maxlen is None:
+        return await r.xadd(stream, fields)  # type: ignore[no-any-return,arg-type]
     return await r.xadd(stream, fields, maxlen=maxlen, approximate=True)  # type: ignore[no-any-return,arg-type]
 
 
@@ -44,8 +54,11 @@ async def _ensure_group(r: aioredis.Redis, stream: str, group: str) -> None:
     key = (stream, group)
     if pairs is not None and key in pairs:
         return
-    with contextlib.suppress(ResponseError):
+    try:
         await r.xgroup_create(stream, group, id="0", mkstream=True)
+    except ResponseError as exc:
+        if "BUSYGROUP" not in str(exc):
+            raise
     if pairs is None:
         pairs = set()
         _ensured[r] = pairs
@@ -161,6 +174,7 @@ async def nack_to_dlq(
         original_message_id=original_message_id,
         retry_after_ms=retry_after_ms,
         enqueued_at=envelope.enqueued_at,
+        dlq_attempts=envelope.dlq_attempts,
         priority=envelope.priority,
     )
     fields: dict[str, Any] = dlq.to_redis_fields()

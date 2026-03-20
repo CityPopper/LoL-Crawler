@@ -16,13 +16,16 @@ from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.raw_store import RawStore
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.service import run_consumer
-from lol_pipeline.streams import ack, nack_to_dlq, publish
+from lol_pipeline.streams import ANALYZE_STREAM_MAXLEN, ack, nack_to_dlq, publish
 
 _IN_STREAM = "stream:parse"
 _OUT_STREAM = "stream:analyze"
 _GROUP = "parsers"
 _DISCOVER_KEY = "discover:players"
 _ITEM_KEYS = [f"item{i}" for i in range(7)]
+
+MATCH_DATA_TTL_SECONDS: int = int(os.getenv("MATCH_DATA_TTL_SECONDS", "604800"))
+MAX_DISCOVER_PLAYERS: int = int(os.getenv("MAX_DISCOVER_PLAYERS", "50000"))
 
 
 def _validate(data: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -43,9 +46,10 @@ async def _write_participant(
 ) -> str:
     puuid: str = p["puuid"]
     items = json.dumps([p.get(k, 0) for k in _ITEM_KEYS])
+    participant_key = f"participant:{match_id}:{puuid}"
     async with r.pipeline(transaction=False) as pipe:
         pipe.hset(
-            f"participant:{match_id}:{puuid}",
+            participant_key,
             mapping={
                 "champion_id": str(p.get("championId", "")),
                 "champion_name": p.get("championName", ""),
@@ -63,6 +67,7 @@ async def _write_participant(
                 "items": items,
             },
         )
+        pipe.expire(participant_key, MATCH_DATA_TTL_SECONDS)
         pipe.sadd(f"match:participants:{match_id}", puuid)
         pipe.zadd(f"player:matches:{puuid}", {match_id: float(game_start)})
         riot_name = p.get("riotIdGameName", "")
@@ -119,21 +124,25 @@ async def _parse_match(
         return
 
     game_start: int = info["gameStartTimestamp"]
-    await r.hset(  # type: ignore[misc]
-        f"match:{match_id}",
-        mapping={
-            "queue_id": str(info.get("queueId", "")),
-            "game_mode": info.get("gameMode", ""),
-            "game_type": info.get("gameType", ""),
-            "game_version": info.get("gameVersion", ""),
-            "game_duration": str(info.get("gameDuration", "")),
-            "game_start": str(game_start),
-            "platform_id": info.get("platformId", ""),
-            "region": region,
-            "status": "parsed",
-        },
-    )
-    await r.sadd("match:status:parsed", match_id)  # type: ignore[misc]
+    match_key = f"match:{match_id}"
+    async with r.pipeline(transaction=True) as pipe:
+        pipe.hset(
+            match_key,
+            mapping={
+                "queue_id": str(info.get("queueId", "")),
+                "game_mode": info.get("gameMode", ""),
+                "game_type": info.get("gameType", ""),
+                "game_version": info.get("gameVersion", ""),
+                "game_duration": str(info.get("gameDuration", "")),
+                "game_start": str(game_start),
+                "platform_id": info.get("platformId", ""),
+                "region": region,
+                "status": "parsed",
+            },
+        )
+        pipe.sadd("match:status:parsed", match_id)
+        pipe.expire(match_key, MATCH_DATA_TTL_SECONDS)
+        await pipe.execute()
 
     seen_puuids: set[str] = set()
     for participant in info["participants"]:
@@ -154,7 +163,7 @@ async def _parse_match(
             payload={"puuid": puuid},
             max_attempts=cfg.max_attempts,
         )
-        await publish(r, _OUT_STREAM, out)
+        await publish(r, _OUT_STREAM, out, maxlen=ANALYZE_STREAM_MAXLEN)
 
     # Discover co-players: ZADD with GT so score only increases (newest game wins).
     # Member encodes "puuid:region" so discovery service has full context.
@@ -168,6 +177,7 @@ async def _parse_match(
             discover_scores[f"{puuid}:{region}"] = float(game_start)
     if discover_scores:
         await r.zadd(_DISCOVER_KEY, discover_scores, gt=True)
+        await r.zremrangebyrank(_DISCOVER_KEY, 0, -(MAX_DISCOVER_PLAYERS + 1))
         log.debug("queued for discovery", extra={"count": len(discover_scores)})
 
     await ack(r, _IN_STREAM, _GROUP, msg_id)

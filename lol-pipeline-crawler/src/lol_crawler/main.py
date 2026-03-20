@@ -15,9 +15,15 @@ from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.priority import clear_priority
 from lol_pipeline.rate_limiter import wait_for_token
 from lol_pipeline.redis_client import get_redis
-from lol_pipeline.riot_api import AuthError, RateLimitError, RiotClient, ServerError
+from lol_pipeline.riot_api import (
+    AuthError,
+    NotFoundError,
+    RateLimitError,
+    RiotClient,
+    ServerError,
+)
 from lol_pipeline.service import run_consumer
-from lol_pipeline.streams import ack, nack_to_dlq, publish
+from lol_pipeline.streams import MATCH_ID_STREAM_MAXLEN, ack, nack_to_dlq, publish
 
 _IN_STREAM = "stream:puuid"
 _OUT_STREAM = "stream:match_id"
@@ -86,7 +92,7 @@ async def _crawl_player(  # noqa: C901, PLR0915
                     payload={"match_id": match_id, "puuid": puuid, "region": region},
                     max_attempts=cfg.max_attempts,
                 )
-                await publish(r, _OUT_STREAM, env)
+                await publish(r, _OUT_STREAM, env, maxlen=MATCH_ID_STREAM_MAXLEN)
                 published += 1
 
             # Stop early if a full page was entirely known
@@ -96,6 +102,11 @@ async def _crawl_player(  # noqa: C901, PLR0915
             if len(page) < count:
                 break
             start += count
+
+    except NotFoundError:
+        log.info("player not found (404) — discarding", extra={"puuid": puuid})
+        await ack(r, _IN_STREAM, _GROUP, msg_id)
+        return
 
     except AuthError:
         await r.set("system:halted", "1")

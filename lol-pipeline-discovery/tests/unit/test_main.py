@@ -13,7 +13,15 @@ from lol_pipeline.config import Config
 from lol_pipeline.riot_api import RiotClient
 from redis.exceptions import RedisError
 
-from lol_discovery.main import _is_idle, _parse_member, _promote_batch, _resolve_names, main
+from lol_discovery.main import (
+    _MAX_STREAM_BACKLOG,
+    _PIPELINE_STREAMS,
+    _is_idle,
+    _parse_member,
+    _promote_batch,
+    _resolve_names,
+    main,
+)
 
 
 @pytest.fixture
@@ -66,6 +74,100 @@ class TestResolveNamesHmget:
             result = await _resolve_names(r, riot, "puuid-noname", "na1", log)
             await riot.close()
         assert result == ("ApiName", "001")
+
+
+class TestResolveNamesMissingFields:
+    """B2: Deleted/banned accounts may return 200 with missing gameName/tagLine."""
+
+    @pytest.mark.asyncio
+    async def test_resolve_names__missing_game_name__returns_none(self, r, log):
+        """API returns 200 but no gameName field — should return None, not crash."""
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-puuid/puuid-banned"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": "puuid-banned", "tagLine": "NA1"},
+                )
+            )
+            riot = RiotClient("RGAPI-test")
+            result = await _resolve_names(r, riot, "puuid-banned", "na1", log)
+            await riot.close()
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_resolve_names__missing_tag_line__returns_none(self, r, log):
+        """API returns 200 but no tagLine field — should return None, not crash."""
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-puuid/puuid-notagline"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": "puuid-notagline", "gameName": "SomeName"},
+                )
+            )
+            riot = RiotClient("RGAPI-test")
+            result = await _resolve_names(r, riot, "puuid-notagline", "na1", log)
+            await riot.close()
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_resolve_names__both_fields_missing__returns_none(self, r, log):
+        """API returns 200 but neither gameName nor tagLine — should return None."""
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-puuid/puuid-empty"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": "puuid-empty"},
+                )
+            )
+            riot = RiotClient("RGAPI-test")
+            result = await _resolve_names(r, riot, "puuid-empty", "na1", log)
+            await riot.close()
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_resolve_names__empty_game_name__returns_none(self, r, log):
+        """API returns 200 with empty string gameName — should return None."""
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-puuid/puuid-emptyname"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": "puuid-emptyname", "gameName": "", "tagLine": "NA1"},
+                )
+            )
+            riot = RiotClient("RGAPI-test")
+            result = await _resolve_names(r, riot, "puuid-emptyname", "na1", log)
+            await riot.close()
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_promote_batch__missing_names_removes_player(self, r, cfg, log):
+        """B2: Player with missing gameName/tagLine is removed from queue, not crash-looped."""
+        await r.zadd("discover:players", {"puuid-deleted:na1": 1700000000000.0})
+
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-puuid/puuid-deleted"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": "puuid-deleted"},
+                )
+            )
+            riot = RiotClient("RGAPI-test")
+            promoted = await _promote_batch(r, cfg, log, riot)
+            await riot.close()
+
+        assert promoted == 0
+        # Player must be removed from queue — no infinite retry loop
+        assert await r.zcard("discover:players") == 0
 
 
 class TestPromoteBatchNames:
@@ -252,6 +354,136 @@ class TestIsIdle:
         assert await _is_idle(r) is False
 
 
+class TestIsIdleAllStreams:
+    """I2-C2: _is_idle checks ALL four pipeline streams, not just stream:puuid."""
+
+    @pytest.mark.asyncio
+    async def test_is_idle__all_streams_empty__returns_true(self, r):
+        """When no pipeline streams exist, all are treated as idle."""
+        assert await _is_idle(r) is True
+
+    @pytest.mark.asyncio
+    async def test_is_idle__all_streams_drained__returns_true(self, r):
+        """When all four streams exist with consumer groups but 0 pending/lag, idle."""
+        from lol_pipeline.models import MessageEnvelope
+        from lol_pipeline.streams import ack, consume, publish
+
+        groups = ["crawlers", "fetchers", "parsers", "analyzers"]
+        for stream, group in zip(_PIPELINE_STREAMS, groups, strict=True):
+            env = MessageEnvelope(source_stream=stream, type="puuid", payload={}, max_attempts=5)
+            await publish(r, stream, env)
+            msgs = await consume(r, stream, group, "w1", block=0)
+            assert msgs
+            for msg_id, _env in msgs:
+                await ack(r, stream, group, msg_id)
+
+        assert await _is_idle(r) is True
+
+    @pytest.mark.asyncio
+    async def test_is_idle__match_id_stream_pending__returns_false(self, r):
+        """When stream:match_id has pending messages, pipeline is NOT idle."""
+        from lol_pipeline.models import MessageEnvelope
+        from lol_pipeline.streams import consume, publish
+
+        env = MessageEnvelope(
+            source_stream="stream:match_id",
+            type="match_id",
+            payload={"match_id": "NA1_123"},
+            max_attempts=5,
+        )
+        await publish(r, "stream:match_id", env)
+        await consume(r, "stream:match_id", "fetchers", "f1", block=0)
+        # Delivered but NOT acked
+        assert await _is_idle(r) is False
+
+    @pytest.mark.asyncio
+    async def test_is_idle__parse_stream_pending__returns_false(self, r):
+        """When stream:parse has pending messages, pipeline is NOT idle."""
+        from lol_pipeline.models import MessageEnvelope
+        from lol_pipeline.streams import consume, publish
+
+        env = MessageEnvelope(
+            source_stream="stream:parse",
+            type="parse",
+            payload={"match_id": "NA1_456"},
+            max_attempts=5,
+        )
+        await publish(r, "stream:parse", env)
+        await consume(r, "stream:parse", "parsers", "p1", block=0)
+        assert await _is_idle(r) is False
+
+    @pytest.mark.asyncio
+    async def test_is_idle__analyze_stream_pending__returns_false(self, r):
+        """When stream:analyze has pending messages, pipeline is NOT idle."""
+        from lol_pipeline.models import MessageEnvelope
+        from lol_pipeline.streams import consume, publish
+
+        env = MessageEnvelope(
+            source_stream="stream:analyze",
+            type="analyze",
+            payload={"puuid": "abc"},
+            max_attempts=5,
+        )
+        await publish(r, "stream:analyze", env)
+        await consume(r, "stream:analyze", "analyzers", "a1", block=0)
+        assert await _is_idle(r) is False
+
+    @pytest.mark.asyncio
+    async def test_is_idle__missing_stream_treated_as_idle(self, r):
+        """Streams that don't exist yet are treated as idle (ResponseError handled)."""
+        from lol_pipeline.models import MessageEnvelope
+        from lol_pipeline.streams import ack, consume, publish
+
+        # Only create stream:puuid — the other 3 don't exist
+        env = MessageEnvelope(
+            source_stream="stream:puuid", type="puuid", payload={}, max_attempts=5
+        )
+        await publish(r, "stream:puuid", env)
+        msgs = await consume(r, "stream:puuid", "crawlers", "c1", block=0)
+        for msg_id, _env in msgs:
+            await ack(r, "stream:puuid", "crawlers", msg_id)
+
+        # stream:puuid is drained, others don't exist — should be idle
+        assert await _is_idle(r) is True
+
+    @pytest.mark.asyncio
+    async def test_is_idle__checks_all_four_streams(self, r):
+        """Verify _PIPELINE_STREAMS contains exactly the four expected streams."""
+        assert set(_PIPELINE_STREAMS) == {
+            "stream:puuid",
+            "stream:match_id",
+            "stream:parse",
+            "stream:analyze",
+        }
+
+    @pytest.mark.asyncio
+    async def test_is_idle__puuid_idle_but_analyze_busy__returns_false(self, r):
+        """Even if stream:puuid is idle, busy downstream streams block promotion."""
+        from lol_pipeline.models import MessageEnvelope
+        from lol_pipeline.streams import ack, consume, publish
+
+        # Drain stream:puuid
+        env1 = MessageEnvelope(
+            source_stream="stream:puuid", type="puuid", payload={}, max_attempts=5
+        )
+        await publish(r, "stream:puuid", env1)
+        msgs = await consume(r, "stream:puuid", "crawlers", "c1", block=0)
+        for msg_id, _env in msgs:
+            await ack(r, "stream:puuid", "crawlers", msg_id)
+
+        # Leave stream:analyze with pending work
+        env2 = MessageEnvelope(
+            source_stream="stream:analyze",
+            type="analyze",
+            payload={"puuid": "busy"},
+            max_attempts=5,
+        )
+        await publish(r, "stream:analyze", env2)
+        await consume(r, "stream:analyze", "analyzers", "a1", block=0)
+
+        assert await _is_idle(r) is False
+
+
 class TestPromoteBatchEdgeCases:
     @pytest.mark.asyncio
     async def test_empty_queue(self, r, cfg, log):
@@ -319,6 +551,63 @@ class TestDiscoveryTier3EdgeCases:
         assert await _is_idle(r) is True
 
 
+class TestPromoteBatchAtomicCleanup:
+    """I2-H12: ZREM + HSET after publish must be atomic (pipeline transaction)."""
+
+    @pytest.mark.asyncio
+    async def test_zrem_and_hset_are_atomic(self, r, cfg, log):
+        """Post-publish cleanup (ZREM + HSET) executes in a single Redis pipeline."""
+        await r.hset(
+            "player:puuid-atomic",
+            mapping={"game_name": "AtomicPlayer", "tag_line": "001"},
+        )
+        await r.zadd("discover:players", {"puuid-atomic:na1": 1700000000000.0})
+
+        pipeline_calls: list[list[str]] = []
+        original_pipeline = r.pipeline
+
+        def tracking_pipeline(**kwargs):
+            pipe = original_pipeline(**kwargs)
+            original_execute = pipe.execute
+            ops: list[str] = []
+
+            original_zrem = pipe.zrem
+            original_hset = pipe.hset
+
+            def track_zrem(*args, **kw):
+                ops.append("zrem")
+                return original_zrem(*args, **kw)
+
+            def track_hset(*args, **kw):
+                ops.append("hset")
+                return original_hset(*args, **kw)
+
+            async def tracking_execute(*args, **kw):
+                pipeline_calls.append(list(ops))
+                return await original_execute(*args, **kw)
+
+            pipe.zrem = track_zrem
+            pipe.hset = track_hset
+            pipe.execute = tracking_execute
+            return pipe
+
+        r.pipeline = tracking_pipeline
+
+        riot = RiotClient("RGAPI-test")
+        promoted = await _promote_batch(r, cfg, log, riot)
+        await riot.close()
+
+        assert promoted == 1
+        # Verify a pipeline was used containing both ZREM and HSET
+        atomic_batches = [ops for ops in pipeline_calls if "zrem" in ops and "hset" in ops]
+        assert len(atomic_batches) == 1, (
+            f"Expected exactly one pipeline with both ZREM and HSET, got: {pipeline_calls}"
+        )
+        # I2-H12: HSET before ZREM — if crash after HSET but before ZREM,
+        # the seeded_at check on next batch cycle skips and cleans up the member.
+        assert atomic_batches[0] == ["hset", "zrem"]
+
+
 class TestPromoteBatchOrdering:
     """CQ-12: publish() must happen before hset(seeded_at) in _promote_batch."""
 
@@ -333,16 +622,6 @@ class TestPromoteBatchOrdering:
         )
         await r.zadd("discover:players", {"puuid-order:na1": 1700000000000.0})
 
-        original_hset = r.hset
-
-        async def tracking_hset(key, *args, **kwargs):
-            mapping = kwargs.get("mapping", {})
-            if isinstance(mapping, dict) and "seeded_at" in mapping:
-                call_order.append("hset_seeded_at")
-            return await original_hset(key, *args, **kwargs)
-
-        r.hset = tracking_hset
-
         original_xadd = r.xadd
 
         async def tracking_xadd(stream, *args, **kwargs):
@@ -351,6 +630,24 @@ class TestPromoteBatchOrdering:
             return await original_xadd(stream, *args, **kwargs)
 
         r.xadd = tracking_xadd
+
+        # Wrap r.pipeline to intercept pipe.hset inside the transaction
+        original_pipeline = r.pipeline
+
+        def tracking_pipeline(**kwargs):
+            pipe = original_pipeline(**kwargs)
+            original_pipe_hset = pipe.hset
+
+            def tracked_pipe_hset(*args, **kw):
+                mapping = kw.get("mapping", {})
+                if isinstance(mapping, dict) and "seeded_at" in mapping:
+                    call_order.append("hset_seeded_at")
+                return original_pipe_hset(*args, **kw)
+
+            pipe.hset = tracked_pipe_hset
+            return pipe
+
+        r.pipeline = tracking_pipeline
 
         riot = RiotClient("RGAPI-test")
         promoted = await _promote_batch(r, cfg, log, riot)
@@ -446,11 +743,18 @@ class TestShutdownEventPattern:
 class TestMainEntryPoint:
     """Tests for main() bootstrap and teardown."""
 
+    @staticmethod
+    def _mock_redis_not_halted() -> AsyncMock:
+        """Return an AsyncMock Redis that reports system:halted as unset."""
+        mock_r = AsyncMock()
+        mock_r.get = AsyncMock(return_value=None)
+        return mock_r
+
     @pytest.mark.asyncio
     async def test_main__creates_redis_and_starts_loop(self, monkeypatch):
         monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
         monkeypatch.setenv("REDIS_URL", "redis://localhost")
-        mock_r = AsyncMock()
+        mock_r = self._mock_redis_not_halted()
         call_count = 0
 
         async def fake_is_idle(*args):
@@ -481,7 +785,7 @@ class TestMainEntryPoint:
     async def test_main__keyboard_interrupt__closes_redis(self, monkeypatch):
         monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
         monkeypatch.setenv("REDIS_URL", "redis://localhost")
-        mock_r = AsyncMock()
+        mock_r = self._mock_redis_not_halted()
 
         mock_loop = MagicMock()
         mock_loop.add_signal_handler.return_value = None
@@ -505,7 +809,7 @@ class TestMainEntryPoint:
         """C4: RedisError in main loop is caught, logged, and retried after 1s sleep."""
         monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
         monkeypatch.setenv("REDIS_URL", "redis://localhost")
-        mock_r = AsyncMock()
+        mock_r = self._mock_redis_not_halted()
 
         call_count = 0
 
@@ -544,7 +848,7 @@ class TestMainEntryPoint:
         """C4: OSError in main loop is caught and retried, same as RedisError."""
         monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
         monkeypatch.setenv("REDIS_URL", "redis://localhost")
-        mock_r = AsyncMock()
+        mock_r = self._mock_redis_not_halted()
 
         call_count = 0
 
@@ -574,3 +878,301 @@ class TestMainEntryPoint:
         mock_sleep.assert_any_call(1)
         assert call_count == 2
         mock_r.aclose.assert_called_once()
+
+
+class TestBacklogThreshold:
+    """I2-C2: _is_idle checks XLEN backlog on all 4 downstream streams."""
+
+    @pytest.mark.asyncio
+    async def test_is_idle__stream_exceeds_backlog__returns_false(self, r):
+        """When any stream has more messages than MAX_STREAM_BACKLOG, not idle."""
+        # Add MAX_STREAM_BACKLOG + 1 messages to stream:match_id
+        for i in range(_MAX_STREAM_BACKLOG + 1):
+            await r.xadd(
+                "stream:match_id",
+                {
+                    "id": f"msg-{i}",
+                    "source_stream": "stream:match_id",
+                    "type": "match_id",
+                    "payload": "{}",
+                    "attempts": "0",
+                    "max_attempts": "5",
+                    "enqueued_at": "2024-01-01",
+                    "dlq_attempts": "0",
+                },
+            )
+        assert await _is_idle(r) is False
+
+    @pytest.mark.asyncio
+    async def test_is_idle__all_streams_below_backlog__returns_true(self, r):
+        """When all streams are below MAX_STREAM_BACKLOG and have no consumer groups, idle."""
+        # Add a few messages to each stream — well below threshold
+        for stream in _PIPELINE_STREAMS:
+            await r.xadd(
+                stream,
+                {
+                    "id": "test",
+                    "source_stream": stream,
+                    "type": "puuid",
+                    "payload": "{}",
+                    "attempts": "0",
+                    "max_attempts": "5",
+                    "enqueued_at": "2024-01-01",
+                    "dlq_attempts": "0",
+                },
+            )
+        # All streams have 1 message each, no consumer groups → idle
+        assert await _is_idle(r) is True
+
+    @pytest.mark.asyncio
+    async def test_is_idle__parse_stream_exceeds_backlog__returns_false(self, r):
+        """Even if stream:puuid is fine, stream:parse exceeding threshold blocks promotion."""
+        for i in range(_MAX_STREAM_BACKLOG + 1):
+            await r.xadd(
+                "stream:parse",
+                {
+                    "id": f"msg-{i}",
+                    "source_stream": "stream:parse",
+                    "type": "parse",
+                    "payload": "{}",
+                    "attempts": "0",
+                    "max_attempts": "5",
+                    "enqueued_at": "2024-01-01",
+                    "dlq_attempts": "0",
+                },
+            )
+        assert await _is_idle(r) is False
+
+    @pytest.mark.asyncio
+    async def test_is_idle__analyze_stream_exceeds_backlog__returns_false(self, r):
+        """stream:analyze exceeding threshold blocks promotion."""
+        for i in range(_MAX_STREAM_BACKLOG + 1):
+            await r.xadd(
+                "stream:analyze",
+                {
+                    "id": f"msg-{i}",
+                    "source_stream": "stream:analyze",
+                    "type": "analyze",
+                    "payload": "{}",
+                    "attempts": "0",
+                    "max_attempts": "5",
+                    "enqueued_at": "2024-01-01",
+                    "dlq_attempts": "0",
+                },
+            )
+        assert await _is_idle(r) is False
+
+    @pytest.mark.asyncio
+    async def test_is_idle__exactly_at_threshold__returns_true(self, r):
+        """Exactly MAX_STREAM_BACKLOG messages is still considered idle (threshold is >)."""
+        for i in range(_MAX_STREAM_BACKLOG):
+            await r.xadd(
+                "stream:match_id",
+                {
+                    "id": f"msg-{i}",
+                    "source_stream": "stream:match_id",
+                    "type": "match_id",
+                    "payload": "{}",
+                    "attempts": "0",
+                    "max_attempts": "5",
+                    "enqueued_at": "2024-01-01",
+                    "dlq_attempts": "0",
+                },
+            )
+        # Exactly at threshold — should be idle (> not >=)
+        assert await _is_idle(r) is True
+
+
+class TestHaltExitsLoop:
+    """I2-M5: Discovery exits polling loop when system:halted is set."""
+
+    @pytest.mark.asyncio
+    async def test_main__halted__exits_cleanly(self, monkeypatch):
+        """When system:halted is set, main() breaks out of loop and shuts down."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_r = AsyncMock()
+        mock_r.get = AsyncMock(return_value="1")  # system:halted = "1"
+
+        mock_loop = MagicMock()
+        mock_loop.add_signal_handler.return_value = None
+
+        is_idle_called = False
+
+        async def should_not_be_called(*args):
+            nonlocal is_idle_called
+            is_idle_called = True
+            return False
+
+        with (
+            patch("lol_discovery.main.Config") as mock_cfg,
+            patch("lol_discovery.main.get_redis", return_value=mock_r),
+            patch("lol_discovery.main.RiotClient") as mock_riot,
+            patch("lol_discovery.main._is_idle", side_effect=should_not_be_called),
+            patch("lol_discovery.main.asyncio.sleep", new_callable=AsyncMock),
+            patch("lol_discovery.main.asyncio.get_running_loop", return_value=mock_loop),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            mock_riot.return_value = AsyncMock()
+            await main()  # should exit cleanly, not loop forever
+
+        # Must NOT have called _is_idle — halted check should break before that
+        assert not is_idle_called
+        mock_r.aclose.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_main__halted__does_not_sleep_loop(self, monkeypatch):
+        """Halted system exits immediately, not sleep(10)+continue like before."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_r = AsyncMock()
+        mock_r.get = AsyncMock(return_value="1")
+
+        mock_loop = MagicMock()
+        mock_loop.add_signal_handler.return_value = None
+
+        with (
+            patch("lol_discovery.main.Config") as mock_cfg,
+            patch("lol_discovery.main.get_redis", return_value=mock_r),
+            patch("lol_discovery.main.RiotClient") as mock_riot,
+            patch("lol_discovery.main._is_idle", new_callable=AsyncMock),
+            patch("lol_discovery.main.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+            patch("lol_discovery.main.asyncio.get_running_loop", return_value=mock_loop),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            mock_riot.return_value = AsyncMock()
+            await main()
+
+        # Should NOT have called sleep(10) — the old behavior was sleep+continue
+        for call in mock_sleep.call_args_list:
+            assert call.args[0] != 10, "Should not sleep(10) when halted — must exit"
+        mock_r.aclose.assert_called_once()
+
+
+class TestPromoteBatchAtomicOrdering:
+    """I2-H12: Promotion must be XADD-first, then HSET+ZREM in pipeline."""
+
+    @pytest.mark.asyncio
+    async def test_hset_before_zrem_in_pipeline(self, r, cfg, log):
+        """HSET seeded_at executes before ZREM inside the pipeline.
+
+        If crash after HSET but before ZREM, the seeded_at check on next
+        batch cycle (hexists seeded_at) catches the player and cleans up.
+        """
+        await r.hset(
+            "player:puuid-order2",
+            mapping={"game_name": "OrderTest2", "tag_line": "002"},
+        )
+        await r.zadd("discover:players", {"puuid-order2:na1": 1700000000000.0})
+
+        pipeline_ops: list[str] = []
+        original_pipeline = r.pipeline
+
+        def tracking_pipeline(**kwargs):
+            pipe = original_pipeline(**kwargs)
+            original_hset = pipe.hset
+            original_zrem = pipe.zrem
+
+            def track_hset(*args, **kw):
+                pipeline_ops.append("hset")
+                return original_hset(*args, **kw)
+
+            def track_zrem(*args, **kw):
+                pipeline_ops.append("zrem")
+                return original_zrem(*args, **kw)
+
+            pipe.hset = track_hset
+            pipe.zrem = track_zrem
+            return pipe
+
+        r.pipeline = tracking_pipeline
+
+        riot = RiotClient("RGAPI-test")
+        promoted = await _promote_batch(r, cfg, log, riot)
+        await riot.close()
+
+        assert promoted == 1
+        # HSET must come before ZREM in the pipeline
+        hset_idx = pipeline_ops.index("hset")
+        zrem_idx = pipeline_ops.index("zrem")
+        assert hset_idx < zrem_idx, (
+            f"HSET must execute before ZREM in pipeline, got: {pipeline_ops}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_xadd_before_pipeline(self, r, cfg, log):
+        """XADD (publish) must happen before the HSET+ZREM pipeline.
+
+        At-least-once guarantee: if crash after XADD but before pipeline,
+        the player stays in discover:players and gets re-promoted.
+        """
+        await r.hset(
+            "player:puuid-xadd-order",
+            mapping={"game_name": "XaddOrder", "tag_line": "003"},
+        )
+        await r.zadd("discover:players", {"puuid-xadd-order:na1": 1700000000000.0})
+
+        global_ops: list[str] = []
+        original_xadd = r.xadd
+        original_pipeline = r.pipeline
+
+        async def tracking_xadd(stream, *args, **kwargs):
+            if stream == "stream:puuid":
+                global_ops.append("xadd")
+            return await original_xadd(stream, *args, **kwargs)
+
+        r.xadd = tracking_xadd
+
+        def tracking_pipeline(**kwargs):
+            pipe = original_pipeline(**kwargs)
+            original_execute = pipe.execute
+
+            async def tracking_execute(*args, **kw):
+                global_ops.append("pipeline_execute")
+                return await original_execute(*args, **kw)
+
+            pipe.execute = tracking_execute
+            return pipe
+
+        r.pipeline = tracking_pipeline
+
+        riot = RiotClient("RGAPI-test")
+        promoted = await _promote_batch(r, cfg, log, riot)
+        await riot.close()
+
+        assert promoted == 1
+        assert global_ops == ["xadd", "pipeline_execute"]
+
+    @pytest.mark.asyncio
+    async def test_crash_after_xadd_leaves_player_in_discover(self, r, cfg, log):
+        """Simulated crash after XADD: player stays in discover:players for re-promotion."""
+        await r.hset(
+            "player:puuid-crash",
+            mapping={"game_name": "CrashTest", "tag_line": "004"},
+        )
+        await r.zadd("discover:players", {"puuid-crash:na1": 1700000000000.0})
+
+        original_pipeline = r.pipeline
+
+        def crashing_pipeline(**kwargs):
+            pipe = original_pipeline(**kwargs)
+
+            async def crash_execute(*args, **kw):
+                raise ConnectionError("simulated crash after XADD")
+
+            pipe.execute = crash_execute
+            return pipe
+
+        r.pipeline = crashing_pipeline
+
+        riot = RiotClient("RGAPI-test")
+        with pytest.raises(ConnectionError, match="simulated crash"):
+            await _promote_batch(r, cfg, log, riot)
+        await riot.close()
+
+        # XADD succeeded (message in stream), but player still in discover:players
+        entries = await r.xrange("stream:puuid")
+        assert len(entries) == 1
+        assert await r.zscore("discover:players", "puuid-crash:na1") is not None
+        # No seeded_at set (pipeline crashed before HSET)
+        assert await r.hget("player:puuid-crash", "seeded_at") is None
