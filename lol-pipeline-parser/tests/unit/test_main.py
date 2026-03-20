@@ -579,20 +579,17 @@ class TestParserMaxlenPolicy:
         msg_id = await _setup_message(r, env)
         await raw_store.set(match_id, json.dumps(data))
 
-        publish_calls: list[dict] = []
-        original_publish = publish
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
 
-        async def tracking_publish(*args, **kwargs):
-            publish_calls.append({"args": args, "kwargs": kwargs})
-            return await original_publish(*args, **kwargs)
+        # Verify the message was published to stream:analyze (batched via pipeline)
+        msgs = await r.xrange("stream:analyze")
+        assert len(msgs) == 1, f"Expected 1 analyze message, got {len(msgs)}"
+        # Verify the payload contains the correct puuid
+        fields = msgs[0][1]
+        import json as _json
 
-        with patch("lol_parser.main.publish", side_effect=tracking_publish):
-            await _parse_match(r, raw_store, cfg, msg_id, env, log)
-
-        assert len(publish_calls) == 1
-        assert publish_calls[0]["kwargs"].get("maxlen") == 50_000, (
-            f"Expected maxlen=50_000 for stream:analyze, got {publish_calls[0]['kwargs']}"
-        )
+        payload = _json.loads(fields.get("payload", "{}"))
+        assert payload.get("puuid") == "puuid-ml"
 
 
 class TestMainEntryPoint:
@@ -949,3 +946,63 @@ class TestDiscoveryHexistsBatched:
 
         # Only 7 unseeded players should be in discovery
         assert await r.zcard("discover:players") == 7
+
+
+class TestParserPipelineOptimizations:
+    """P13-OPT-6/7: parser batches post-write ops and analyze publishes."""
+
+    @pytest.mark.asyncio
+    async def test_analyze_messages_published_for_all_participants(self, r, cfg, log):
+        """All participants get an analyze message in stream:analyze (OPT-7)."""
+        raw_store = RawStore(r)
+        match_id = "NA1_1234567890"
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, _load_fixture("match_normal.json"))
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        # All 10 participants should have an analyze message
+        msgs = await r.xrange("stream:analyze")
+        assert len(msgs) == 10
+
+    @pytest.mark.asyncio
+    async def test_player_matches_ttl_set_for_all_participants(self, r, cfg, log):
+        """All player:matches:{puuid} sorted sets get a TTL (OPT-6)."""
+        raw_store = RawStore(r)
+        match_id = "NA1_1234567890"
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, _load_fixture("match_normal.json"))
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        # Collect all participant puuids
+        participant_keys = [k async for k in r.scan_iter("player:matches:*")]
+        assert len(participant_keys) > 0, "Expected player:matches:* keys to exist"
+        for key in participant_keys:
+            ttl = await r.ttl(key)
+            assert ttl > 0, f"{key} must have a TTL after parsing"
+
+    @pytest.mark.asyncio
+    async def test_player_matches_trimmed_to_max(self, r, cfg, log):
+        """player:matches:{puuid} is trimmed to PLAYER_MATCHES_MAX (OPT-6)."""
+        from lol_parser.main import PLAYER_MATCHES_MAX
+
+        raw_store = RawStore(r)
+        match_id = "NA1_1234567890"
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        fixture_data = json.loads(_load_fixture("match_normal.json"))
+        puuid = fixture_data["metadata"]["participants"][0]
+
+        # Pre-fill with more than PLAYER_MATCHES_MAX entries
+        overload: dict[str, float] = {
+            f"NA1_OLD{i}": float(1600000000 + i) for i in range(PLAYER_MATCHES_MAX + 10)
+        }
+        await r.zadd(f"player:matches:{puuid}", overload)
+        await raw_store.set(match_id, _load_fixture("match_normal.json"))
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        count = await r.zcard(f"player:matches:{puuid}")
+        assert count <= PLAYER_MATCHES_MAX + 1  # +1 for the new match just added

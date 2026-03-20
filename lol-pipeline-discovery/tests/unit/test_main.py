@@ -1351,3 +1351,50 @@ class TestPromoteBatchPlayersAll:
 
         assert promoted == 0
         assert await r.zscore("players:all", "puuid-existing") is None
+
+
+class TestPromoteBatchPlayerTTL:
+    """P11-DB-2: _promote_batch sets 30-day TTL on player:{puuid} hashes."""
+
+    @pytest.mark.asyncio
+    async def test_promote_sets_player_ttl(self, r, cfg, log):
+        """Promoted player:{puuid} hash has a positive TTL (30 days)."""
+        await r.zadd("discover:players", {"puuid-ttltest:na1": 1700000000000.0})
+
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-puuid/puuid-ttltest"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": "puuid-ttltest", "gameName": "TtlPlayer", "tagLine": "TTL"},
+                )
+            )
+            riot = RiotClient("RGAPI-test")
+            await _promote_batch(r, cfg, log, riot)
+            await riot.close()
+
+        ttl = await r.ttl("player:puuid-ttltest")
+        assert ttl > 0, "player:{puuid} must have a TTL after promotion"
+
+    @pytest.mark.asyncio
+    async def test_promote_ttl_approx_30_days(self, r, cfg, log):
+        """TTL is approximately 30 days (within 60s tolerance)."""
+        await r.zadd("discover:players", {"puuid-ttl2:na1": 1700000000001.0})
+
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-puuid/puuid-ttl2"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": "puuid-ttl2", "gameName": "AnotherPlayer", "tagLine": "AP"},
+                )
+            )
+            riot = RiotClient("RGAPI-test")
+            await _promote_batch(r, cfg, log, riot)
+            await riot.close()
+
+        ttl = await r.ttl("player:puuid-ttl2")
+        # 30 days = 2592000s; allow for sub-second timing drift
+        assert abs(ttl - 2592000) <= 60, f"Expected ~2592000s TTL, got {ttl}s"

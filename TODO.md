@@ -140,6 +140,51 @@ All B1–B15, C1–C2 items resolved. All I2-C1 through I2-M7 items resolved. Se
 
 ---
 
+## Phase 12 — "ZENITH" (Orchestrator Cycle 6, 20-agent review)
+
+### Implemented
+
+- [x] Champion icons (P10-UX-1): `_get_ddragon_version()`, `_get_champion_map()`, `_champion_icon_html()` — 32px icons in match history
+- [x] P10-SEC-4: Security headers middleware (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`)
+- [x] P10-DX-2: Python 3.12 → 3.14 in all Dockerfiles and pyproject.toml target-version
+- [x] P10-CW-7: Riot Games attribution footer in `_page()`
+- [x] CSP headers with nonce for inline scripts
+- [x] Async log I/O (`asyncio.to_thread`)
+- [x] TTLs on `match:{match_id}` and `participant:{match_id}:{puuid}` hashes (I2-C3 / I2-H12 follow-ups)
+- [x] ARIA improvements on streams/logs page
+
+---
+
+## Phase 13 — "SUMMIT" (Orchestrator Cycle 7, 20-agent review)
+
+### Explicitly REJECTED
+
+- P13-WD-14/DD-16/ARC-7/QA-1: `except A, B:` — PERMANENTLY REJECTED (valid PEP 758, Phase 11 decision stands)
+- P13-FV-1: XAUTOCLAIM 60s < lock TTL 300s — REJECTED (Worker B's `nx=True` SET correctly fails; Worker B discards duplicate and ACKs; Worker A completes normally)
+
+### Critical
+
+- [x] P13-DBG-3: `_ensured` WeakKeyDictionary cache not cleared on NOGROUP ResponseError → permanent NOGROUP loop after Redis restart (`streams.py`)
+
+### High
+
+- [x] P13-DEV-3: `REDIS_PASSWORD` missing from `.env.example` (`.env.example`)
+- [x] P13-UX-6: Streams/logs fetch errors silently swallowed — no inline error state shown to user (`ui/main.py` JS)
+
+### Medium
+
+- [x] P13-UX-11: "Load more" replaces match history container instead of appending rows (`ui/main.py`)
+- [x] P13-OPT-6: Parser sequential post-write RTTs (ZREMRANGEBYRANK + expire per participant) → pipeline them (`parser/main.py`)
+- [x] P13-OPT-7: Parser sequential analyze `publish()` calls → batch into pipeline (`parser/main.py`)
+- [x] P11-DB-2: `player:{puuid}` hashes have no TTL in discovery `_promote_batch` (`discovery/main.py`)
+- [x] P13-INT-4: Raw blob 24h TTL inconsistent with `MATCH_DATA_TTL_SECONDS` (7d) — configurable via `RAW_STORE_TTL_SECONDS` env var (`raw_store.py`, `.env.example`)
+
+### Low
+
+- [x] P13-CR-4: Recovery `_archive()` sets `match:{match_id}` with no TTL — unbounded growth for archived matches (`recovery/main.py`)
+
+---
+
 ## Fuzzing Targets
 
 Fuzz-worthy functions with high input-surface risk. Each should get a Hypothesis property-based test.

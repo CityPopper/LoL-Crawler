@@ -854,3 +854,66 @@ class TestMainEntryPoint:
             with pytest.raises(KeyboardInterrupt):
                 await main()
         mock_r.aclose.assert_called_once()
+
+
+class TestArchiveMatchTTL:
+    """P13-CR-4: _archive() sets TTL on match:{match_id} when archiving."""
+
+    @pytest.fixture
+    def _dlq_with_match(self):
+        return DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"match_id": "NA1_TTL99", "region": "na1"},
+            attempts=5,
+            max_attempts=5,
+            failure_code="parse_error",
+            failure_reason="parse_error",
+            failed_by="parser",
+            original_stream="stream:parse",
+            original_message_id="1-0",
+            dlq_attempts=3,
+        )
+
+    @pytest.mark.asyncio
+    async def test_archive_sets_ttl_on_match_key(self, r, log, _dlq_with_match):
+        """_archive() sets EXPIRE on match:{match_id} so it doesn't grow unbounded."""
+        from lol_recovery.main import _archive
+
+        await _archive(r, _dlq_with_match, log)
+
+        ttl = await r.ttl("match:NA1_TTL99")
+        assert ttl > 0, "match:{match_id} must have a TTL after _archive()"
+
+    @pytest.mark.asyncio
+    async def test_archive_ttl_approx_7_days(self, r, log, _dlq_with_match):
+        """TTL is approximately 7 days (MATCH_DATA_TTL_SECONDS default)."""
+        from lol_recovery.main import _archive
+
+        await _archive(r, _dlq_with_match, log)
+
+        ttl = await r.ttl("match:NA1_TTL99")
+        # Default 604800s = 7 days; allow sub-second drift
+        assert abs(ttl - 604800) <= 60, f"Expected ~604800s TTL, got {ttl}s"
+
+    @pytest.mark.asyncio
+    async def test_archive_no_match_id_no_ttl_set(self, r, log):
+        """_archive() without match_id in payload skips the match key entirely."""
+        from lol_recovery.main import _archive
+
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"puuid": "some-puuid"},  # no match_id
+            attempts=5,
+            max_attempts=5,
+            failure_code="parse_error",
+            failure_reason="parse_error",
+            failed_by="parser",
+            original_stream="stream:parse",
+            original_message_id="1-0",
+            dlq_attempts=3,
+        )
+        await _archive(r, dlq, log)
+        # No match key should have been created
+        assert await r.exists("match:") == 0

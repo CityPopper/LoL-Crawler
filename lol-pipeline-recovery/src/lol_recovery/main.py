@@ -19,6 +19,8 @@ from lol_pipeline.redis_client import get_redis
 from lol_pipeline.streams import consume_typed
 from redis.exceptions import RedisError
 
+MATCH_DATA_TTL_SECONDS: int = int(os.getenv("MATCH_DATA_TTL_SECONDS", "604800"))
+
 _IN_STREAM = "stream:dlq"
 _ARCHIVE_STREAM = "stream:dlq:archive"
 _DELAYED_KEY = "delayed:messages"
@@ -57,6 +59,7 @@ async def _archive(
     match_id: str | None = dlq.payload.get("match_id")
     if match_id:
         await r.hset(f"match:{match_id}", mapping={"status": "failed"})  # type: ignore[misc]
+        await r.expire(f"match:{match_id}", MATCH_DATA_TTL_SECONDS)
         await r.sadd("match:status:failed", match_id)  # type: ignore[misc]
         await r.expire("match:status:failed", 7776000)  # 90 days
     log.warning(
