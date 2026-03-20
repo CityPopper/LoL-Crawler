@@ -42,8 +42,10 @@ _LOG_RESERVED = frozenset(
 
 class _JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
+        dt = datetime.fromtimestamp(record.created, tz=UTC)
+        ts = dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
         data: dict[str, Any] = {
-            "timestamp": datetime.now(tz=UTC).isoformat(),
+            "timestamp": ts,
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),

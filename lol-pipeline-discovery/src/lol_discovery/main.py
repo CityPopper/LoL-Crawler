@@ -78,7 +78,7 @@ async def _is_idle(r: aioredis.Redis) -> bool:
             continue  # stream does not exist yet — idle for this stream
         if not groups:
             continue  # no consumer groups registered — idle for this stream
-        if not all(int(g.get("pending", 0)) == 0 and int(g.get("lag", 0)) == 0 for g in groups):
+        if not all(int(g.get("pending") or 0) == 0 and int(g.get("lag") or 0) == 0 for g in groups):
             return False
     return True
 

@@ -491,6 +491,36 @@ class TestIsIdleAllStreams:
         assert await _is_idle(r) is False
 
 
+class TestIsIdleNoneLagPending:
+    """P11-PM-03-A: XINFO GROUPS can return lag=None or pending=None."""
+
+    @pytest.mark.asyncio
+    async def test_is_idle__lag_none__returns_true(self, r):
+        """When XINFO GROUPS returns lag=None (empty stream), _is_idle returns True."""
+        mock_groups = [
+            {
+                "pending": None,
+                "lag": None,
+                "name": "grp",
+                "consumers": 0,
+                "last-delivered-id": "0-0",
+            }
+        ]
+        with patch.object(r, "xinfo_groups", new_callable=AsyncMock, return_value=mock_groups):
+            result = await _is_idle(r)
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_is_idle__lag_none_pending_nonzero__returns_false(self, r):
+        """When lag=None but pending > 0, pipeline is not idle."""
+        mock_groups = [
+            {"pending": 3, "lag": None, "name": "grp", "consumers": 1, "last-delivered-id": "1-0"}
+        ]
+        with patch.object(r, "xinfo_groups", new_callable=AsyncMock, return_value=mock_groups):
+            result = await _is_idle(r)
+        assert result is False
+
+
 class TestPromoteBatchEdgeCases:
     @pytest.mark.asyncio
     async def test_empty_queue(self, r, cfg, log):

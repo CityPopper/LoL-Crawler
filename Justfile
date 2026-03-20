@@ -109,7 +109,13 @@ _stream_depths:
     printf "%-24s %s\n" "stream:dlq:"        "$(exec_redis XLEN stream:dlq)"
     printf "%-24s %s\n" "stream:dlq:archive:" "$(exec_redis XLEN stream:dlq:archive)"
     printf "%-24s %s\n" "delayed:messages:"  "$(exec_redis ZCARD delayed:messages)"
-    printf "%-24s %s\n" "system:halted:"     "$(exec_redis GET system:halted)"
+    echo ""
+    halted=$(exec_redis GET system:halted)
+    if [ "$halted" = "1" ]; then
+        printf "%-24s %s\n" "system:halted" "*** HALTED ***"
+    else
+        printf "%-24s %s\n" "system:halted" "running"
+    fi
 
 # Show Redis stream depths
 streams: _stream_depths

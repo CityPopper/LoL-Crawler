@@ -88,6 +88,7 @@ _CSS = """
   --color-error: #ff4136;
   --color-warning: #ffdc00;
   --color-info: #5a9eff;
+  --color-critical: #c00;
   --color-error-bg: #cc3333;
   --font-mono: 'Fira Code', 'JetBrains Mono', 'Cascadia Code', monospace;
   --font-size-sm: 12px;
@@ -237,10 +238,10 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
 .log-ts { color: var(--color-muted); white-space: nowrap; flex-shrink: 0; }
 .log-badge { padding: 0 4px; border-radius: 2px;
   font-size: 0.75em; white-space: nowrap; flex-shrink: 0; }
-.log-badge.log-critical { background: #c00; color: #fff; }
-.log-badge.log-error { background: #e33; color: #fff; }
-.log-badge.log-warning { background: #e80; color: #fff; }
-.log-badge.log-debug { background: #555; color: #fff; }
+.log-badge.log-critical { background: var(--color-critical); color: #fff; }
+.log-badge.log-error { background: var(--color-error); color: #fff; }
+.log-badge.log-warning { background: var(--color-warning); color: #111; }
+.log-badge.log-debug { background: var(--color-border); color: var(--color-text); }
 .log-badge.log-info { background: var(--color-info); color: #fff; }
 .log-svc { color: var(--color-info); flex-shrink: 0; }
 .log-msg { flex: 1; }
@@ -249,9 +250,17 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
   gap: 0.5rem; align-items: center; flex-wrap: wrap; }
 .log-meta { color: var(--color-muted); font-size: 0.85em; margin-bottom: 0.3rem; }
 #pause-btn { padding: var(--space-sm) var(--space-lg); min-height: 44px; cursor: pointer; }
-#pause-btn.paused { background: var(--color-error); color: #fff; }
+#pause-btn.paused, #streams-pause-btn.paused { background: var(--color-error); color: #fff; }
 
 .log-ts, .log-badge, .log-svc { font-size: 0.75em; }
+
+#player-search { width: 100%; }
+
+/* Mobile overrides */
+@media (max-width: 767px) {
+  body { margin: 1rem auto; }
+  .site-footer { padding: var(--space-md) var(--space-sm); }
+}
 
 /* Tablet (768px+) */
 @media (min-width: 768px) {
@@ -263,6 +272,7 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
   .log-line { flex-direction: row; gap: 0.5rem; align-items: baseline; }
   .log-ts, .log-badge, .log-svc { font-size: inherit; }
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
+  #player-search { width: auto; }
 }
 
 /* Wide desktop (1440px+) */
@@ -304,6 +314,15 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
 .sort-controls a.active { color: var(--color-text); border-color: var(--color-info);
                            background: rgba(90,158,255,0.1); }
 .sort-controls span { font-size: var(--font-size-sm); color: var(--color-muted); }
+
+/* Footer */
+.site-footer { text-align: center; padding: var(--space-lg); color: var(--color-muted);
+  font-size: var(--font-size-sm); border-top: 1px solid var(--color-border);
+  margin-top: var(--space-xl); }
+
+/* Loading state */
+.loading-state { display: flex; align-items: center; gap: var(--space-sm);
+  color: var(--color-muted); padding: var(--space-lg); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important;
@@ -430,9 +449,7 @@ def _page(title: str, body: str, path: str = "") -> str:
 <main id="main-content">
 {body}
 </main>
-<footer style="text-align:center;padding:var(--space-lg);color:var(--color-muted);
-font-size:var(--font-size-sm);border-top:1px solid var(--color-border);
-margin-top:var(--space-xl)">
+<footer class="site-footer">
   LoL Pipeline isn&rsquo;t endorsed by Riot Games and doesn&rsquo;t
   reflect the views or opinions of Riot Games or anyone officially
   involved in producing or managing Riot Games properties.
@@ -575,7 +592,8 @@ def _match_history_section(puuid: str, region: str, riot_id: str) -> str:
 <script>
 function loadMatches(puuid, region, riotId, page) {{
   var container = document.getElementById('match-history-container');
-  container.textContent = 'Loading...';
+  container.innerHTML = '<div class="loading-state">'
+    + '<span class="spinner"></span> Loading match history\u2026</div>';
   var url = '/stats/matches?puuid=' + encodeURIComponent(puuid)
     + '&region=' + encodeURIComponent(region)
     + '&riot_id=' + encodeURIComponent(riotId)
@@ -1139,9 +1157,12 @@ async def _streams_fragment_html(r: Any) -> str:
     rows = ""
     for s, length in zip(_STREAM_KEYS, stream_lengths, strict=True):
         status_badge = _depth_badge(s, length)
-        rows += f"<tr><td>{s}</td><td>{length}</td><td>{status_badge}</td></tr>"
+        rows += f'<tr><td>{s}</td><td class="text-right">{length}</td><td>{status_badge}</td></tr>'
     delayed_badge = _depth_badge("delayed:messages", delayed)
-    rows += f"<tr><td>delayed:messages</td><td>{delayed}</td><td>{delayed_badge}</td></tr>"
+    rows += (
+        f"<tr><td>delayed:messages</td>"
+        f'<td class="text-right">{delayed}</td><td>{delayed_badge}</td></tr>'
+    )
 
     status = (
         '<div class="banner banner--error">&#9888; System is HALTED (system:halted is set)</div>'
@@ -1155,7 +1176,7 @@ async def _streams_fragment_html(r: Any) -> str:
 <p>Priority players in-flight: <strong>{priority_display}</strong></p>
 <div class="table-scroll">
 <table class="streams">
-  <tr><th>Key</th><th>Length</th><th>Status</th></tr>
+  <tr><th>Key</th><th class="text-right">Length</th><th>Status</th></tr>
   {rows}
 </table>
 </div>

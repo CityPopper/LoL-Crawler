@@ -22,7 +22,7 @@ COPY lol-pipeline-fetcher/ /svc/
 RUN pip install --no-cache-dir -q -e /common -e /svc
 
 HEALTHCHECK --interval=10s --timeout=5s --retries=3 --start-period=60s \
-    CMD python -c "import asyncio, os; from lol_pipeline.redis_client import get_redis, health_check; r=get_redis(os.environ.get('REDIS_URL', 'redis://redis:6379/0')); print(asyncio.run(health_check(r)))"
+    CMD python -c "import asyncio, os, sys; from lol_pipeline.redis_client import get_redis, health_check; r=get_redis(os.environ.get('REDIS_URL', 'redis://redis:6379/0')); sys.exit(0 if asyncio.run(health_check(r)) else 1)"
 
 RUN adduser --disabled-password --no-create-home appuser
 USER appuser

@@ -64,3 +64,4 @@ lol-pipeline-fetcher/match-data/**/*.json
 lol-pipeline-fetcher/match-data/**/*.jsonl
 !lol-pipeline-fetcher/match-data/**/.gitkeep.hypothesis/
 */.hypothesis/
+.hypothesis/

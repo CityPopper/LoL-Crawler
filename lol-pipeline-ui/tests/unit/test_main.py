@@ -79,11 +79,13 @@ class TestMatchHistorySection:
         assert "closest('.load-matches')" in html_out
         assert "dataset.puuid" in html_out
 
-    def test_no_innerhtml_for_loading_indicator(self):
-        """SEC-X1: loading indicator uses textContent, not innerHTML."""
+    def test_loading_indicator_uses_spinner(self):
+        """P11-DD-13: loading indicator uses spinner element, not plain text."""
         html_out = _match_history_section("puuid-abc", "na1", "Player#NA1")
-        assert "textContent = 'Loading...'" in html_out
-        # innerHTML must not appear for the loading indicator
+        assert "loading-state" in html_out
+        assert "spinner" in html_out
+        assert "Loading match history" in html_out
+        # Must not inject user-supplied data via innerHTML (static string only)
         assert "innerHTML = '<p>Loading" not in html_out
 
 
@@ -1775,7 +1777,7 @@ class TestStreamsFragmentHtmlEdgeCases:
             await r.xadd("stream:puuid", {"dummy": str(i)})
 
         result = await _streams_fragment_html(r)
-        assert "<td>5</td>" in result
+        assert '<td class="text-right">5</td>' in result
         await r.aclose()
 
     @pytest.mark.asyncio
@@ -1790,7 +1792,7 @@ class TestStreamsFragmentHtmlEdgeCases:
 
         result = await _streams_fragment_html(r)
         assert "delayed:messages" in result
-        assert "<td>2</td>" in result
+        assert '<td class="text-right">2</td>' in result
         await r.aclose()
 
 
