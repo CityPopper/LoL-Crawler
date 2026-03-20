@@ -278,6 +278,38 @@ class TestAnalyzerPriority:
         assert await r.get("system:priority_count") == "0"
 
 
+class TestAnalyzerAckPlacement:
+    """Verify ack() is called even when clear_priority() raises an error.
+
+    clear_priority() is wrapped in try/except so it cannot block the ack().
+    Stats are computed, lock is released, message is acknowledged regardless.
+    """
+
+    @pytest.mark.asyncio
+    async def test_clear_priority_raises__ack_still_called(self, r, cfg, log):
+        """When clear_priority raises, ack is still called — message leaves PEL."""
+        puuid = "test-puuid-0001"
+        await _add_participant(r, "NA1_1", puuid, 1000, kills=5, deaths=1, assists=3)
+        env = _analyze_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        # Patch clear_priority to raise a ConnectionError
+        with patch(
+            "lol_analyzer.main.clear_priority",
+            side_effect=ConnectionError("redis down during clear_priority"),
+        ):
+            # Should NOT raise — clear_priority error is caught internally
+            await _analyze_player(r, cfg, "my-worker", msg_id, env, log)
+
+        # Stats should have been written before the error
+        assert await r.hget(f"player:stats:{puuid}", "total_games") == "1"
+        # Lock should have been released by the finally block
+        assert await r.exists(f"player:stats:lock:{puuid}") == 0
+        # Message should be ACKed (no longer in PEL)
+        pending = await r.xpending(_IN_STREAM, _GROUP)
+        assert pending["pending"] == 0
+
+
 class TestAnalyzerPipeline:
     @pytest.mark.asyncio
     async def test_stats_update_uses_pipeline(self, r, cfg, log):

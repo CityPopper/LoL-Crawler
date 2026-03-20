@@ -18,7 +18,6 @@ Seed → stream:puuid → Crawler → stream:match_id → Fetcher → stream:par
                                                                                 ↕
                                                               Failures → stream:dlq → Recovery → delayed:messages → Delay Scheduler → source stream
                                                               Discovery (idle) → stream:puuid
-                                                              LCU (standalone) → JSONL on disk
 ```
 
 ### Services & Entry Points
@@ -35,7 +34,6 @@ Seed → stream:puuid → Crawler → stream:match_id → Fetcher → stream:par
 | Discovery | `lol-pipeline-discovery/src/lol_discovery/main.py` | — | discover:players ZSET | stream:puuid |
 | Admin | `lol-pipeline-admin/src/lol_admin/main.py` | — | CLI | Redis direct |
 | UI | `lol-pipeline-ui/src/lol_ui/main.py` | — | HTTP | HTML |
-| LCU | `lol-pipeline-lcu/src/lol_lcu/main.py` | — | LCU API | JSONL files |
 
 ### Common Library (`lol-pipeline-common/src/lol_pipeline/`)
 

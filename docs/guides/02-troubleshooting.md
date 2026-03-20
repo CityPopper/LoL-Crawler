@@ -1,5 +1,7 @@
 # Troubleshooting Guide
 
+> **Runtime note:** Commands below use `docker compose`. Replace with `podman compose` when using the default Podman runtime, or use `just` wrappers which auto-detect the runtime.
+
 ## Quick Diagnostic Commands
 
 Run these first when something seems wrong:
@@ -274,46 +276,6 @@ If `stream:analyze` is growing and logs show "lock contention" warnings:
 
 ---
 
-## LCU Connection Issues
-
-### Common Problems
-
-| Problem | Cause | Solution |
-|---------|-------|----------|
-| "Could not find lockfile" | League client not running | Start the League client, then retry |
-| "Connection refused" | LCU API not ready | Wait for client to fully load; retry |
-| "SSL certificate verify failed" | Expected — LCU uses self-signed cert | The client disables SSL verification for LCU (this is safe for localhost) |
-| "Host unreachable" (Docker) | Docker cannot reach Windows localhost | Ensure `extra_hosts: host.docker.internal:host-gateway` is set |
-
-### WSL2 Specifics
-
-On WSL2, the LCU collector runs via Docker to reach the Windows-side League client:
-
-```bash
-# The Docker container uses host.docker.internal to reach Windows localhost
-# This is configured in docker-compose.yml:
-#   extra_hosts:
-#     - "host.docker.internal:host-gateway"
-#   environment:
-#     LCU_HOST: host.docker.internal
-
-# Verify Docker can reach the host
-docker compose run --rm lcu ping -c 1 host.docker.internal
-```
-
-### Verify LCU is Accessible
-
-```bash
-# Check if League client is running (from WSL2)
-ls "/mnt/f/Riot Games/League of Legends/lockfile" 2>/dev/null && echo "Client running" || echo "Client not running"
-
-# Manually test the LCU endpoint (from the host where League is running)
-# The lockfile contains: process:port:pid:password:protocol
-# Parse it and curl the API
-```
-
----
-
 ## Redis State Inspection Recipes
 
 ### Player Overview
@@ -439,14 +401,14 @@ python -m pytest tests/contract -v --tb=long
 ### Integration Test Failures
 
 ```bash
-# Integration tests use testcontainers — requires Docker
+# Integration tests use testcontainers — requires Podman or Docker
 just integration
 
-# Common issue: Docker not running
-docker info
+# Common issue: container runtime not running
+podman info   # or: docker info
 
 # Common issue: port conflict (another Redis on 6379)
-docker ps | grep 6379
+podman ps | grep 6379   # or: docker ps | grep 6379
 ```
 
 ### Lint Failures
@@ -526,7 +488,7 @@ These commands are destructive. Use them only when you understand the consequenc
 
 ```bash
 # WARNING: Destroys ALL pipeline state — stats, matches, streams, everything.
-# LCU data on disk is NOT affected.
+# match-data/ on disk is NOT affected.
 just reset
 ```
 
@@ -575,7 +537,7 @@ just run
 
 ```bash
 # WARNING: Destroys everything — containers, volumes, built images, Redis data
-docker compose down -v --rmi all
-# LCU data in lol-pipeline-lcu/lcu-data/ and match-data/ on disk are NOT removed
+podman compose down -v --rmi all
+# match-data/ on disk is NOT removed
 just up
 ```

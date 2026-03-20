@@ -5,10 +5,12 @@
 | Tool | Version | Install |
 |------|---------|---------|
 | Python | 3.12+ | https://python.org or `pyenv install 3.12` |
-| Docker | 24.x+ | https://docs.docker.com/get-docker/ |
-| Docker Compose | v2.x+ | Bundled with Docker Desktop |
+| Podman | 4.x+ | https://podman.io/getting-started/installation (default runtime) |
+| Podman Compose | 1.x+ | `pip install podman-compose` or via Homebrew |
 | just | 1.x+ | https://github.com/casey/just#installation |
-| Redis CLI | 7.x+ (optional) | `apt install redis-tools` or via Docker |
+| Redis CLI | 7.x+ (optional) | `brew install redis` or via container |
+
+> To use Docker instead of Podman: set `RUNTIME=docker` in your environment or prefix any `just` command with `RUNTIME=docker just <cmd>`.
 
 ---
 
@@ -16,7 +18,7 @@
 
 ```bash
 # Clone and enter the repo
-git clone <repo-url> && cd Scraper
+git clone <repo-url> && cd LoL-Crawler
 
 # Create .env from template
 just setup
@@ -78,7 +80,7 @@ source .venv/bin/activate
 For running `just test`, `just lint`, or integration tests, you can create a root-level venv:
 
 ```bash
-cd /path/to/Scraper
+cd /path/to/LoL-Crawler
 python3 -m venv .venv
 source .venv/bin/activate
 
@@ -97,10 +99,11 @@ done
 
 ```bash
 just run
-# Starts Redis + all long-running services in Docker
+# Starts Redis + all long-running services
 
-# Equivalent:
-docker compose up -d
+# Equivalent (Podman):
+podman compose up -d
+# or Docker: RUNTIME=docker just run
 ```
 
 ### Seed a Player
@@ -165,14 +168,14 @@ export REDIS_URL=redis://localhost:6379/0
 python -m lol_crawler
 ```
 
-### In Docker (Single Service)
+### In a Container (Single Service)
 
 ```bash
 # Restart just one service (picks up code changes via volume mount)
 just restart crawler
 
 # Or start a specific service
-docker compose up -d crawler
+podman compose up -d crawler
 ```
 
 ---
@@ -224,7 +227,8 @@ just contract
 ```bash
 just integration
 # Uses testcontainers — starts a real Redis container automatically
-# No need for Docker Compose stack to be running
+# No need for the full stack to be running
+# Requires Podman or Docker; use RUNTIME=docker if needed
 ```
 
 ### Coverage
@@ -245,6 +249,8 @@ python -m pytest tests/unit --cov=lol_pipeline --cov-report=term-missing
 just test-all   # unit + contract
 just check      # lint + typecheck
 ```
+
+> Integration tests require Podman or Docker for testcontainers. Set `RUNTIME=docker` if using Docker.
 
 ---
 
@@ -494,19 +500,6 @@ just update-mocks
 # 1. Fetches real API responses
 # 2. Anonymizes PUUIDs and player names
 # 3. Writes to tests/fixtures/ directories
-```
-
-### LCU Data Collection
-
-```bash
-# One-shot collection (League client must be running)
-just lcu
-
-# Continuous polling (default: every 5 minutes)
-just lcu-watch
-
-# After collecting, reload the UI
-just restart ui
 ```
 
 ### Consolidate Match Data

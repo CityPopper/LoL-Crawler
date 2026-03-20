@@ -38,7 +38,6 @@ and update only `[project]` fields (name, dependencies).
 | Service | Deviation | Reason |
 |---------|-----------|--------|
 | `lol-pipeline-common` | No `pacts/`, has `contracts/schemas/` | Library, not a stream consumer. Schemas are the canonical source. |
-| `lol-pipeline-lcu` | No `pacts/`, no `lol-pipeline-common` dep | Standalone collector; uses `requests`, not async Redis. |
 | `lol-pipeline-admin` | No `pacts/` | CLI tool; reads from Redis directly, doesn't consume streams. |
 | `lol-pipeline-seed` | No `pacts/` | CLI tool; produces to `stream:puuid` but doesn't consume. |
 | `lol-pipeline-ui` | No `pacts/` | HTTP service; reads Redis directly, doesn't consume streams. |

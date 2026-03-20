@@ -9,7 +9,7 @@ You are a senior QA engineer reviewing the complete user experience across all s
 
 ## Project Overview
 
-LoL Match Intelligence Pipeline — 12 Python services, Redis Streams, Docker Compose. Three user-facing surfaces: Web UI (FastAPI, port 8080), Admin CLI, and LCU Collector.
+LoL Match Intelligence Pipeline — 11 Python services, Redis Streams, Docker Compose. Two user-facing surfaces: Web UI (FastAPI, port 8080) and Admin CLI.
 
 ### What You Review (that other agents don't)
 
@@ -26,18 +26,11 @@ LoL Match Intelligence Pipeline — 12 Python services, Redis Streams, Docker Co
 - `/` — Does the seed form work? Are instructions clear?
 - `/stats` — Do stats display correctly? Are verified/unverified indicators present?
 - `/streams` — Does pipeline health view show useful information?
-- `/lcu` — Does LCU data display correctly?
-
 **Admin CLI** (`lol-pipeline-admin/src/lol_admin/main.py`):
 - Does `--help` output match actual available commands?
 - Do error messages tell the user what to do?
 - Does `stats` output match what's actually in Redis?
 - Does `dlq replay` actually requeue messages?
-
-**LCU** (`lol-pipeline-lcu/src/lol_lcu/main.py`):
-- Does `just lcu` produce useful output when League client is running?
-- Does it fail gracefully when League client is not running?
-- Are match counts accurate?
 
 **Documentation**:
 - Do README examples actually work when copy-pasted?
@@ -113,7 +106,7 @@ Before making any recommendations or writing any code, you MUST read the relevan
 ## Output Format
 
 For each finding:
-- **Surface** — Web UI / Admin CLI / LCU / Docs / Logs
+- **Surface** — Web UI / Admin CLI / Docs / Logs
 - **Issue** — What's wrong or inconsistent
 - **Severity** — blocker / major / minor / nit
 - **Suggested fix** — Specific text or code change

@@ -239,7 +239,7 @@ async def main() -> None:
     r = get_redis(cfg.redis_url)
     consumer = f"{socket.gethostname()}-{os.getpid()}"
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     with contextlib.suppress(NotImplementedError, OSError):
         loop.add_signal_handler(signal.SIGTERM, shutdown_event.set)
 

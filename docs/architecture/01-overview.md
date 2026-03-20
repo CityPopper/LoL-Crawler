@@ -19,7 +19,7 @@ independently. All state lives in Redis; services are stateless processes.
 | Delayed messages     | Redis Sorted Set (`delayed:messages`) + Delay Scheduler |
 | Rate limiter         | Redis Sorted Sets + atomic dual-window Lua script       |
 | Config               | Environment variables only                              |
-| Containers           | Docker; see [07-containers.md](07-containers.md)        |
+| Containers           | Podman (default) or Docker; see [07-containers.md](07-containers.md) |
 | Repo structure       | Monorepo; see [08-repo-structure.md](08-repo-structure.md) |
 
 Redis persists via RDB snapshots + AOF. In prod, point `REDIS_URL` at a managed instance
@@ -47,22 +47,8 @@ All services are written in Python. The primary bottleneck is the Riot API rate 
 | 8 | Discovery         | Promotes co-discovered players to stream:puuid when idle |
 | 9 | Admin             | One-shot CLI tool for operational commands         |
 | 10 | UI               | Web dashboard for stats, streams, and logs        |
-| 11 | LCU              | Collects match history from local League client   |
 
 Full service contracts: [02-services.md](02-services.md)
-
-## LCU Data Source (Supplementary, Unverified)
-
-The **LCU Collector** (`lol-pipeline-lcu`) is a one-shot CLI tool that collects match history directly from the running League client via the local LCU HTTP API (port varies; discovered via lockfile). This data bypasses the Riot Match-v5 API entirely and includes game modes not exposed publicly (rotating queues: ARAM Mayhem, URF, One for All, etc.).
-
-**Two-pronged data model:**
-
-| Source | Trust Level | Coverage | Storage |
-|--------|-------------|----------|---------|
-| Riot Match-v5 API | Verified ✓ | Ranked, ARAM, Normals | Redis |
-| LCU (local client) | Unverified ⚠ | All modes (~hundreds of recent games) | JSONL on disk |
-
-LCU data is stored as append-only JSONL files (`lcu-data/{puuid}.jsonl`) in `lol-pipeline-lcu/`. The UI reads these files on startup and displays them alongside verified API stats, clearly labelled. The data is never overwritten — only appended — making it safe to re-run the collector at any time.
 
 ---
 
@@ -103,9 +89,6 @@ LCU data is stored as append-only JSONL files (`lcu-data/{puuid}.jsonl`) in `lol
 | `DELAY_SCHEDULER_INTERVAL_MS` | How often Delay Scheduler polls (ms)            | `500`     |
 | `ANALYZER_LOCK_TTL_SECONDS`   | TTL for the per-PUUID Analyzer lock                       | `300`     |
 | `API_RATE_LIMIT_PER_SECOND`   | Riot API per-second request cap (1s sliding window)       | `20`      |
-| `LCU_DATA_DIR`                | Path to LCU JSONL directory (UI reads on startup)         | `/lcu-data` (Docker) |
-| `LCU_POLL_INTERVAL_MINUTES`   | UI reloads LCU data from disk every N minutes (0 = load once at startup) | `0` |
-| `LEAGUE_INSTALL_PATH`         | LoL install dir for LCU collector (WSL2 path); unset = no live LCU | — |
 | `MATCH_DATA_DIR`              | Directory for write-through raw match JSON disk persistence | `` |
 | `DISCOVERY_POLL_INTERVAL_MS`  | How often Discovery polls for idle pipeline (ms) | `5000` |
 | `DISCOVERY_BATCH_SIZE`        | Max players promoted per idle poll | `10` |

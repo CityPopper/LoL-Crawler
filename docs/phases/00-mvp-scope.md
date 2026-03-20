@@ -48,7 +48,7 @@ A successful MVP means ALL of the following pass.
 - AC-O2: `admin dlq replay --all` → all DLQ entries requeued to their `original_stream`; `stream:dlq` XLEN = 0; pipeline processes entries to completion; exit code 0.
 - AC-O3: `admin stats "GameName#TagLine"` → prints all fields from `player:stats:{puuid}` for that player; exit code 0.
 - AC-O4: `just seed "GameName#TagLine"` → executes successfully from the deploy repo; exit code 0.
-- AC-O5: `just run` → Redis + all long-running services start (crawler, fetcher, parser, analyzer, recovery, delay-scheduler, ui, discovery, lcu); `docker compose ps` shows 10 containers in "Up" state within 30 seconds.
+- AC-O5: `just run` → Redis + all long-running services start (crawler, fetcher, parser, analyzer, recovery, delay-scheduler, ui, discovery); containers show as "Up" within 30 seconds.
 
 ---
 

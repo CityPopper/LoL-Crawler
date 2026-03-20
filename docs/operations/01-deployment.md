@@ -4,11 +4,13 @@
 
 | Requirement | Minimum Version | Check |
 |-------------|----------------|-------|
-| Docker | 24.x+ | `docker --version` |
-| Docker Compose | v2.x+ (built into Docker Desktop) | `docker compose version` |
+| Podman | 4.x+ | `podman --version` (default runtime) |
+| Podman Compose | 1.x+ | `podman-compose --version` |
 | just | 1.x+ | `just --version` |
 | Python | 3.12+ (for local dev/testing only) | `python3 --version` |
 | Riot API Key | Development or Production | https://developer.riotgames.com |
+
+> To use Docker instead of Podman: set `RUNTIME=docker` in your environment before any `just` command.
 
 ---
 
@@ -18,7 +20,7 @@
 
 ```bash
 # 1. Clone the repository
-git clone <repo-url> && cd Scraper
+git clone <repo-url> && cd LoL-Crawler
 
 # 2. Create .env from template
 just setup
@@ -64,7 +66,6 @@ All services are defined in `docker-compose.yml` at the repo root. The stack con
 | delay-scheduler | Long-running worker | Auto | `unless-stopped` |
 | discovery | Long-running worker | Auto | `unless-stopped` |
 | ui | HTTP server (port 8080) | Auto | `unless-stopped` |
-| lcu | Long-running collector | Auto | `unless-stopped` |
 | seed | One-shot tool | On demand (`just seed`) | `no` |
 | admin | One-shot tool | On demand (`just admin`) | `no` |
 
@@ -86,9 +87,7 @@ All services are defined in `docker-compose.yml` at the repo root. The stack con
 | `/data` (redis) | `${REDIS_DATA_DIR:-./redis-data}` | Redis RDB + AOF persistence |
 | `/match-data` (fetcher) | `./lol-pipeline-fetcher/match-data` | Write-through raw match JSON |
 | `/match-data` (parser) | `./lol-pipeline-fetcher/match-data` (read-only) | Parser reads match JSON from disk |
-| `/lcu-data` | `./lol-pipeline-lcu/lcu-data` | LCU JSONL match history |
 | `/logs` | `./logs` | Rotating JSON log files |
-| `/league-install` (lcu) | `${LEAGUE_INSTALL_PATH}` | League client install (read-only) |
 
 ---
 
@@ -209,9 +208,6 @@ docker compose exec redis redis-cli ZCARD "ratelimit:long"
 | `API_RATE_LIMIT_PER_SECOND` | No | `20` | Riot API per-second request cap |
 | `DISCOVERY_POLL_INTERVAL_MS` | No | `5000` | Discovery idle-check poll interval (ms) |
 | `DISCOVERY_BATCH_SIZE` | No | `10` | Players promoted per Discovery poll cycle |
-| `LCU_DATA_DIR` | No | `/lcu-data` | LCU JSONL data directory |
-| `LCU_POLL_INTERVAL_MINUTES` | No | `5` | UI reloads LCU data every N minutes (0 = once) |
-| `LEAGUE_INSTALL_PATH` | No | — | League client install directory (for LCU collection) |
 | `LOG_DIR` | No | `/logs` | Directory for rotating JSON log files |
 | `LOG_LEVEL` | No | `INFO` | Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL |
 
@@ -283,7 +279,7 @@ just run
 ```bash
 just reset
 # Removes containers AND volumes; Redis data is deleted
-# LCU data in lol-pipeline-lcu/lcu-data/ is NOT deleted (not a Docker volume)
+# match-data/ on disk is NOT deleted
 ```
 
 ### Seed a Player
@@ -545,10 +541,6 @@ just run
 
 If `MATCH_DATA_DIR` is set, raw match JSON is persisted to disk independently of Redis. On a Redis reset, the parser auto-repopulates from disk.
 
-### LCU Data
-
-LCU JSONL files in `lol-pipeline-lcu/lcu-data/` are append-only and never deleted by the pipeline. Back them up separately if desired.
-
 ---
 
 ## Justfile Reference
@@ -568,8 +560,6 @@ LCU JSONL files in `lol-pipeline-lcu/lcu-data/` are append-only and never delete
 | `just scale <svc> <N>` | Scale a service to N replicas |
 | `just streams` | Show Redis stream depths |
 | `just admin <args>` | Run an admin command (auto-starts stack) |
-| `just lcu` | Collect LCU match history (one-shot) |
-| `just lcu-watch` | Continuously collect LCU data |
 | `just ui` | Open Web UI in browser |
 | `just lint` | Ruff check + format check on all services |
 | `just typecheck` | Mypy on all services |

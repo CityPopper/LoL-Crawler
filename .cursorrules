@@ -33,7 +33,7 @@ Use the cheapest model that can handle the task correctly:
 - **Config source of truth**: `.env.example` for env vars, `pyproject.toml` for tool config.
 - **Pact contracts**: Schemas in `lol-pipeline-common/contracts/schemas/` are canonical.
 - **Redis quirks**: `Redis` unparameterized (not `Redis[str]`), `hmget(key, [fields])` list form required.
-- **LCU data is precious**: Never delete `lol-pipeline-lcu/lcu-data/*.jsonl`.
+- **Runtime**: Podman is the default (`just build`). Use `RUNTIME=docker just <cmd>` to switch to Docker.
 
 ## Pre-commit Hooks
 

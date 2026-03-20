@@ -90,7 +90,7 @@ async def run_consumer(
         shutdown = True
         log.info("SIGTERM received — shutting down gracefully")
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     with contextlib.suppress(NotImplementedError, OSError):
         loop.add_signal_handler(signal.SIGTERM, _sigterm_handler)
 

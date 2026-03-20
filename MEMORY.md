@@ -5,7 +5,7 @@
 - [user_preferences.md](user_preferences.md) — User preferences and workflow
 
 ## Services
-- [services.md](services.md) — Service stream map, LCU, discovery, UI
+- [services.md](services.md) — Service stream map, discovery, UI
 
 ## Infrastructure
 - [github_auth.md](github_auth.md) — GitHub token location, push/release workflow

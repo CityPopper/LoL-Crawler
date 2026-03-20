@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import weakref
 from typing import Any
 
 import redis.asyncio as aioredis
@@ -19,6 +20,13 @@ _DLQ_STREAM = "stream:dlq"
 
 _DEFAULT_MAXLEN = 10_000
 
+# Cache of (stream, group) pairs for which _ensure_group has already succeeded.
+# Uses a WeakKeyDictionary keyed on the Redis client so that different connections
+# (e.g., in tests) don't share state and entries are cleaned up when the client is GC'd.
+_ensured: weakref.WeakKeyDictionary[aioredis.Redis, set[tuple[str, str]]] = (
+    weakref.WeakKeyDictionary()
+)
+
 
 async def publish(
     r: aioredis.Redis,
@@ -32,8 +40,16 @@ async def publish(
 
 
 async def _ensure_group(r: aioredis.Redis, stream: str, group: str) -> None:
+    pairs = _ensured.get(r)
+    key = (stream, group)
+    if pairs is not None and key in pairs:
+        return
     with contextlib.suppress(ResponseError):
         await r.xgroup_create(stream, group, id="0", mkstream=True)
+    if pairs is None:
+        pairs = set()
+        _ensured[r] = pairs
+    pairs.add(key)
 
 
 async def _deserialize_entries(

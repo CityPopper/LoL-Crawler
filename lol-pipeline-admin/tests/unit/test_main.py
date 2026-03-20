@@ -16,6 +16,7 @@ from lol_pipeline.riot_api import RiotClient
 
 from lol_admin.main import (
     _dispatch,
+    _region_from_match_id,
     _resolve_puuid,
     cmd_dlq_clear,
     cmd_dlq_list,
@@ -117,6 +118,20 @@ class TestDlqReplay:
         assert result == 0
         assert await r.xlen(_DLQ_STREAM) == 1
         assert await r.xlen("stream:match_id") == 1
+
+
+class TestDlqReplayValidation:
+    @pytest.mark.asyncio
+    async def test_replay_no_id_no_all__returns_error(self, r, cfg, capsys):
+        """Q4: dlq replay with neither ID nor --all prints error and returns 1."""
+        await _add_dlq_entries(r, 2)
+        args = argparse.Namespace(all=False, id=None)
+        result = await cmd_dlq_replay(r, cfg, args)
+        assert result == 1
+        captured = capsys.readouterr()
+        assert "specify a message ID or --all" in captured.err
+        # DLQ should be unchanged
+        assert await r.xlen(_DLQ_STREAM) == 2
 
 
 class TestDlqClear:
@@ -457,3 +472,105 @@ class TestUserFacingErrorsUsePrint:
         captured = capsys.readouterr()
         assert "invalid Riot ID" in captured.err
         assert "NoHash" in captured.err
+
+
+class TestRegionFromMatchId:
+    """Tests for _region_from_match_id helper."""
+
+    def test_na1_prefix__returns_na1(self):
+        """NA1_12345 → 'na1'."""
+        assert _region_from_match_id("NA1_12345") == "na1"
+
+    def test_euw1_prefix__returns_euw1(self):
+        """EUW1_67890 → 'euw1'."""
+        assert _region_from_match_id("EUW1_67890") == "euw1"
+
+    def test_kr_prefix__returns_kr(self):
+        """KR_99999 → 'kr'."""
+        assert _region_from_match_id("KR_99999") == "kr"
+
+    def test_br1_prefix__returns_br1(self):
+        """BR1_11111 → 'br1'."""
+        assert _region_from_match_id("BR1_11111") == "br1"
+
+    def test_lowercase_prefix__returns_lowercase(self):
+        """Already lowercase prefix works the same."""
+        assert _region_from_match_id("eun1_55555") == "eun1"
+
+    def test_unknown_prefix__defaults_to_na1(self):
+        """Unknown platform prefix falls back to 'na1'."""
+        assert _region_from_match_id("UNKNOWN_12345") == "na1"
+
+    def test_no_underscore__defaults_to_na1(self):
+        """Match ID with no underscore → entire string is prefix; falls back to 'na1'."""
+        assert _region_from_match_id("badmatchid") == "na1"
+
+    def test_jp1_prefix__returns_jp1(self):
+        """JP1_44444 → 'jp1'."""
+        assert _region_from_match_id("JP1_44444") == "jp1"
+
+    def test_oc1_prefix__returns_oc1(self):
+        """OC1_77777 → 'oc1'."""
+        assert _region_from_match_id("OC1_77777") == "oc1"
+
+
+class TestResolvePuuidNoRedis:
+    """Tests for _resolve_puuid when r=None (no Redis available)."""
+
+    @pytest.mark.asyncio
+    async def test_no_redis__api_success__returns_puuid(self):
+        """r=None, API returns account → returns puuid string."""
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Test/NA1"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": "api-puuid", "gameName": "Test", "tagLine": "NA1"},
+                )
+            )
+            riot = RiotClient("RGAPI-test")
+            result = await _resolve_puuid(riot, "Test#NA1", "na1", r=None)
+            await riot.close()
+        assert result == "api-puuid"
+
+    @pytest.mark.asyncio
+    async def test_no_redis__api_404__returns_none_and_prints_error(self, capsys):
+        """r=None, API returns 404 → returns None, prints error to stderr."""
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Ghost/NA1"
+            ).mock(return_value=httpx.Response(404))
+            riot = RiotClient("RGAPI-test")
+            result = await _resolve_puuid(riot, "Ghost#NA1", "na1", r=None)
+            await riot.close()
+        assert result is None
+        captured = capsys.readouterr()
+        assert "player not found" in captured.err
+        assert "Ghost#NA1" in captured.err
+
+    @pytest.mark.asyncio
+    async def test_no_redis__invalid_riot_id__returns_none(self, capsys):
+        """r=None, invalid Riot ID (no #) → returns None, prints error."""
+        riot = RiotClient("RGAPI-test")
+        result = await _resolve_puuid(riot, "NoHashTag", "na1", r=None)
+        await riot.close()
+        assert result is None
+        captured = capsys.readouterr()
+        assert "invalid Riot ID" in captured.err
+
+
+class TestDlqClearNoAll:
+    """cmd_dlq_clear with all=False must return error."""
+
+    @pytest.mark.asyncio
+    async def test_clear_no_all__returns_error(self, r, capsys):
+        """cmd_dlq_clear with all=False → prints error to stderr, returns 1."""
+        await _add_dlq_entries(r, 2)
+        args = argparse.Namespace(all=False)
+        result = await cmd_dlq_clear(r, args)
+        assert result == 1
+        captured = capsys.readouterr()
+        assert "--all is required" in captured.err
+        # DLQ should be unchanged
+        assert await r.xlen(_DLQ_STREAM) == 2

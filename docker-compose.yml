@@ -130,7 +130,6 @@ services:
     volumes:
       - ./lol-pipeline-common:/common
       - ./lol-pipeline-ui:/svc
-      - ./lol-pipeline-lcu/lcu-data:/lcu-data:ro
       - ./logs:/logs
     ports:
       - "127.0.0.1:8080:8080"
@@ -148,31 +147,6 @@ services:
       - ./logs:/logs
     command: >
       sh -c "pip install -q -e /common && pip install -q -e /svc && python -m lol_discovery"
-
-  lcu:
-    build:
-      context: .
-      dockerfile: lol-pipeline-lcu/Dockerfile
-    env_file: .env
-    restart: unless-stopped
-    security_opt: ["no-new-privileges:true"]
-    stop_grace_period: 30s
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    environment:
-      LEAGUE_INSTALL_PATH: /league-install
-      LCU_HOST: host.docker.internal
-      LCU_POLL_INTERVAL_MINUTES: ${LCU_POLL_INTERVAL_MINUTES:-5}
-      PIP_ROOT_USER_ACTION: ignore
-      PIP_DISABLE_PIP_VERSION_CHECK: "1"
-      LOG_DIR: /logs
-    volumes:
-      - ./lol-pipeline-lcu:/svc
-      - ./lol-pipeline-lcu/lcu-data:/lcu-data
-      - ${LEAGUE_INSTALL_PATH:-/tmp}:/league-install:ro
-      - ./logs:/logs
-    command: >
-      sh -c "pip install -q -e /svc && python -m lol_lcu --data-dir /lcu-data --poll-interval ${LCU_POLL_INTERVAL_MINUTES:-5}"
 
   # One-shot tools — not started by default; use `docker compose run`
   seed:

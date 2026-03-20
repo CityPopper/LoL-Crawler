@@ -8,6 +8,12 @@ When the user says "think" (or tells the orchestrator to "think"), execute this 
 4. **Implement the steps**, removing completed tasks as you go
 5. **Once all tasks are done**, repeat from step 1
 
-## Concurrency limit
+## Concurrency
 
-Run at most **2 agents in parallel** at a time. Batch agents into groups of 2, wait for each batch to complete before launching the next, until all agents have been processed.
+Run **all agents in parallel** simultaneously — maximize parallelism at every step.
+
+- In step 1: spawn one agent per service/domain area concurrently (reviewer, security, performance, database, devops, etc.)
+- In step 3: spawn debate agents in parallel; each contested item runs its own debate sub-thread concurrently
+- In step 4: spawn one implementer agent per task/file concurrently; do not serialize implementation
+- Never wait for one agent to finish before starting another if they are independent
+- Aim for the maximum number of concurrent agents the system supports at each step

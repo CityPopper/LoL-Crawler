@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import fakeredis.aioredis
 import pytest
@@ -298,7 +298,7 @@ class TestGracefulShutdown:
         def spy_add_signal_handler(sig, callback, *args):
             captured_callbacks.append(callback)
 
-        mock_loop = AsyncMock()
+        mock_loop = MagicMock()
         mock_loop.add_signal_handler.side_effect = spy_add_signal_handler
 
         with (
@@ -306,7 +306,7 @@ class TestGracefulShutdown:
             patch("lol_delay_scheduler.main.get_redis", return_value=mock_r),
             patch("lol_delay_scheduler.main._tick", side_effect=fake_tick),
             patch("lol_delay_scheduler.main.asyncio.sleep", new_callable=AsyncMock),
-            patch("lol_delay_scheduler.main.asyncio.get_event_loop", return_value=mock_loop),
+            patch("lol_delay_scheduler.main.asyncio.get_running_loop", return_value=mock_loop),
         ):
             mock_cfg.return_value = Config(_env_file=None)
             await main()  # should exit cleanly, not loop forever
@@ -338,14 +338,14 @@ class TestShutdownEventPattern:
             registered_signals.append(signum)
             callback()  # immediately set to stop the loop
 
-        mock_loop = AsyncMock()
+        mock_loop = MagicMock()
         mock_loop.add_signal_handler.side_effect = spy_add_signal_handler
 
         with (
             patch("lol_delay_scheduler.main.Config") as mock_cfg,
             patch("lol_delay_scheduler.main.get_redis", return_value=mock_r),
             patch("lol_delay_scheduler.main.asyncio.sleep", new_callable=AsyncMock),
-            patch("lol_delay_scheduler.main.asyncio.get_event_loop", return_value=mock_loop),
+            patch("lol_delay_scheduler.main.asyncio.get_running_loop", return_value=mock_loop),
         ):
             mock_cfg.return_value = Config(_env_file=None)
             await main()
@@ -378,7 +378,7 @@ class TestMainLoopRedisError:
         async def tracking_sleep(seconds, *args, **kwargs):
             sleep_args.append(seconds)
 
-        mock_loop = AsyncMock()
+        mock_loop = MagicMock()
         mock_loop.add_signal_handler.return_value = None
 
         with (
@@ -386,7 +386,7 @@ class TestMainLoopRedisError:
             patch("lol_delay_scheduler.main.get_redis", return_value=mock_r),
             patch("lol_delay_scheduler.main._tick", side_effect=fake_tick),
             patch("lol_delay_scheduler.main.asyncio.sleep", side_effect=tracking_sleep),
-            patch("lol_delay_scheduler.main.asyncio.get_event_loop", return_value=mock_loop),
+            patch("lol_delay_scheduler.main.asyncio.get_running_loop", return_value=mock_loop),
         ):
             mock_cfg.return_value = Config(_env_file=None)
             with pytest.raises(KeyboardInterrupt):
@@ -413,7 +413,7 @@ class TestMainLoopRedisError:
                 raise OSError("broken pipe")
             raise KeyboardInterrupt
 
-        mock_loop = AsyncMock()
+        mock_loop = MagicMock()
         mock_loop.add_signal_handler.return_value = None
 
         with (
@@ -421,7 +421,7 @@ class TestMainLoopRedisError:
             patch("lol_delay_scheduler.main.get_redis", return_value=mock_r),
             patch("lol_delay_scheduler.main._tick", side_effect=fake_tick),
             patch("lol_delay_scheduler.main.asyncio.sleep", new_callable=AsyncMock),
-            patch("lol_delay_scheduler.main.asyncio.get_event_loop", return_value=mock_loop),
+            patch("lol_delay_scheduler.main.asyncio.get_running_loop", return_value=mock_loop),
         ):
             mock_cfg.return_value = Config(_env_file=None)
             with pytest.raises(KeyboardInterrupt):
@@ -429,6 +429,91 @@ class TestMainLoopRedisError:
 
         assert call_count == 2, f"Expected _tick called twice, got {call_count}"
         mock_r.aclose.assert_called_once()
+
+
+class TestXaddOSErrorContinuesProcessing:
+    """OSError during individual XADD in _tick does not crash the loop."""
+
+    @pytest.mark.asyncio
+    async def test_oserror_on_xadd__member_preserved_in_zset(self, r, log):
+        """When XADD raises OSError for a member, it stays in delayed:messages for retry."""
+        env = _delayed_envelope()
+        past_ms = int(time.time() * 1000) - 1
+        await _add_delayed(r, env, past_ms)
+
+        original_xadd = r.xadd
+
+        async def failing_xadd(*args, **kwargs):
+            raise OSError("broken pipe")
+
+        r.xadd = failing_xadd
+
+        # _tick should NOT raise — it catches (RedisError, OSError) per-member
+        await _tick(r, log)
+
+        r.xadd = original_xadd
+        # Member should still be in sorted set since XADD failed
+        assert await r.zcard(_DELAYED_KEY) == 1
+        # Nothing was dispatched to the target stream
+        assert await r.xlen("stream:match_id") == 0
+
+    @pytest.mark.asyncio
+    async def test_oserror_on_one_member__other_members_not_blocked(self, r, log):
+        """When XADD fails for one member, the batch loop still processes others.
+
+        Because the error is caught per-member and the 'dispatched' count reflects
+        only successful dispatches, the loop exits when dispatched==0 for a batch
+        of all-failing members. All members remain in the ZSET for retry.
+        """
+        now_ms = int(time.time() * 1000)
+        env1 = _delayed_envelope(match_id="NA1_fail")
+        env2 = _delayed_envelope(match_id="NA1_also_fail")
+        await _add_delayed(r, env1, now_ms - 2000)
+        await _add_delayed(r, env2, now_ms - 1000)
+
+        original_xadd = r.xadd
+
+        async def always_failing_xadd(*args, **kwargs):
+            raise OSError("broken pipe")
+
+        r.xadd = always_failing_xadd
+
+        # Should not raise
+        await _tick(r, log)
+
+        r.xadd = original_xadd
+        # Both remain since all XADDs failed
+        assert await r.zcard(_DELAYED_KEY) == 2
+
+    @pytest.mark.asyncio
+    async def test_oserror_on_first__second_still_dispatched(self, r, log):
+        """When XADD fails for the first member but succeeds for the second,
+        the second member is dispatched and removed from the ZSET."""
+        now_ms = int(time.time() * 1000)
+        env_fail = _delayed_envelope(stream="stream:fail_target", match_id="NA1_fail")
+        env_ok = _delayed_envelope(stream="stream:match_id", match_id="NA1_ok")
+        await _add_delayed(r, env_fail, now_ms - 2000)
+        await _add_delayed(r, env_ok, now_ms - 1000)
+
+        original_xadd = r.xadd
+        call_count = 0
+
+        async def selective_failing_xadd(stream, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if stream == "stream:fail_target":
+                raise OSError("broken pipe")
+            return await original_xadd(stream, *args, **kwargs)
+
+        r.xadd = selective_failing_xadd
+
+        await _tick(r, log)
+
+        r.xadd = original_xadd
+        # The failing one stays, the successful one is removed
+        assert await r.zcard(_DELAYED_KEY) == 1
+        assert await r.xlen("stream:match_id") == 1
+        assert await r.xlen("stream:fail_target") == 0
 
 
 class TestMainEntryPoint:
@@ -447,7 +532,7 @@ class TestMainEntryPoint:
             if call_count > 1:
                 raise KeyboardInterrupt
 
-        mock_loop = AsyncMock()
+        mock_loop = MagicMock()
         mock_loop.add_signal_handler.return_value = None
 
         with (
@@ -455,7 +540,7 @@ class TestMainEntryPoint:
             patch("lol_delay_scheduler.main.get_redis", return_value=mock_r),
             patch("lol_delay_scheduler.main._tick", side_effect=fake_tick),
             patch("lol_delay_scheduler.main.asyncio.sleep", new_callable=AsyncMock),
-            patch("lol_delay_scheduler.main.asyncio.get_event_loop", return_value=mock_loop),
+            patch("lol_delay_scheduler.main.asyncio.get_running_loop", return_value=mock_loop),
         ):
             mock_cfg.return_value = Config(_env_file=None)
             with pytest.raises(KeyboardInterrupt):
@@ -468,14 +553,14 @@ class TestMainEntryPoint:
         monkeypatch.setenv("REDIS_URL", "redis://localhost")
         mock_r = AsyncMock()
 
-        mock_loop = AsyncMock()
+        mock_loop = MagicMock()
         mock_loop.add_signal_handler.return_value = None
 
         with (
             patch("lol_delay_scheduler.main.Config") as mock_cfg,
             patch("lol_delay_scheduler.main.get_redis", return_value=mock_r),
             patch("lol_delay_scheduler.main._tick", side_effect=KeyboardInterrupt),
-            patch("lol_delay_scheduler.main.asyncio.get_event_loop", return_value=mock_loop),
+            patch("lol_delay_scheduler.main.asyncio.get_running_loop", return_value=mock_loop),
         ):
             mock_cfg.return_value = Config(_env_file=None)
             with pytest.raises(KeyboardInterrupt):

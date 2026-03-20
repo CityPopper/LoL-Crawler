@@ -35,6 +35,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/unit"]
+addopts = ""
 asyncio_mode = "auto"
 
 [tool.ruff]

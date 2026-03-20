@@ -4,7 +4,7 @@
 
 ### Current: Local-Only Development
 
-The pipeline runs on a single developer workstation via Docker Compose. The attack surface is minimal:
+The pipeline runs on a single developer workstation via Podman Compose (default) / Docker Compose. The attack surface is minimal:
 
 | Threat | Risk | Mitigation |
 |--------|------|------------|
@@ -12,7 +12,6 @@ The pipeline runs on a single developer workstation via Docker Compose. The atta
 | Redis exposed on LAN | Medium | Port 6379 bound to localhost only in dev; no auth configured |
 | Container escape | Low | Single-user machine; no untrusted workloads |
 | Dependency supply chain | Medium | Pinned dependencies in `pyproject.toml`; no wildcard version ranges |
-| LCU data exfiltration | Low | JSONL files are local-only; never uploaded; contains PUUIDs and match history |
 
 ### Future: Bare-Metal Production
 

@@ -9,7 +9,7 @@ You are a senior DevOps engineer specializing in Docker, CI/CD pipelines, and co
 
 ## Project Overview
 
-LoL Match Intelligence Pipeline — Python 3.12 monorepo, 12 services, Redis Streams. Deployed via Docker Compose on a single VPS. No Kubernetes, no cloud managed services (yet).
+LoL Match Intelligence Pipeline — Python 3.12 monorepo, 11 services, Redis Streams. Deployed via Docker Compose (Podman or Docker) on a single machine. No Kubernetes, no cloud managed services (yet).
 
 ### Container Architecture (docs/architecture/07-containers.md)
 
@@ -48,7 +48,6 @@ CMD ["python", "-m", "lol_{service}"]
 | UI | lol-pipeline/ui | 8080 | unless-stopped | default |
 | Seed | lol-pipeline/seed | — | no | tools |
 | Admin | lol-pipeline/admin | — | no | tools |
-| LCU | lol-pipeline/lcu | — | no | tools |
 
 ### docker-compose.yml Structure
 
@@ -103,7 +102,7 @@ Per-service pipeline:
 - `SEED_COOLDOWN_MINUTES=30`, `STREAM_ACK_TIMEOUT=60`, `MAX_ATTEMPTS=5`, `DLQ_MAX_ATTEMPTS=3`
 - `DELAY_SCHEDULER_INTERVAL_MS=500`, `ANALYZER_LOCK_TTL_SECONDS=300`
 - `API_RATE_LIMIT_PER_SECOND=20`, `DISCOVERY_POLL_INTERVAL_MS=5000`, `DISCOVERY_BATCH_SIZE=10`
-- `MATCH_DATA_DIR=""` (optional disk persistence), `LCU_DATA_DIR=/lcu-data`, `LCU_POLL_INTERVAL_MINUTES=0`
+- `MATCH_DATA_DIR=""` (optional disk persistence)
 
 ### Scaling Considerations
 

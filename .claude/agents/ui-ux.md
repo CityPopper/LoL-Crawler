@@ -15,13 +15,13 @@ LoL Match Intelligence Pipeline — collects and analyzes League of Legends matc
 - **Tech**: FastAPI on port 8080, HTML templates
 - **Entry**: `lol-pipeline-ui/src/lol_ui/main.py`
 - **Routes**:
-  - `/` — home page (seed form + stream depth overview)
-  - `/stats?riot_id=Name%23Tag` — per-player stats (✓ verified API data + ⚠ unverified LCU data)
+  - `/` — redirect to `/stats`
+  - `/stats?riot_id=Name%23Tag` — per-player stats with auto-seed
   - `/stats/matches?riot_id=...` — match history list
+  - `/players` — all tracked players
   - `/streams` — stream lengths and consumer group status
-  - `/lcu` — LCU data overview (match history by player/game mode)
-- **Data sources**: Redis (player:stats, player:matches, player:champions, player:roles, match:*, participant:*) + LCU JSONL files from disk
-- **Startup**: Loads LCU JSONL from `LCU_DATA_DIR`, optional background reload every `LCU_POLL_INTERVAL_MINUTES`
+  - `/logs` — merged service logs
+- **Data sources**: Redis (player:stats, player:matches, player:champions, player:roles, match:*, participant:*)
 
 ### 2. Admin CLI (`lol-pipeline-admin`)
 - **Entry**: `lol-pipeline-admin/src/lol_admin/main.py`
@@ -32,12 +32,6 @@ LoL Match Intelligence Pipeline — collects and analyzes League of Legends matc
   - `dlq list` / `dlq clear --all` / `dlq replay --all|--id` — DLQ management
   - `streams` — stream lengths + consumer groups
 - **Invocation**: `just admin <command>` or `docker compose run --rm admin <command>`
-
-### 3. LCU Collector (`lol-pipeline-lcu`)
-- **Entry**: `lol-pipeline-lcu/src/lol_lcu/main.py`
-- **Standalone**: No common lib dependency, connects to local League client (port 2999)
-- **Output**: JSONL files in `lol-pipeline-lcu/lcu-data/{puuid}.jsonl` (precious, append-only)
-- **Invocation**: `just lcu` (one-shot) or `just lcu-watch` (polling)
 
 ### Pipeline Data Available for Display
 
@@ -54,7 +48,7 @@ LoL Match Intelligence Pipeline — collects and analyzes League of Legends matc
 
 ### Justfile Commands (user workflows)
 
-`just up`, `just seed "Name#Tag"`, `just ui`, `just logs`, `just admin stats "Name#Tag"`, `just admin dlq list`, `just lcu`, `just lcu-watch`, `just test`, `just lint`
+`just up`, `just seed "Name#Tag"`, `just ui`, `just logs`, `just admin stats "Name#Tag"`, `just admin dlq list`, `just test`, `just lint`
 
 ## Research First
 
@@ -63,7 +57,6 @@ Before making any recommendations or writing any code, you MUST read the relevan
 ### Key Sources
 - `lol-pipeline-ui/src/lol_ui/main.py` — All routes, HTML templates, data rendering logic
 - `lol-pipeline-admin/src/lol_admin/main.py` — CLI commands, output formatting, help text
-- `lol-pipeline-lcu/src/lol_lcu/main.py` — Terminal output, progress indicators, error messages
 - `README.md` — Documented user-facing commands and examples
 - `Justfile` — User-facing command names and ergonomics
 
@@ -88,7 +81,7 @@ Before making any recommendations or writing any code, you MUST read the relevan
 - **Fail helpfully** — error messages should say what went wrong AND what to do about it
 - **Color with purpose** — green=healthy, red=error, yellow=warning — never decoration
 - **Respect the terminal** — handle narrow widths, piped output, no-color environments
-- **Verified vs unverified** — API data (✓) vs LCU data (⚠) must always be visually distinguished
+- **Data integrity** — all displayed data comes from verified Riot API responses
 
 ## Process
 

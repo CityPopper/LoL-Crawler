@@ -79,6 +79,22 @@ These are concrete bugs and code-quality issues discovered by reading the source
   - Subtask 2: Extract auto-seed logic into helper
   - Subtask 3: Extract stats rendering into helper
 
+- **Priority counter drift on TTL expiry (CRITICAL)** — `lol-pipeline-common/src/lol_pipeline/priority.py:9-17`
+  - When `player:priority:{puuid}` key expires via TTL, `system:priority_count` is never decremented. Over time this counter grows permanently, causing `_is_idle()` in discovery to always return False, **blocking discovery indefinitely**.
+  - Fix: In `_DEL_DECR_LUA`, after the DEL check fails (key already expired), still attempt to DECR if count > 0. Or remove TTL entirely and rely solely on explicit `clear_priority()` calls.
+
+- **Priority counter can go negative** — `lol-pipeline-common/src/lol_pipeline/priority.py:19-24`
+  - `_DEL_DECR_LUA` can DECR below 0 if called when counter is already 0.
+  - Fix: Add floor in Lua: only DECR if `tonumber(redis.call("get", KEYS[2]) or 0) > 0`.
+
+- **`asyncio.get_event_loop()` deprecated in Python 3.12+** — `service.py:93`, `delay-scheduler/main.py:85`, `discovery/main.py:159`, `recovery/main.py:242`
+  - All SIGTERM handlers use deprecated `asyncio.get_event_loop()`. Should use `asyncio.get_running_loop()` which is safe inside `async def main()` running under `asyncio.run()`.
+  - Fix: Replace `asyncio.get_event_loop()` with `asyncio.get_running_loop()` in all 4 files.
+
+- **Analyzer `ack()` outside try/finally** — `lol-pipeline-analyzer/src/lol_analyzer/main.py:128`
+  - If `clear_priority()` raises, the ack is skipped and message stays in PEL for redelivery. Safe due to idempotency, but priority is never cleared.
+  - Fix: Move `ack()` inside the try block, or wrap `clear_priority()` in its own try/except.
+
 ---
 
 ## Fuzzing Targets
@@ -140,10 +156,6 @@ Fuzz-worthy functions with high input-surface risk. Each should get a Hypothesis
 - **`_validate` in parser** — `lol-pipeline-parser/src/lol_parser/main.py:27-34`
   - Fuzz with deeply nested dicts, missing `info`/`metadata`, empty participant lists, non-dict types
   - Verify: raises `KeyError` for missing required fields, never panics on unexpected input shapes
-
-- **`_load_lcu_data`** — `lol-pipeline-ui/src/lol_ui/main.py:46-65`
-  - Fuzz with malformed JSONL, binary files, symlinks, very large files
-  - Verify: returns a dict, skips malformed lines, never crashes
 
 - **`RawStore._search_bundle_file`** — `lol-pipeline-common/src/lol_pipeline/raw_store.py:95-98`
   - Fuzz with corrupted JSONL bundles, lines with no tab separator, binary content
@@ -260,15 +272,31 @@ Fuzz-worthy functions with high input-surface risk. Each should get a Hypothesis
 - (future) Circuit breaker for Riot API
 - (future) S3 backend for RawStore
 
+## Test Performance
+
+- **Each unit test must complete in ≤0.5s** — find and fix any slow tests across all `lol-pipeline-*/tests/unit/` suites
+  - Profile with `pytest --durations=20` to identify the slowest tests
+  - Common causes: real `asyncio.sleep()` calls, large fixture setup, unpatched I/O, `time.sleep()` in tested code paths
+  - Fix: mock all sleeps (`unittest.mock.patch`), use `AsyncMock` for async Redis calls, minimize fixture data sizes
+  - Target: `pytest tests/unit -q` completes in <5s total per service
+- **Maximize pytest parallelism** — enable `pytest-xdist` across all services
+  - Add `pytest-xdist` to each `pyproject.toml` dev deps
+  - Configure `addopts = -n auto` in `[tool.pytest.ini_options]` per service
+  - Ensure tests are stateless (no shared module-level state that breaks under `-n auto`)
+
 ## Testing Gaps Found
 
 - **No unit tests for `_streams_fragment_html`** — `lol-pipeline-ui/src/lol_ui/main.py:836-865`. No test verifies the halt banner or priority count display.
 - **No unit tests for `show_dlq` route** — `lol-pipeline-ui/src/lol_ui/main.py:920-961`. DLQ page rendering is untested.
 - **No unit tests for `/stats/matches` route** — `lol-pipeline-ui/src/lol_ui/main.py:1018-1058`. Match history pagination, PUUID validation, pipeline batching all untested.
-- **No unit tests for LCU `_collect_with_auth_retry`** — `lcu/main.py:150-165`. Retry logic for stale lockfile credentials is untested.
-- **No unit tests for LCU `_build_participants`** — `lcu/main.py:68-85`. Edge cases like missing participantIdentities untested.
 - **Analyzer `_derived` division edge cases** — `lol-pipeline-analyzer/src/lol_analyzer/main.py:32-46`. No test for extremely large stat values or negative values.
 - **No test for `_tail_file` with very large files** — `lol-pipeline-ui/src/lol_ui/main.py:1132-1149`. Byte-seek logic untested with files larger than `n * _EST_BYTES_PER_LOG_LINE`.
+- **`consume()` XAUTOCLAIM corrupt message path untested** — `lol-pipeline-common/src/lol_pipeline/streams.py:109-128`
+  - No test for corrupt messages during XAUTOCLAIM (only PEL path tested).
+- **Recovery `_consume_dlq` corrupt entry handling untested** — `lol-pipeline-recovery/src/lol_recovery/main.py:36-84`
+- **Admin helper functions missing tests** — `_region_from_match_id`, `_resolve_puuid` error paths, `cmd_dlq_clear` with `all=False`
+- **Crawler priority preservation not tested** — no test that priority is NOT cleared when `published > 0`
+- **Delay-scheduler `_tick` OSError path untested** — only RedisError tested, not OSError
 - (Phase 9) Shared test fixtures in conftest.py (FakeRedis, Config, envelope factory)
 - (Phase 9) UI route integration tests with TestClient + fakeredis
 - (Phase 9) E2E smoke test: seed -> crawl -> fetch -> parse -> analyze
@@ -317,7 +345,7 @@ Fuzz-worthy functions with high input-surface risk. Each should get a Hypothesis
 
 ## Documentation
 
-- (Phase 9) Discovery + LCU service READMEs
+- (Phase 9) Discovery service README
 - (Phase 9) CONTRIBUTING.md
 - (Phase 9) CI workflow guide
 - (Phase 9) Discovery architecture doc

@@ -1,5 +1,12 @@
-DC      := "docker compose"
-LCU_DIR := "lol-pipeline-lcu"
+# Container runtime: podman (default) or docker. Override: RUNTIME=docker just <recipe>
+RUNTIME := env_var_or_default("RUNTIME", "podman")
+DC      := RUNTIME + " compose"
+# Compose project name (used for network name: <project>_default)
+PROJECT := env_var_or_default("COMPOSE_PROJECT_NAME", "lol-crawler")
+# Podman stores locally-built images under localhost/; Docker does not
+_image_prefix := if RUNTIME == "podman" { "localhost/" } else { "" }
+# Docker Compose v2 uses hyphens ({project}-{service}-{N}); Podman uses underscores
+_redis_ctr := if RUNTIME == "podman" { PROJECT + "_redis_1" } else { PROJECT + "-redis-1" }
 
 # List available recipes
 default:
@@ -22,9 +29,11 @@ setup:
         echo "pre-commit not found — run 'pip install pre-commit && pre-commit install' to enable hooks."
     fi
 
-# 2. Build all Docker images
+# 2. Build all Docker images (including one-shot tools)
 build:
     {{DC}} build
+    {{RUNTIME}} build -f lol-pipeline-seed/Dockerfile  -t {{PROJECT}}-seed:latest  .
+    {{RUNTIME}} build -f lol-pipeline-admin/Dockerfile -t {{PROJECT}}-admin:latest .
 
 # 3. Start all services (Redis + workers); idempotent
 run:
@@ -37,14 +46,14 @@ up: setup build run
 _ensure_up:
     #!/usr/bin/env bash
     set -euo pipefail
-    STATUS=$(docker compose ps --format '{{{{.Status}}}}' redis 2>/dev/null | head -1)
-    if [[ "$STATUS" != "Up"* ]]; then
+    DC="{{DC}}"
+    # Probe Redis directly — works with both docker compose and podman-compose
+    if ! $DC exec -T redis redis-cli ping &>/dev/null 2>&1; then
         echo "Stack not running — starting..."
-        docker compose up -d
+        $DC up -d
         echo "Waiting for Redis to be healthy..."
         for i in $(seq 1 20); do
-            STATUS=$(docker compose ps --format '{{{{.Status}}}}' redis 2>/dev/null | head -1)
-            [[ "$STATUS" == *"healthy"* ]] && break
+            $DC exec -T redis redis-cli ping &>/dev/null 2>&1 && break
             sleep 1
         done
     fi
@@ -52,7 +61,14 @@ _ensure_up:
 # Seed a player into the pipeline (auto-starts stack if needed)
 # e.g. just seed "Faker#KR1" kr
 seed riot_id region="na1": _ensure_up
-    {{DC}} run --rm seed "{{riot_id}}" "{{region}}"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Run directly from image — packages are baked in; avoids compose profile limitations
+    {{RUNTIME}} run --rm \
+        --network "{{PROJECT}}_default" \
+        --env-file .env \
+        {{_image_prefix}}{{PROJECT}}-seed:latest \
+        python -m lol_seed "{{riot_id}}" "{{region}}"
 
 # Stop all services (containers paused, data preserved)
 stop:
@@ -82,7 +98,9 @@ scale svc count:
 streams:
     #!/usr/bin/env bash
     set -euo pipefail
-    exec_redis() { {{DC}} exec -T redis redis-cli "$@"; }
+    # Use RUNTIME exec directly to avoid noisy compose provider warnings on each call
+    REDIS_CTR="{{_redis_ctr}}"
+    exec_redis() { {{RUNTIME}} exec "$REDIS_CTR" redis-cli "$@"; }
     printf "%-24s %s\n" "stream:puuid:"      "$(exec_redis XLEN stream:puuid)"
     printf "%-24s %s\n" "stream:match_id:"   "$(exec_redis XLEN stream:match_id)"
     printf "%-24s %s\n" "stream:parse:"      "$(exec_redis XLEN stream:parse)"
@@ -95,45 +113,14 @@ streams:
 # Run an admin command (auto-starts stack if needed)
 # e.g. just admin stats Faker#KR1
 admin *args: _ensure_up
-    {{DC}} run --rm admin {{args}}
-
-# Collect LCU match history (one-shot). On WSL, runs via Windows Python (the LCU
-# only accepts connections from Windows localhost — Docker and WSL2 get 403).
-# On native Windows/macOS, runs locally. Set LEAGUE_INSTALL_PATH in .env.
-lcu:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [ -z "${LEAGUE_INSTALL_PATH:-}" ] && [ -f ".env" ]; then
-        set -a; source ".env"; set +a
-    fi
-    if grep -qi microsoft /proc/version 2>/dev/null; then
-        echo "WSL detected — running LCU collector via Windows Python (LCU only accepts localhost)..."
-        WIN_PROJECT=$(wslpath -w "$(pwd)/{{LCU_DIR}}")
-        WIN_DATA=$(wslpath -w "$(pwd)/{{LCU_DIR}}/lcu-data")
-        WIN_INSTALL=$(wslpath -w "${LEAGUE_INSTALL_PATH}")
-        powershell.exe -Command "cd '${WIN_PROJECT}'; pip install -q -e .; \$env:LEAGUE_INSTALL_PATH='${WIN_INSTALL}'; \$env:LCU_HOST='127.0.0.1'; python -m lol_lcu --data-dir '${WIN_DATA}'"
-    else
-        cd {{LCU_DIR}} && pip install -q -e . && python3 -m lol_lcu --data-dir lcu-data
-    fi
-
-# Continuously collect LCU match history, polling every LCU_POLL_INTERVAL_MINUTES minutes (default: 5).
-# UI reloads data automatically when LCU_POLL_INTERVAL_MINUTES > 0.
-lcu-watch:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [ -z "${LEAGUE_INSTALL_PATH:-}" ] && [ -f ".env" ]; then
-        set -a; source ".env"; set +a
-    fi
-    POLL="${LCU_POLL_INTERVAL_MINUTES:-5}"
-    if grep -qi microsoft /proc/version 2>/dev/null; then
-        echo "WSL detected — running LCU collector via Windows Python (LCU only accepts localhost)..."
-        WIN_PROJECT=$(wslpath -w "$(pwd)/{{LCU_DIR}}")
-        WIN_DATA=$(wslpath -w "$(pwd)/{{LCU_DIR}}/lcu-data")
-        WIN_INSTALL=$(wslpath -w "${LEAGUE_INSTALL_PATH}")
-        powershell.exe -Command "cd '${WIN_PROJECT}'; pip install -q -e .; \$env:LEAGUE_INSTALL_PATH='${WIN_INSTALL}'; \$env:LCU_HOST='127.0.0.1'; python -m lol_lcu --data-dir '${WIN_DATA}' --poll-interval ${POLL}"
-    else
-        cd {{LCU_DIR}} && pip install -q -e . && python3 -m lol_lcu --data-dir lcu-data --poll-interval "$POLL"
-    fi
+    # Run directly from image — packages are baked in; avoids compose profile limitations
+    {{RUNTIME}} run --rm \
+        --network "{{PROJECT}}_default" \
+        --env-file .env \
+        {{_image_prefix}}{{PROJECT}}-admin:latest \
+        python -m lol_admin {{args}}
 
 # Open the web UI in the default browser
 ui:
@@ -191,7 +178,7 @@ update-mocks:
     echo "Fetching live data for Pwnerer#1337..."
     python3 scripts/update_mocks.py
 
-# Run integration tests (requires Docker for testcontainers)
+# Run integration tests (requires Docker or Podman for testcontainers)
 integration:
     python3 -m pytest tests/integration/ -v
 
@@ -205,28 +192,31 @@ e2e:
 test:
     #!/usr/bin/env bash
     set -euo pipefail
-    PYTEST="python3 -m pytest"
-    if [ -f ".venv/bin/python" ]; then PYTEST=".venv/bin/python -m pytest"; fi
+    if [ -f ".venv/bin/python" ] && .venv/bin/python -c "import pytest" 2>/dev/null; then
+        PYTEST="$(pwd)/.venv/bin/python -m pytest"
+    else
+        PYTEST="$(command -v python3) -m pytest"
+    fi
     PIDS=()
     NAMES=()
-    TMPDIR=$(mktemp -d)
+    OUTTMP=$(mktemp -d)
     for dir in lol-pipeline-*/; do
         name="${dir%/}"
         if [ -d "$dir/tests/unit" ]; then
             NAMES+=("$name")
-            (cd "$dir" && ../$PYTEST tests/unit -q --tb=short > "$TMPDIR/$name.out" 2>&1; echo $? > "$TMPDIR/$name.rc") &
+            (cd "$dir" && RC=0 && $PYTEST tests/unit -q --tb=short > "$OUTTMP/$name.out" 2>&1 || RC=$?; echo $RC > "$OUTTMP/$name.rc") &
             PIDS+=($!)
         fi
     done
     FAILED=0
     for i in "${!PIDS[@]}"; do
         wait "${PIDS[$i]}" || true
-        RC=$(cat "$TMPDIR/${NAMES[$i]}.rc")
+        RC=$(cat "$OUTTMP/${NAMES[$i]}.rc")
         echo "=== ${NAMES[$i]} ==="
-        cat "$TMPDIR/${NAMES[$i]}.out"
+        cat "$OUTTMP/${NAMES[$i]}.out"
         [ "$RC" -ne 0 ] && FAILED=1
     done
-    rm -rf "$TMPDIR"
+    rm -rf "$OUTTMP"
     exit $FAILED
 
 # Run unit tests for a single service (e.g. just test-svc crawler)
@@ -244,15 +234,18 @@ test-all: test contract
 coverage:
     #!/usr/bin/env bash
     set -euo pipefail
-    PYTEST="python3 -m pytest"
-    if [ -f ".venv/bin/python" ]; then PYTEST=".venv/bin/python -m pytest"; fi
+    if [ -f ".venv/bin/python" ] && .venv/bin/python -c "import pytest" 2>/dev/null; then
+        PYTEST="$(pwd)/.venv/bin/python -m pytest"
+    else
+        PYTEST="$(command -v python3) -m pytest"
+    fi
     for dir in lol-pipeline-*/; do
         name="${dir%/}"
         short="${name#lol-pipeline-}"
         if [ -d "$dir/tests/unit" ] && [ -d "$dir/src" ]; then
             pkg=$(ls "$dir/src/")
             echo "=== $name ==="
-            (cd "$dir" && ../$PYTEST tests/unit --cov="src/$pkg" --cov-report=term-missing -q --tb=short)
+            (cd "$dir" && $PYTEST tests/unit --cov="src/$pkg" --cov-report=term-missing -q --tb=short)
         fi
     done
 

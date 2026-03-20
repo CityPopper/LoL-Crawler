@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-18
 **Reviewed by:** web-designer, responsive-designer, graphic-designer, design-director
-**Scope:** Web UI, terminal output (Admin CLI, LCU), documentation diagrams
+**Scope:** Web UI, terminal output (Admin CLI), documentation diagrams
 **Phase:** 7 (IRONCLAD)
 
 ---
@@ -29,7 +29,7 @@
 1. `/players` and `/logs` routes are not in the `02-services.md` route table (P0-19 already tracks this)
 2. No documentation of the log viewer CSS system (`_LOG_CSS`, level-based coloring, flex layout)
 3. No documentation of `_merged_log_lines` behavior (file-based tail, JSON parse, timestamp sort)
-4. No documentation of the LCU background reload feature (`LCU_POLL_INTERVAL_MINUTES`)
+4. No documentation of match history lazy-load timing and "processing" state UX
 5. No documentation of match history lazy-load UX (what users see during loading)
 
 #### Phase B -- Route-by-Route Code Review
@@ -113,13 +113,6 @@ Issues:
 - **No consumer group info.** Does not show pending counts, consumer lag, or consumer names
 - **System halted banner** uses inline `<p class="error">` -- should be a prominent full-width banner with fix instructions (`just admin system-resume`)
 
-**`/lcu` (main.py:571-615) -- LCU Match History**
-
-Issues:
-- **No link to individual player stats.** Players listed by PUUID prefix -- should link to `/stats?riot_id=...`
-- **Mode string is dense** (main.py:591-593): `CLASSIC (5/10), ARAM (3/5)` -- should be a sub-table or expandable section
-- **Empty state is good** (instructions to run `just lcu`) but could include a code-copy button
-
 **`/logs` (main.py:741-802) -- Log Viewer**
 
 Issues:
@@ -159,7 +152,7 @@ Issues:
 | Input `padding: 0.4rem` | Touch target is ~25px tall | OK | Set `min-height: 44px; font-size: 16px;` (16px prevents iOS auto-zoom) |
 | Select has no sizing | Tiny on mobile | OK | Match input styling |
 
-**All tables (`/stats`, `/players`, `/streams`, `/lcu`, `/stats/matches`):**
+**All tables (`/stats`, `/players`, `/streams`, `/stats/matches`):**
 
 | Issue | 320px | Fix |
 |-------|-------|-----|
@@ -286,19 +279,6 @@ watch -n 5 'just streams && echo "---" && docker compose ps ...'
 
 Overall: Admin CLI output is mostly good plain text. The main issues are `dlq list` outputting raw JSON (CQ-2) and error messages going through the JSON logger instead of `print()`.
 
-**LCU Collector (`lol-pipeline-lcu/src/lol_lcu/main.py`):**
-
-| Output | Current | Issue |
-|--------|---------|-------|
-| `log.info("Loaded %d existing game IDs for %s", ...)` (line 99) | JSON structured log | Should be `print()` for terminal use (CQ-3) |
-| `log.info("Collected %d new matches for %s", ...)` (line 142) | JSON structured log | Should be `print()` for terminal use |
-| `log.warning("League client not running -- showing historical summary")` (line 178) | JSON structured log | Should be `print()` with `warning` icon |
-| `log.info("Polling every %d minutes", ...)` (line 185) | JSON structured log | Should be `print()` |
-| `_show_summary` (line 194-202) | `log.info("%s: %d matches", ...)` per file | Should be a formatted table |
-| `log.error("LEAGUE_INSTALL_PATH not set")` (line 173) | JSON structured log | Should be `print("Error: ...")` |
-
-Overall: LCU outputs everything through JSON structured logging, which renders as machine-readable JSON on terminal. CQ-3 already tracks this. The `_show_summary` function should display a formatted table.
-
 **Justfile `just streams` (line 82-91):**
 
 Current output format:
@@ -335,13 +315,13 @@ system:halted:           (not set)
 
 **Status indicator consistency across surfaces:**
 
-| Concept | Web UI | Admin CLI | LCU CLI | Docs | Consistent? |
-|---------|--------|-----------|---------|------|-------------|
-| Success/healthy | `<span class="success">checkmark</span>` (green) | Plain text | N/A | `checkmark` | No -- CLI has no icons |
-| Error/failed | `<span class="error">warning</span>` (red) | JSON log | JSON log | `X` | No -- CLI uses logger |
-| Warning | `<span class="warning">...</span>` (orange) | JSON log | JSON log | `warning` | No -- CLI uses logger |
-| System halted | `<p class="error">warning System is HALTED</p>` | `system resumed` text | N/A | `system:halted = 1` | Partial |
-| DLQ entry | Table row with entry_id | `json.dumps(record)` | N/A | Text description | No -- CLI outputs raw JSON |
+| Concept | Web UI | Admin CLI | Docs | Consistent? |
+|---------|--------|-----------|------|-------------|
+| Success/healthy | `<span class="success">checkmark</span>` (green) | Plain text | `checkmark` | No -- CLI has no icons |
+| Error/failed | `<span class="error">warning</span>` (red) | JSON log | `X` | No -- CLI uses logger |
+| Warning | `<span class="warning">...</span>` (orange) | JSON log | `warning` | No -- CLI uses logger |
+| System halted | `<p class="error">warning System is HALTED</p>` | `system resumed` text | `system:halted = 1` | Partial |
+| DLQ entry | Table row with entry_id | `json.dumps(record)` | Text description | No -- CLI outputs raw JSON |
 
 ---
 
@@ -421,12 +401,8 @@ Gap: No way to browse DLQ entries in the web UI. Admin CLI outputs raw JSON.
 
 | Surface | Display |
 |---------|---------|
-| Web UI `/stats` | "Verified (Riot API) checkmark" header (green) + "Unverified (LCU) warning" header (dark goldenrod `#b8860b`) |
-| Web UI `/lcu` | "LCU Match History warning Unverified" header |
-| Docs | "verified (Riot API)" / "unverified (local client)" text |
-| CLI | No concept of verified vs unverified |
-
-Mostly consistent on Web UI. The `#b8860b` color for `.unverified` does not match any design token -- should use `--color-warning` (`#ffdc00`).
+| Web UI `/stats` | "Verified (Riot API) checkmark" header (green) |
+| Docs | "verified (Riot API)" text |
 
 ---
 
@@ -467,9 +443,7 @@ These are improvements that enhance UX but are not functional bugs.
 | DR-20 | Discovery fan-out flow diagram for docs | graphic | Small |
 | DR-21 | Priority queue flow diagram (Sprint 5 Lua scripts) | graphic | Small |
 | DR-22 | Match lifecycle state machine diagram | graphic | Small |
-| DR-23 | Code-copy button on LCU empty state instructions | web | Trivial |
-| DR-24 | Visual bar charts for champion/role distribution on `/stats` | web | Medium |
-| DR-25 | LCU summary as formatted table instead of log lines | graphic | Small |
+| DR-23 | Visual bar charts for champion/role distribution on `/stats` | web | Medium |
 
 ### Design System Recommendations (standards to adopt)
 
@@ -486,7 +460,7 @@ These are systemic improvements that should be formalized before Phase 8.
 | DS-7 | **Create a `_badge()` HTML helper** for status indicators: `_badge("success", "checkmark Running")`, `_badge("error", "X Halted")`, `_badge("warning", "warning Slow")`. Reuse across all routes. | Currently each route builds status HTML ad-hoc with different markup patterns |
 | DS-8 | **Consolidate font stack.** Replace `monospace` in `_page()` with the full font stack from the design system: `'Fira Code', 'JetBrains Mono', 'Cascadia Code', monospace`. | Design system specifies it; code does not use it |
 | DS-9 | **Match `just streams` output to Web UI `/streams` key set.** Both should show the same streams + `system:halted`. Add `stream:dlq:archive` to `just streams`. | Cross-surface consistency: same data on all surfaces |
-| DS-10 | **CLI error output via `print()` not `_log.error()`.** Already tracked as CQ-2 (Admin) and CQ-3 (LCU) but the design rationale is: CLI users expect `stderr` text, not JSON structured logs. | Machine-readable logs are for services; human-readable text is for CLI tools |
+| DS-10 | **CLI error output via `print()` not `_log.error()`.** Already tracked as CQ-2 (Admin) — the design rationale is: CLI users expect `stderr` text, not JSON structured logs. | Machine-readable logs are for services; human-readable text is for CLI tools |
 
 ---
 

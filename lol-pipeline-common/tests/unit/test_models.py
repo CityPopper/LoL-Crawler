@@ -307,15 +307,19 @@ class TestEnvelopeSchemaIncludesDlqAttempts:
     """CQ-8: envelope.json must include dlq_attempts to match the dataclass."""
 
     def test_dlq_attempts_in_envelope_schema(self):
-        """The envelope.json schema includes 'dlq_attempts' with type 'string' and default '0'."""
+        """The envelope.json schema includes 'dlq_attempts' with type 'integer' and default 0.
+
+        Q3: dlq_attempts is an integer in the Python model (models.py:29), so the schema
+        must declare type 'integer' (not 'string') to match.
+        """
         schema_path = (
             Path(__file__).parent.parent.parent / "contracts" / "schemas" / "envelope.json"
         )
         schema = json.loads(schema_path.read_text())
         props = schema["properties"]
         assert "dlq_attempts" in props, "dlq_attempts missing from envelope.json properties"
-        assert props["dlq_attempts"]["type"] == "string"
-        assert props["dlq_attempts"]["default"] == "0"
+        assert props["dlq_attempts"]["type"] == "integer"
+        assert props["dlq_attempts"]["default"] == 0
 
 
 class TestEnvelopeSchemaIncludesPriority:

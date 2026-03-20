@@ -22,7 +22,6 @@ its own `pyproject.toml` and `Dockerfile`. Infrastructure files (`docker-compose
 | `lol-pipeline-delay-scheduler`| Service        | Delay Scheduler Service                        |
 | `lol-pipeline-ui`             | Service        | Web UI (FastAPI, port 8080)                    |
 | `lol-pipeline-admin`          | Service        | Admin CLI                                      |
-| `lol-pipeline-lcu`            | Service        | LCU Collector (Docker + native CLI) + `lcu-data/` JSONL storage |
 | `lol-pipeline-discovery`      | Service        | Discovery Service — idle fan-out of co-players |
 
 ---
@@ -86,23 +85,6 @@ lol-pipeline-{service}/
     └── ...                    # unit + integration tests
 ```
 
-**Exception — `lol-pipeline-lcu`:** This repo has a Dockerfile and Docker Compose entry, but no `pacts/` and no dependency on `lol-pipeline-common`. It runs as a Docker service that polls the Windows LCU API via `host.docker.internal`. `just lcu` (native one-shot) and `just lcu-watch` (native polling) remain available for development.
-
-```
-lol-pipeline-lcu/
-├── pyproject.toml             # depends only on requests; no lol-pipeline-common
-├── Dockerfile                 # python:3.12-slim; no common dep
-├── src/
-│   └── lol_lcu/
-│       ├── __init__.py
-│       ├── __main__.py        # python -m lol_lcu entry point
-│       ├── lcu_client.py      # reads lockfile, LCU HTTPS client (LCU_HOST env var)
-│       ├── models.py          # LcuMatch dataclass + JSONL serialization
-│       └── main.py            # CLI: collect + deduplicate + append; --poll-interval
-└── lcu-data/                  # JSONL files — precious, do not delete
-    └── {puuid}.jsonl
-```
-
 **Pact file ownership:** Each `pacts/` file is owned by the **consumer** service repo.
 Provider verification tests live in the **provider** repo and load pact files from the
 consumer's sibling directory (`../lol-pipeline-{consumer}/pacts/`) in local dev, or from
@@ -154,7 +136,6 @@ repo-root/
 ├── lol-pipeline-delay-scheduler/
 ├── lol-pipeline-seed/
 ├── lol-pipeline-admin/
-├── lol-pipeline-lcu/           ← one-shot CLI; lcu-data/ lives here
 ├── lol-pipeline-discovery/     ← idle fan-out; promotes discovered players
 ├── lol-pipeline-ui/
 ├── scripts/                    # update_mocks.py, fixtures
@@ -179,11 +160,13 @@ Changes to `lol-pipeline-common` are immediately visible without reinstalling.
 **Running all services locally (from the repo root):**
 ```bash
 just setup          # copies .env.example → .env
-just build          # builds all Docker images
-just run            # start Redis + all service containers (docker compose up -d)
+just build          # builds all container images
+just run            # start Redis + all service containers (podman compose up -d)
 just seed "Faker#KR1"
 just ui             # open web UI at http://localhost:8080
 ```
+
+Podman is the default runtime. Use Docker via `RUNTIME=docker just <cmd>`.
 
 ---
 

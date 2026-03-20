@@ -28,14 +28,14 @@ async def r():
 
 class TestSetPriority:
     @pytest.mark.asyncio
-    async def test_set_priority__creates_key_with_ttl(self, r):
-        """set_priority creates player:priority:{puuid} with a TTL."""
+    async def test_set_priority__creates_key_without_ttl(self, r):
+        """set_priority creates player:priority:{puuid} without a TTL."""
         await set_priority(r, "puuid-abc")
 
         val = await r.get("player:priority:puuid-abc")
         assert val == "high"
         ttl = await r.ttl("player:priority:puuid-abc")
-        assert ttl > 0  # has a TTL
+        assert ttl == -1  # no expiry — TTL removed to prevent counter drift
 
     @pytest.mark.asyncio
     async def test_set_priority__increments_counter(self, r):
@@ -106,6 +106,34 @@ class TestSetPriorityIdempotency:
 
         count3 = await set_priority(r, "puuid-c")
         assert count3 == 3
+
+
+class TestPriorityCounterFloor:
+    """R2: _DEL_DECR_LUA must never let system:priority_count go negative."""
+
+    @pytest.mark.asyncio
+    async def test_clear_priority__counter_at_zero_key_exists__no_negative(self, r):
+        """Counter manually set to 0 but priority key exists — DECR must be skipped."""
+        # Simulate drift: key exists but counter was externally reset to 0
+        await r.set("player:priority:puuid-x", "high")
+        await r.set("system:priority_count", "0")
+
+        count = await clear_priority(r, "puuid-x")
+        assert count == 0  # must NOT be -1
+
+
+class TestNoTTLOnPriorityKeys:
+    """R1: player:priority:{puuid} must NOT have a TTL to prevent counter drift."""
+
+    @pytest.mark.asyncio
+    async def test_set_priority__key_has_no_ttl(self, r):
+        """set_priority creates key WITHOUT TTL — expiry caused counter drift."""
+        await set_priority(r, "puuid-abc")
+
+        val = await r.get("player:priority:puuid-abc")
+        assert val == "high"
+        ttl = await r.ttl("player:priority:puuid-abc")
+        assert ttl == -1  # no expiry
 
 
 class TestPriorityCount:
