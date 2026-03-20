@@ -109,6 +109,50 @@ class TestStoredLimits:
         assert results[2] is False
 
 
+class TestLuaKeysArray:
+    """P10-DB-4/FV-2: Lua script must use KEYS[] for all Redis key access (cluster compat)."""
+
+    @pytest.mark.asyncio
+    async def test_lua_script_does_not_hardcode_limit_keys(
+        self, r: fakeredis.aioredis.FakeRedis
+    ) -> None:
+        """The Lua script must not contain hardcoded 'ratelimit:limits:short/long' strings.
+
+        These must be passed via KEYS[3] and KEYS[4] to avoid CROSSSLOT errors
+        in Redis Cluster mode.
+        """
+        from lol_pipeline.rate_limiter import _LUA_RATE_LIMIT_SCRIPT
+
+        # The Lua body should NOT contain literal key names
+        assert '"ratelimit:limits:short"' not in _LUA_RATE_LIMIT_SCRIPT
+        assert '"ratelimit:limits:long"' not in _LUA_RATE_LIMIT_SCRIPT
+
+    @pytest.mark.asyncio
+    async def test_stored_limits_via_keys_array(self, r: fakeredis.aioredis.FakeRedis) -> None:
+        """Stored limits are read via KEYS[3]/KEYS[4], not hardcoded key names."""
+        # Pre-set stored limits
+        await r.set("ratelimit:limits:short", "3")
+        await r.set("ratelimit:limits:long", "100")
+
+        # Should respect the stored short limit of 3
+        results = [await acquire_token(r, limit_per_second=20) for _ in range(4)]
+        assert results[:3] == [True, True, True]
+        assert results[3] is False
+
+    @pytest.mark.asyncio
+    async def test_custom_prefix_stored_limits(self, r: fakeredis.aioredis.FakeRedis) -> None:
+        """Custom key_prefix still reads from the standard stored limit keys."""
+        await r.set("ratelimit:limits:short", "2")
+        await r.set("ratelimit:limits:long", "100")
+
+        results = [
+            await acquire_token(r, key_prefix="custom_limiter", limit_per_second=20)
+            for _ in range(3)
+        ]
+        assert results[:2] == [True, True]
+        assert results[2] is False
+
+
 class TestRateLimiterBoundary:
     """Tier 3 — Rate limiter boundary conditions."""
 

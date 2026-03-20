@@ -131,7 +131,7 @@ async def run_consumer(
                 consumer,
                 autoclaim_min_idle_ms=autoclaim_min_idle_ms,
             )
-        except (RedisError, OSError):
+        except RedisError, OSError:
             log.exception("consume error — retrying in 1s")
             await asyncio.sleep(1)
             continue
@@ -152,6 +152,6 @@ async def run_consumer(
                     handler,
                     log,
                 )
-        except (RedisError, OSError):
+        except RedisError, OSError:
             log.exception("dispatch error — retrying on next consume cycle")
             await asyncio.sleep(1)

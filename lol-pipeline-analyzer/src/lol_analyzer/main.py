@@ -19,6 +19,7 @@ from lol_pipeline.streams import ack
 
 _IN_STREAM = "stream:analyze"
 _GROUP = "analyzers"
+_30_DAYS = 30 * 24 * 3600  # 2592000 seconds
 
 # Atomic lock-release: only delete if we still own it.
 _RELEASE_LOCK_LUA = """
@@ -192,6 +193,16 @@ async def _analyze_player(
         derived = _derived(stats)
         if derived:
             await r.hset(f"player:stats:{puuid}", mapping=derived)  # type: ignore[misc]
+
+        # P10-DB-1: Set 30-day TTL on all player stat keys to prevent unbounded
+        # growth for inactive players. Active players get TTL refreshed each analysis.
+        for key in (
+            f"player:stats:{puuid}",
+            f"player:stats:cursor:{puuid}",
+            f"player:champions:{puuid}",
+            f"player:roles:{puuid}",
+        ):
+            await r.expire(key, _30_DAYS)
 
         await _safe_clear_priority(r, puuid, log)
 

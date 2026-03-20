@@ -17,6 +17,8 @@ from lol_pipeline.riot_api import RiotClient
 from lol_admin.main import (
     _dispatch,
     _dlq_entries,
+    _format_dlq_table,
+    _format_stats_output,
     _make_replay_envelope,
     _region_from_match_id,
     _resolve_puuid,
@@ -80,16 +82,28 @@ class TestDlqList:
     @pytest.mark.asyncio
     async def test_empty_dlq(self, r, capsys):
         """AC-06-01: dlq list empty → stdout '(empty)', exit 0."""
-        args = argparse.Namespace()
+        args = argparse.Namespace(json=False)
         result = await cmd_dlq_list(r, args)
         assert result == 0
         assert "(empty)" in capsys.readouterr().out
 
     @pytest.mark.asyncio
     async def test_three_entries(self, r, capsys):
-        """AC-06-02: 3 DLQ entries → 3 records printed."""
+        """AC-06-02: 3 DLQ entries → 3 data rows in table output."""
         await _add_dlq_entries(r, 3)
-        args = argparse.Namespace()
+        args = argparse.Namespace(json=False)
+        result = await cmd_dlq_list(r, args)
+        assert result == 0
+        output = capsys.readouterr().out
+        # Table output: header + separator + 3 data rows
+        assert "Entry ID" in output
+        assert "http_429" in output
+
+    @pytest.mark.asyncio
+    async def test_three_entries_json(self, r, capsys):
+        """AC-06-02b: --json flag → 3 JSON records printed."""
+        await _add_dlq_entries(r, 3)
+        args = argparse.Namespace(json=True)
         result = await cmd_dlq_list(r, args)
         assert result == 0
         lines = [x for x in capsys.readouterr().out.strip().split("\n") if x]
@@ -255,7 +269,7 @@ class TestResolvePuuidCache:
 class TestStats:
     @pytest.mark.asyncio
     async def test_stats_found(self, r, cfg, capsys):
-        """AC-06-09: stats for existing player → prints fields."""
+        """AC-06-09: stats for existing player → prints formatted fields."""
         puuid = "test-puuid-0001"
         await r.hset(f"player:stats:{puuid}", mapping={"total_games": "10", "win_rate": "0.6000"})
 
@@ -269,14 +283,15 @@ class TestStats:
                 )
             )
             riot = RiotClient("RGAPI-test")
-            args = argparse.Namespace(riot_id="Faker#NA1", region="na1")
+            args = argparse.Namespace(riot_id="Faker#NA1", region="na1", json=False)
             result = await cmd_stats(r, riot, cfg, args)
             await riot.close()
 
         assert result == 0
         output = capsys.readouterr().out
-        assert "total_games" in output
-        assert "win_rate" in output
+        assert "Total Games" in output
+        assert "Win Rate" in output
+        assert "60.0%" in output
 
 
 class TestDispatch:
@@ -447,44 +462,34 @@ class TestMainEntryPoint:
 class TestRecalcPriority:
     @pytest.mark.asyncio
     async def test_recalc_priority__counts_actual_keys(self, r, capsys):
-        """recalc-priority scans player:priority:* keys and updates counter."""
-        # Set up 3 priority keys and a stale counter
-        await r.set("player:priority:puuid-1", "high")
-        await r.set("player:priority:puuid-2", "high")
-        await r.set("player:priority:puuid-3", "high")
-        await r.set("system:priority_count", "99")  # stale/drifted value
+        """recalc-priority scans player:priority:* keys and prints count (diagnostic-only)."""
+        await r.set("player:priority:puuid-1", "1")
+        await r.set("player:priority:puuid-2", "1")
+        await r.set("player:priority:puuid-3", "1")
 
         args = argparse.Namespace()
         result = await cmd_recalc_priority(r, args)
         assert result == 0
-        assert await r.get("system:priority_count") == "3"
         output = capsys.readouterr().out
-        assert "recalculated: 3" in output
+        assert "keys found: 3" in output
 
     @pytest.mark.asyncio
-    async def test_recalc_priority__warns_when_not_halted(self, r, capsys):
-        """I2-H13: recalc-priority prints warning to stderr when system is not halted."""
-        await r.set("player:priority:puuid-1", "high")
+    async def test_recalc_priority__no_keys__reports_zero(self, r, capsys):
+        """recalc-priority with no priority keys reports 0."""
         args = argparse.Namespace()
         result = await cmd_recalc_priority(r, args)
         assert result == 0
-        captured = capsys.readouterr()
-        assert "Warning" in captured.err
-        assert "pipeline halted" in captured.err
-        # Should still complete successfully
-        assert await r.get("system:priority_count") == "1"
+        output = capsys.readouterr().out
+        assert "keys found: 0" in output
 
     @pytest.mark.asyncio
-    async def test_recalc_priority__no_warning_when_halted(self, r, capsys):
-        """I2-H13: recalc-priority does NOT warn when system:halted is set."""
-        await r.set("system:halted", "1")
-        await r.set("player:priority:puuid-1", "high")
+    async def test_recalc_priority__does_not_write_counter(self, r, capsys):
+        """recalc-priority is read-only — does NOT write system:priority_count."""
+        await r.set("player:priority:puuid-1", "1")
         args = argparse.Namespace()
-        result = await cmd_recalc_priority(r, args)
-        assert result == 0
-        captured = capsys.readouterr()
-        assert "Warning" not in captured.err
-        assert await r.get("system:priority_count") == "1"
+        await cmd_recalc_priority(r, args)
+        # No counter key should be created
+        assert await r.exists("system:priority_count") == 0
 
 
 class TestUserFacingErrorsUsePrint:
@@ -752,18 +757,17 @@ class TestDlqEntriesCorruptSkip:
 
     @pytest.mark.asyncio
     async def test_dlq_list_with_corrupt_entry__still_works(self, r, capsys):
-        """cmd_dlq_list with mixed valid/corrupt → prints valid, returns 0."""
+        """cmd_dlq_list with mixed valid/corrupt → prints valid in table, returns 0."""
         dlq = _make_dlq(match_id="NA1_ok")
         await r.xadd(_DLQ_STREAM, dlq.to_redis_fields())
         await r.xadd(_DLQ_STREAM, {"corrupt": "true"})
 
-        args = argparse.Namespace()
+        args = argparse.Namespace(json=False)
         result = await cmd_dlq_list(r, args)
         assert result == 0
-        lines = [x for x in capsys.readouterr().out.strip().split("\n") if x]
-        assert len(lines) == 1
-        record = json.loads(lines[0])
-        assert record["failure_code"] == "http_429"
+        output = capsys.readouterr().out
+        assert "http_429" in output
+        assert "Entry ID" in output
 
 
 class TestMakeReplayEnvelopePreservesMetadata:
@@ -928,7 +932,7 @@ class TestReseedHighPriority:
         assert result == 0
         # Verify priority key was set
         prio_val = await r.get(f"player:priority:{puuid}")
-        assert prio_val == "high"
+        assert prio_val == "1"
 
 
 class TestMainRedisConnectionError:
@@ -1051,7 +1055,7 @@ class TestStatsJson:
 
     @pytest.mark.asyncio
     async def test_stats_no_json_flag__outputs_human_text(self, r, cfg, capsys):
-        """Without --json, stats prints human-readable 'Stats for ...' header."""
+        """Without --json, stats prints human-readable 'Player: ...' header."""
         puuid = "test-puuid-human"
         await r.hset(
             f"player:stats:{puuid}",
@@ -1074,8 +1078,8 @@ class TestStatsJson:
 
         assert result == 0
         output = capsys.readouterr().out
-        assert "Stats for Human#NA1" in output
-        assert "total_games" in output
+        assert "Player: Human#NA1" in output
+        assert "Total Games" in output
 
     def test_build_parser__json_flag_defaults_false(self):
         """_build_parser produces --json flag that defaults to False."""
@@ -1223,3 +1227,227 @@ class TestRecalcPlayers:
         assert result == 0
         args = mock_dispatch.call_args[0][3]
         assert args.command == "recalc-players"
+
+
+class TestFormatStatsOutput:
+    """P10-GD-1: _format_stats_output produces formatted, human-readable stats."""
+
+    def test_format_stats_output__win_rate_formatted_as_percent(self):
+        """win_rate 0.5374 → '53.7%' in output."""
+        stats = {
+            "win_rate": "0.5374",
+            "kda": "3.42",
+            "total_games": "100",
+            "kills": "850",
+        }
+        output = _format_stats_output(stats, "Faker", "KR1", "abcdef1234567890")
+        assert "53.7%" in output
+        assert "(100 games)" in output
+
+    def test_format_stats_output__priority_order(self):
+        """win_rate appears before kda, which appears before total_games."""
+        stats = {
+            "total_games": "50",
+            "kda": "2.50",
+            "win_rate": "0.6000",
+            "assists": "300",
+            "deaths": "200",
+            "kills": "400",
+        }
+        output = _format_stats_output(stats, "Test", "NA1", "aabb0011223344")
+        lines = output.split("\n")
+        # Find line indices for priority keys
+        win_rate_idx = next(i for i, ln in enumerate(lines) if "Win Rate" in ln)
+        kda_idx = next(i for i, ln in enumerate(lines) if "KDA" in ln)
+        total_games_idx = next(i for i, ln in enumerate(lines) if "Total Games" in ln)
+        assert win_rate_idx < kda_idx < total_games_idx
+
+    def test_format_stats_output__header_includes_player_info(self):
+        """Header line includes game_name#tag_line and truncated puuid."""
+        stats = {"win_rate": "0.5000", "total_games": "10"}
+        output = _format_stats_output(stats, "MyName", "TAG1", "abcdef1234567890")
+        assert "MyName#TAG1" in output
+        assert "abcdef12" in output
+
+    def test_format_stats_output__kda_formatted_as_float(self):
+        """kda 3.4 → '3.40' (2 decimal places)."""
+        stats = {"kda": "3.4", "total_games": "5", "win_rate": "0.5"}
+        output = _format_stats_output(stats, "P", "T", "aabbccdd")
+        assert "3.40" in output
+
+    def test_format_stats_output__total_games_as_integer(self):
+        """total_games shown as integer without decimals."""
+        stats = {"total_games": "42", "win_rate": "0.5"}
+        output = _format_stats_output(stats, "P", "T", "aabbccdd")
+        # "42" should appear as the value, not "42.0"
+        assert "42" in output
+
+    def test_format_stats_output__rule_lines_present(self):
+        """Output contains horizontal rule lines (unicode box-drawing)."""
+        stats = {"win_rate": "0.5", "total_games": "10"}
+        output = _format_stats_output(stats, "P", "T", "aabbccdd")
+        assert "\u2500" in output  # ─ character
+
+
+class TestFormatDlqTable:
+    """P10-GD-2: _format_dlq_table produces human-readable table output."""
+
+    def test_format_dlq_table__plain_text_output(self):
+        """Table has headers and at least one data row."""
+        dlq = _make_dlq(failure_code="http_429", match_id="NA1_123")
+        entries = [("1720000000000-0", dlq)]
+        output = _format_dlq_table(entries)
+        # Header row
+        assert "Entry ID" in output
+        assert "Stream" in output
+        assert "Code" in output
+        assert "Attempts" in output
+        assert "Age" in output
+        # Data row
+        assert "1720000000000-0" in output
+        assert "http_429" in output
+
+    def test_format_dlq_table__stream_truncated(self):
+        """Long stream names are truncated to 15 chars."""
+        dlq = _make_dlq()
+        entries = [("1-0", dlq)]
+        output = _format_dlq_table(entries)
+        # "stream:match_id" is 15 chars, should fit exactly
+        assert "stream:match_id" in output
+
+    def test_format_dlq_table__dlq_attempts_shown(self):
+        """Attempts column shows dlq_attempts with 'dlq' suffix."""
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"match_id": "NA1_1", "region": "na1"},
+            attempts=3,
+            max_attempts=5,
+            failure_code="http_429",
+            failure_reason="test",
+            failed_by="fetcher",
+            original_stream="stream:match_id",
+            original_message_id="1234-0",
+            dlq_attempts=5,
+        )
+        entries = [("1-0", dlq)]
+        output = _format_dlq_table(entries)
+        assert "5 dlq" in output
+
+
+class TestCmdStatsPlayerNotFound:
+    """P10-GD-3: error messages use [ERROR] prefix."""
+
+    @pytest.mark.asyncio
+    async def test_cmd_stats_player_not_found__error_prefix(self, r, cfg, capsys):
+        """stats for non-existent player → stderr starts with [ERROR]."""
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Ghost/NA1"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": "ghost-puuid", "gameName": "Ghost", "tagLine": "NA1"},
+                )
+            )
+            riot = RiotClient("RGAPI-test")
+            args = argparse.Namespace(riot_id="Ghost#NA1", region="na1", json=False)
+            result = await cmd_stats(r, riot, cfg, args)
+            await riot.close()
+        assert result == 1
+        captured = capsys.readouterr()
+        assert captured.err.strip().startswith("[ERROR]")
+
+
+class TestErrorPrefixes:
+    """P10-GD-3: standardized error/warning/success prefixes."""
+
+    @pytest.mark.asyncio
+    async def test_system_halt__ok_prefix(self, r, capsys):
+        """system-halt success message uses [OK] prefix."""
+        args = argparse.Namespace()
+        await cmd_system_halt(r, args)
+        output = capsys.readouterr().out
+        assert output.strip().startswith("[OK]")
+
+    @pytest.mark.asyncio
+    async def test_system_resume__ok_prefix(self, r, capsys):
+        """system-resume success message uses [OK] prefix."""
+        await r.set("system:halted", "1")
+        args = argparse.Namespace()
+        await cmd_system_resume(r, args)
+        output = capsys.readouterr().out
+        assert output.strip().startswith("[OK]")
+
+    @pytest.mark.asyncio
+    async def test_dlq_replay__ok_prefix(self, r, cfg, capsys):
+        """dlq replay success message uses [OK] prefix."""
+        await _add_dlq_entries(r, 1)
+        entries = await r.xrange("stream:dlq", "-", "+")
+        entry_id = entries[0][0]
+        args = argparse.Namespace(all=False, id=entry_id)
+        await cmd_dlq_replay(r, cfg, args)
+        output = capsys.readouterr().out
+        assert "[OK]" in output
+
+    @pytest.mark.asyncio
+    async def test_dlq_clear__ok_prefix(self, r, capsys):
+        """dlq clear success message uses [OK] prefix."""
+        await _add_dlq_entries(r, 2)
+        args = argparse.Namespace(all=True)
+        await cmd_dlq_clear(r, args)
+        output = capsys.readouterr().out
+        assert output.strip().startswith("[OK]")
+
+    @pytest.mark.asyncio
+    async def test_resolve_puuid_invalid__error_prefix(self, r, capsys):
+        """Invalid Riot ID error uses [ERROR] prefix."""
+        riot = RiotClient("RGAPI-test")
+        await _resolve_puuid(riot, "NoHash", "na1", r)
+        await riot.close()
+        captured = capsys.readouterr()
+        assert captured.err.strip().startswith("[ERROR]")
+
+    @pytest.mark.asyncio
+    async def test_reseed__ok_prefix(self, r, cfg, capsys):
+        """reseed success message uses [OK] prefix."""
+        puuid = "test-puuid-prefix"
+        await r.hset(
+            f"player:{puuid}",
+            mapping={"seeded_at": "2024-01-01", "last_crawled_at": "2024-01-01"},
+        )
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/PFX/NA1"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": puuid, "gameName": "PFX", "tagLine": "NA1"},
+                )
+            )
+            riot = RiotClient("RGAPI-test")
+            args = argparse.Namespace(riot_id="PFX#NA1", region="na1")
+            await cmd_reseed(r, riot, cfg, args)
+            await riot.close()
+        output = capsys.readouterr().out
+        assert "[OK]" in output
+
+    @pytest.mark.asyncio
+    async def test_main__redis_error__error_prefix(self, monkeypatch, capsys):
+        """Redis connection error uses [ERROR] prefix."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        from redis.exceptions import ConnectionError as RedisConnectionError
+
+        mock_dispatch = AsyncMock(side_effect=RedisConnectionError("refused"))
+        mock_r = AsyncMock()
+        mock_riot = AsyncMock()
+        with (
+            patch("lol_admin.main._dispatch", mock_dispatch),
+            patch("lol_admin.main.get_redis", return_value=mock_r),
+            patch("lol_admin.main.RiotClient", return_value=mock_riot),
+        ):
+            result = await main(["admin", "system-halt"])
+        assert result == 1
+        captured = capsys.readouterr()
+        assert captured.err.strip().startswith("[ERROR]")

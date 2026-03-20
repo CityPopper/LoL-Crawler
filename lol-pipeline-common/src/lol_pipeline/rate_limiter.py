@@ -16,12 +16,14 @@ import redis.asyncio as aioredis
 
 # Atomic Lua script: checks both windows before admitting a token.
 # KEYS[1] = short-window ZSET key, KEYS[2] = long-window ZSET key
+# KEYS[3] = stored short limit key, KEYS[4] = stored long limit key
 # ARGV[1] = now_ms, ARGV[2] = short limit fallback, ARGV[3] = long limit fallback,
 # ARGV[4] = short window ms, ARGV[5] = long window ms, ARGV[6] = unique member ID
 #
-# Stored limit keys ratelimit:limits:short / ratelimit:limits:long are written by
-# RiotClient after each successful API response. If present they override the ARGV
-# fallback values so the limiter automatically adapts to the real API key limits.
+# Stored limit keys (KEYS[3]/KEYS[4]) are written by RiotClient after each
+# successful API response. If present they override the ARGV fallback values so
+# the limiter automatically adapts to the real API key limits.
+# All key access uses the KEYS array for Redis Cluster compatibility (no CROSSSLOT).
 _LUA_RATE_LIMIT_SCRIPT = """
 local key_s = KEYS[1]
 local key_l = KEYS[2]
@@ -30,8 +32,8 @@ local win_s   = tonumber(ARGV[4])
 local win_l   = tonumber(ARGV[5])
 local uid     = ARGV[6]
 
-local stored_s = redis.call("GET", "ratelimit:limits:short")
-local stored_l = redis.call("GET", "ratelimit:limits:long")
+local stored_s = redis.call("GET", KEYS[3])
+local stored_l = redis.call("GET", KEYS[4])
 local limit_s = (stored_s and tonumber(stored_s)) or tonumber(ARGV[2])
 local limit_l = (stored_l and tonumber(stored_l)) or tonumber(ARGV[3])
 
@@ -72,9 +74,11 @@ async def acquire_token(
     uid = str(uuid.uuid4())
     result: Any = await r.eval(  # type: ignore[misc]
         _LUA_RATE_LIMIT_SCRIPT,
-        2,
+        4,
         f"{key_prefix}:short",
         f"{key_prefix}:long",
+        "ratelimit:limits:short",
+        "ratelimit:limits:long",
         now_ms,
         limit_per_second,
         _LONG_LIMIT,

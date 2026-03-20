@@ -37,6 +37,7 @@ from lol_ui.main import (
     _page,
     _parse_log_line,
     _render_log_lines,
+    _render_player_rows,
     _stats_form,
     _stats_table,
     _tail_file,
@@ -714,21 +715,19 @@ class TestAutoSeedPriority:
         assert entries[0][1]["priority"] == "high"
 
         # Check priority key was set
-        assert await r.get("player:priority:test-puuid-ui") == "high"
-        assert await r.get("system:priority_count") == "1"
+        assert await r.get("player:priority:test-puuid-ui") == "1"
 
         await r.aclose()
 
     @pytest.mark.asyncio
-    @pytest.mark.skipif(not _LUPA_AVAILABLE, reason="lupa required for Lua scripts")
-    async def test_show_streams__displays_priority_count(self):
-        """The /streams page displays system:priority_count value."""
+    async def test_show_streams__displays_priority_status(self):
+        """The /streams page displays priority status via SCAN-based detection."""
         import fakeredis.aioredis
 
         from lol_ui.main import show_streams
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        await r.set("system:priority_count", "3")
+        await r.set("player:priority:puuid-1", "1", ex=86400)
 
         from unittest.mock import MagicMock
 
@@ -738,7 +737,7 @@ class TestAutoSeedPriority:
         resp = await show_streams(request)
         body = resp.body.decode()
         assert "Priority players in-flight" in body
-        assert "<strong>3</strong>" in body
+        assert "<strong>Yes</strong>" in body
 
         await r.aclose()
 
@@ -998,8 +997,8 @@ class TestPlayersPageCount:
         await r.aclose()
 
     @pytest.mark.asyncio
-    async def test_players__shows_full_iso_timestamp(self):
-        """seeded_at is rendered as a full ISO string, not truncated."""
+    async def test_players__shows_date_only_timestamp(self):
+        """P10-RD-9: seeded_at is rendered as date-only, not full ISO string."""
         from unittest.mock import MagicMock
 
         import fakeredis.aioredis
@@ -1025,7 +1024,8 @@ class TestPlayersPageCount:
         resp = await show_players(request)
         body = resp.body.decode()
 
-        assert iso_ts in body
+        assert "2026-03-19" in body
+        assert "T12:34:56" not in body
         await r.aclose()
 
     @pytest.mark.asyncio
@@ -1193,14 +1193,14 @@ class TestStreamsFragment:
         await r.aclose()
 
     @pytest.mark.asyncio
-    async def test_streams_fragment__includes_priority_count(self):
-        """Fragment includes priority count display."""
+    async def test_streams_fragment__includes_priority_status(self):
+        """Fragment includes SCAN-based priority status display."""
         import fakeredis.aioredis
 
         from lol_ui.main import streams_fragment
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        await r.set("system:priority_count", "5")
+        await r.set("player:priority:puuid-1", "1", ex=86400)
 
         from unittest.mock import MagicMock
 
@@ -1210,7 +1210,7 @@ class TestStreamsFragment:
         resp = await streams_fragment(request)
         body = resp.body.decode()
 
-        assert "<strong>5</strong>" in body
+        assert "<strong>Yes</strong>" in body
         await r.aclose()
 
 
@@ -2722,24 +2722,24 @@ class TestStreamsFragmentHtmlHaltBanner:
         await r.aclose()
 
     @pytest.mark.asyncio
-    async def test_streams_fragment_html__priority_count_nonzero__displays_count(self):
-        """When system:priority_count > 0, the count is rendered in <strong> tags."""
+    async def test_streams_fragment_html__priority_keys_exist__displays_yes(self):
+        """When player:priority:* keys exist, displays Yes via SCAN-based detection."""
         import fakeredis.aioredis
 
         from lol_ui.main import _streams_fragment_html
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        await r.set("system:priority_count", "7")
+        await r.set("player:priority:puuid-1", "1", ex=86400)
 
         result = await _streams_fragment_html(r)
 
         assert "Priority players in-flight" in result
-        assert "<strong>7</strong>" in result
+        assert "<strong>Yes</strong>" in result
         await r.aclose()
 
     @pytest.mark.asyncio
     async def test_streams_fragment_html__normal__no_halt_shows_running(self):
-        """When neither halted nor priority set, shows running banner and priority 0."""
+        """When neither halted nor priority set, shows running banner and priority No."""
         import fakeredis.aioredis
 
         from lol_ui.main import _streams_fragment_html
@@ -2751,7 +2751,7 @@ class TestStreamsFragmentHtmlHaltBanner:
         assert "System running" in result
         assert "banner--success" in result
         assert "HALTED" not in result
-        assert "<strong>0</strong>" in result
+        assert "<strong>No</strong>" in result
         # All stream keys should be present
         assert "stream:puuid" in result
         assert "stream:match_id" in result
@@ -3902,3 +3902,223 @@ class TestMakeReplayEnvelope:
 
         assert envelope.type == "parse"
         assert envelope.source_stream == "stream:parse"
+
+
+# ---------------------------------------------------------------------------
+# P10-QA-1: Auto-seed must call set_priority BEFORE publish
+# ---------------------------------------------------------------------------
+
+
+class TestAutoSeedPriorityBeforePublish:
+    @pytest.mark.asyncio
+    async def test_auto_seed_player__sets_priority_before_publish(self):
+        """set_priority() must be called BEFORE publish() to avoid race with Crawler."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from lol_ui.main import _auto_seed_player
+
+        call_order: list[str] = []
+
+        mock_r = AsyncMock()
+        mock_r.get.return_value = None  # no halted, no cooldown
+        mock_r.hget.return_value = None  # no existing seeded_at
+        mock_r.set.return_value = True
+
+        mock_cfg = MagicMock()
+        mock_cfg.max_attempts = 5
+
+        async def tracking_publish(*args, **kwargs):
+            call_order.append("publish")
+
+        async def tracking_set_priority(*args, **kwargs):
+            call_order.append("set_priority")
+
+        with (
+            patch("lol_ui.main.publish", new_callable=AsyncMock) as mock_pub,
+            patch("lol_ui.main.set_priority", new_callable=AsyncMock) as mock_sp,
+        ):
+            mock_pub.side_effect = tracking_publish
+            mock_sp.side_effect = tracking_set_priority
+
+            await _auto_seed_player(mock_r, "test-puuid", "GameName", "Tag", "na1", mock_cfg)
+
+        assert call_order == ["set_priority", "publish"]
+
+
+# ---------------------------------------------------------------------------
+# P10-QA-2: Auto-seed must write to players:all sorted set
+# ---------------------------------------------------------------------------
+
+
+class TestAutoSeedWritesPlayersAll:
+    @pytest.mark.asyncio
+    async def test_auto_seed_player__writes_to_players_all(self):
+        """Auto-seed must call zadd('players:all', {puuid: timestamp})."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from lol_ui.main import _auto_seed_player
+
+        mock_r = AsyncMock()
+        mock_r.get.return_value = None
+        mock_r.hget.return_value = None
+        mock_r.set.return_value = True
+
+        mock_cfg = MagicMock()
+        mock_cfg.max_attempts = 5
+
+        with (
+            patch("lol_ui.main.publish", new_callable=AsyncMock),
+            patch("lol_ui.main.set_priority", new_callable=AsyncMock),
+        ):
+            await _auto_seed_player(mock_r, "seed-puuid-1", "Player", "NA1", "na1", mock_cfg)
+
+        mock_r.zadd.assert_called_once()
+        args, _kwargs = mock_r.zadd.call_args
+        assert args[0] == "players:all"
+        mapping = args[1]
+        assert "seed-puuid-1" in mapping
+        # Score should be a timestamp (positive number)
+        assert mapping["seed-puuid-1"] > 0
+
+
+# ---------------------------------------------------------------------------
+# P10-DD-3/PM-01: Dashboard nav link
+# ---------------------------------------------------------------------------
+
+
+class TestNavItemsDashboardLink:
+    def test_nav_items__contains_dashboard_link(self):
+        """_NAV_ITEMS must include a '/' -> 'Dashboard' entry as the first item."""
+        assert ("/", "Dashboard") in _NAV_ITEMS
+        assert _NAV_ITEMS[0] == ("/", "Dashboard")
+
+
+# ---------------------------------------------------------------------------
+# P10-CW-7/DD-9: Riot Games attribution footer
+# ---------------------------------------------------------------------------
+
+
+class TestRiotAttributionFooter:
+    def test_page__contains_riot_attribution(self):
+        """_page() output must contain Riot Games legal attribution in a footer."""
+        result = _page("Test", "<p>body</p>")
+        assert "Riot Games" in result
+        assert "<footer" in result
+        assert (
+            "isn\u2019t endorsed by Riot Games" in result
+            or "isn&rsquo;t endorsed by Riot Games" in result
+        )
+
+
+# ---------------------------------------------------------------------------
+# P10-DD-7: Dashboard region selector must show all regions
+# ---------------------------------------------------------------------------
+
+
+class TestDashboardRegionSelector:
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not _LUPA_AVAILABLE, reason="lupa required for Lua scripts")
+    async def test_dashboard__region_select_has_all_regions(self):
+        """Dashboard region <select> must include all _REGIONS, not just 4."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import index
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+
+        resp = await index(request)
+        body = resp.body.decode()
+
+        for region in _REGIONS:
+            assert f'value="{region}"' in body, f"Region {region} missing from dashboard"
+
+        # Count option tags — should be at least len(_REGIONS)
+        option_count = body.count("<option value=")
+        assert option_count >= len(_REGIONS)
+
+        await r.aclose()
+
+
+class TestCssTableScrollNowrap:
+    def test_css__table_scroll_has_nowrap(self):
+        """P10-RD-8: .table-scroll td/th must have white-space: nowrap."""
+        assert "white-space: nowrap" in _CSS
+        assert ".table-scroll td" in _CSS or ".table-scroll th" in _CSS
+
+
+class TestRenderPlayerRowsSeededTruncated:
+    def test_render_player_rows__seeded_at_truncated_to_date(self):
+        """P10-RD-9: seeded_at ISO timestamp must be truncated to date-only."""
+        rows = [("TestPlayer", "NA1", "na1", "2024-01-15T14:23:11+00:00")]
+        result = _render_player_rows(rows)
+        assert "2024-01-15" in result
+        assert "T14:23:11" not in result
+        assert "14:23:11+00:00" not in result
+
+
+class TestCssSortControlsMinHeight:
+    def test_css__sort_controls_has_min_height_44(self):
+        """P10-RD-6: .sort-controls a must have min-height: 44px for tap targets."""
+        idx = _CSS.find(".sort-controls a")
+        assert idx != -1, ".sort-controls a rule not found in CSS"
+        snippet = _CSS[idx : idx + 300]
+        assert "min-height: 44px" in snippet
+
+
+class TestCssPauseBtnMinHeight:
+    def test_css__pause_btn_has_min_height(self):
+        """P10-RD-11: #pause-btn must have min-height: 44px."""
+        idx = _CSS.find("#pause-btn")
+        assert idx != -1, "#pause-btn rule not found in CSS"
+        snippet = _CSS[idx : idx + 200]
+        assert "min-height: 44px" in snippet
+
+
+class TestSecurityHeaders:
+    """P10-SEC-4: Every response must include security headers."""
+
+    def _get_response(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from starlette.testclient import TestClient
+
+        with (
+            patch("lol_ui.main.Config") as mock_cfg_cls,
+            patch("lol_ui.main.get_redis") as mock_get_redis,
+            patch("lol_ui.main.RiotClient") as mock_riot_cls,
+        ):
+            mock_cfg = MagicMock()
+            mock_cfg.redis_url = "redis://localhost:6379/0"
+            mock_cfg.riot_api_key = "RGAPI-test"
+            mock_cfg_cls.return_value = mock_cfg
+
+            mock_redis = AsyncMock()
+            mock_get_redis.return_value = mock_redis
+
+            mock_riot = AsyncMock()
+            mock_riot_cls.return_value = mock_riot
+
+            from lol_ui.main import app
+
+            with TestClient(app) as client:
+                return client.get("/health")
+
+    def test_security_headers__x_content_type_options(self):
+        """P10-SEC-4: X-Content-Type-Options: nosniff in every response."""
+        resp = self._get_response()
+        assert resp.headers.get("X-Content-Type-Options") == "nosniff"
+
+    def test_security_headers__x_frame_options(self):
+        """P10-SEC-4: X-Frame-Options: DENY in every response."""
+        resp = self._get_response()
+        assert resp.headers.get("X-Frame-Options") == "DENY"
+
+    def test_security_headers__referrer_policy(self):
+        """P10-SEC-4: Referrer-Policy: no-referrer in every response."""
+        resp = self._get_response()
+        assert resp.headers.get("Referrer-Policy") == "no-referrer"

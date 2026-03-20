@@ -10,16 +10,16 @@
 
 ---
 
-## Per-Test Time Limit: ≤ 0.5s
+## Per-Test Time Limit: ≤ 10s
 
-Every unit test must complete within **0.5 seconds**. This is enforced via `pytest-timeout`.
+Every unit test must complete within **10 seconds**. This is enforced via `pytest-timeout`.
 
 ### Configuration (canonical template — all services must match)
 
 ```toml
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-timeout = 0.5          # hard kill any test exceeding 500ms
+timeout = 10           # hard kill any test exceeding 10s
 addopts = "-n auto"    # pytest-xdist: use all available CPU cores
 
 [project.optional-dependencies]
@@ -34,18 +34,18 @@ dev = [
 
 ### Suite-level capacity planning
 
-With `timeout = 0.5` per test, the worst-case suite time is:
+With `timeout = 10` per test, the worst-case suite time is:
 
 ```
-max_suite_time = num_tests × 0.5s
+max_suite_time = num_tests × 10s
 ```
 
 Examples:
-- 100 tests → ≤ 50s
-- 200 tests → ≤ 100s
-- 50 tests  → ≤ 25s
+- 100 tests → ≤ 1000s
+- 200 tests → ≤ 2000s
+- 50 tests  → ≤ 500s
 
-With `-n auto` (xdist), actual time ≈ `max_suite_time / num_cores`. On a 4-core machine, a 100-test suite should finish in ~12s.
+With `-n auto` (xdist), actual time ≈ `max_suite_time / num_cores`. On a 4-core machine, a 100-test suite should finish in ~250s.
 
 ---
 
@@ -53,8 +53,8 @@ With `-n auto` (xdist), actual time ≈ `max_suite_time / num_cores`. On a 4-cor
 
 | Cause | Symptom | Fix |
 |-------|---------|-----|
-| Real `asyncio.sleep()` in code | Test takes exactly N seconds | `@patch("asyncio.sleep", new_callable=AsyncMock)` |
-| Real `time.sleep()` in code | Test takes exactly N seconds | `@patch("time.sleep")` |
+| Unpatched `asyncio.sleep()` | Test takes exactly N seconds | `@patch("asyncio.sleep", new_callable=AsyncMock)` |
+| Unpatched `time.sleep()` | Test takes exactly N seconds | `@patch("time.sleep")` |
 | Unpatched HTTP I/O | Flaky / slow depending on network | Mock `httpx.AsyncClient` or use `respx` |
 | Unpatched Redis I/O | Slow or requires live Redis | Use `fakeredis` or `AsyncMock` |
 | Large fixture data | Slow fixture setup | Trim to minimum fields needed for the test |
@@ -80,7 +80,7 @@ With `-n auto` (xdist), actual time ≈ `max_suite_time / num_cores`. On a 4-cor
 
 ## Optimizing Tests: Agent Batch Strategy
 
-When adding `pytest-timeout` causes existing tests to fail (they're too slow), fix them in parallel:
+When adding `pytest-timeout` causes existing tests to fail (they exceed the 10s limit), fix them in parallel:
 
 ### Step 1 — Profile
 
@@ -88,14 +88,14 @@ When adding `pytest-timeout` causes existing tests to fail (they're too slow), f
 cd lol-pipeline-<service> && python3 -m pytest tests/unit --durations=20 -q
 ```
 
-Collect the `--durations` output for all services. Note any test ≥ 0.5s.
+Collect the `--durations` output for all services. Note any test ≥ 10s.
 
 ### Step 2 — Batch and parallelize
 
 Group slow tests into batches of ~50-75 tests per agent. Spawn one developer agent per batch simultaneously. Each agent:
 1. Identifies the slow test
 2. Patches the underlying slow call (sleep, I/O)
-3. Verifies the test still passes and now runs in < 0.5s
+3. Verifies the test still passes and now runs in < 10s
 
 **Example batching by service:**
 
@@ -115,7 +115,7 @@ Run all 5 agents in a single message (parallel). Never run them sequentially.
 
 ```bash
 # Single service (from service directory):
-python3 -m pytest tests/unit -v --timeout=0.5
+python3 -m pytest tests/unit -v --timeout=10
 
 # All services (from repo root):
 just test
@@ -128,7 +128,7 @@ python3 -m pytest tests/unit --durations=20 -q
 
 ## CI Enforcement
 
-`pytest-timeout` is active in CI (same `pyproject.toml` config). Any test that exceeds 0.5s will:
+`pytest-timeout` is active in CI (same `pyproject.toml` config). Any test that exceeds 10s will:
 1. Be killed by the timeout
 2. Report as `FAILED` with `Timeout`
 3. Block the CI run

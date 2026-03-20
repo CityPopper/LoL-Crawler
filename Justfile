@@ -94,13 +94,14 @@ restart svc:
 scale svc count:
     {{DC}} up --scale {{svc}}={{count}} -d
 
-# Show Redis stream depths
-streams:
+# Internal: print stream depths + system:halted (used by streams and status)
+_stream_depths:
     #!/usr/bin/env bash
     set -euo pipefail
-    # Use RUNTIME exec directly to avoid noisy compose provider warnings on each call
     REDIS_CTR="{{_redis_ctr}}"
     exec_redis() { {{RUNTIME}} exec "$REDIS_CTR" redis-cli "$@"; }
+    printf "%-24s %s\n" "Stream"             "Depth"
+    printf "%-24s %s\n" "──────────────────────" "──────"
     printf "%-24s %s\n" "stream:puuid:"      "$(exec_redis XLEN stream:puuid)"
     printf "%-24s %s\n" "stream:match_id:"   "$(exec_redis XLEN stream:match_id)"
     printf "%-24s %s\n" "stream:parse:"      "$(exec_redis XLEN stream:parse)"
@@ -110,30 +111,21 @@ streams:
     printf "%-24s %s\n" "delayed:messages:"  "$(exec_redis ZCARD delayed:messages)"
     printf "%-24s %s\n" "system:halted:"     "$(exec_redis GET system:halted)"
 
+# Show Redis stream depths
+streams: _stream_depths
+
 # Show a dashboard: container health, stream depths, DLQ depth, halt flag, last 3 log lines
 status:
     #!/usr/bin/env bash
     set -euo pipefail
     DC="{{DC}}"
-    REDIS_CTR="{{_redis_ctr}}"
-    exec_redis() { {{RUNTIME}} exec "$REDIS_CTR" redis-cli "$@"; }
 
     echo "=== Container health ==="
     $DC ps
 
     echo ""
     echo "=== Stream depths ==="
-    printf "%-24s %s\n" "stream:puuid:"       "$(exec_redis XLEN stream:puuid)"
-    printf "%-24s %s\n" "stream:match_id:"    "$(exec_redis XLEN stream:match_id)"
-    printf "%-24s %s\n" "stream:parse:"       "$(exec_redis XLEN stream:parse)"
-    printf "%-24s %s\n" "stream:analyze:"     "$(exec_redis XLEN stream:analyze)"
-    printf "%-24s %s\n" "stream:dlq:"         "$(exec_redis XLEN stream:dlq)"
-    printf "%-24s %s\n" "stream:dlq:archive:" "$(exec_redis XLEN stream:dlq:archive)"
-    printf "%-24s %s\n" "delayed:messages:"   "$(exec_redis ZCARD delayed:messages)"
-
-    echo ""
-    echo "=== System flags ==="
-    printf "%-24s %s\n" "system:halted:" "$(exec_redis GET system:halted)"
+    just _stream_depths
 
     echo ""
     echo "=== Last 3 log lines per service ==="

@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -23,7 +24,7 @@ from lol_pipeline.config import Config
 from lol_pipeline.helpers import name_cache_key
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import DLQEnvelope, MessageEnvelope
-from lol_pipeline.priority import set_priority
+from lol_pipeline.priority import has_priority_players, set_priority
 from lol_pipeline.rate_limiter import wait_for_token
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.resolve import CACHE_TTL_S
@@ -35,6 +36,7 @@ from lol_pipeline.riot_api import (
     ServerError,
 )
 from lol_pipeline.streams import publish
+from starlette.responses import Response
 
 _STREAM_PUUID = "stream:puuid"
 _PUUID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
@@ -67,6 +69,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 # ---------------------------------------------------------------------------
 
 _NAV_ITEMS = [
+    ("/", "Dashboard"),
     ("/stats", "Stats"),
     ("/players", "Players"),
     ("/streams", "Streams"),
@@ -85,6 +88,7 @@ _CSS = """
   --color-error: #ff4136;
   --color-warning: #ffdc00;
   --color-info: #5a9eff;
+  --color-error-bg: #cc3333;
   --font-mono: 'Fira Code', 'JetBrains Mono', 'Cascadia Code', monospace;
   --font-size-sm: 12px;
   --font-size-base: 14px;
@@ -104,7 +108,7 @@ body {
   font-size: var(--font-size-base);
   background: var(--color-bg);
   color: var(--color-text);
-  max-width: min(900px, 100% - 2rem);
+  max-width: min(900px, calc(100% - 2rem));
   margin: 2rem auto;
   padding: 0 var(--space-sm);
   line-height: var(--line-height);
@@ -172,7 +176,7 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
 .badge { display: inline-block; padding: 2px 8px; border-radius: var(--radius);
          font-size: var(--font-size-sm); font-weight: bold; }
 .badge--success { background: var(--color-success); color: #111; }
-.badge--error { background: #cc3333; color: #fff; }
+.badge--error { background: var(--color-error-bg); color: #fff; }
 .badge--warning { background: var(--color-warning); color: #111; }
 .badge--info { background: var(--color-info); color: #fff; }
 .badge--muted { background: var(--color-border); color: var(--color-text); }
@@ -190,6 +194,18 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
 
 /* Table scroll wrapper */
 .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.table-scroll td, .table-scroll th { white-space: nowrap; }
+
+/* Small button */
+.btn-sm { padding: var(--space-xs) var(--space-sm); font-size: var(--font-size-sm);
+          min-height: 44px; }
+
+/* Pagination links — accessible touch targets */
+.page-link { display: inline-flex; align-items: center; min-height: 44px;
+             padding: 0 var(--space-sm); }
+
+/* Utility */
+.text-right { text-align: right; }
 
 /* Banners */
 .banner { padding: var(--space-md); border-radius: var(--radius); margin: var(--space-md) 0;
@@ -212,8 +228,8 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
 
 /* Log viewer */
 .log-wrap { font-family: var(--font-mono); font-size: 0.82em; }
-.log-line { display: flex; gap: 0.5rem; padding: 2px 4px;
-  border-bottom: 1px solid var(--color-border); align-items: baseline; flex-wrap: wrap; }
+.log-line { display: flex; flex-direction: column; gap: 2px; padding: 2px 4px;
+  border-bottom: 1px solid var(--color-border); flex-wrap: nowrap; }
 .log-critical { background: rgba(255,65,54,0.15); font-weight: bold; }
 .log-error { background: rgba(255,65,54,0.08); }
 .log-warning { background: rgba(255,220,0,0.08); }
@@ -232,20 +248,19 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
 .log-controls { margin: 0.5rem 0; display: flex;
   gap: 0.5rem; align-items: center; flex-wrap: wrap; }
 .log-meta { color: var(--color-muted); font-size: 0.85em; margin-bottom: 0.3rem; }
-#pause-btn { padding: 0.4rem 1rem; cursor: pointer; }
+#pause-btn { padding: var(--space-sm) var(--space-lg); min-height: 44px; cursor: pointer; }
 #pause-btn.paused { background: var(--color-error); color: #fff; }
 
-/* Mobile log lines */
-.log-line { flex-direction: column; gap: 2px; flex-wrap: nowrap; }
 .log-ts, .log-badge, .log-svc { font-size: 0.75em; }
 
 /* Tablet (768px+) */
 @media (min-width: 768px) {
   .form-inline { flex-direction: row; flex-wrap: wrap; align-items: flex-end; }
-  .form-inline input, .form-inline select, .form-inline button {
-    width: auto; flex: 1; min-width: 0; }
+  .form-inline label { flex: 1; min-width: 0; }
+  .form-inline input, .form-inline select { width: 100%; }
+  .form-inline button { width: auto; }
   body { padding: 0 1rem; }
-  .log-line { flex-direction: row; gap: 0.5rem; flex-wrap: nowrap; }
+  .log-line { flex-direction: row; gap: 0.5rem; align-items: baseline; }
   .log-ts, .log-badge, .log-svc { font-size: inherit; }
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
 }
@@ -284,7 +299,8 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
                  margin-bottom: var(--space-sm); flex-wrap: wrap; }
 .sort-controls a { padding: var(--space-xs) var(--space-sm); border-radius: var(--radius);
                    text-decoration: none; color: var(--color-muted);
-                   border: 1px solid var(--color-border); font-size: var(--font-size-sm); }
+                   border: 1px solid var(--color-border); font-size: var(--font-size-sm);
+                   min-height: 44px; display: inline-flex; align-items: center; }
 .sort-controls a.active { color: var(--color-text); border-color: var(--color-info);
                            background: rgba(90,158,255,0.1); }
 .sort-controls span { font-size: var(--font-size-sm); color: var(--color-muted); }
@@ -414,6 +430,15 @@ def _page(title: str, body: str, path: str = "") -> str:
 <main id="main-content">
 {body}
 </main>
+<footer style="text-align:center;padding:var(--space-lg);color:var(--color-muted);
+font-size:var(--font-size-sm);border-top:1px solid var(--color-border);
+margin-top:var(--space-xl)">
+  LoL Pipeline isn&rsquo;t endorsed by Riot Games and doesn&rsquo;t
+  reflect the views or opinions of Riot Games or anyone officially
+  involved in producing or managing Riot Games properties.
+  League of Legends and Riot Games are trademarks or registered
+  trademarks of Riot Games, Inc.
+</footer>
 </body>
 </html>"""
 
@@ -583,6 +608,16 @@ document.addEventListener('click', function(e) {{
 app = FastAPI(title="LoL Pipeline UI", lifespan=_lifespan)
 
 
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next: Any) -> Response:
+    """Add security headers to every response."""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
 @app.exception_handler(redis.exceptions.RedisError)
 async def redis_error_handler(request: Request, exc: redis.exceptions.RedisError) -> HTMLResponse:
     """Return a user-friendly 503 page when Redis is unreachable."""
@@ -638,14 +673,16 @@ async def index(request: Request) -> HTMLResponse:
     for s, length in zip(_STREAM_KEYS, stream_lengths, strict=True):
         stream_rows += (
             f"<tr><td>{s}</td>"
-            f"<td style='text-align:right'>{length}</td>"
+            f"<td class='text-right'>{length}</td>"
             f"<td>{_depth_badge(s, length)}</td></tr>"
         )
     stream_rows += (
         f"<tr><td>delayed:messages</td>"
-        f"<td style='text-align:right'>{delayed}</td>"
+        f"<td class='text-right'>{delayed}</td>"
         f"<td>{_depth_badge('delayed:messages', delayed)}</td></tr>"
     )
+
+    region_options = "\n        ".join(f'<option value="{reg}">{reg}</option>' for reg in _REGIONS)
 
     body = f"""{halt_html}
 <h2>Dashboard</h2>
@@ -680,7 +717,7 @@ async def index(request: Request) -> HTMLResponse:
   <h3 class="card__title">Stream Depths</h3>
   <div class="table-scroll">
   <table class="streams">
-    <tr><th>Key</th><th style="text-align:right">Length</th><th>Status</th></tr>
+    <tr><th>Key</th><th class="text-right">Length</th><th>Status</th></tr>
     {stream_rows}
   </table>
   </div>
@@ -697,10 +734,7 @@ async def index(request: Request) -> HTMLResponse:
     </label>
     <label>Region:
       <select name="region">
-        <option value="na1">na1</option>
-        <option value="euw1">euw1</option>
-        <option value="kr">kr</option>
-        <option value="br1">br1</option>
+        {region_options}
       </select>
     </label>
     <button type="submit">Look Up</button>
@@ -830,8 +864,11 @@ async def _auto_seed_player(
         max_attempts=cfg.max_attempts,
         priority="high",
     )
-    await publish(r, _STREAM_PUUID, envelope)
+    # Set priority before publishing so clear_priority() by downstream
+    # services cannot race against a not-yet-set priority key.
     await set_priority(r, puuid)
+    await r.zadd("players:all", {puuid: int(time.time())})
+    await publish(r, _STREAM_PUUID, envelope)
     now_iso = datetime.now(tz=UTC).isoformat()
     await r.hset(
         f"player:{puuid}",
@@ -950,7 +987,7 @@ def _render_player_rows(rows: list[_PlayerRow]) -> str:
             f"&amp;region={html.escape(region)}"
         )
         safe_name = html.escape(f"{game_name}#{tag_line}")
-        seeded = html.escape(seeded_at) if seeded_at else "?"
+        seeded = html.escape(seeded_at[:10]) if seeded_at else "?"
         html_rows += (
             f'<tr><td><a href="{href}">{safe_name}</a></td>'
             f"<td>{html.escape(region)}</td><td>{seeded}</td></tr>"
@@ -1021,12 +1058,16 @@ async def show_players(request: Request) -> HTMLResponse:
 </div>"""
 
     prev_link = (
-        f'<a href="/players?sort={sort}&amp;page={page - 1}">&larr; Prev</a>' if has_prev else ""
+        f'<a class="page-link" href="/players?sort={sort}&amp;page={page - 1}">&larr; Prev</a>'
+        if has_prev
+        else ""
     )
     page_indicator = f"page {page + 1} of {total_pages}"
     sep = "&nbsp;&nbsp;" if has_prev else ""
     next_link = (
-        f'<a href="/players?sort={sort}&amp;page={page + 1}">Next &rarr;</a>' if has_next else ""
+        f'<a class="page-link" href="/players?sort={sort}&amp;page={page + 1}">Next &rarr;</a>'
+        if has_next
+        else ""
     )
     sep2 = "&nbsp;&nbsp;" if has_next else ""
     pagination = f"<p>{prev_link}{sep}{page_indicator}{sep2}{next_link}</p>"
@@ -1086,14 +1127,14 @@ async def _streams_fragment_html(r: Any) -> str:
             pipe.xlen(s)
         pipe.zcard("delayed:messages")
         pipe.get("system:halted")
-        pipe.get("system:priority_count")
         results = await pipe.execute()
 
-    # Unpack: 6 XLEN results, 1 ZCARD, 2 GETs
+    # Unpack: 6 XLEN results, 1 ZCARD, 1 GET
     stream_lengths: list[int] = results[: len(_STREAM_KEYS)]
     delayed: int = results[len(_STREAM_KEYS)]
     halted = results[len(_STREAM_KEYS) + 1]
-    priority_count_val = results[len(_STREAM_KEYS) + 2]
+
+    has_priority = await has_priority_players(r)
 
     rows = ""
     for s, length in zip(_STREAM_KEYS, stream_lengths, strict=True):
@@ -1108,7 +1149,7 @@ async def _streams_fragment_html(r: Any) -> str:
         else '<div class="banner banner--success">&#10003; System running</div>'
     )
 
-    priority_display = priority_count_val or "0"
+    priority_display = "Yes" if has_priority else "No"
 
     return f"""{status}
 <p>Priority players in-flight: <strong>{priority_display}</strong></p>
@@ -1234,7 +1275,7 @@ async def show_dlq(request: Request) -> HTMLResponse:
         replay_form = (
             f'<form method="post" action="/dlq/replay/{_url_quote(entry_id)}"'
             f' style="display:inline">'
-            f'<button type="submit" style="padding:2px 8px;font-size:12px">'
+            f'<button type="submit" class="btn-sm">'
             f"Replay</button></form>"
         )
         rows += (
@@ -1244,12 +1285,12 @@ async def show_dlq(request: Request) -> HTMLResponse:
         )
 
     prev_link = (
-        f'<a href="/dlq?page={page - 1}&amp;per_page={per_page}">&larr; Prev</a>'
+        f'<a class="page-link" href="/dlq?page={page - 1}&amp;per_page={per_page}">&larr; Prev</a>'
         if has_prev
         else ""
     )
     next_link = (
-        f'<a href="/dlq?page={page + 1}&amp;per_page={per_page}">Next &rarr;</a>'
+        f'<a class="page-link" href="/dlq?page={page + 1}&amp;per_page={per_page}">Next &rarr;</a>'
         if has_next
         else ""
     )
@@ -1443,7 +1484,7 @@ def _parse_log_line(line: str) -> tuple[str, str, str, str, str]:
         msg = str(d.pop("message", line))
         extra = "  ".join(f"{k}={v}" for k, v in d.items() if not str(k).startswith("_"))
         return ts, level, logger, msg, extra
-    except (json.JSONDecodeError, TypeError, AttributeError):
+    except json.JSONDecodeError, TypeError, AttributeError:
         return "", "INFO", "", line, ""
 
 
@@ -1482,7 +1523,7 @@ def _merged_log_lines(log_dir: Path, n: int) -> list[str]:
             try:
                 d = json.loads(line)
                 ts = str(d.get("timestamp", ""))
-            except (json.JSONDecodeError, TypeError):
+            except json.JSONDecodeError, TypeError:
                 ts = ""
             result.append((ts, line))
         return result

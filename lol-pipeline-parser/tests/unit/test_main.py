@@ -804,6 +804,100 @@ class TestDiscoverPlayersCap:
         assert MAX_DISCOVER_PLAYERS == 50000
 
 
+class TestPlayerMatchesCap:
+    """P10-CR-6: player:matches:{puuid} sorted set capped at PLAYER_MATCHES_MAX."""
+
+    @pytest.mark.asyncio
+    async def test_player_matches_trimmed_after_parse(self, r, cfg, log, monkeypatch):
+        """player:matches:{puuid} is trimmed to PLAYER_MATCHES_MAX after parsing."""
+        # Set a tiny cap for testing
+        monkeypatch.setattr("lol_parser.main.PLAYER_MATCHES_MAX", 5)
+
+        # Pre-populate player:matches with 5 existing entries
+        puuid = "puuid-cap-test"
+        for i in range(5):
+            await r.zadd(f"player:matches:{puuid}", {f"OLD_{i}": float(1600000000000 + i)})
+        assert await r.zcard(f"player:matches:{puuid}") == 5
+
+        # Parse a match that adds this puuid as a participant (newer timestamp)
+        raw_store = RawStore(r)
+        match_id = "NA1_CAPTEST"
+        data = {
+            "metadata": {"matchId": match_id, "participants": [puuid]},
+            "info": {
+                "gameStartTimestamp": 1700000000000,
+                "gameDuration": 900,
+                "gameMode": "CLASSIC",
+                "gameType": "MATCHED_GAME",
+                "gameVersion": "14.1.1",
+                "queueId": 420,
+                "platformId": "NA1",
+                "participants": [
+                    {
+                        "puuid": puuid,
+                        "championId": 1,
+                        "championName": "Annie",
+                        "teamId": 100,
+                        "teamPosition": "MID",
+                        "role": "SOLO",
+                        "win": True,
+                        "kills": 5,
+                        "deaths": 2,
+                        "assists": 3,
+                        "goldEarned": 10000,
+                        "totalDamageDealtToChampions": 15000,
+                        "totalMinionsKilled": 100,
+                        "visionScore": 10,
+                    }
+                ],
+            },
+        }
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, json.dumps(data))
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        # After trimming, should have at most 5 entries
+        count = await r.zcard(f"player:matches:{puuid}")
+        assert count <= 5
+
+        # The new match should be present (highest score)
+        score = await r.zscore(f"player:matches:{puuid}", match_id)
+        assert score == 1700000000000.0
+
+        # Oldest entries should have been removed
+        remaining = await r.zrange(f"player:matches:{puuid}", 0, -1, withscores=True)
+        for _member, s in remaining:
+            # The kept entries should include the newest one
+            assert s >= 1600000000001.0  # at least the second-oldest survived
+
+    @pytest.mark.asyncio
+    async def test_player_matches_max_default(self):
+        """PLAYER_MATCHES_MAX defaults to 500."""
+        from lol_parser.main import PLAYER_MATCHES_MAX
+
+        assert PLAYER_MATCHES_MAX == 500
+
+    @pytest.mark.asyncio
+    async def test_player_matches_no_trim_when_under_cap(self, r, cfg, log):
+        """When player:matches count is under cap, no entries are removed."""
+        raw_store = RawStore(r)
+        match_id = "NA1_1234567890"
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, _load_fixture("match_normal.json"))
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        # Normal fixture has 10 participants, each gets 1 match entry
+        # All should be present (well under default 500 cap)
+        for i in range(1, 11):
+            puuid = f"test-puuid-{i:04d}"
+            count = await r.zcard(f"player:matches:{puuid}")
+            assert count == 1
+
+
 class TestDiscoveryHexistsBatched:
     """HEXISTS calls for seeded_at checks are batched in a single pipeline round-trip."""
 

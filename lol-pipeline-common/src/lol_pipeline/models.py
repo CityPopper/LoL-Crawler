@@ -43,7 +43,7 @@ class MessageEnvelope:
         }
 
     @classmethod
-    def from_redis_fields(cls, fields: dict[str, str]) -> "MessageEnvelope":
+    def from_redis_fields(cls, fields: dict[str, str]) -> MessageEnvelope:
         return cls(
             id=fields["id"],
             source_stream=fields["source_stream"],
@@ -99,7 +99,7 @@ class DLQEnvelope:
         }
 
     @classmethod
-    def from_redis_fields(cls, fields: dict[str, str]) -> "DLQEnvelope":
+    def from_redis_fields(cls, fields: dict[str, str]) -> DLQEnvelope:
         ram = fields.get("retry_after_ms", "null")
         return cls(
             id=fields["id"],

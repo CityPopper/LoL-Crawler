@@ -26,6 +26,7 @@ _ITEM_KEYS = [f"item{i}" for i in range(7)]
 
 MATCH_DATA_TTL_SECONDS: int = int(os.getenv("MATCH_DATA_TTL_SECONDS", "604800"))
 MAX_DISCOVER_PLAYERS: int = int(os.getenv("MAX_DISCOVER_PLAYERS", "50000"))
+PLAYER_MATCHES_MAX: int = int(os.getenv("PLAYER_MATCHES_MAX", "500"))
 
 
 def _validate(data: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -102,6 +103,9 @@ async def _write_participants(
             seen.add(puuid)
         if seen:
             await pipe.execute()
+    # P10-CR-6: Cap player:matches per player to prevent unbounded growth.
+    for puuid in seen:
+        await r.zremrangebyrank(f"player:matches:{puuid}", 0, -(PLAYER_MATCHES_MAX + 1))
     return seen
 
 

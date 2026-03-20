@@ -78,7 +78,7 @@ just admin reseed "Faker#KR1" --region kr   # force re-crawl bypassing cooldown
 
 ## Testing
 
-541 unit tests + 44 contract tests across all services.
+888 unit tests + 61 contract tests across all services.
 
 ```bash
 just test                       # run all unit tests (services tested in parallel)

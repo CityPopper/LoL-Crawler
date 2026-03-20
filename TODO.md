@@ -1,46 +1,92 @@
 # TODO — Improvement Proposals (All 21 Agents)
 
-Phase 7 "IRONCLAD" and Phase 8 "FACELIFT" are **complete**.
-546 unit tests + 61 contract tests. 21 agentic coding agents.
+Phase 7 "IRONCLAD", Phase 8 "FACELIFT", Phase 9 "FORTRESS", and Phase 10 (in progress).
+866 unit tests + 61 contract tests. 19-agent review cycle per phase.
 
 ---
 
-## Critical Bugs (Orchestrator Cycle 2)
+## ✅ Completed — Orchestrator Cycle 2 (Phase 9)
+
+All B1–B15, C1–C2 items resolved. All I2-C1 through I2-M7 items resolved. See CLAUDE.md for detail.
+
+---
+
+## Phase 10 — "ILLUMINATE" (Orchestrator Cycle 4, 19-agent review)
 
 ### Critical
-- [ ] B1: `raw:match:*` no TTL + `maxmemory-policy noeviction` = pipeline OOM at ~50K matches (`raw_store.py:126`)
-- [ ] B2: Discovery `_resolve_names` crashes on missing `gameName`/`tagLine` for deleted/banned accounts → infinite crash loop (`discovery/main.py`)
+
+- [ ] P10-CR-1: Rate limiter hardcodes 1s/120s windows — production API keys use 10s/600s windows → 25× throughput cliff when going to prod. Add `RATE_LIMIT_SHORT_WINDOW_MS` / `RATE_LIMIT_LONG_WINDOW_MS` env vars; fix `_parse_app_rate_limit` to search configured windows. (`riot_api.py`)
+- [ ] P10-CR-7: Discovery `_resolve_names` calls Riot API without `wait_for_token()` → bypasses shared rate limiter. Add `await wait_for_token(r)` before every Riot API call in discovery. (`discovery/main.py`)
+- [ ] P10-QA-1: UI `_auto_seed_player()` still publishes BEFORE `set_priority()` — regression of I2-H1 fix. Swap order: `set_priority` first, then `publish`. (`ui/main.py`)
+- [ ] P10-QA-2: UI `_auto_seed_player()` never writes to `players:all` sorted set → player never appears in /players list after auto-seeding from stats page. Add `r.zadd("players:all", {puuid: now_ts})`. (`ui/main.py`)
 
 ### High
-- [ ] B3: `_raise_for_status` crashes on non-integer Retry-After header (HTTP-date format) (`riot_api.py:102`)
-- [ ] B4: Admin + UI DLQ pages crash on any corrupt DLQ entry (`admin/main.py`, `ui/main.py`)
-- [ ] B5: Admin `_make_replay_envelope` resets `enqueued_at` and `dlq_attempts=0` — loses metadata (`admin/main.py`)
-- [ ] B6: Crawler missing `NotFoundError` (404) handler → unnecessary DLQ cycles for non-existent accounts
-- [ ] B7: CI `docker-build` not gated on lint/typecheck/test — broken builds can publish images
-- [ ] B8: Worker Dockerfiles missing `--start-period=60s` on HEALTHCHECK — 9 services restart prematurely
-- [ ] B9: CI `mypy --ignore-missing-imports` overrides `strict=true` — hides real type errors
+
+- [ ] P10-DB-4/FV-2: Rate limiter Lua script accesses `ratelimit:limits:short/long` as literal strings, not via KEYS array → CROSSSLOT violation in Redis Cluster mode. Pass as KEYS[3]/KEYS[4]. (`riot_api.py`)
+- [ ] P10-FV-6: Corrupt messages in `consume()` XAUTOCLAIM path are ACK'd and silently dropped without DLQ archiving — audit gap, messages lost forever. Add `nack_to_dlq()` call before ACK on parse failure. (`streams.py`)
+- [ ] P10-SEC-4: Missing security headers — add `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` middleware to UI. (`ui/main.py`)
+- [ ] P10-DX-2/R7: Python version skew — Dockerfiles use `python:3.12-slim`, CI uses 3.14, local dev uses 3.14. Update all 10 Dockerfiles to `python:3.14-slim`; update `pyproject.toml` `python_version = "3.14"` / `target-version = "py314"`. (all Dockerfiles, all pyproject.toml)
+- [ ] P10-RD-5: `.form-inline` flex targets `input`/`select` but actual flex children are `<label>` wrappers → tablet layout broken (fields don't expand). Fix CSS to target `label` children at 768px breakpoint. (`ui/main.py`)
+- [ ] P10-RD-6: Sort control links have `padding: 4px 8px` → ~22px tap target, half the 44px minimum. Fix to `min-height: 44px`. (`ui/main.py`)
+- [ ] P10-RD-7: DLQ replay button has inline `style="padding:2px 8px;font-size:12px"` overriding global `min-height: 44px` → ~16px tap target on mobile. Remove inline style, use CSS class. (`ui/main.py`)
+- [ ] P10-RD-8: DLQ and match history tables missing `white-space: nowrap` on cells → cells wrap inside scroll container instead of extending table. (`ui/main.py`)
 
 ### Medium
-- [ ] B10: Redis connection pool has no socket timeout → hung connections block all coroutines
-- [ ] B11: Priority keys have no TTL → orphaned keys permanently block Discovery if message lost in transit
-- [ ] B12: In-memory retry counter lost on service restart → poison messages loop forever (formal invariant V3)
-- [ ] B13: `match:participants:{match_id}` sets are write-only, never read (~90MB waste at 10K players)
-- [ ] B14: `ratelimit:limits:short/long` keys have no TTL → stale limits persist after API key rotation
-- [ ] B15: Recovery `_consume_dlq` lacks XAUTOCLAIM → stranded DLQ messages after worker crash
 
-### Complexity Refactors
-- [ ] C1: `_crawl_player` — extract `_fetch_match_ids_paginated()` + `_handle_crawl_error()` helpers
-- [ ] C2: `show_stats` — extract `_resolve_and_cache_puuid()`, `_auto_seed_player()`, `_build_stats_response()`
+- [ ] P10-CR-6: `player:matches:{puuid}` sorted set grows unbounded. Add `ZREMRANGEBYRANK` cap (e.g. keep last 500) after ZADD in parser. (`parser/main.py`)
+- [ ] P10-DB-1: `player:stats:{puuid}`, `player:champions:{puuid}`, `player:roles:{puuid}`, `player:cursor:{puuid}` hashes have no TTL → unbounded growth for inactive players. Add 30-day EXPIRE in analyzer pipeline. (`analyzer/main.py`)
+- [ ] P10-DB-3 (DEBATED — see below): Replace `system:priority_count` INCR/DECR with SCAN-based `_is_idle()` check → eliminates TTL-expiry counter drift. Trade-off: O(N) SCAN vs O(1) counter with known leak. Decision after debate.
+- [ ] P10-DD-3/PM-01/QA-3: Dashboard `/` has no nav link in `_NAV_ITEMS` → can't navigate back to dashboard from other pages. Add `("/", "Dashboard")` as first entry. (`ui/main.py`)
+- [ ] P10-CW-7/DD-9: No Riot Games attribution footer — required by Riot ToS. Add `<footer>` to `_page()` with attribution text. (`ui/main.py`)
+- [ ] P10-DD-7: Dashboard region selector shows only 4 regions vs stats page showing all 15. Use full `_REGIONS` list on dashboard form. (`ui/main.py`)
+- [ ] P10-RD-9: Players table renders full ISO timestamps in Seeded column → forces 550px+ min-width on mobile. Truncate to date-only (`seeded_at[:10]`). (`ui/main.py`)
+- [ ] P10-RD-10: Match history table cells wrap inside `.table-scroll` container. Add `white-space: nowrap` to `td, th` inside scroll tables. (`ui/main.py`)
+- [ ] P10-RD-11: `#pause-btn` CSS `padding: 0.4rem 1rem` overrides global `min-height: 44px` → ~25px touch target. Add `min-height: 44px` to `#pause-btn` rule. (`ui/main.py`)
+- [ ] P10-RD-12: Duplicate `.log-line` CSS rules — second rule unconditionally overrides first. Merge into single mobile-first declaration. (`ui/main.py`)
+- [ ] P10-GD-1: `cmd_stats` outputs raw Redis key dump in random sort order with unformatted values (e.g. `win_rate: 0.5374` not `53.7%`). Add fixed key ordering, aligned columns, formatted values. (`admin/main.py`)
+- [ ] P10-GD-2: `cmd_dlq_list` always outputs raw JSON blobs — no plain-text table mode. Default to human-readable table; add `--json` for machine-readable. (`admin/main.py`)
+- [ ] P10-GD-3: Admin CLI error messages use 3 different casing conventions (`error:`, `Error:`, `Warning:`). Standardize to `[ERROR]` / `[WARN]` / `[OK]` prefixes. (`admin/main.py`)
+- [ ] P10-GD-4: `just streams` and `just status` duplicate stream block code with different label alignments; `just streams` missing `system:halted`. Factor into shared helper. (`Justfile`)
+- [ ] P10-DX-3: Testing standards doc mandates 0.5s timeout but all pyproject.toml files set 10s. Align doc to 10s or vice versa. (`docs/standards/03-testing-standards.md`)
+- [ ] P10-DX-4: CI lints only `src/` while local `just lint` lints `.` (src + tests). Align to same scope. (`.github/workflows/ci.yml`)
+- [ ] P10-DD-4: Admin CLI status output uses plain lowercase `error:` prefix with no visual distinction between error/warning/success. Introduce `[OK]`/`[WARN]`/`[ERROR]` scheme. (`admin/main.py`)
+- [ ] P10-DD-5: `.badge--error` uses hardcoded `#cc3333` instead of `var(--color-error)`. Add `--color-error-bg` token. (`ui/main.py`)
 
-## New Findings (Orchestrator Cycle 3 — Review Iteration 2)
+### Low / Polish
 
-### Critical (NEW)
-- [ ] I2-C1: `nack_to_dlq` never passes `dlq_attempts` → DLQ exhaustion mechanism completely broken + backoff always 5s
-- [ ] I2-C2: Discovery idle check only watches `stream:puuid` → promotes players into backlogged pipeline
-- [ ] I2-C3: `match:{match_id}` + `participant:` hashes no TTL → unbounded Redis growth (~1.5GB+ at 10K players)
+- [ ] P10-UX-1/WD/PM-05: Champion icons from Data Dragon CDN — add `_get_ddragon_version()`, `_get_champion_map()` (cached in Redis 24h), `_champion_icon_html()` helper; render 32px icon in match history table. (`ui/main.py`)
+- [ ] P10-ARC-4/OPT-2: Adaptive `wait_for_token()` backoff — return remaining wait_ms from Lua script on denial; sleep until next slot instead of fixed 50ms polling. (`riot_api.py`)
+- [ ] P10-DX-1: `just setup` does not create venv or install dev deps — developer must do this manually with no documented steps. Add `just venv` recipe. (`Justfile`)
+- [ ] P10-RD-13: Pagination links have no padding/min-height → ~20px touch target. Add `.page-link` CSS class with `min-height: 44px`. (`ui/main.py`)
+- [ ] P10-RD-14: Player filter `#player-search` input has no `width: 100%` on mobile. Add CSS rule. (`ui/main.py`)
+- [ ] P10-GD-5: `just status` container health uses raw `compose ps` output with no healthy/unhealthy summary line. Post-process with `[OK]`/`[ERR]` prefix. (`Justfile`)
+- [ ] P10-GD-6: Destructive admin ops (`dlq clear --all`, `replay --all`) act immediately with no preflight scope line. Add "About to act on N entries…" before loop. (`admin/main.py`)
+- [ ] P10-DD-8: Route handlers scatter inline `style` attributes instead of using CSS classes. Extract to named classes. (`ui/main.py`)
+- [ ] P10-DD-11: Dashboard and streams page both render stream tables with different HTML structure. Extract shared `_render_stream_table()` helper. (`ui/main.py`)
+- [ ] P10-DD-13: Empty state inconsistency — logs/stats pages use plain `<p>` while players/DLQ use `_empty_state()` helper. Use `_empty_state()` consistently. (`ui/main.py`)
+- [ ] P10-DX-20: README hardcodes test count "541 unit tests" — stale. Update to "866 unit tests + 61 contract tests". (`README.md`)
 
-### High (NEW)
-- [ ] I2-H1 through I2-H15 [see CLAUDE.md for details]
+### Debated Items
+
+#### P10-DB-3: SCAN-based priority_count vs INCR/DECR counter
+
+**Proposal:** Replace `system:priority_count` INCR/DECR with `SCAN player:priority:* COUNT 1` in `_is_idle()` to eliminate TTL-expiry counter drift (P10-FV-1 confirmed: no Lua-only fix).
+
+**For:** Eliminates permanent +1 leak per TTL expiry. SCAN is O(N) but N=1 in common case (at most a handful of priority keys exist at once). Atomic by nature — no counter to go out of sync.
+
+**Against:** O(N) SCAN is not O(1); could be slow if keyspace is large. Adds Redis cursor management. Counter approach is O(1) and the leak is bounded (at most +1 per player per pipeline run — negligible in practice).
+
+**Decision (supermajority needed):** Run debate with architect + database + formal-verifier agents. Tentatively defer to Phase 11 unless debate resolves in favor of SCAN.
+
+#### Champion icons scope
+
+**Proposal (P10-UX-1/WD/PM-05):** Add Data Dragon CDN champion icon rendering in match history. Full spec from web-designer: `_get_ddragon_version()` (cached), `_get_champion_map()` (Redis `ddragon:champion_map`, 24h TTL), CSS `.champion-icon`.
+
+**For:** High visual value. No self-hosting needed. Data Dragon is official Riot CDN.
+
+**Against:** Requires 2 extra HTTP calls per page render (version + champion map), plus Redis cache. Adds complexity. Needs fallback for API downtime.
+
+**Decision:** Include in Phase 10 with Redis cache guard (graceful degradation if CDN unreachable).
 
 ---
 

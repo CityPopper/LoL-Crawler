@@ -98,8 +98,7 @@ class TestCrawlPriority:
         """Zero matches found → clear_priority called (removes player:priority key)."""
         puuid = "test-puuid-0001"
         # Set a priority key to verify it gets cleared
-        await r.set(f"player:priority:{puuid}", "high")
-        await r.set("system:priority_count", "1")
+        await r.set(f"player:priority:{puuid}", "1", ex=86400)
 
         env = _puuid_envelope(puuid=puuid)
         msg_id = await _setup_message(r, env)
@@ -112,7 +111,6 @@ class TestCrawlPriority:
 
         # Priority key should be cleared
         assert await r.get(f"player:priority:{puuid}") is None
-        assert await r.get("system:priority_count") == "0"
 
 
 class TestCrawlPriorityPreservation:
@@ -123,8 +121,7 @@ class TestCrawlPriorityPreservation:
         """When published > 0, clear_priority() is NOT called — priority key remains."""
         puuid = "test-puuid-0001"
         # Set a priority key to verify it is NOT cleared
-        await r.set(f"player:priority:{puuid}", "high")
-        await r.set("system:priority_count", "1")
+        await r.set(f"player:priority:{puuid}", "1", ex=86400)
 
         env = _puuid_envelope(puuid=puuid)
         msg_id = await _setup_message(r, env)
@@ -139,15 +136,13 @@ class TestCrawlPriorityPreservation:
 
         # Matches were published, so priority must be preserved
         assert await r.xlen(_STREAM_OUT) == 2
-        assert await r.get(f"player:priority:{puuid}") == "high"
-        assert await r.get("system:priority_count") == "1"
+        assert await r.get(f"player:priority:{puuid}") == "1"
 
     @pytest.mark.asyncio
     async def test_crawl__no_matches__priority_cleared(self, r, cfg, log):
         """When published == 0, clear_priority() IS called — priority key removed."""
         puuid = "test-puuid-0001"
-        await r.set(f"player:priority:{puuid}", "high")
-        await r.set("system:priority_count", "1")
+        await r.set(f"player:priority:{puuid}", "1", ex=86400)
 
         env = _puuid_envelope(puuid=puuid)
         msg_id = await _setup_message(r, env)
@@ -161,7 +156,6 @@ class TestCrawlPriorityPreservation:
         # No matches published, so priority must be cleared
         assert await r.xlen(_STREAM_OUT) == 0
         assert await r.get(f"player:priority:{puuid}") is None
-        assert await r.get("system:priority_count") == "0"
 
 
 class TestCrawlPriorityClearCallBehavior:

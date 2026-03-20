@@ -1,4 +1,4 @@
-"""IT-10 — Priority TTL expiry: key expires, count never cleanly decremented."""
+"""IT-10 — Priority TTL expiry: SCAN-based detection returns False after key expires."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import pytest
 import redis.asyncio as aioredis
 
 from helpers import PUUID, tlog
-from lol_pipeline.priority import priority_count, set_priority
+from lol_pipeline.priority import has_priority_players, set_priority
 
 _SHORT_TTL_SECONDS = 1
 
@@ -20,8 +20,7 @@ async def test_priority_ttl__key_expires(r: aioredis.Redis) -> None:
     tlog("it10")
 
     # Set priority with a 1-second TTL
-    count = await set_priority(r, PUUID, ttl=_SHORT_TTL_SECONDS)
-    assert count == 1
+    await set_priority(r, PUUID, ttl=_SHORT_TTL_SECONDS)
     assert await r.exists(f"player:priority:{PUUID}") == 1
 
     # Wait for TTL to expire
@@ -33,24 +32,25 @@ async def test_priority_ttl__key_expires(r: aioredis.Redis) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_priority_ttl__count_stale_after_expiry(r: aioredis.Redis) -> None:
-    """After TTL expiry, system:priority_count remains stale (never decremented).
+async def test_priority_ttl__scan_detects_no_keys_after_expiry(
+    r: aioredis.Redis,
+) -> None:
+    """After TTL expiry, has_priority_players returns False (no stale counter drift).
 
-    This is an inherent limitation: Redis key expiry does not trigger the Lua DECR
-    script. The count stays at 1 even though no priority key exists.
+    This is the key improvement over the counter-based approach: SCAN correctly
+    reports no priority keys after TTL expiry, whereas the old counter would
+    remain stale at 1.
     """
     tlog("it10")
 
     await set_priority(r, PUUID, ttl=_SHORT_TTL_SECONDS)
-    assert await priority_count(r) == 1
+    assert await has_priority_players(r) is True
 
     await asyncio.sleep(2)
 
-    # Key is gone but counter was never decremented
+    # Key is gone AND detection correctly reports False (no drift)
     assert await r.exists(f"player:priority:{PUUID}") == 0
-    # Count is stale — still reads 1 because TTL expiry does not call clear_priority
-    count = await priority_count(r)
-    assert count == 1
+    assert await has_priority_players(r) is False
 
 
 @pytest.mark.asyncio
