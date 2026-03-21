@@ -96,7 +96,7 @@ class TestPage:
         assert "<!doctype html>" in result
         assert "Test Title" in result
         assert "<p>body</p>" in result
-        assert "<nav>" in result
+        assert '<nav aria-label="Main navigation">' in result
 
     def test_contains_navigation_links(self):
         result = _page("X", "")
@@ -2180,7 +2180,7 @@ class TestRedisExceptionHandler:
         assert resp.status_code == 503
         body = resp.body.decode()
         assert "Cannot connect to Redis" in body or "Redis" in body
-        assert "<code>just run</code>" in body
+        assert "<code>just up</code>" in body
 
     @pytest.mark.asyncio
     async def test_connection_error_handler__returns_503(self):

@@ -95,10 +95,16 @@ _STAT_LABELS: dict[str, str] = {
     "win_rate": "Win Rate",
     "kda": "KDA",
     "total_games": "Total Games",
+    "total_kills": "Total Kills",
+    "total_wins": "Total Wins",
+    "total_deaths": "Total Deaths",
+    "total_assists": "Total Assists",
     "kills": "Kills",
     "deaths": "Deaths",
     "assists": "Assists",
     "avg_kills": "Avg Kills",
+    "avg_deaths": "Avg Deaths",
+    "avg_assists": "Avg Assists",
     "wins": "Wins",
 }
 
@@ -542,13 +548,13 @@ async def main(argv: list[str]) -> int:
         r = get_redis(cfg.redis_url)
         riot = RiotClient(cfg.riot_api_key)
     except (RedisConnectionError, RedisError) as exc:
-        _print_error(f"Cannot connect to Redis. Is the stack running? Try: just run ({exc})")
+        _print_error(f"Cannot connect to Redis. Is the stack running? Try: just up ({exc})")
         return 1
 
     try:
         return await _dispatch(r, riot, cfg, args)
     except (RedisConnectionError, RedisError) as exc:
-        _print_error("Cannot connect to Redis. Is the stack running? Try: just run")
+        _print_error("Cannot connect to Redis. Is the stack running? Try: just up")
         _log.debug("Redis connection error: %s", exc)
         return 1
     finally:

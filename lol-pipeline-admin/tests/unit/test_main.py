@@ -958,7 +958,7 @@ class TestMainRedisConnectionError:
         assert result == 1
         captured = capsys.readouterr()
         assert "Cannot connect to Redis" in captured.err
-        assert "just run" in captured.err
+        assert "just up" in captured.err
 
     @pytest.mark.asyncio
     async def test_main__redis_error_during_dispatch__closes_connections(self, monkeypatch, capsys):

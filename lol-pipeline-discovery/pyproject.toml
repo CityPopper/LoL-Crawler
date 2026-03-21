@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lol-pipeline-discovery"
 version = "0.1.0"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 dependencies = [
     "lol-pipeline-common>=1.0.0,<2.0.0",
 ]
@@ -50,7 +50,7 @@ select = [
     "I",    # isort — deterministic import ordering
     "B",    # flake8-bugbear — likely bugs and design issues
     "C90",  # McCabe cyclomatic complexity
-    "UP",   # pyupgrade — enforce modern Python 3.12 idioms
+    "UP",   # pyupgrade — enforce modern Python 3.14 idioms
     "N",    # pep8-naming — consistent naming conventions
     "S",    # flake8-bandit — security vulnerability scanning
     "ANN",  # flake8-annotations — require type annotations

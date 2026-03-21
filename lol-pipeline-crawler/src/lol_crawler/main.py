@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 
 import redis.asyncio as aioredis
 from lol_pipeline.config import Config
+from lol_pipeline.constants import PLAYER_DATA_TTL_SECONDS
 from lol_pipeline.helpers import is_system_halted
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
@@ -52,7 +53,11 @@ async def _fetch_match_ids_paginated(
         if await is_system_halted(r):
             log.info("system halted — aborting pagination", extra={"puuid": puuid})
             break
-        await wait_for_token(r, limit_per_second=cfg.api_rate_limit_per_second)
+        try:
+            await wait_for_token(r, limit_per_second=cfg.api_rate_limit_per_second)
+        except TimeoutError:
+            log.warning("rate limiter timeout — aborting crawl", extra={"puuid": puuid})
+            break
         page: list[str] = await riot.get_match_ids(puuid, region, start=start, count=count)
         log.debug(
             "fetched match ids page",
@@ -178,7 +183,7 @@ async def _crawl_player(
 
     now_iso = datetime.now(tz=UTC).isoformat()
     await r.hset(f"player:{puuid}", mapping={"last_crawled_at": now_iso})  # type: ignore[misc]
-    await r.expire(f"player:{puuid}", 2592000)  # 30 days
+    await r.expire(f"player:{puuid}", PLAYER_DATA_TTL_SECONDS)  # refreshed on each successful crawl
     if published == 0:
         await clear_priority(r, puuid)
     log.info(

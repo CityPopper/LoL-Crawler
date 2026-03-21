@@ -13,6 +13,7 @@ from typing import Any
 
 import redis.asyncio as aioredis
 from lol_pipeline.config import Config
+from lol_pipeline.constants import PLAYER_DATA_TTL_SECONDS
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.priority import has_priority_players
@@ -30,7 +31,7 @@ _PIPELINE_STREAMS = (
     "stream:parse",
     "stream:analyze",
 )
-_MAX_STREAM_BACKLOG = int(os.getenv("MAX_STREAM_BACKLOG", "500"))
+_MAX_STREAM_BACKLOG = int(os.getenv("MAX_STREAM_BACKLOG", "8000"))
 
 
 def _parse_member(member: str) -> tuple[str, str]:
@@ -75,7 +76,8 @@ async def _is_idle(r: aioredis.Redis) -> bool:
         try:
             groups: list[Any] = await r.xinfo_groups(stream)
         except ResponseError as exc:
-            if "NOGROUP" not in str(exc):
+            exc_str = str(exc)
+            if "NOGROUP" not in exc_str and "no such key" not in exc_str:
                 raise
             continue  # stream does not exist yet — idle for this stream
         if not groups:
@@ -187,7 +189,7 @@ async def _promote_batch(
                     "seeded_at": now_iso,
                 },
             )
-            await pipe.expire(f"player:{puuid}", 2592000)  # 30 days
+            await pipe.expire(f"player:{puuid}", PLAYER_DATA_TTL_SECONDS)  # 30 days
             await pipe.zadd("players:all", {puuid: time.time()})
             await pipe.zremrangebyrank("players:all", 0, -50001)
             await pipe.zrem(_DISCOVER_KEY, member)
