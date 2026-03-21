@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 
 import redis.asyncio as aioredis
 from lol_pipeline.config import Config
+from lol_pipeline.constants import PLAYER_DATA_TTL_SECONDS
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.priority import set_priority
@@ -120,7 +121,7 @@ async def seed(
             "seeded_at": now_iso,
         },
     )
-    await r.expire(f"player:{puuid}", 2592000)  # 30 days
+    await r.expire(f"player:{puuid}", PLAYER_DATA_TTL_SECONDS)  # 30 days
     await r.zadd("players:all", {puuid: time.time()})
     await r.zremrangebyrank("players:all", 0, -50001)
 

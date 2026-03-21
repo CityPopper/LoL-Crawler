@@ -9,6 +9,7 @@ import uuid
 
 import redis.asyncio as aioredis
 from lol_pipeline.config import Config
+from lol_pipeline.constants import PLAYER_DATA_TTL_SECONDS
 from lol_pipeline.helpers import is_system_halted
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
@@ -19,8 +20,6 @@ from lol_pipeline.streams import ack
 
 _IN_STREAM = "stream:analyze"
 _GROUP = "analyzers"
-_30_DAYS = 30 * 24 * 3600  # 2592000 seconds
-
 # Atomic lock-release: only delete if we still own it.
 _RELEASE_LOCK_LUA = """
 if redis.call("get", KEYS[1]) == ARGV[1] then
@@ -204,7 +203,7 @@ async def _analyze_player(
                 f"player:champions:{puuid}",
                 f"player:roles:{puuid}",
             ):
-                ttl_pipe.expire(key, _30_DAYS)
+                ttl_pipe.expire(key, PLAYER_DATA_TTL_SECONDS)
             await ttl_pipe.execute()
 
         await _safe_clear_priority(r, puuid, log)

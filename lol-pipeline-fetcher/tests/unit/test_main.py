@@ -229,6 +229,61 @@ class TestFetchMaxAttempts:
         assert "payload" in fields
 
 
+class TestFetchRateLimiterTimeout:
+    """P15-HORIZON: TimeoutError from wait_for_token leaves message in PEL."""
+
+    @pytest.mark.asyncio
+    async def test_timeout__no_ack_no_dlq(self, r, cfg, log):
+        """TimeoutError → return without ACK or DLQ; message stays in PEL for retry."""
+        raw_store = RawStore(r)
+        env = _match_envelope()
+        msg_id = await _setup_message(r, env)
+
+        with (
+            respx.mock,
+            patch(
+                "lol_fetcher.main.wait_for_token",
+                new_callable=AsyncMock,
+                side_effect=TimeoutError("rate limiter timeout"),
+            ),
+        ):
+            riot = RiotClient("RGAPI-test")
+            await _fetch_match(r, riot, raw_store, cfg, msg_id, env, log)
+            await riot.close()
+
+        # No output published
+        assert await r.xlen(_STREAM_OUT) == 0
+        # No DLQ entry — transient condition
+        assert await r.xlen("stream:dlq") == 0
+        # Message NOT ACKed — stays in PEL for autoclaim/retry
+        pending = await r.xpending(_STREAM_IN, _GROUP)
+        assert pending["pending"] == 1
+        # No match status set
+        assert await r.hget("match:NA1_123", "status") is None
+
+
+class TestFetchNotFoundTTL:
+    """P15-HORIZON: 404 response sets TTL on match:{match_id}."""
+
+    @pytest.mark.asyncio
+    async def test_404_sets_ttl_on_match_key(self, r, cfg, log):
+        """NotFoundError (404) → match:{match_id} has a TTL set."""
+        raw_store = RawStore(r)
+        env = _match_envelope()
+        msg_id = await _setup_message(r, env)
+
+        with respx.mock:
+            respx.get(_match_url()).mock(return_value=httpx.Response(404))
+            riot = RiotClient("RGAPI-test")
+            await _fetch_match(r, riot, raw_store, cfg, msg_id, env, log)
+            await riot.close()
+
+        assert await r.hget("match:NA1_123", "status") == "not_found"
+        ttl = await r.ttl("match:NA1_123")
+        assert ttl > 0, "match:{match_id} must have a TTL after 404"
+        assert abs(ttl - 604800) <= 60
+
+
 class TestFetchMatchTTL:
     """P14-CR-1: After storing match data, set TTL on match:{match_id}."""
 

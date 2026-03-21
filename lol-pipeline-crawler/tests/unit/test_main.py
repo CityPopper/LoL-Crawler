@@ -755,6 +755,73 @@ class TestCrawlerPublishPipeline:
         assert "NA1_NEW_2" in match_ids
 
 
+class TestPaginationRateLimiterTimeout:
+    """P15-HORIZON: TimeoutError from wait_for_token exits pagination gracefully."""
+
+    @pytest.mark.asyncio
+    async def test_timeout__returns_zero_published__no_propagation(self, r, cfg, log):
+        """TimeoutError in pagination loop → break, return 0, no DLQ, no crash."""
+        env = _puuid_envelope()
+        msg_id = await _setup_message(r, env)
+
+        with (
+            respx.mock,
+            patch(
+                "lol_crawler.main.wait_for_token",
+                new_callable=AsyncMock,
+                side_effect=TimeoutError("rate limiter timeout"),
+            ),
+        ):
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        # No matches published (timeout on first page)
+        assert await r.xlen(_STREAM_OUT) == 0
+        # No DLQ entry — transient, not a handler crash
+        assert await r.xlen("stream:dlq") == 0
+        # last_crawled_at IS set (crawl completed normally, just with 0 results)
+        assert await r.hget("player:test-puuid-0001", "last_crawled_at") is not None
+        # Message was ACKed
+        pending = await r.xpending(_STREAM_IN, _GROUP)
+        assert pending["pending"] == 0
+
+    @pytest.mark.asyncio
+    async def test_timeout_on_page2__publishes_page1_only(self, r, cfg, log):
+        """TimeoutError on page 2 → page 1 matches published, page 2 skipped."""
+        env = _puuid_envelope()
+        msg_id = await _setup_message(r, env)
+        page1 = [f"NA1_{i}" for i in range(100)]
+
+        call_count = 0
+
+        async def _timeout_on_second_call(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 2:
+                raise TimeoutError("rate limiter timeout")
+
+        with (
+            respx.mock,
+            patch(
+                "lol_crawler.main.wait_for_token",
+                new_callable=AsyncMock,
+                side_effect=_timeout_on_second_call,
+            ),
+        ):
+            riot = RiotClient("RGAPI-test")
+            riot.get_match_ids = AsyncMock(side_effect=[page1])
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        # Page 1 matches were published before timeout
+        assert await r.xlen(_STREAM_OUT) == 100
+        # No DLQ entry
+        assert await r.xlen("stream:dlq") == 0
+        # last_crawled_at set (crawl finished gracefully)
+        assert await r.hget("player:test-puuid-0001", "last_crawled_at") is not None
+
+
 class TestPaginationHaltCheck:
     """P12-DBG-2: Crawler checks system:halted between pagination pages."""
 

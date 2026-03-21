@@ -43,7 +43,7 @@ select = [
     "I",    # isort — deterministic import ordering
     "B",    # flake8-bugbear — likely bugs and design issues
     "C90",  # McCabe cyclomatic complexity
-    "UP",   # pyupgrade — enforce modern Python 3.12 idioms
+    "UP",   # pyupgrade — enforce modern Python 3.14 idioms
     "N",    # pep8-naming — consistent naming conventions
     "S",    # flake8-bandit — security vulnerability scanning
     "ANN",  # flake8-annotations — require type annotations

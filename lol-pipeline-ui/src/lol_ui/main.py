@@ -162,6 +162,7 @@ button, .btn {
 button:hover, .btn:hover { filter: brightness(1.1); }
 .success { color: var(--color-success); }
 .error { color: var(--color-error); }
+.error-msg { color: var(--color-error); padding: var(--space-sm) 0; }
 .warning { color: var(--color-warning); }
 .unverified { color: var(--color-warning); }
 table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
@@ -215,9 +216,12 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
 /* Banners */
 .banner { padding: var(--space-md); border-radius: var(--radius); margin: var(--space-md) 0;
           border-left: 4px solid; }
-.banner--error { background: rgba(255,65,54,0.1); border-color: var(--color-error); }
-.banner--success { background: rgba(46,204,64,0.1); border-color: var(--color-success); }
-.banner--warning { background: rgba(255,220,0,0.1); border-color: var(--color-warning); }
+.banner--error { background: color-mix(in srgb, var(--color-error) 10%, transparent);
+                border-color: var(--color-error); }
+.banner--success { background: color-mix(in srgb, var(--color-success) 10%, transparent);
+                  border-color: var(--color-success); }
+.banner--warning { background: color-mix(in srgb, var(--color-warning) 10%, transparent);
+                  border-color: var(--color-warning); }
 
 /* Empty state */
 .empty-state { text-align: center; padding: var(--space-xl); color: var(--color-muted); }
@@ -235,9 +239,10 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
 .log-wrap { font-family: var(--font-mono); font-size: 0.82em; }
 .log-line { display: flex; flex-direction: column; gap: 2px; padding: 2px 4px;
   border-bottom: 1px solid var(--color-border); flex-wrap: nowrap; }
-.log-critical { background: rgba(255,65,54,0.15); font-weight: bold; }
-.log-error { background: rgba(255,65,54,0.08); }
-.log-warning { background: rgba(255,220,0,0.08); }
+.log-critical { background: color-mix(in srgb, var(--color-error) 15%, transparent);
+               font-weight: bold; }
+.log-error { background: color-mix(in srgb, var(--color-error) 8%, transparent); }
+.log-warning { background: color-mix(in srgb, var(--color-warning) 8%, transparent); }
 .log-debug { color: var(--color-muted); }
 .log-ts { color: var(--color-muted); white-space: nowrap; flex-shrink: 0; }
 .log-badge { padding: 0 4px; border-radius: 2px;
@@ -316,7 +321,7 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
                    border: 1px solid var(--color-border); font-size: var(--font-size-sm);
                    min-height: 44px; display: inline-flex; align-items: center; }
 .sort-controls a.active { color: var(--color-text); border-color: var(--color-info);
-                           background: rgba(90,158,255,0.1); }
+                           background: color-mix(in srgb, var(--color-info) 10%, transparent); }
 .sort-controls span { font-size: var(--font-size-sm); color: var(--color-muted); }
 
 /* Footer */
@@ -476,7 +481,7 @@ def _page(title: str, body: str, path: str = "") -> str:
     nav_links = []
     for href, label in _NAV_ITEMS:
         active = (href != "/" and path.startswith(href)) or href == path
-        cls = ' class="active"' if active else ""
+        cls = ' class="active" aria-current="page"' if active else ""
         nav_links.append(f'<a href="{href}"{cls}>{label}</a>')
     nav_html = "\n  ".join(nav_links)
     return f"""<!doctype html>
@@ -492,7 +497,7 @@ def _page(title: str, body: str, path: str = "") -> str:
 <body>
 <a class="skip-link" href="#main-content">Skip to content</a>
 <h1>LoL Pipeline</h1>
-<nav>
+<nav aria-label="Main navigation">
   {nav_html}
 </nav>
 <hr>
@@ -725,7 +730,7 @@ async def redis_error_handler(request: Request, exc: redis.exceptions.RedisError
     """Return a user-friendly 503 page when Redis is unreachable."""
     body = _page(
         "Error",
-        "<p>Cannot connect to Redis. Is the stack running? Try: <code>just run</code></p>",
+        "<p>Cannot connect to Redis. Is the stack running? Try: <code>just up</code></p>",
     )
     return HTMLResponse(content=body, status_code=503)
 
@@ -735,7 +740,7 @@ async def connection_error_handler(request: Request, exc: ConnectionError) -> HT
     """Return a user-friendly 503 page on connection errors."""
     body = _page(
         "Error",
-        "<p>Cannot connect to Redis. Is the stack running? Try: <code>just run</code></p>",
+        "<p>Cannot connect to Redis. Is the stack running? Try: <code>just up</code></p>",
     )
     return HTMLResponse(content=body, status_code=503)
 

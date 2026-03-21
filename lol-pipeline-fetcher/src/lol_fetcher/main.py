@@ -62,8 +62,15 @@ async def _fetch_match(
     try:
         await wait_for_token(r, limit_per_second=cfg.api_rate_limit_per_second)
         data = await riot.get_match(match_id, region)
+    except TimeoutError:
+        log.warning(
+            "rate limiter timeout — leaving in PEL for retry",
+            extra={"match_id": match_id},
+        )
+        return
     except NotFoundError:
         await r.hset(f"match:{match_id}", mapping={"status": "not_found"})  # type: ignore[misc]
+        await r.expire(f"match:{match_id}", MATCH_DATA_TTL_SECONDS)
         await ack(r, _IN_STREAM, _GROUP, msg_id)
         log.info("match not found — discarding", extra={"match_id": match_id})
         return

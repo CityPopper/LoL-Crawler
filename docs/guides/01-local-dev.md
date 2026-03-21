@@ -302,7 +302,7 @@ just check
 All services share identical ruff and mypy config in their `pyproject.toml`. The canonical configuration is documented in `docs/standards/01-coding-standards.md`.
 
 Key settings:
-- `ruff`: Python 3.12 target, line length 100, security rules (S), complexity limits (C901, PLR)
+- `ruff`: Python 3.14 target, line length 100, security rules (S), complexity limits (C901, PLR)
 - `mypy`: strict mode, all functions annotated, no implicit Any
 - Tests are exempt from `S101` (assert), `ANN` (annotations), and `SIM` (simplification)
 

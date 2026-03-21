@@ -10,6 +10,7 @@ from typing import Any
 
 import redis.asyncio as aioredis
 from lol_pipeline.config import Config
+from lol_pipeline.constants import PLAYER_DATA_TTL_SECONDS
 from lol_pipeline.helpers import is_system_halted
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
@@ -109,7 +110,7 @@ async def _write_participants(
         async with r.pipeline(transaction=False) as trim_pipe:
             for puuid in seen:
                 trim_pipe.zremrangebyrank(f"player:matches:{puuid}", 0, -(PLAYER_MATCHES_MAX + 1))
-                trim_pipe.expire(f"player:matches:{puuid}", 2592000)  # 30 days
+                trim_pipe.expire(f"player:matches:{puuid}", PLAYER_DATA_TTL_SECONDS)  # 30 days
             await trim_pipe.execute()
     return seen
 
