@@ -151,6 +151,46 @@ class TestDlqReplayValidation:
         # DLQ should be unchanged
         assert await r.xlen(_DLQ_STREAM) == 2
 
+    @pytest.mark.asyncio
+    async def test_replay__invalid_original_stream__skipped_entry_remains(
+        self, r, cfg, capsys
+    ):
+        """Entries with invalid original_stream are skipped; DLQ entry not removed."""
+        bad_dlq = _make_dlq()
+        bad_dlq = DLQEnvelope(
+            **{**bad_dlq.__dict__, "original_stream": "stream:unknown-sink"}
+        )
+        await r.xadd(_DLQ_STREAM, bad_dlq.to_redis_fields())
+        args = argparse.Namespace(all=True, id=None)
+        result = await cmd_dlq_replay(r, cfg, args)
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "refusing to replay" in captured.err
+        # Entry was NOT removed from DLQ
+        assert await r.xlen(_DLQ_STREAM) == 1
+        # Nothing published to the invalid stream
+        assert await r.xlen("stream:unknown-sink") == 0
+
+    @pytest.mark.asyncio
+    async def test_replay__valid_and_invalid_mixed__only_valid_replayed(
+        self, r, cfg, capsys
+    ):
+        """Mixed batch: valid entry replayed, invalid entry kept in DLQ."""
+        good_ids = await _add_dlq_entries(r, 1)
+        bad_dlq = DLQEnvelope(
+            **{**_make_dlq().__dict__, "original_stream": "stream:unknown-sink"}
+        )
+        await r.xadd(_DLQ_STREAM, bad_dlq.to_redis_fields())
+
+        args = argparse.Namespace(all=True, id=None)
+        result = await cmd_dlq_replay(r, cfg, args)
+        assert result == 0
+        # Good entry replayed, bad entry stays
+        assert await r.xlen("stream:match_id") == 1
+        assert await r.xlen(_DLQ_STREAM) == 1
+        captured = capsys.readouterr()
+        assert "refusing to replay" in captured.err
+
 
 class TestDlqClear:
     @pytest.mark.asyncio

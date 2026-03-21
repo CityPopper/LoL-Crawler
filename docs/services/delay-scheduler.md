@@ -22,7 +22,7 @@ they can be reprocessed by the appropriate pipeline consumer.
 ## Data Flow
 
 ```
-Recovery or nack_to_dlq writes delayed message
+Recovery service writes delayed message
               |
               v
     delayed:messages  (sorted set, score = delivery_timestamp_ms)
@@ -51,10 +51,11 @@ XADD  target_stream  MAXLEN ~ maxlen  *  field1 val1 ...
 ZREM  delayed:messages  member
 ```
 
-**Delivery guarantee:** at-least-once. If the process crashes after `XADD` but
-before `ZREM`, the member remains in `delayed:messages` and will be dispatched
-again on the next tick. Downstream consumers handle duplicate delivery
-idempotently.
+**Delivery guarantee:** at-least-once. The Lua script runs atomically on Redis —
+`XADD` and `ZREM` either both succeed or both are never applied. If the Delay
+Scheduler process crashes *before* invoking the script, the member remains in
+`delayed:messages` and is dispatched again on the next tick. Downstream consumers
+handle duplicate delivery idempotently.
 
 ---
 
@@ -79,8 +80,8 @@ re-opens — approximately 5 seconds at 500 ms/tick.
 
 | Stream | MAXLEN |
 |--------|--------|
-| `stream:match_id` | `MATCH_ID_STREAM_MAXLEN` (unbounded by default) |
-| `stream:analyze` | `ANALYZE_STREAM_MAXLEN` |
+| `stream:match_id` | `MATCH_ID_STREAM_MAXLEN` (unbounded — `None` by default) |
+| `stream:analyze` | `ANALYZE_STREAM_MAXLEN` (50,000) |
 | All others | `_DEFAULT_MAXLEN` (10,000) |
 
 MAXLEN is applied as `XADD MAXLEN ~ <n>` (approximate trimming) to avoid exact
@@ -113,5 +114,5 @@ trimming overhead.
 
 | Key | Type | Written by | Read by | Description |
 |-----|------|-----------|---------|-------------|
-| `delayed:messages` | Sorted set | Recovery (`nack_to_dlq`), Admin replay | Delay Scheduler | Delayed messages, score = delivery timestamp ms |
+| `delayed:messages` | Sorted set | Recovery service, Admin replay | Delay Scheduler | Delayed messages, score = delivery timestamp ms |
 | Target streams | Stream | Delay Scheduler (via Lua) | Respective consumers | Published ready messages |
