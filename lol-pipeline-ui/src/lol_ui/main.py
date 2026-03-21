@@ -707,7 +707,7 @@ app = FastAPI(title="LoL Pipeline UI", lifespan=_lifespan)
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next: Any) -> Response:
     """Add security headers to every response."""
-    response = await call_next(request)
+    response: Response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
