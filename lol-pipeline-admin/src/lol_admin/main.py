@@ -182,11 +182,11 @@ def _relative_age(iso_time: str) -> str:
 def _format_dlq_table(entries: list[tuple[str, DLQEnvelope]]) -> str:
     """Format DLQ entries as a human-readable table."""
     hdr = (
-        f"{'Entry ID':<18}\u2502 {'Stream':<16}\u2502 {'Code':<10}"
+        f"{'Entry ID':<18}\u2502 {'Stream':<16}\u2502 {'Code':<14}"
         f"\u2502 {'Attempts':>8} \u2502 {'Age':<10}"
     )
     sep = (
-        f"{'\u2500' * 18}\u253c{'\u2500' * 17}\u253c{'\u2500' * 11}"
+        f"{'\u2500' * 18}\u253c{'\u2500' * 17}\u253c{'\u2500' * 15}"
         f"\u253c{'\u2500' * 10}\u253c{'\u2500' * 10}"
     )
     rows: list[str] = [hdr, sep]
@@ -195,7 +195,7 @@ def _format_dlq_table(entries: list[tuple[str, DLQEnvelope]]) -> str:
         age = _relative_age(dlq.enqueued_at)
         attempts = f"{dlq.dlq_attempts} dlq"
         rows.append(
-            f"{entry_id:<18}\u2502 {stream:<16}\u2502 {dlq.failure_code:<10}"
+            f"{entry_id:<18}\u2502 {stream:<16}\u2502 {dlq.failure_code:<14}"
             f"\u2502 {attempts:>8} \u2502 {age:<10}"
         )
     return "\n".join(rows)

@@ -401,8 +401,8 @@ class TestRedisBackedRetryCounter:
         assert dlq_len == 1
 
     @pytest.mark.asyncio
-    async def test_incr_retry_sets_ttl_on_first_call(self, r):
-        """_incr_retry sets TTL on first increment, preserves it on subsequent."""
+    async def test_incr_retry_sets_ttl_atomically(self, r):
+        """P16-DB-4: _incr_retry sets TTL via pipeline on every call (atomic)."""
         count1 = await _incr_retry(r, _STREAM, "msg-ttl-test")
         assert count1 == 1
         ttl1 = await r.ttl(_retry_key(_STREAM, "msg-ttl-test"))
@@ -411,8 +411,8 @@ class TestRedisBackedRetryCounter:
         count2 = await _incr_retry(r, _STREAM, "msg-ttl-test")
         assert count2 == 2
         ttl2 = await r.ttl(_retry_key(_STREAM, "msg-ttl-test"))
-        # TTL should still be positive (not reset or removed)
-        assert ttl2 > 0
+        # TTL refreshed on every call — should be close to _RETRY_KEY_TTL
+        assert 0 < ttl2 <= _RETRY_KEY_TTL
 
     @pytest.mark.asyncio
     async def test_clear_retry_removes_key(self, r):

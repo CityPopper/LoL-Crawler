@@ -30,6 +30,7 @@ services:
       --save 60 10000
       --maxmemory 800mb
       --maxmemory-policy noeviction
+      --stop-writes-on-bgsave-error no
 
   crawler:
     <<: *prod-defaults

@@ -40,7 +40,7 @@ docker compose exec redis redis-cli INFO memory | grep used_memory_human
 | No stream activity at all | Nothing seeded, or all services halted | `just seed "Name#Tag" region` |
 | `delayed:messages` growing | Rate limiting or Delay Scheduler down | Check Delay Scheduler: `just logs delay-scheduler` |
 | Web UI returns 500 | Redis connection issue or config error | `just logs ui`, check `REDIS_URL` |
-| `just seed` hangs | Stack not running | Wait for auto-start, or run `just run` first |
+| `just seed` hangs | Stack not running | Wait for auto-start, or run `just up` first |
 | Container exits immediately | Missing env var or import error | `docker compose logs <svc>` for the error |
 
 ---

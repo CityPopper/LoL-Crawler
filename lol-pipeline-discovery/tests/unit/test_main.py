@@ -14,7 +14,6 @@ from lol_pipeline.riot_api import RiotClient
 from redis.exceptions import RedisError, ResponseError
 
 from lol_discovery.main import (
-    _MAX_STREAM_BACKLOG,
     _PIPELINE_STREAMS,
     _is_idle,
     _parse_member,
@@ -571,6 +570,18 @@ class TestIsIdleNarrowResponseError:
             with pytest.raises(ResponseError, match="WRONGTYPE"):
                 await _is_idle(r)
 
+    @pytest.mark.asyncio
+    async def test_is_idle__no_such_key_error__treats_stream_as_idle(self, r):
+        """'no such key' ResponseError (without NOGROUP) is also treated as idle."""
+        with patch.object(
+            r,
+            "xinfo_groups",
+            new_callable=AsyncMock,
+            side_effect=ResponseError("ERR no such key"),
+        ):
+            result = await _is_idle(r)
+        assert result is True
+
 
 class TestDiscoveryTier3EdgeCases:
     """Tier 3 — Discovery edge case tests."""
@@ -947,14 +958,18 @@ class TestMainEntryPoint:
         mock_r.aclose.assert_called_once()
 
 
-class TestBacklogThreshold:
-    """I2-C2: _is_idle checks XLEN backlog on all 4 downstream streams."""
+class TestIsIdleNoXlenCheck:
+    """V16-3: _is_idle uses only XINFO GROUPS, not XLEN backlog threshold."""
 
     @pytest.mark.asyncio
-    async def test_is_idle__stream_exceeds_backlog__returns_false(self, r):
-        """When any stream has more messages than MAX_STREAM_BACKLOG, not idle."""
-        # Add MAX_STREAM_BACKLOG + 1 messages to stream:match_id
-        for i in range(_MAX_STREAM_BACKLOG + 1):
+    async def test_is_idle__many_messages_no_consumer_groups__returns_true(self, r):
+        """Streams with many messages but no consumer groups are treated as idle.
+
+        Layer 1 (XLEN threshold) was removed because stream:match_id has no
+        MAXLEN trimming, so XLEN grows monotonically and permanently blocks
+        Discovery after ~8000 cumulative match IDs.
+        """
+        for i in range(100):
             await r.xadd(
                 "stream:match_id",
                 {
@@ -968,85 +983,7 @@ class TestBacklogThreshold:
                     "dlq_attempts": "0",
                 },
             )
-        assert await _is_idle(r) is False
-
-    @pytest.mark.asyncio
-    async def test_is_idle__all_streams_below_backlog__returns_true(self, r):
-        """When all streams are below MAX_STREAM_BACKLOG and have no consumer groups, idle."""
-        # Add a few messages to each stream — well below threshold
-        for stream in _PIPELINE_STREAMS:
-            await r.xadd(
-                stream,
-                {
-                    "id": "test",
-                    "source_stream": stream,
-                    "type": "puuid",
-                    "payload": "{}",
-                    "attempts": "0",
-                    "max_attempts": "5",
-                    "enqueued_at": "2024-01-01",
-                    "dlq_attempts": "0",
-                },
-            )
-        # All streams have 1 message each, no consumer groups → idle
-        assert await _is_idle(r) is True
-
-    @pytest.mark.asyncio
-    async def test_is_idle__parse_stream_exceeds_backlog__returns_false(self, r):
-        """Even if stream:puuid is fine, stream:parse exceeding threshold blocks promotion."""
-        for i in range(_MAX_STREAM_BACKLOG + 1):
-            await r.xadd(
-                "stream:parse",
-                {
-                    "id": f"msg-{i}",
-                    "source_stream": "stream:parse",
-                    "type": "parse",
-                    "payload": "{}",
-                    "attempts": "0",
-                    "max_attempts": "5",
-                    "enqueued_at": "2024-01-01",
-                    "dlq_attempts": "0",
-                },
-            )
-        assert await _is_idle(r) is False
-
-    @pytest.mark.asyncio
-    async def test_is_idle__analyze_stream_exceeds_backlog__returns_false(self, r):
-        """stream:analyze exceeding threshold blocks promotion."""
-        for i in range(_MAX_STREAM_BACKLOG + 1):
-            await r.xadd(
-                "stream:analyze",
-                {
-                    "id": f"msg-{i}",
-                    "source_stream": "stream:analyze",
-                    "type": "analyze",
-                    "payload": "{}",
-                    "attempts": "0",
-                    "max_attempts": "5",
-                    "enqueued_at": "2024-01-01",
-                    "dlq_attempts": "0",
-                },
-            )
-        assert await _is_idle(r) is False
-
-    @pytest.mark.asyncio
-    async def test_is_idle__exactly_at_threshold__returns_true(self, r):
-        """Exactly MAX_STREAM_BACKLOG messages is still considered idle (threshold is >)."""
-        for i in range(_MAX_STREAM_BACKLOG):
-            await r.xadd(
-                "stream:match_id",
-                {
-                    "id": f"msg-{i}",
-                    "source_stream": "stream:match_id",
-                    "type": "match_id",
-                    "payload": "{}",
-                    "attempts": "0",
-                    "max_attempts": "5",
-                    "enqueued_at": "2024-01-01",
-                    "dlq_attempts": "0",
-                },
-            )
-        # Exactly at threshold — should be idle (> not >=)
+        # No consumer groups → idle regardless of XLEN
         assert await _is_idle(r) is True
 
 
@@ -1167,11 +1104,14 @@ class TestPromoteBatchAtomicOrdering:
         )
 
     @pytest.mark.asyncio
-    async def test_xadd_before_pipeline(self, r, cfg, log):
-        """XADD (publish) must happen before the HSET+ZREM pipeline.
+    async def test_xadd_before_transactional_pipeline(self, r, cfg, log):
+        """XADD (publish) must happen before the HSET+ZREM transactional pipeline.
 
         At-least-once guarantee: if crash after XADD but before pipeline,
         the player stays in discover:players and gets re-promoted.
+
+        Note: a non-transactional pipeline for batched HEXISTS may run before
+        XADD — only the transactional pipeline (transaction=True) must follow XADD.
         """
         await r.hset(
             "player:puuid-xadd-order",
@@ -1192,10 +1132,12 @@ class TestPromoteBatchAtomicOrdering:
 
         def tracking_pipeline(**kwargs):
             pipe = original_pipeline(**kwargs)
+            is_transaction = kwargs.get("transaction", True)
             original_execute = pipe.execute
 
             async def tracking_execute(*args, **kw):
-                global_ops.append("pipeline_execute")
+                label = "tx_pipeline" if is_transaction else "check_pipeline"
+                global_ops.append(label)
                 return await original_execute(*args, **kw)
 
             pipe.execute = tracking_execute
@@ -1208,7 +1150,8 @@ class TestPromoteBatchAtomicOrdering:
         await riot.close()
 
         assert promoted == 1
-        assert global_ops == ["xadd", "pipeline_execute"]
+        # Batched HEXISTS check pipeline runs first, then XADD, then transactional
+        assert global_ops == ["check_pipeline", "xadd", "tx_pipeline"]
 
     @pytest.mark.asyncio
     async def test_crash_after_xadd_leaves_player_in_discover(self, r, cfg, log):
@@ -1223,11 +1166,14 @@ class TestPromoteBatchAtomicOrdering:
 
         def crashing_pipeline(**kwargs):
             pipe = original_pipeline(**kwargs)
+            is_transaction = kwargs.get("transaction", True)
+            if is_transaction:
+                # Only crash the transactional pipeline (HSET+ZREM after XADD),
+                # not the HEXISTS check pipeline (transaction=False).
+                async def crash_execute(*args, **kw):
+                    raise ConnectionError("simulated crash after XADD")
 
-            async def crash_execute(*args, **kw):
-                raise ConnectionError("simulated crash after XADD")
-
-            pipe.execute = crash_execute
+                pipe.execute = crash_execute
             return pipe
 
         r.pipeline = crashing_pipeline

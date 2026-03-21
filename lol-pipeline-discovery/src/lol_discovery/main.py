@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import os
 import signal
 import time
 from datetime import UTC, datetime
@@ -31,7 +30,6 @@ _PIPELINE_STREAMS = (
     "stream:parse",
     "stream:analyze",
 )
-_MAX_STREAM_BACKLOG = int(os.getenv("MAX_STREAM_BACKLOG", "8000"))
 
 
 def _parse_member(member: str) -> tuple[str, str]:
@@ -50,29 +48,18 @@ async def _is_idle(r: aioredis.Redis) -> bool:
 
     Checks stream:puuid, stream:match_id, stream:parse, and stream:analyze.
 
-    Two-layer check:
-    1. XLEN — if any stream has more than MAX_STREAM_BACKLOG messages, the
-       pipeline is backlogged regardless of consumer group state.
-    2. XINFO GROUPS — 'pending' (delivered but not yet ACKed) and 'lag'
-       (not yet delivered) — both zero across all groups on all streams means
-       the pipeline has caught up.
+    Uses XINFO GROUPS pending/lag: both zero across all groups on all streams
+    means the pipeline has caught up. Streams that do not exist yet (ResponseError)
+    or have no consumer groups are treated as idle.
 
     Also returns False when priority players are in-flight (any player:priority:*
     key exists) to avoid promoting discovery players that would compete with
     seeded players.  Uses SCAN-based detection instead of a counter to avoid
     TTL-expiry drift.
-
-    Streams that do not exist yet (ResponseError) or have no consumer groups
-    are treated as idle.
     """
     if await has_priority_players(r):
         return False
     for stream in _PIPELINE_STREAMS:
-        # Layer 1: absolute backlog check via XLEN
-        stream_len: int = await r.xlen(stream)
-        if stream_len > _MAX_STREAM_BACKLOG:
-            return False
-        # Layer 2: consumer group pending/lag check
         try:
             groups: list[Any] = await r.xinfo_groups(stream)
         except ResponseError as exc:
@@ -135,20 +122,25 @@ async def _promote_batch(
     if not members:
         return 0
 
+    # Batch HEXISTS for all members to avoid N sequential round-trips
+    async with r.pipeline(transaction=False) as hex_pipe:
+        for member in members:
+            puuid_check, _ = _parse_member(str(member))
+            hex_pipe.hexists(f"player:{puuid_check}", "seeded_at")
+        seeded_results: list[bool] = await hex_pipe.execute()
+
     promoted = 0
-    for member in members:
+    for member, already_seeded in zip(members, seeded_results, strict=True):
         puuid, region = _parse_member(str(member))
 
-        # Skip if player was seeded after being added to discover:players
-        seeded: bool = await r.hexists(f"player:{puuid}", "seeded_at")  # type: ignore[misc]
-        if seeded:
+        if already_seeded:
             await r.zrem(_DISCOVER_KEY, member)
             continue
 
         try:
             names = await _resolve_names(r, riot, puuid, region, log)
         except AuthError:
-            log.error("auth error (403) — halting system", extra={"puuid": puuid})
+            log.critical("auth error (403) — halting system", extra={"puuid": puuid})
             await r.set("system:halted", "1")
             break
         except RiotAPIError:
