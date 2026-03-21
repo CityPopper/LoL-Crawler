@@ -24,7 +24,7 @@ import redis.exceptions
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from lol_pipeline.config import Config
-from lol_pipeline.constants import PLAYER_DATA_TTL_SECONDS
+from lol_pipeline.constants import PLAYER_DATA_TTL_SECONDS, VALID_REPLAY_STREAMS
 from lol_pipeline.helpers import name_cache_key
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import DLQEnvelope, MessageEnvelope
@@ -39,16 +39,11 @@ from lol_pipeline.riot_api import (
     RiotClient,
     ServerError,
 )
-from lol_pipeline.streams import publish
+from lol_pipeline.streams import publish, replay_from_dlq
 from starlette.responses import Response
 
 _STREAM_PUUID = "stream:puuid"
-_VALID_REPLAY_STREAMS = frozenset({
-    "stream:puuid",
-    "stream:match_id",
-    "stream:parse",
-    "stream:analyze",
-})
+_VALID_REPLAY_STREAMS = VALID_REPLAY_STREAMS
 _PUUID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
 _STREAM_ENTRY_ID_RE = re.compile(r"^\d+-\d+$")
 _NAME_CACHE_INDEX = "name_cache:index"
@@ -1511,7 +1506,8 @@ async def dlq_replay(request: Request, entry_id: str) -> Response:
         body = (
             f"<h2>DLQ Replay Failed</h2>"
             f'<div class="banner banner--error">Entry {safe_id} is corrupt '
-            f"and cannot be replayed.</div>"
+            f"and cannot be replayed. To remove it, run "
+            f"<code>just admin dlq clear {safe_id}</code>.</div>"
             f'<p><a href="/dlq">&larr; Back to DLQ</a></p>'
         )
         return HTMLResponse(_page("DLQ Replay Failed", body, path="/dlq"), status_code=422)
@@ -1521,13 +1517,14 @@ async def dlq_replay(request: Request, entry_id: str) -> Response:
         body = (
             f"<h2>DLQ Replay Failed</h2>"
             f'<div class="banner banner--error">Entry {safe_id} has invalid '
-            f"original_stream <code>{safe_stream}</code> — replay refused.</div>"
+            f"original_stream <code>{safe_stream}</code> — replay refused. "
+            f"To remove this entry, run "
+            f"<code>just admin dlq clear {safe_id}</code>.</div>"
             f'<p><a href="/dlq">&larr; Back to DLQ</a></p>'
         )
         return HTMLResponse(_page("DLQ Replay Failed", body, path="/dlq"), status_code=422)
     envelope = _make_replay_envelope(dlq, cfg.max_attempts)
-    await publish(r, dlq.original_stream, envelope)
-    await r.xdel("stream:dlq", entry_id)
+    await replay_from_dlq(r, entry_id, dlq.original_stream, envelope)
     return RedirectResponse("/dlq", status_code=303)
 
 

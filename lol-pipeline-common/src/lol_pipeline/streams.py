@@ -1,4 +1,4 @@
-"""Stream operations: publish, consume, ack, nack_to_dlq."""
+"""Stream operations: publish, consume, ack, nack_to_dlq, replay_from_dlq."""
 
 from __future__ import annotations
 
@@ -222,3 +222,70 @@ async def nack_to_dlq(
     )
     fields: dict[str, Any] = dlq.to_redis_fields()
     await r.xadd(STREAM_DLQ, fields, maxlen=50_000, approximate=True)  # type: ignore[arg-type]
+
+
+# Atomic DLQ replay: XADD to target stream + XDEL from stream:dlq in one
+# server round-trip.  Prevents duplicate replay if the process crashes between
+# the two operations.
+#
+# KEYS[1] = target stream, KEYS[2] = stream:dlq
+# ARGV[1] = DLQ entry ID to delete
+# ARGV[2] = maxlen for the target stream ("0" means no trimming)
+# Remaining ARGV pairs (3..N) = field, value, field, value, ... for XADD
+_REPLAY_LUA = """
+local stream  = KEYS[1]
+local dlq     = KEYS[2]
+local entry_id = ARGV[1]
+local maxlen  = tonumber(ARGV[2])
+
+local n = #ARGV
+local fields = {}
+for i = 3, n, 2 do
+    fields[#fields + 1] = ARGV[i]
+    fields[#fields + 1] = ARGV[i + 1]
+end
+
+if maxlen and maxlen > 0 then
+    redis.call("XADD", stream, "MAXLEN", "~", maxlen, "*", unpack(fields))
+else
+    redis.call("XADD", stream, "*", unpack(fields))
+end
+redis.call("XDEL", dlq, entry_id)
+return 1
+"""
+
+
+def _maxlen_for_replay(stream: str) -> int:
+    """Return the MAXLEN to use when replaying to *stream*."""
+    if stream == "stream:match_id":
+        return MATCH_ID_STREAM_MAXLEN or 0
+    if stream == "stream:analyze":
+        return ANALYZE_STREAM_MAXLEN
+    return _DEFAULT_MAXLEN
+
+
+async def replay_from_dlq(
+    r: aioredis.Redis,
+    dlq_entry_id: str,
+    target_stream: str,
+    envelope: MessageEnvelope,
+) -> None:
+    """Atomically XADD *envelope* to *target_stream* and XDEL *dlq_entry_id* from
+    stream:dlq in a single Lua script call.
+
+    This prevents duplicate replay when the process crashes between the two
+    operations — the standard two-step `publish` + `xdel` pattern is not atomic.
+    """
+    redis_fields = envelope.to_redis_fields()
+    ml = _maxlen_for_replay(target_stream)
+    flat_args: list[str] = [dlq_entry_id, str(ml)]
+    for k, v in redis_fields.items():
+        flat_args.append(str(k))
+        flat_args.append(str(v))
+    await r.eval(  # type: ignore[misc]
+        _REPLAY_LUA,
+        2,
+        target_stream,
+        STREAM_DLQ,
+        *flat_args,
+    )

@@ -147,10 +147,10 @@ Platform: macOS. Container runtime: Podman (default). Switch with `RUNTIME=docke
 - [ ] OPS-16-04: `just status` missing `discover:players` depth and retry key count
 
 ### Medium
-- [ ] P16-PERF-2: UI `_build_stats_response` 3 sequential reads should be pipelined
+- [x] P16-PERF-2: UI `_build_stats_response` 3 sequential reads should be pipelined
 - [ ] P16-PERF-3: UI `_auto_seed_player` guard checks and tail writes partially batchable
 - [ ] P16-PERF-5: DLQ page over-fetches O(page×per_page) entries — use cursor-based pagination
-- [ ] S16-1: DLQ replay publishes to unvalidated `original_stream` — no whitelist check
+- [x] S16-1: DLQ replay publishes to unvalidated `original_stream` — no whitelist check (added `_VALID_REPLAY_STREAMS` from `constants.py`; made replay atomic via `replay_from_dlq` Lua script)
 - [ ] T16-2: Analyzer test for `_process_matches` skipping empty participant data (`if not p: continue`)
 - [ ] T16-4: Crawler design question — should `last_crawled_at` be set when timeout on page 1 (no API call)?
 - [ ] OPS-16-07: No `delayed-list`/`delayed-flush` for 429 recovery after API key rotation
@@ -158,8 +158,22 @@ Platform: macOS. Container runtime: Podman (default). Switch with `RUNTIME=docke
 - [ ] P16-DB-3: `match:status:parsed/failed` — per-write EXPIRE resets TTL for entire set
 
 ### Low
-- [ ] DX-22: "Add new service" docker-compose snippet in docs uses wrong build context
+- [x] DX-22: "Add new service" docker-compose snippet in docs uses wrong build context
 - [ ] DX-23: No `just smoke`/`just verify` recipe for quick post-change validation without API key
 - [ ] UI-16-02: 7 tables still missing `<thead>`/`<tbody>` (subset covered by UX-01)
 - [ ] UI-16-03: `<th>` elements missing `scope="col"` (WCAG 1.3.1 Level A)
 - [ ] OPS-16-08: README test count stale (update after each phase)
+
+## TODO — Orchestrator Cycle 6 (Phase 17 RESOLUTION — deferred items)
+
+### High
+- [x] FV18-1: DLQ replay `publish()` + `XDEL` not atomic — crash causes duplicate replay; fixed via `replay_from_dlq` Lua script in `streams.py`
+- [x] A18-1: `_VALID_REPLAY_STREAMS` duplicated in admin and UI — migrated to `constants.py`
+
+### Medium
+- [ ] R5: Crawler clears priority only when `published == 0` — stalled matches leave priority key active for up to 24h (TTL mitigates)
+- [ ] V15-1: Analyzer lock ownership race (post-commit refresh is post-hoc) — extremely rare, TTL mitigates
+
+### Low
+- [ ] D18-1: `docs/services/delay-scheduler.md` — created, may need expansion
+- [ ] D18-4: ARCHITECTURE.md phase table — updated through Phase 17
