@@ -3692,6 +3692,84 @@ class TestDlqReplayEndpoint:
         assert fields["max_attempts"] == "10"
         await r.aclose()
 
+    @pytest.mark.asyncio
+    async def test_dlq_replay__invalid_original_stream__returns_422(self):
+        """S16-1: DLQ entry with unknown original_stream is rejected with 422."""
+        import fakeredis.aioredis
+        from lol_pipeline.models import DLQEnvelope
+
+        from lol_ui.main import dlq_replay
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"puuid": "p1", "region": "na1"},
+            attempts=1,
+            max_attempts=5,
+            failure_code="http_5xx",
+            failure_reason="server error",
+            failed_by="crawler",
+            original_stream="stream:arbitrary-unknown",
+            original_message_id="orig-x",
+        )
+        entry_id = await r.xadd("stream:dlq", dlq.to_redis_fields())
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.app.state.cfg = MagicMock(max_attempts=5)
+
+        resp = await dlq_replay(request, entry_id)
+
+        assert resp.status_code == 422
+        body = resp.body.decode()
+        assert "invalid" in body.lower() or "refused" in body.lower()
+        # DLQ entry must NOT be deleted — replay was rejected
+        assert await r.xlen("stream:dlq") == 1
+        # Nothing published to unknown stream
+        assert await r.xlen("stream:arbitrary-unknown") == 0
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_dlq_replay__self_referential__returns_422(self):
+        """S16-1: DLQ entry whose original_stream is stream:dlq itself is rejected."""
+        import fakeredis.aioredis
+        from lol_pipeline.models import DLQEnvelope
+
+        from lol_ui.main import dlq_replay
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"puuid": "p1", "region": "na1"},
+            attempts=1,
+            max_attempts=5,
+            failure_code="http_5xx",
+            failure_reason="server error",
+            failed_by="crawler",
+            original_stream="stream:dlq",  # self-referential
+            original_message_id="orig-self",
+        )
+        entry_id = await r.xadd("stream:dlq", dlq.to_redis_fields())
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.app.state.cfg = MagicMock(max_attempts=5)
+
+        resp = await dlq_replay(request, entry_id)
+
+        assert resp.status_code == 422
+        body = resp.body.decode()
+        assert "invalid" in body.lower() or "refused" in body.lower()
+        # Entry must remain in DLQ
+        assert await r.xlen("stream:dlq") == 1
+        await r.aclose()
+
 
 # ---------------------------------------------------------------------------
 # Phase 9: DLQ pagination

@@ -13,13 +13,14 @@ from typing import Any
 
 import redis.asyncio as aioredis
 from lol_pipeline.config import Config
+from lol_pipeline.constants import VALID_REPLAY_STREAMS
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import DLQEnvelope, MessageEnvelope
 from lol_pipeline.priority import set_priority
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.resolve import resolve_puuid
 from lol_pipeline.riot_api import PLATFORM_TO_REGION, RiotClient
-from lol_pipeline.streams import publish
+from lol_pipeline.streams import publish, replay_from_dlq
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import RedisError
 
@@ -28,15 +29,9 @@ _log = get_logger("admin")
 _STREAM_PUUID = "stream:puuid"
 _STREAM_MATCH_ID = "stream:match_id"
 _STREAM_PARSE = "stream:parse"
-_STREAM_ANALYZE = "stream:analyze"
 _STREAM_DLQ = "stream:dlq"
 
-_VALID_REPLAY_STREAMS = frozenset({
-    _STREAM_PUUID,
-    _STREAM_MATCH_ID,
-    _STREAM_PARSE,
-    _STREAM_ANALYZE,
-})
+_VALID_REPLAY_STREAMS = VALID_REPLAY_STREAMS
 
 
 # ---------------------------------------------------------------------------
@@ -321,8 +316,7 @@ async def cmd_dlq_replay(r: aioredis.Redis, cfg: Config, args: argparse.Namespac
             )
             continue
         envelope = _make_replay_envelope(dlq, cfg.max_attempts)
-        await publish(r, dlq.original_stream, envelope)
-        await r.xdel(_STREAM_DLQ, entry_id)
+        await replay_from_dlq(r, entry_id, dlq.original_stream, envelope)
         _print_ok(f"replayed {entry_id} \u2192 {dlq.original_stream}")
     return 0
 

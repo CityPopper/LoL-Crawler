@@ -68,6 +68,15 @@ See [docs/phases/README.md](docs/phases/README.md) for the phased delivery plan 
 | [06](docs/phases/06-operations.md) | Operations — Admin CLI, Justfile, integration tests |
 | [07](docs/phases/07-next-phase.md) | IRONCLAD — Security hardening, code quality, weighted queue |
 | [08](docs/phases/08-ui-overhaul.md) | FACELIFT — UI overhaul |
+| 09 | Architecture hardening, UI Phase 9, integration tests IT-08–IT-12 (v1.1.0) |
+| 10 | ILLUMINATE — Rate limiter, mobile UX, admin CLI, security (v1.2.0) |
+| 11 | APEX — Hardening, responsive design, DX, observability (v1.3.0) |
+| 12 | ZENITH — Champion icons, CSP, async log IO, TTLs, ARIA (v1.4.0) |
+| 13 | SUMMIT — Cache invalidation, TTLs, parser pipeline, UX (v1.5.0) |
+| 14 | HORIZON — Rate limiter hardening, atomicity, pipeline optimizations (v1.6.0) |
+| 15 | HORIZON — TTL constants, TimeoutError handling, UX, DX hardening (v1.7.0) |
+| 16 | HORIZON — Discovery XLEN fix, crawler atomicity, UI hardening (v1.8.0) |
+| 17 | RESOLUTION — Delay scheduler starvation, DLQ whitelist, docs, perf (v1.9.0) |
 
 ---
 
