@@ -43,6 +43,12 @@ from lol_pipeline.streams import publish
 from starlette.responses import Response
 
 _STREAM_PUUID = "stream:puuid"
+_VALID_REPLAY_STREAMS = frozenset({
+    "stream:puuid",
+    "stream:match_id",
+    "stream:parse",
+    "stream:analyze",
+})
 _PUUID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
 _STREAM_ENTRY_ID_RE = re.compile(r"^\d+-\d+$")
 _NAME_CACHE_INDEX = "name_cache:index"
@@ -1039,15 +1045,16 @@ async def _build_stats_response(
     stats: dict[str, str],
 ) -> HTMLResponse:
     """Read Redis hashes and build the stats HTML response."""
-    priority_key = await r.get(f"player:priority:{puuid}")
-    priority_html = f" {_badge('info', 'Priority')}" if priority_key else ""
+    # P16-PERF-2: batch the three independent reads into a single pipeline RTT.
+    async with r.pipeline(transaction=False) as pipe:
+        pipe.get(f"player:priority:{puuid}")
+        pipe.zrevrange(f"player:champions:{puuid}", 0, 9, withscores=True)
+        pipe.zrevrange(f"player:roles:{puuid}", 0, -1, withscores=True)
+        priority_key, champs, roles = await pipe.execute()
 
-    champs: list[tuple[str, float]] = await r.zrevrange(
-        f"player:champions:{puuid}", 0, 9, withscores=True
-    )
-    roles: list[tuple[str, float]] = await r.zrevrange(
-        f"player:roles:{puuid}", 0, -1, withscores=True
-    )
+    champs = champs or []
+    roles = roles or []
+    priority_html = f" {_badge('info', 'Priority')}" if priority_key else ""
     api_html = (
         _stats_table(stats, champs, roles)
         if stats
@@ -1296,8 +1303,7 @@ async def _streams_fragment_html(r: Any) -> str:
     )
 
     status = (
-        '<div class="banner banner--error">'
-        "&#9888; System is HALTED &mdash; all workers have stopped</div>"
+        _HALT_BANNER
         if halted
         else '<div class="banner banner--success">&#10003; System running</div>'
     )
@@ -1506,6 +1512,16 @@ async def dlq_replay(request: Request, entry_id: str) -> Response:
             f"<h2>DLQ Replay Failed</h2>"
             f'<div class="banner banner--error">Entry {safe_id} is corrupt '
             f"and cannot be replayed.</div>"
+            f'<p><a href="/dlq">&larr; Back to DLQ</a></p>'
+        )
+        return HTMLResponse(_page("DLQ Replay Failed", body, path="/dlq"), status_code=422)
+    if dlq.original_stream not in _VALID_REPLAY_STREAMS:
+        safe_id = html.escape(entry_id)
+        safe_stream = html.escape(dlq.original_stream)
+        body = (
+            f"<h2>DLQ Replay Failed</h2>"
+            f'<div class="banner banner--error">Entry {safe_id} has invalid '
+            f"original_stream <code>{safe_stream}</code> — replay refused.</div>"
             f'<p><a href="/dlq">&larr; Back to DLQ</a></p>'
         )
         return HTMLResponse(_page("DLQ Replay Failed", body, path="/dlq"), status_code=422)

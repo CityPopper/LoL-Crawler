@@ -125,6 +125,10 @@ async def _tick(r: aioredis.Redis, log: logging.Logger) -> None:
         dispatched = 0
         for member in members:
             if _is_circuit_open(member):
+                # Push member to future so it doesn't starve other ready messages.
+                future_ms = int(time.time() * 1000) + (_CIRCUIT_OPEN_TTL_S * 1000)
+                await r.zadd(_DELAYED_KEY, {member: future_ms}, xx=True)
+                dispatched += 1
                 continue
             try:
                 fields: dict[str, str] = json.loads(member)

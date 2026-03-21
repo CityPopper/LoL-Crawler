@@ -19,6 +19,7 @@ from lol_ui.main import (
     _AUTOSEED_COOLDOWN_S,
     _BADGE_VARIANTS,
     _CSS,
+    _HALT_BANNER,
     _NAME_CACHE_INDEX,
     _NAME_CACHE_MAX,
     _NAV_ITEMS,
@@ -43,6 +44,15 @@ from lol_ui.main import (
     _stats_table,
     _tail_file,
 )
+
+
+class TestHaltBanner:
+    def test_halt_banner__contains_recovery_instructions(self):
+        """_HALT_BANNER must tell users how to recover, not just that the system is halted."""
+        assert "system-resume" in _HALT_BANNER
+        assert "just up" in _HALT_BANNER
+        assert ".env" in _HALT_BANNER
+        assert "banner--error" in _HALT_BANNER
 
 
 class TestMatchHistorySection:
@@ -279,6 +289,14 @@ class TestStatsForm:
     def test_region_preserves_kr_selection(self):
         result = _stats_form(selected_region="kr")
         assert 'value="kr"selected' in result or 'value="kr" selected' in result
+
+    def test_invalid_css_class__coerced_to_error(self):
+        """Unknown css_class is coerced to 'error' rather than injected into HTML."""
+        result = _stats_form("Something went wrong", "banana")
+        # Must not render the unknown class name
+        assert 'class="banana"' not in result
+        # Must render the safe fallback
+        assert 'class="error"' in result
 
 
 class TestStatsTable:
@@ -1066,6 +1084,24 @@ class TestPlayersPageCount:
 class TestStatsHeading:
     """Sprint 2.1: /stats heading shows Riot ID name only (no PUUID)."""
 
+    def _make_mock_r(self, *, puuid: str, stats: dict, priority_key=None, champs=None, roles=None):
+        """Build an AsyncMock Redis client that supports the pipeline context manager."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_pipe = AsyncMock()
+        mock_pipe.execute.return_value = [priority_key, champs or [], roles or []]
+
+        mock_pipeline_ctx = MagicMock()
+        mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
+        mock_pipeline_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        mock_r = AsyncMock()
+        mock_r.get.return_value = None  # no cache hit, no halt
+        mock_r.hgetall.return_value = stats
+        # pipeline() must be a sync callable so `async with r.pipeline(...)` works.
+        mock_r.pipeline = MagicMock(return_value=mock_pipeline_ctx)
+        return mock_r
+
     @pytest.mark.asyncio
     async def test_show_stats__heading_shows_riot_id(self):
         """Heading reads 'Stats for GameName#TagLine' when stats exist."""
@@ -1073,11 +1109,10 @@ class TestStatsHeading:
 
         from lol_ui.main import show_stats
 
-        mock_r = AsyncMock()
-        mock_r.get.return_value = None  # no cache, no halt, no priority
-        mock_r.hgetall.return_value = {"total_games": "10", "win_rate": "0.6"}
-        mock_r.zrevrange.return_value = []
-
+        mock_r = self._make_mock_r(
+            puuid="test-puuid-heading",
+            stats={"total_games": "10", "win_rate": "0.6"},
+        )
         mock_riot = AsyncMock()
         mock_riot.get_account_by_riot_id.return_value = {"puuid": "test-puuid-heading"}
 
@@ -1100,11 +1135,10 @@ class TestStatsHeading:
         from lol_ui.main import show_stats
 
         test_puuid = "secret-puuid-abc-xyz-999"
-        mock_r = AsyncMock()
-        mock_r.get.return_value = None
-        mock_r.hgetall.return_value = {"total_games": "5"}
-        mock_r.zrevrange.return_value = []
-
+        mock_r = self._make_mock_r(
+            puuid=test_puuid,
+            stats={"total_games": "5"},
+        )
         mock_riot = AsyncMock()
         mock_riot.get_account_by_riot_id.return_value = {"puuid": test_puuid}
 
@@ -1406,14 +1440,21 @@ class TestNameCacheTTLInUI:
 
         from lol_ui.main import show_stats
 
+        mock_pipe = AsyncMock()
+        mock_pipe.execute.return_value = [None, [], []]  # priority_key, champs, roles
+
+        mock_pipeline_ctx = MagicMock()
+        mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
+        mock_pipeline_ctx.__aexit__ = AsyncMock(return_value=False)
+
         mock_r = AsyncMock()
         mock_r.get.side_effect = lambda key: {
             "player:name:test#na1": None,
             "system:halted": None,
         }.get(key)
         mock_r.hgetall.return_value = {"total_games": "10"}
-        mock_r.zrevrange.return_value = []
         mock_r.hget.return_value = None
+        mock_r.pipeline = MagicMock(return_value=mock_pipeline_ctx)
 
         mock_riot = AsyncMock()
         mock_riot.get_account_by_riot_id.return_value = {"puuid": "test-puuid-ttl"}
@@ -1492,14 +1533,20 @@ class TestPriorityBadge:
 
         from lol_ui.main import show_stats
 
+        mock_pipe = AsyncMock()
+        mock_pipe.execute.return_value = ["high", [], []]  # priority_key, champs, roles
+
+        mock_pipeline_ctx = MagicMock()
+        mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
+        mock_pipeline_ctx.__aexit__ = AsyncMock(return_value=False)
+
         mock_r = AsyncMock()
         mock_r.get.side_effect = lambda key: {
             "player:name:test#na1": "test-puuid-123",
-            "player:priority:test-puuid-123": "high",
             "system:halted": None,
         }.get(key)
         mock_r.hgetall.return_value = {"total_games": "10", "wins": "5"}
-        mock_r.zrevrange.return_value = []
+        mock_r.pipeline = MagicMock(return_value=mock_pipeline_ctx)
 
         request = MagicMock()
         request.query_params = {"riot_id": "Test#NA1", "region": "na1"}
@@ -1520,14 +1567,20 @@ class TestPriorityBadge:
 
         from lol_ui.main import show_stats
 
+        mock_pipe = AsyncMock()
+        mock_pipe.execute.return_value = [None, [], []]  # priority_key, champs, roles
+
+        mock_pipeline_ctx = MagicMock()
+        mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
+        mock_pipeline_ctx.__aexit__ = AsyncMock(return_value=False)
+
         mock_r = AsyncMock()
         mock_r.get.side_effect = lambda key: {
             "player:name:test#na1": "test-puuid-123",
-            "player:priority:test-puuid-123": None,
             "system:halted": None,
         }.get(key)
         mock_r.hgetall.return_value = {"total_games": "10", "wins": "5"}
-        mock_r.zrevrange.return_value = []
+        mock_r.pipeline = MagicMock(return_value=mock_pipeline_ctx)
 
         request = MagicMock()
         request.query_params = {"riot_id": "Test#NA1", "region": "na1"}
@@ -2306,10 +2359,17 @@ class TestRateLimitBeforeRiotCall:
 
         call_order: list[str] = []
 
+        mock_pipe = AsyncMock()
+        mock_pipe.execute.return_value = [None, [], []]
+
+        mock_pipeline_ctx = MagicMock()
+        mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
+        mock_pipeline_ctx.__aexit__ = AsyncMock(return_value=False)
+
         mock_r = AsyncMock()
         mock_r.get.return_value = None  # no cached puuid
         mock_r.hgetall.return_value = {"total_games": "10"}
-        mock_r.zrevrange.return_value = []
+        mock_r.pipeline = MagicMock(return_value=mock_pipeline_ctx)
 
         mock_riot = AsyncMock()
 
@@ -2352,10 +2412,17 @@ class TestRateLimitBeforeRiotCall:
 
         from lol_ui.main import show_stats
 
+        mock_pipe = AsyncMock()
+        mock_pipe.execute.return_value = [None, [], []]
+
+        mock_pipeline_ctx = MagicMock()
+        mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
+        mock_pipeline_ctx.__aexit__ = AsyncMock(return_value=False)
+
         mock_r = AsyncMock()
         mock_r.get.return_value = None
         mock_r.hgetall.return_value = {"total_games": "10"}
-        mock_r.zrevrange.return_value = []
+        mock_r.pipeline = MagicMock(return_value=mock_pipeline_ctx)
 
         mock_riot = AsyncMock()
         mock_riot.get_account_by_riot_id.return_value = {"puuid": "test-puuid-cfg"}
@@ -2381,14 +2448,20 @@ class TestRateLimitBeforeRiotCall:
 
         from lol_ui.main import show_stats
 
+        mock_pipe = AsyncMock()
+        mock_pipe.execute.return_value = [None, [], []]
+
+        mock_pipeline_ctx = MagicMock()
+        mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
+        mock_pipeline_ctx.__aexit__ = AsyncMock(return_value=False)
+
         mock_r = AsyncMock()
         mock_r.get.side_effect = lambda key: {
             "player:name:test#na1": "cached-puuid-123",
-            "player:priority:cached-puuid-123": None,
             "system:halted": None,
         }.get(key)
         mock_r.hgetall.return_value = {"total_games": "10"}
-        mock_r.zrevrange.return_value = []
+        mock_r.pipeline = MagicMock(return_value=mock_pipeline_ctx)
 
         request = MagicMock()
         request.query_params = {"riot_id": "Test#NA1", "region": "na1"}

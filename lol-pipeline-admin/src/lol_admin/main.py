@@ -28,7 +28,15 @@ _log = get_logger("admin")
 _STREAM_PUUID = "stream:puuid"
 _STREAM_MATCH_ID = "stream:match_id"
 _STREAM_PARSE = "stream:parse"
+_STREAM_ANALYZE = "stream:analyze"
 _STREAM_DLQ = "stream:dlq"
+
+_VALID_REPLAY_STREAMS = frozenset({
+    _STREAM_PUUID,
+    _STREAM_MATCH_ID,
+    _STREAM_PARSE,
+    _STREAM_ANALYZE,
+})
 
 
 # ---------------------------------------------------------------------------
@@ -306,13 +314,14 @@ async def cmd_dlq_replay(r: aioredis.Redis, cfg: Config, args: argparse.Namespac
         _print_error(f"entry not found: {args.id}")
         return 1
     for entry_id, dlq in targets:
+        if dlq.original_stream not in _VALID_REPLAY_STREAMS:
+            _print_error(
+                f"refusing to replay {entry_id}: "
+                f"original_stream {dlq.original_stream!r} is not a valid pipeline stream"
+            )
+            continue
         envelope = _make_replay_envelope(dlq, cfg.max_attempts)
-        await r.xadd(
-            dlq.original_stream,
-            envelope.to_redis_fields(),  # type: ignore[arg-type]
-            maxlen=10_000,
-            approximate=True,
-        )
+        await publish(r, dlq.original_stream, envelope)
         await r.xdel(_STREAM_DLQ, entry_id)
         _print_ok(f"replayed {entry_id} \u2192 {dlq.original_stream}")
     return 0
