@@ -760,7 +760,7 @@ class TestPaginationRateLimiterTimeout:
 
     @pytest.mark.asyncio
     async def test_timeout__returns_zero_published__no_propagation(self, r, cfg, log):
-        """TimeoutError in pagination loop → break, return 0, no DLQ, no crash."""
+        """V16-1: TimeoutError before any API call → no last_crawled_at, ACK, no DLQ."""
         env = _puuid_envelope()
         msg_id = await _setup_message(r, env)
 
@@ -780,9 +780,10 @@ class TestPaginationRateLimiterTimeout:
         assert await r.xlen(_STREAM_OUT) == 0
         # No DLQ entry — transient, not a handler crash
         assert await r.xlen("stream:dlq") == 0
-        # last_crawled_at IS set (crawl completed normally, just with 0 results)
-        assert await r.hget("player:test-puuid-0001", "last_crawled_at") is not None
-        # Message was ACKed
+        # last_crawled_at NOT set — no API call was made, so we cannot confirm
+        # whether new matches exist; Discovery can re-seed next cycle.
+        assert await r.hget("player:test-puuid-0001", "last_crawled_at") is None
+        # Message was ACKed (to avoid infinite redelivery)
         pending = await r.xpending(_STREAM_IN, _GROUP)
         assert pending["pending"] == 0
 

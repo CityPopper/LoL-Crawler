@@ -23,7 +23,7 @@ RUN pip install --no-cache-dir -q -e /common -e /svc
 
 EXPOSE 8080
 
-HEALTHCHECK --interval=10s --timeout=5s --retries=3 --start-period=30s \
+HEALTHCHECK --interval=10s --timeout=5s --retries=3 --start-period=60s \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"
 
 RUN adduser --disabled-password --no-create-home appuser

@@ -24,6 +24,7 @@ import redis.exceptions
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from lol_pipeline.config import Config
+from lol_pipeline.constants import PLAYER_DATA_TTL_SECONDS
 from lol_pipeline.helpers import name_cache_key
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import DLQEnvelope, MessageEnvelope
@@ -516,12 +517,17 @@ def _page(title: str, body: str, path: str = "") -> str:
 
 
 _HALT_BANNER = (
-    '<div class="banner banner--error">&#9888; System is HALTED — all workers have stopped</div>'
+    '<div class="banner banner--error">&#9888; System is HALTED — all workers have stopped. '
+    "To recover: fix the API key in <code>.env</code>, restart with "
+    "<code>just up</code>, then run <code>just admin system-resume</code>.</div>"
 )
 
 
+_VALID_MSG_CLASSES = frozenset({"", "success", "warning", "error"})
+
 _DLQ_DEFAULT_PER_PAGE = 25
 _DLQ_MAX_PER_PAGE = 50
+_DLQ_MAX_PAGE = 1000
 
 
 def _make_replay_envelope(dlq: DLQEnvelope, max_attempts: int) -> MessageEnvelope:
@@ -567,6 +573,8 @@ def _stats_form(
     selected_region: str = "na1",
     value: str = "",
 ) -> str:
+    if css_class not in _VALID_MSG_CLASSES:
+        css_class = "error"
     msg_html = f'<p class="{css_class}">{msg}</p>' if msg else ""
     options = "\n      ".join(
         f'<option value="{r}"{" selected" if r == selected_region else ""}>{r}</option>'
@@ -649,14 +657,18 @@ def _match_history_section(puuid: str, region: str, riot_id: str) -> str:
      data-riot-id="{safe_id}" data-page="0">Load match history</a></p>
 </div>
 <script>
+var _loadingMatches = false;
 function loadMatches(puuid, region, riotId, page) {{
+  if (_loadingMatches) return;
+  _loadingMatches = true;
   var container = document.getElementById('match-history-container');
   var isFirst = page === 0;
+  var btn = null;
   if (isFirst) {{
     container.innerHTML = '<div class="loading-state">'
       + '<span class="spinner"></span> Loading match history\u2026</div>';
   }} else {{
-    var btn = container.querySelector('.load-matches');
+    btn = container.querySelector('.load-matches');
     if (btn) {{ btn.textContent = 'Loading\u2026'; btn.style.pointerEvents = 'none'; }}
   }}
   var url = '/stats/matches?puuid=' + encodeURIComponent(puuid)
@@ -685,12 +697,18 @@ function loadMatches(puuid, region, riotId, page) {{
       }}
     }})
     .catch(function(e) {{
-      container.textContent = '';
+      if (btn) {{
+        btn.textContent = 'Load more (page ' + (page + 1) + ')';
+        btn.style.pointerEvents = '';
+      }}
+      var existing = container.querySelector('.error');
+      if (existing) existing.remove();
       var p = document.createElement('p');
       p.className = 'error';
       p.textContent = 'Failed to load: ' + (e.message || e);
       container.appendChild(p);
-    }});
+    }})
+    .finally(function() {{ _loadingMatches = false; }});
 }}
 document.addEventListener('click', function(e) {{
   var el = e.target.closest('.load-matches');
@@ -902,7 +920,9 @@ async def _resolve_and_cache_puuid(
     except AuthError:
         return HTMLResponse(
             _stats_form(
-                "API key issue. An admin must run <code>just admin system-resume</code>.",
+                "API key invalid or expired. Update <code>RIOT_API_KEY</code> in"
+                " <code>.env</code> and restart, then run"
+                " <code>just admin system-resume</code>.",
                 "error",
                 selected_region=region,
                 value=riot_id,
@@ -996,6 +1016,7 @@ async def _auto_seed_player(
             "seeded_at": now_iso,
         },
     )
+    await r.expire(f"player:{puuid}", PLAYER_DATA_TTL_SECONDS)
     await r.set(cooldown_key, "1", ex=_AUTOSEED_COOLDOWN_S)
     _log.info("auto-seeded via stats lookup", extra={"puuid": puuid})
     return HTMLResponse(
@@ -1375,7 +1396,7 @@ async def show_dlq(request: Request) -> HTMLResponse:
     except ValueError:
         per_page = _DLQ_DEFAULT_PER_PAGE
     per_page = max(per_page, 1)
-    page = max(page, 0)
+    page = min(max(page, 0), _DLQ_MAX_PAGE)
 
     # Fetch one extra to detect next page
     fetch_count = page * per_page + per_page + 1
@@ -1523,9 +1544,9 @@ def _match_history_html(
         champ = html.escape(raw_champ)
         icon = _champion_icon_html(raw_champ, version)
         role = html.escape(participant.get("team_position", participant.get("role", "?")))
-        k = participant.get("kills", "0")
-        d = participant.get("deaths", "0")
-        a = participant.get("assists", "0")
+        k = html.escape(participant.get("kills", "0"))
+        d = html.escape(participant.get("deaths", "0"))
+        a = html.escape(participant.get("assists", "0"))
         mode = html.escape(match.get("game_mode", "?"))
         rows += (
             f"<tr><td>{dt}</td><td>{result}</td><td>{icon}{champ}</td><td>{role}</td>"

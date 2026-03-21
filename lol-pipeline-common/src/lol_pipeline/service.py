@@ -30,12 +30,20 @@ def _retry_key(stream: str, msg_id: str) -> str:
 
 
 async def _incr_retry(r: aioredis.Redis, stream: str, msg_id: str) -> int:
-    """Increment the Redis-backed retry counter and return the new value."""
+    """Increment the Redis-backed retry counter and return the new value.
+
+    INCR and EXPIRE are batched in a single pipeline so a crash between them
+    cannot leave the key without a TTL.  Using ``transaction=False`` (no
+    MULTI/EXEC) is sufficient — both commands execute in sequence without
+    interruption on single-node Redis, and the TTL is refreshed on every retry
+    (key expires ``_RETRY_KEY_TTL`` seconds after the *last* attempt).
+    """
     key = _retry_key(stream, msg_id)
-    count: int = await r.incr(key)
-    if count == 1:
-        await r.expire(key, _RETRY_KEY_TTL)
-    return count
+    async with r.pipeline(transaction=False) as pipe:
+        pipe.incr(key)
+        pipe.expire(key, _RETRY_KEY_TTL)
+        results: list[int] = await pipe.execute()
+    return results[0]
 
 
 async def _clear_retry(r: aioredis.Redis, stream: str, msg_id: str) -> None:

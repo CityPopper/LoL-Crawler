@@ -39,15 +39,18 @@ async def _fetch_match_ids_paginated(
     region: str,
     known: set[str],
     log: logging.Logger,
-) -> int:
+) -> tuple[int, int]:
     """Paginate through Riot match-ID API and publish new IDs to stream:match_id.
 
-    Returns the number of newly published match IDs.  Raises Riot API exceptions
-    (NotFoundError, AuthError, RateLimitError, ServerError) to the caller.
+    Returns ``(published, pages_fetched)`` — the number of newly published match
+    IDs and the number of API pages successfully fetched.  Raises Riot API
+    exceptions (NotFoundError, AuthError, RateLimitError, ServerError) to the
+    caller.
     """
     start = 0
     count = 100
     published = 0
+    pages_fetched = 0
 
     while True:
         if await is_system_halted(r):
@@ -59,6 +62,7 @@ async def _fetch_match_ids_paginated(
             log.warning("rate limiter timeout — aborting crawl", extra={"puuid": puuid})
             break
         page: list[str] = await riot.get_match_ids(puuid, region, start=start, count=count)
+        pages_fetched += 1
         log.debug(
             "fetched match ids page",
             extra={"puuid": puuid, "start": start, "returned": len(page)},
@@ -93,7 +97,7 @@ async def _fetch_match_ids_paginated(
             break
         start += count
 
-    return published
+    return published, pages_fetched
 
 
 async def _handle_crawl_error(
@@ -176,9 +180,22 @@ async def _crawl_player(
     )
 
     try:
-        published = await _fetch_match_ids_paginated(r, riot, cfg, puuid, region, known, log)
+        published, pages_fetched = await _fetch_match_ids_paginated(
+            r, riot, cfg, puuid, region, known, log
+        )
     except (NotFoundError, AuthError, RateLimitError, ServerError) as exc:
         await _handle_crawl_error(r, msg_id, envelope, exc, puuid, log)
+        return
+
+    if pages_fetched == 0:
+        # Rate limiter timed out before any API call — do not update last_crawled_at.
+        # The message is ACKed to avoid infinite redelivery, but we don't mark
+        # the player as crawled so Discovery can re-seed them next cycle.
+        log.warning(
+            "crawl aborted before any API call (rate limiter timeout)",
+            extra={"puuid": puuid},
+        )
+        await ack(r, _IN_STREAM, _GROUP, msg_id)
         return
 
     now_iso = datetime.now(tz=UTC).isoformat()

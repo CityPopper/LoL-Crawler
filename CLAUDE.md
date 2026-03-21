@@ -28,7 +28,7 @@ Platform: macOS. Container runtime: Podman (default). Switch with `RUNTIME=docke
 | `docs/standards/03-testing-standards.md` | Test speed limits, timeout config, parallelism, agent batch strategy |
 | `lol-pipeline-common/contracts/schemas/` | Canonical Pact v3 schemas |
 | `lol-pipeline-*/pacts/` | Per-service consumer contracts |
-| `tests/integration/` | 7 integration tests (IT-01 through IT-07, testcontainers) |
+| `tests/integration/` | 12 integration tests (IT-01 through IT-12, testcontainers) |
 
 ## TODO — Review Cycle 2
 

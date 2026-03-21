@@ -4,31 +4,34 @@
 
 All application state lives in Redis. No other database.
 
-| Key Pattern                          | Type       | TTL      | Contents                                                    |
-|--------------------------------------|------------|----------|-------------------------------------------------------------|
-| `system:halted`                      | String     | none     | Set to `"1"` by Recovery on HTTP 403; cleared manually     |
-| `player:{puuid}`                     | Hash       | none     | `game_name`, `tag_line`, `region`, `seeded_at` (ISO 8601 string), `last_crawled_at` (ISO 8601 string) |
-| `player:matches:{puuid}`             | Sorted Set | none     | member=`match_id`, score=`game_start` epoch ms              |
-| `player:stats:{puuid}`               | Hash       | none     | Raw totals: `total_games`, `total_wins`, `total_kills`, `total_deaths`, `total_assists`; Derived: `win_rate`, `avg_kills`, `avg_deaths`, `avg_assists`, `kda` |
-| `player:stats:cursor:{puuid}`        | String     | none     | `game_start` epoch ms of last match processed by Analyzer   |
-| `player:stats:lock:{puuid}`          | String     | 300s     | Worker ID; distributed lock for Analyzer; TTL = `ANALYZER_LOCK_TTL_SECONDS` |
-| `player:champions:{puuid}`           | Sorted Set | none     | member=`champion_name`, score=games played on that champion |
-| `player:roles:{puuid}`               | Sorted Set | none     | member=`role`, score=games played in that role              |
-| `match:{match_id}`                   | Hash       | none     | `queue_id`, `game_mode`, `game_type`, `game_version`, `game_duration`, `game_start`, `platform_id`, `region`, `status` |
-| `match:participants:{match_id}`      | Set        | none     | PUUIDs of all participants in this match                    |
-| `match:status:parsed`                | Set        | none     | Secondary index: match IDs with status=parsed (written by Parser) |
-| `match:status:failed`                | Set        | none     | Secondary index: match IDs with status=failed (written by Recovery) |
-| `participant:{match_id}:{puuid}`     | Hash       | none     | `champion_id`, `champion_name`, `team_id`, `team_position`, `role`, `win`, `kills`, `deaths`, `assists`, `gold_earned`, `total_damage_dealt_to_champions`, `total_minions_killed`, `vision_score`, `items` |
-| `raw:match:{match_id}`               | String     | none     | Raw match JSON blob; also persisted to disk when `MATCH_DATA_DIR` is set |
-| `discover:players`                   | Sorted Set | none     | member=`{puuid}:{region}`, score=most-recent `game_start` epoch ms; GT update semantics |
-| `delayed:messages`                   | Sorted Set | none     | member=serialized envelope, score=ready epoch ms            |
-| `player:name:{game_name}#{tag_line}` | String     | 86400s (24h) | PUUID cache; maps lowercased Riot ID to PUUID               |
-| `ratelimit:short`                    | Sorted Set | 1000ms   | member=`req_id`, score=epoch ms; sliding 1s window          |
-| `ratelimit:long`                     | Sorted Set | 120000ms | member=`req_id`, score=epoch ms; sliding 2min window        |
-| `ratelimit:limits:short`             | String     | none     | Dynamic 1s window limit from Riot API `X-App-Rate-Limit` header |
-| `ratelimit:limits:long`              | String     | none     | Dynamic 2min window limit from Riot API `X-App-Rate-Limit` header |
-| `player:priority:{puuid}`           | String     | 86400s (24h) | Priority marker; set by `set_priority()` (Seed/UI auto-seed) |
-| `system:priority_count`             | String     | none     | Count of active priority players (maintained by atomic Lua INCR/DECR) |
+| Key Pattern                          | Type       | TTL                       | Contents                                                    |
+|--------------------------------------|------------|---------------------------|-------------------------------------------------------------|
+| `system:halted`                      | String     | none                      | Set to `"1"` by Recovery on HTTP 403; cleared manually     |
+| `player:{puuid}`                     | Hash       | 30d (`PLAYER_DATA_TTL_SECONDS`) | `game_name`, `tag_line`, `region`, `seeded_at` (ISO 8601 string), `last_crawled_at` (ISO 8601 string); TTL refreshed on each crawl/seed |
+| `player:matches:{puuid}`             | Sorted Set | 30d (`PLAYER_DATA_TTL_SECONDS`) | member=`match_id`, score=`game_start` epoch ms; capped at `PLAYER_MATCHES_MAX` entries |
+| `player:stats:{puuid}`               | Hash       | 30d (`PLAYER_DATA_TTL_SECONDS`) | Raw totals: `total_games`, `total_wins`, `total_kills`, `total_deaths`, `total_assists`; Derived: `win_rate`, `avg_kills`, `avg_deaths`, `avg_assists`, `kda` |
+| `player:stats:cursor:{puuid}`        | String     | 30d (`PLAYER_DATA_TTL_SECONDS`) | `game_start` epoch ms of last match processed by Analyzer   |
+| `player:stats:lock:{puuid}`          | String     | 300s (`ANALYZER_LOCK_TTL_SECONDS`) | Worker ID; distributed lock for Analyzer              |
+| `player:champions:{puuid}`           | Sorted Set | 30d (`PLAYER_DATA_TTL_SECONDS`) | member=`champion_name`, score=games played on that champion |
+| `player:roles:{puuid}`               | Sorted Set | 30d (`PLAYER_DATA_TTL_SECONDS`) | member=`role`, score=games played in that role              |
+| `match:{match_id}`                   | Hash       | 7d (`MATCH_DATA_TTL_SECONDS`)   | `queue_id`, `game_mode`, `game_type`, `game_version`, `game_duration`, `game_start`, `platform_id`, `region`, `status` |
+| `match:status:parsed`                | Set        | 90d (hardcoded)           | Secondary index: match IDs with status=parsed (written by Parser) |
+| `match:status:failed`                | Set        | 90d (hardcoded)           | Secondary index: match IDs with status=failed (written by Recovery) |
+| `participant:{match_id}:{puuid}`     | Hash       | 7d (`MATCH_DATA_TTL_SECONDS`)   | `champion_id`, `champion_name`, `team_id`, `team_position`, `role`, `win`, `kills`, `deaths`, `assists`, `gold_earned`, `total_damage_dealt_to_champions`, `total_minions_killed`, `vision_score`, `items` |
+| `raw:match:{match_id}`               | String     | 24h (`RAW_STORE_TTL_SECONDS`)   | Raw match JSON blob; also persisted to disk when `MATCH_DATA_DIR` is set |
+| `discover:players`                   | Sorted Set | none                      | member=`{puuid}:{region}`, score=most-recent `game_start` epoch ms; GT update semantics; capped at `MAX_DISCOVER_PLAYERS` |
+| `delayed:messages`                   | Sorted Set | none                      | member=serialized envelope, score=ready epoch ms            |
+| `player:name:{game_name}#{tag_line}` | String     | 86400s (24h)              | PUUID cache; maps lowercased Riot ID to PUUID               |
+| `players:all`                        | Sorted Set | none                      | member=`puuid`, score=seed epoch; capped at 50K; used by UI for player listing |
+| `consumer:retry:{stream}:{msg_id}`   | String     | 7d (hardcoded)            | Crash-restart-safe retry counter for poison message detection |
+| `autoseed:cooldown:{puuid}`          | String     | 300s (hardcoded)          | Rate-limit key preventing repeated UI auto-seeds for same player |
+| `name_cache:index`                   | Sorted Set | none                      | LRU eviction index for `player:name:*` keys; capped at 10K entries |
+| `ddragon:version`                    | String     | 24h (hardcoded)           | Cached Data Dragon version string fetched by UI             |
+| `ratelimit:short`                    | Sorted Set | 1000ms                    | member=`req_id`, score=epoch ms; sliding 1s window          |
+| `ratelimit:long`                     | Sorted Set | 120000ms                  | member=`req_id`, score=epoch ms; sliding 2min window        |
+| `ratelimit:limits:short`             | String     | 1h (hardcoded)            | Dynamic 1s window limit from Riot API `X-App-Rate-Limit` header |
+| `ratelimit:limits:long`              | String     | 1h (hardcoded)            | Dynamic 2min window limit from Riot API `X-App-Rate-Limit` header |
+| `player:priority:{puuid}`            | String     | 24h (`PRIORITY_KEY_TTL`)  | Priority marker; set by `set_priority()` (Seed/UI auto-seed) |
 
 ---
 

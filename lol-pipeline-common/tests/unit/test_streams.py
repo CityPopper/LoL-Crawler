@@ -233,6 +233,10 @@ class TestNackToDlq:
         assert fields["failed_by"] == "fetcher"
         assert fields["original_message_id"] == "456-0"
         assert fields["retry_after_ms"] == "5000"
+        # T16-3: original_stream reflects the envelope's source_stream;
+        # source_stream on the DLQ entry itself is "stream:dlq".
+        assert fields["original_stream"] == "stream:test"
+        assert fields["source_stream"] == "stream:dlq"
 
 
 class TestEnsureGroup:

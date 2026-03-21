@@ -1342,7 +1342,7 @@ class TestErrorMessages:
         resp = await show_stats(request)
         body = resp.body.decode()
 
-        assert "API key issue" in body
+        assert "API key invalid or expired" in body
         assert "system-resume" in body
 
     @pytest.mark.asyncio

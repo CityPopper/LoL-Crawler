@@ -39,7 +39,7 @@ jobs:
           pip install -e "lol-pipeline-common/[dev]"
           for dir in lol-pipeline-*/; do
             if [ -f "$dir/pyproject.toml" ]; then
-              pip install -e "$dir[dev]" 2>/dev/null || pip install -e "$dir" || true
+              pip install -e "$dir[dev]" 2>/dev/null || pip install -e "$dir"
             fi
           done
           pip install mypy types-requests
