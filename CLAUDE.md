@@ -132,3 +132,34 @@ Platform: macOS. Container runtime: Podman (default). Switch with `RUNTIME=docke
 - [ ] DX-09: No `just logs-all` for merged live tail of all services
 - [ ] DX-15: `just check` runs lint+typecheck sequentially — could be parallelized
 - [ ] DX-16: No `just lint-svc`/`just typecheck-svc` for single-service iteration
+
+## TODO — Orchestrator Cycle 5 (Phase 16 HORIZON — deferred items)
+
+### Critical
+- [ ] P16-C1: Worker Dockerfiles double-install packages in runtime stage (large refactor scope)
+
+### High
+- [ ] P16-H1: CI `integration-tests` not in `docker-build` needs; broken integration test passes image
+- [ ] P16-H2: CI `security-audit` not gated — known CVEs never block builds
+- [ ] OPS-16-01: Priority key stall — no recovery command (`admin clear-priority`), no visibility
+- [ ] OPS-16-02: Halt banner omits why halted and recovery instructions (partially fixed — banner now has recovery step)
+- [ ] OPS-16-03: No `just redis-cli` shortcut for ad-hoc diagnostics
+- [ ] OPS-16-04: `just status` missing `discover:players` depth and retry key count
+
+### Medium
+- [ ] P16-PERF-2: UI `_build_stats_response` 3 sequential reads should be pipelined
+- [ ] P16-PERF-3: UI `_auto_seed_player` guard checks and tail writes partially batchable
+- [ ] P16-PERF-5: DLQ page over-fetches O(page×per_page) entries — use cursor-based pagination
+- [ ] S16-1: DLQ replay publishes to unvalidated `original_stream` — no whitelist check
+- [ ] T16-2: Analyzer test for `_process_matches` skipping empty participant data (`if not p: continue`)
+- [ ] T16-4: Crawler design question — should `last_crawled_at` be set when timeout on page 1 (no API call)?
+- [ ] OPS-16-07: No `delayed-list`/`delayed-flush` for 429 recovery after API key rotation
+- [ ] P16-DB-2: `players:all` sorted set — no cleanup of stale members when underlying player hashes expire
+- [ ] P16-DB-3: `match:status:parsed/failed` — per-write EXPIRE resets TTL for entire set
+
+### Low
+- [ ] DX-22: "Add new service" docker-compose snippet in docs uses wrong build context
+- [ ] DX-23: No `just smoke`/`just verify` recipe for quick post-change validation without API key
+- [ ] UI-16-02: 7 tables still missing `<thead>`/`<tbody>` (subset covered by UX-01)
+- [ ] UI-16-03: `<th>` elements missing `scope="col"` (WCAG 1.3.1 Level A)
+- [ ] OPS-16-08: README test count stale (update after each phase)

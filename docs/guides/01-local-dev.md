@@ -429,7 +429,8 @@ async def test_crawler__successful_crawl__publishes_matches():
    new-service:
      <<: *service-defaults
      build:
-       context: lol-pipeline-new-service
+       context: .
+       dockerfile: lol-pipeline-new-service/Dockerfile
        args:
          COMMON_VERSION: local
      volumes:

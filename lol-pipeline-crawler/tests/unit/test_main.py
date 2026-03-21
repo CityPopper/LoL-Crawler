@@ -788,6 +788,38 @@ class TestPaginationRateLimiterTimeout:
         assert pending["pending"] == 0
 
     @pytest.mark.asyncio
+    async def test_crawl__timeout_before_api__clear_priority_not_called(self, r, cfg, log):
+        """V16-1: TimeoutError before first API call — clear_priority must NOT run.
+
+        When pages_fetched == 0 we cannot confirm whether new matches exist,
+        so priority must be preserved to prevent Discovery from unblocking
+        prematurely for a player whose crawl never completed.
+        """
+        puuid = "test-puuid-0001"
+        await r.set(f"player:priority:{puuid}", "1", ex=86400)
+
+        env = _puuid_envelope(puuid=puuid)
+        msg_id = await _setup_message(r, env)
+
+        with (
+            respx.mock,
+            patch(
+                "lol_crawler.main.wait_for_token",
+                new_callable=AsyncMock,
+                side_effect=TimeoutError("rate limiter timeout"),
+            ),
+        ):
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        # Priority key must still be present — timeout means no API call was made
+        assert await r.get(f"player:priority:{puuid}") == "1"
+        # No matches published and no DLQ entry
+        assert await r.xlen(_STREAM_OUT) == 0
+        assert await r.xlen("stream:dlq") == 0
+
+    @pytest.mark.asyncio
     async def test_timeout_on_page2__publishes_page1_only(self, r, cfg, log):
         """TimeoutError on page 2 → page 1 matches published, page 2 skipped."""
         env = _puuid_envelope()

@@ -11,6 +11,159 @@ This project uses semantic versioning.
 
 ---
 
+## [1.8.0] — 2026-03-20
+
+Phase 16 HORIZON: Discovery idle-check simplification, crawler atomicity, UI hardening.
+
+### Fixed
+
+- **V16-3**: Discovery `_is_idle()` Layer 1 XLEN check was always true at normal scale and
+  added a false sense of backpressure; removed — idle check now uses only XINFO GROUPS
+  pending/lag per stream (`discovery/main.py`)
+- **S16-1**: DLQ replay in admin CLI and UI accepted arbitrary `original_stream` values from
+  the DLQ envelope without validation; added `_VALID_REPLAY_STREAMS` whitelist to reject
+  replay to unknown streams (`admin/main.py`, `ui/main.py`)
+- **S16-2**: Admin `cmd_dlq_replay` called `r.xadd()` directly with hardcoded `maxlen=10_000`,
+  bypassing the per-stream MAXLEN policy; replaced with `publish()` (`admin/main.py`)
+- **P16-PERF-1**: Crawler `_fetch_match_ids_paginated` made one Redis write per match ID;
+  batched into a single `r.pipeline()` call
+- **P16-PERF-2**: `_build_stats_response` made 3 sequential Redis reads with no data
+  dependencies; collapsed into one `r.pipeline(transaction=False)` call (`ui/main.py`)
+- Streams page halt banner now uses shared `_HALT_BANNER` constant with recovery instructions
+  instead of an abbreviated inline message (`ui/main.py`)
+- Discovery docs (`docs/services/discovery.md`) updated: removed stale Layer 1 / XLEN
+  section, `MAX_STREAM_BACKLOG` config row, `system:priority_count` key references, and
+  resolved Known Limitations (I2-C2, I2-H3)
+
+---
+
+## [1.7.0] — 2026-03-20
+
+Phase 15 HORIZON: TTL constants, TimeoutError handling, UX fixes, DX hardening.
+
+### Fixed
+
+- Introduced shared TTL constants module to eliminate magic numbers scattered across services
+- Added `asyncio.TimeoutError` handling in Crawler and Fetcher to prevent indefinite hangs
+  on slow Riot API responses
+- Halt banner on all UI pages now includes actionable recovery instructions
+- DX: pre-push hook verifies mypy passes on changed services before push
+
+---
+
+## [1.6.0] — 2026-03-20
+
+Phase 14 HORIZON: rate limiter hardening, atomicity fixes, pipeline optimizations (980 tests).
+
+### Fixed
+
+- Rate limiter `wait_for_token()` now checks `system:halted` flag before sleeping to avoid
+  blocking workers when the pipeline is stopped
+- Parser HSET + SADD for match metadata wrapped in `MULTI/EXEC` for atomic write
+- `_incr_retry` batches INCR + EXPIRE into a single pipeline call to prevent partial
+  retry-counter state
+- UI stats route now calls `wait_for_token()` before any Riot API calls
+
+### Changed
+
+- `stream:analyze` upgraded to per-stream `ANALYZE_STREAM_MAXLEN` override to accommodate
+  bursty analyzer workloads without silent trimming
+
+---
+
+## [1.5.0] — 2026-03-20
+
+Phase 13 SUMMIT: cache invalidation, TTLs, parser pipeline, UX fixes.
+
+### Fixed
+
+- `ratelimit:limits:short` and `ratelimit:limits:long` now carry a TTL so stale rate limit
+  state clears automatically after API key rotation
+- Parser now batches participant HSET writes into a pipeline call, reducing round-trips for
+  large match rosters
+- `name_cache_key` length capped to prevent Redis key injection from long `game_name`/
+  `tag_line` values (I2-H15 residual hardening)
+- UI player list page handles missing `game_name`/`tag_line` gracefully instead of
+  crashing on incomplete player hashes
+
+---
+
+## [1.4.0] — 2026-03-20
+
+Phase 12 ZENITH: champion icons, Content Security Policy, async log IO, TTLs, ARIA improvements.
+
+### Added
+
+- Champion icon images on the stats page (fetched from CDragon CDN)
+- Content Security Policy header via FastAPI middleware
+- ARIA labels and roles on interactive UI elements for screen-reader accessibility
+
+### Fixed
+
+- Log IO moved to `asyncio.to_thread()` so synchronous file writes no longer block the
+  async event loop
+- `match:{match_id}` and `participant:{match_id}:{puuid}` hashes now carry a 30-day TTL
+  (I2-C3 residual: applied to parser output)
+
+---
+
+## [1.3.0] — 2026-03-20
+
+Phase 11 APEX: hardening, responsive design, DX improvements, and observability fixes.
+
+### Added
+
+- Responsive mobile layout for all UI pages using CSS grid breakpoints
+- `just logs <service>` recipe for tailing a single service log file
+- Per-service `pytest-timeout` configuration (10 s per test) enforced in CI
+
+### Fixed
+
+- Structured JSON logs now include `service` field for easier log aggregation
+- Admin DLQ page no longer crashes on corrupt DLQ entries (B4 residual)
+- `system:halted` check added to Delay Scheduler main loop
+
+---
+
+## [1.2.0] — 2026-03-20
+
+Phase 10 "ILLUMINATE": rate limiter improvements, mobile UX, admin CLI extensions, security.
+
+### Added
+
+- Admin `system-resume` command to clear `system:halted` flag and restart pipeline workers
+- Admin `dlq-list` pagination for large DLQ backlogs
+- Mobile-friendly navigation menu with hamburger toggle
+
+### Fixed
+
+- Rate limiter short/long window sliding correctly without counter drift
+- Admin CLI now wraps all Redis operations in try/except and prints clean errors (B11)
+- UI XSS: player names and Riot IDs HTML-escaped in all rendered templates
+
+---
+
+## [1.1.0] — 2026-03-20
+
+Architecture hardening, UI Phase 9 design polish, integration tests IT-08 through IT-12.
+
+### Added
+
+- Integration tests IT-08 through IT-12: Discovery fan-out, DLQ circuit-breaker, rate-limit
+  window sliding, parser atomicity, and priority gate scenarios (testcontainers)
+- UI Phase 9: consistent card layout, colour-coded status badges, and stream depth sparklines
+- `just admin` recipe family wrapping all `lol-admin` CLI commands
+
+### Fixed
+
+- Crawler backpressure: checks `stream:match_id` depth before publishing a new batch to
+  prevent flooding the stream past MAXLEN (I2-H4)
+- Seed service sets priority before publishing to `stream:puuid` to eliminate the
+  clear-before-set race (I2-H1)
+- `_ensure_group` now re-raises non-BUSYGROUP `ResponseError` (I2-H10)
+
+---
+
 ## [1.0.0] — 2026-03-19
 
 Orchestrator cycles 2 and 3: 30 bug fixes spanning critical correctness gaps,
@@ -228,6 +381,14 @@ initial test coverage expansion to 560 unit tests + 61 contract tests.
 - `Justfile` with setup/build/run/test/lint/typecheck recipes
 - `docker-compose.yml` with Redis + all worker services
 
-[Unreleased]: https://github.com/abhiregmi/LoL-Crawler/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/abhiregmi/LoL-Crawler/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/abhiregmi/LoL-Crawler/compare/v1.7.0...v1.8.0
+[1.7.0]: https://github.com/abhiregmi/LoL-Crawler/compare/v1.6.0...v1.7.0
+[1.6.0]: https://github.com/abhiregmi/LoL-Crawler/compare/v1.5.0...v1.6.0
+[1.5.0]: https://github.com/abhiregmi/LoL-Crawler/compare/v1.4.0...v1.5.0
+[1.4.0]: https://github.com/abhiregmi/LoL-Crawler/compare/v1.3.0...v1.4.0
+[1.3.0]: https://github.com/abhiregmi/LoL-Crawler/compare/v1.2.0...v1.3.0
+[1.2.0]: https://github.com/abhiregmi/LoL-Crawler/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/abhiregmi/LoL-Crawler/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/abhiregmi/LoL-Crawler/compare/v0.9.0...v1.0.0
 [0.9.0]: https://github.com/abhiregmi/LoL-Crawler/compare/v0.8.0...v0.9.0
