@@ -23,7 +23,7 @@ from lol_pipeline.riot_api import (
     ServerError,
 )
 from lol_pipeline.service import run_consumer
-from lol_pipeline.streams import MATCH_ID_STREAM_MAXLEN, ack, nack_to_dlq, publish
+from lol_pipeline.streams import ack, nack_to_dlq
 
 _IN_STREAM = "stream:puuid"
 _OUT_STREAM = "stream:match_id"
@@ -66,15 +66,19 @@ async def _fetch_match_ids_paginated(
             "match id page filtered",
             extra={"puuid": puuid, "page_size": len(page), "new": len(new_ids)},
         )
-        for match_id in new_ids:
-            env = MessageEnvelope(
-                source_stream=_OUT_STREAM,
-                type="match_id",
-                payload={"match_id": match_id, "puuid": puuid, "region": region},
-                max_attempts=cfg.max_attempts,
-            )
-            await publish(r, _OUT_STREAM, env, maxlen=MATCH_ID_STREAM_MAXLEN)
-            published += 1
+        # P14-OPT-4: Batch all publishes for the page into a single pipeline.
+        if new_ids:
+            async with r.pipeline(transaction=False) as pipe:
+                for match_id in new_ids:
+                    env = MessageEnvelope(
+                        source_stream=_OUT_STREAM,
+                        type="match_id",
+                        payload={"match_id": match_id, "puuid": puuid, "region": region},
+                        max_attempts=cfg.max_attempts,
+                    )
+                    pipe.xadd(_OUT_STREAM, env.to_redis_fields())  # type: ignore[arg-type]
+                await pipe.execute()
+            published += len(new_ids)
 
         # Stop early if a full page was entirely known
         if len(page) == count and not new_ids:
@@ -98,6 +102,7 @@ async def _handle_crawl_error(
     """Handle Riot API errors during crawl — ack/nack/halt as appropriate."""
     if isinstance(exc, NotFoundError):
         log.info("player not found (404) — discarding", extra={"puuid": puuid})
+        await clear_priority(r, puuid)
         await ack(r, _IN_STREAM, _GROUP, msg_id)
         return
 
@@ -140,9 +145,18 @@ async def _crawl_player(
 
     last_crawled = await r.hget(f"player:{puuid}", "last_crawled_at")  # type: ignore[misc]
     if last_crawled:
-        cutoff_dt = datetime.fromisoformat(last_crawled) - timedelta(days=7)
-        cutoff_ms = cutoff_dt.timestamp() * 1000
-        known: set[str] = set(await r.zrangebyscore(f"player:matches:{puuid}", cutoff_ms, "+inf"))
+        try:
+            cutoff_dt = datetime.fromisoformat(last_crawled) - timedelta(days=7)
+            cutoff_ms = cutoff_dt.timestamp() * 1000
+            known: set[str] = set(
+                await r.zrangebyscore(f"player:matches:{puuid}", cutoff_ms, "+inf")
+            )
+        except ValueError:
+            log.warning(
+                "corrupt last_crawled_at — falling back to full ZRANGE",
+                extra={"puuid": puuid, "last_crawled_at": last_crawled},
+            )
+            known = set(await r.zrange(f"player:matches:{puuid}", 0, -1))
     else:
         known = set(await r.zrange(f"player:matches:{puuid}", 0, -1))
     log.info(

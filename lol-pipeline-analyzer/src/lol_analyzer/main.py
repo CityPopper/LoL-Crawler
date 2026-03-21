@@ -196,13 +196,16 @@ async def _analyze_player(
 
         # P10-DB-1: Set 30-day TTL on all player stat keys to prevent unbounded
         # growth for inactive players. Active players get TTL refreshed each analysis.
-        for key in (
-            f"player:stats:{puuid}",
-            f"player:stats:cursor:{puuid}",
-            f"player:champions:{puuid}",
-            f"player:roles:{puuid}",
-        ):
-            await r.expire(key, _30_DAYS)
+        # P14-OPT-1: Batch all EXPIRE calls into a single pipeline round-trip.
+        async with r.pipeline(transaction=False) as ttl_pipe:
+            for key in (
+                f"player:stats:{puuid}",
+                f"player:stats:cursor:{puuid}",
+                f"player:champions:{puuid}",
+                f"player:roles:{puuid}",
+            ):
+                ttl_pipe.expire(key, _30_DAYS)
+            await ttl_pipe.execute()
 
         await _safe_clear_priority(r, puuid, log)
 

@@ -229,6 +229,30 @@ class TestFetchMaxAttempts:
         assert "payload" in fields
 
 
+class TestFetchMatchTTL:
+    """P14-CR-1: After storing match data, set TTL on match:{match_id}."""
+
+    @pytest.mark.asyncio
+    async def test_successful_fetch_sets_match_ttl(self, r, cfg, log):
+        """After fetch+store, match:{match_id} has a TTL set."""
+        raw_store = RawStore(r)
+        env = _match_envelope()
+        msg_id = await _setup_message(r, env)
+
+        with respx.mock:
+            respx.get(_match_url()).mock(
+                return_value=httpx.Response(200, json={"info": {"gameDuration": 1800}})
+            )
+            riot = RiotClient("RGAPI-test")
+            await _fetch_match(r, riot, raw_store, cfg, msg_id, env, log)
+            await riot.close()
+
+        ttl = await r.ttl("match:NA1_123")
+        assert ttl > 0, "match:{match_id} must have a TTL after successful fetch"
+        # Default is 604800 (7 days)
+        assert abs(ttl - 604800) <= 60
+
+
 class TestFetchStoreErrors:
     """Tests for failure modes during fetch and store."""
 

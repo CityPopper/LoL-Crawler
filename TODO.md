@@ -185,6 +185,82 @@ All B1–B15, C1–C2 items resolved. All I2-C1 through I2-M7 items resolved. Se
 
 ---
 
+## Phase 14 — "HORIZON" (Orchestrator Cycle 8, 20-agent review)
+
+### Rejected
+
+- P14-DBG-5: `except A, B:` — PERMANENTLY REJECTED (valid PEP 758, Phase 11 decision stands)
+- P14-FV-6: XAUTOCLAIM cursor not persisted — DEFERRED (only matters during large-PEL recovery; O(N) scan is bounded by small normal PELs)
+
+### Critical
+
+- [x] P14-ARC-2/DBG-1: `wait_for_token()` infinite loop — add `max_wait_s=60` timeout, raise `TimeoutError` after deadline (`riot_api.py`)
+- [x] P14-DBG-2: Lua rate-limit script uses limit=0 as real limit → permanent deadlock; add floor guard: if `limit < 1`, use default (`rate_limiter.py`)
+- [x] P14-DBG-4: Recovery `_requeue_delayed` ZADD + XACK not atomic → duplicate delivery on crash; wrap in MULTI/EXEC pipeline (`recovery/main.py`)
+- [x] P14-CR-1: Fetcher `match:{match_id}` hashes have no TTL → unbounded Redis growth; add `EXPIRE` with `MATCH_DATA_TTL_SECONDS` after HSET (`fetcher/main.py`)
+- [x] P14-CR-6: `_is_idle` catches ALL `ResponseError` from `xinfo_groups` → masks real errors; narrow to only `NOGROUP` (`discovery/main.py`)
+
+### High
+
+- [x] P14-CR-4/DEV-4: Unhandled `ValueError` in crawler `datetime.fromisoformat()` — wrap in try/except, treat as stale and skip (`crawler/main.py`)
+- [x] P14-FV-2: Recovery busy-spins on PEL when `system:halted` — add `await asyncio.sleep(5)` when no messages ACK'd (`recovery/main.py`)
+- [x] P14-FV-7: Crawler `NotFoundError` (404) handler never calls `clear_priority()` → orphaned priority key blocks Discovery for 24h (`crawler/main.py`)
+- [x] P14-PM-1: `_auto_seed_player()` order verified correct (set_priority before publish) (`ui/main.py`)
+- [x] P14-PM-2: `_auto_seed_player()` never writes to `players:all` sorted set → auto-seeded players invisible in /players (`ui/main.py`)
+- [x] P14-PM-3: Dashboard seed form already used full `_REGIONS` list — verified correct (`ui/main.py`)
+- [x] P14-UX-2: JS `fetch()` never checks `r.ok` — 4xx/5xx response bodies silently injected as HTML; add `if (!r.ok) throw` before `.text()` (`ui/main.py`)
+- [x] P14-TST-3: `test_http_5xx_requeued` never verifies `dlq_attempts=1` or `source_stream` — assertions added (`lol-pipeline-recovery/tests/unit/test_main.py`)
+
+### Medium
+
+- [x] P14-UX-1: Auto-seed success uses `css_class="warning"` (yellow) instead of `"success"` (green) (`ui/main.py`)
+- [x] P14-UX-3: DLQ replay failure silently returns 303 redirect with no error shown — return error message inline (`ui/main.py`)
+- [x] P14-UX-5: Active nav link uses exact path match → subpages show no active state; use `path.startswith(href)` (`ui/main.py`)
+- [x] P14-UX-10: Streams/logs auto-refresh error prepends duplicate `<p>` on each poll; clear old error before prepending (`ui/main.py`)
+- [x] P14-OPT-1: Analyzer 4 sequential `EXPIRE` calls → pipeline them (`analyzer/main.py`)
+- [x] P14-OPT-4: Crawler sequential `publish()` per match ID → batch all XADDs into one pipeline (`crawler/main.py`)
+- [x] P14-DB-1: `players:all` sorted set grows unbounded → cap at 50K with `ZREMRANGEBYRANK` after ZADD (`seed/main.py`, `ui/main.py`, `discovery/main.py`)
+- [x] P14-SEC-10: `/players` negative `page` parameter not clamped → clamp to `max(0, page)` (`ui/main.py`)
+- [x] P14-DX-1: `MAX_STREAM_BACKLOG` missing from `.env.example` — added entry with comment (`env.example`)
+- [x] P14-FV-3/DBG-3: Delay scheduler `_member_failures` dict never resets on circuit expiry → counter persists, circuit re-trips on first next failure; reset counter when circuit clears (`delay_scheduler/main.py`)
+- [x] P14-CW-2/GD-5: `--json` flag help text says "supported: stats" but `dlq list` also supports it — fixed help string (`admin/main.py`)
+- [x] P14-WD-2: `btn.className = paused ? 'paused' : ''` clobbers existing classes — use `classList.toggle('paused')` (`ui/main.py`)
+- [x] P14-TST-1: `test_lock_stolen_logs_warning` has no assertion — added `caplog` + ACK assertion (`lol-pipeline-analyzer/tests/unit/test_main.py`)
+- [x] P14-TST-2: `test_invalidate_ensured_no_error_when_not_cached` has no assertion — added assertion on `_ensured` state (`lol-pipeline-common/tests/unit/test_streams.py`)
+- [x] P14-TST-6: Recovery tests share `match_id="NA1_123"` across tests — use unique IDs per test (`lol-pipeline-recovery/tests/unit/test_main.py`)
+
+### Low / Polish
+
+- [x] P14-CW-1/4: Halt banner shows raw Redis key `(system:halted is set)` — stripped parenthetical; added actionable text (`ui/main.py`)
+- [x] P14-CW-10: Streams page `<h2>` says "Stream Depths" — unified to "Streams" (`ui/main.py`)
+- [x] P14-DX-2: `docs/guides/01-local-dev.md` says `just lint` runs `--fix` — fixed doc (`docs/guides/01-local-dev.md`)
+- [x] P14-DOC-1: `07-containers.md` shows `python:3.12-slim` throughout — updated to 3.14 (`docs/architecture/07-containers.md`)
+- [x] P14-DOC-2: README unit/contract test count stale — updated to 963 unit / 44 contract (`README.md`)
+- [x] P14-DOC-3: `03-streams.md` envelope table missing `priority` field — added row (`docs/architecture/03-streams.md`)
+- [x] P14-DOC-6: `02-services.md` admin command table missing `recalc-players` — added row (`docs/architecture/02-services.md`)
+- [x] P14-DOC-11: `docs/services/discovery.md` references nonexistent `just admin unhalt` — fixed to `just admin system-resume` (`docs/services/discovery.md`)
+
+### Deferred
+
+- P14-SEC-2: CSRF protection for `/dlq/replay/{id}` — needs token infrastructure, defer to Phase 15
+- P14-ARC-4: Migrate 5 config values to pydantic `Config` — large refactor, defer
+- P14-FV-1: Analyzer cursor stalls on expired participant data — complex edge case, defer
+- P14-FV-4: Analyzer premature priority clear on partial match data — edge case requiring data loss, defer
+- P14-FV-5: Parser analyze pipeline partial-XADD + raw-blob-expiry compound failure — extremely rare, defer
+- P14-FV-8: Recovery 404 discards with no audit trail — audit gap only, defer
+- P14-PM-4/PM-6: `cmd_dlq_list` table mode + `dlq clear` preflight scope line — feature, defer
+- P14-UX-4/12: DLQ pagination total count + cursor-based pagination — refactor, defer
+- P14-UX-6: Dashboard double-queries `stream:dlq` (redundant pipeline call) — cosmetic, defer
+- P14-WD/UX ARIA: nav aria-label, aria-current, role="alert", form label pairing — accessibility sprint, Phase 16
+- P14-RD-*: Responsive CSS improvements — defer to Phase 16 UI sprint
+- P14-DD-*: Design system cleanup (rgba tokens, h2/h3 rules, spacing scale) — defer
+- P14-GD-*: CLI output formatting (DLQ table borders, stats JSON, progress signals) — defer
+- P14-DX-4-13: DevEx improvements (conftest.py, pre-commit mypy, parallel check) — defer
+- P14-DOC-4/5/7/8/12-18: Large env var table updates, storage schema, deployment docs — defer
+- P14-DBG-6: rate_limiter stored-limit keys not scoped to key_prefix — defer
+
+---
+
 ## Fuzzing Targets
 
 Fuzz-worthy functions with high input-surface risk. Each should get a Hypothesis property-based test.

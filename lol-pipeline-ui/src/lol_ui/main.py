@@ -475,7 +475,8 @@ def _champion_icon_html(champion_name: str, version: str | None) -> str:
 def _page(title: str, body: str, path: str = "") -> str:
     nav_links = []
     for href, label in _NAV_ITEMS:
-        cls = ' class="active"' if path == href else ""
+        active = (href != "/" and path.startswith(href)) or href == path
+        cls = ' class="active"' if active else ""
         nav_links.append(f'<a href="{href}"{cls}>{label}</a>')
     nav_html = "\n  ".join(nav_links)
     return f"""<!doctype html>
@@ -510,7 +511,7 @@ def _page(title: str, body: str, path: str = "") -> str:
 
 
 _HALT_BANNER = (
-    '<div class="banner banner--error">&#9888; System is HALTED (system:halted is set)</div>'
+    '<div class="banner banner--error">&#9888; System is HALTED — all workers have stopped</div>'
 )
 
 
@@ -658,7 +659,7 @@ function loadMatches(puuid, region, riotId, page) {{
     + '&riot_id=' + encodeURIComponent(riotId)
     + '&page=' + page;
   fetch(url, {{headers: {{'Accept': 'text/html'}}}})
-    .then(function(r) {{ return r.text(); }})
+    .then(function(r) {{ if (!r.ok) {{ throw new Error('HTTP ' + r.status); }} return r.text(); }})
     .then(function(html) {{
       if (isFirst) {{
         container.innerHTML = html;
@@ -976,7 +977,9 @@ async def _auto_seed_player(
     # Set priority before publishing so clear_priority() by downstream
     # services cannot race against a not-yet-set priority key.
     await set_priority(r, puuid)
-    await r.zadd("players:all", {puuid: int(time.time())})
+    now_ts = time.time()
+    await r.zadd("players:all", {puuid: now_ts})
+    await r.zremrangebyrank("players:all", 0, -50001)
     await publish(r, _STREAM_PUUID, envelope)
     now_iso = datetime.now(tz=UTC).isoformat()
     await r.hset(
@@ -993,7 +996,7 @@ async def _auto_seed_player(
     return HTMLResponse(
         _stats_form(
             f"&#10003; Auto-seeded {safe_id} — pipeline processing. Refresh in a minute.",
-            "warning",
+            "success",
             selected_region=region,
             value=riot_id,
         )
@@ -1119,6 +1122,7 @@ async def show_players(request: Request) -> HTMLResponse:
         page = int(request.query_params.get("page", "0"))
     except ValueError:
         page = 0
+    page = max(0, page)
 
     sort = request.query_params.get("sort", "date")
     if sort not in _PLAYERS_SORT_OPTIONS:
@@ -1266,7 +1270,8 @@ async def _streams_fragment_html(r: Any) -> str:
     )
 
     status = (
-        '<div class="banner banner--error">&#9888; System is HALTED (system:halted is set)</div>'
+        '<div class="banner banner--error">'
+        "&#9888; System is HALTED &mdash; all workers have stopped</div>"
         if halted
         else '<div class="banner banner--success">&#10003; System running</div>'
     )
@@ -1307,7 +1312,7 @@ async def show_streams(request: Request) -> HTMLResponse:
   btn.addEventListener('click', function() {
     paused = !paused;
     btn.textContent = paused ? 'Resume' : 'Pause';
-    btn.className = paused ? 'paused' : '';
+    btn.classList.toggle('paused', paused);
     btn.setAttribute('aria-label', paused ? 'Resume auto-refresh' : 'Pause auto-refresh');
   });
 
@@ -1315,12 +1320,14 @@ async def show_streams(request: Request) -> HTMLResponse:
     if (paused) return;
     spinner.style.display = 'inline-block';
     fetch('/streams/fragment')
-      .then(function(r) { return r.text(); })
+      .then(function(r) { if (!r.ok) { throw new Error('HTTP ' + r.status); } return r.text(); })
       .then(function(html) { container.innerHTML = html; spinner.style.display = 'none'; })
       .catch(function(e) {
         spinner.style.display = 'none';
+        var existing = container.querySelector('.error-msg');
+        if (existing) existing.remove();
         var msg = document.createElement('p');
-        msg.className = 'error';
+        msg.className = 'error-msg';
         msg.textContent = 'Failed to refresh streams: ' + (e.message || 'network error');
         container.prepend(msg);
       });
@@ -1332,7 +1339,7 @@ async def show_streams(request: Request) -> HTMLResponse:
 """
 
     body = f"""
-<h2>Stream Depths</h2>
+<h2>Streams</h2>
 <div id="streams-container">
 {fragment}
 </div>
@@ -1446,7 +1453,7 @@ async def show_dlq(request: Request) -> HTMLResponse:
 
 
 @app.post("/dlq/replay/{entry_id:path}")
-async def dlq_replay(request: Request, entry_id: str) -> RedirectResponse:
+async def dlq_replay(request: Request, entry_id: str) -> Response:
     """Replay a single DLQ entry back to its original stream."""
     if not _STREAM_ENTRY_ID_RE.match(entry_id):
         raise HTTPException(status_code=400, detail="Invalid entry ID format")
@@ -1456,13 +1463,26 @@ async def dlq_replay(request: Request, entry_id: str) -> RedirectResponse:
         "stream:dlq", min=entry_id, max=entry_id, count=1
     )
     if not entries:
-        return RedirectResponse("/dlq", status_code=303)
+        safe_id = html.escape(entry_id)
+        body = (
+            f"<h2>DLQ Replay Failed</h2>"
+            f'<div class="banner banner--error">Entry {safe_id} not found.</div>'
+            f'<p><a href="/dlq">&larr; Back to DLQ</a></p>'
+        )
+        return HTMLResponse(_page("DLQ Replay Failed", body, path="/dlq"), status_code=404)
     _eid, fields = entries[0]
     try:
         dlq = DLQEnvelope.from_redis_fields(fields)
     except Exception:
         _log.warning("corrupt DLQ entry during replay", extra={"entry_id": entry_id})
-        return RedirectResponse("/dlq", status_code=303)
+        safe_id = html.escape(entry_id)
+        body = (
+            f"<h2>DLQ Replay Failed</h2>"
+            f'<div class="banner banner--error">Entry {safe_id} is corrupt '
+            f"and cannot be replayed.</div>"
+            f'<p><a href="/dlq">&larr; Back to DLQ</a></p>'
+        )
+        return HTMLResponse(_page("DLQ Replay Failed", body, path="/dlq"), status_code=422)
     envelope = _make_replay_envelope(dlq, cfg.max_attempts)
     await publish(r, dlq.original_stream, envelope)
     await r.xdel("stream:dlq", entry_id)
@@ -1726,18 +1746,20 @@ async def show_logs(request: Request) -> HTMLResponse:
   btn.addEventListener('click', function() {
     paused = !paused;
     btn.textContent = paused ? 'Resume' : 'Pause';
-    btn.className = paused ? 'paused' : '';
+    btn.classList.toggle('paused', paused);
     btn.setAttribute('aria-label', paused ? 'Resume auto-refresh' : 'Pause auto-refresh');
   });
 
   function refresh() {
     if (paused) return;
     fetch('/logs/fragment')
-      .then(function(r) { return r.text(); })
+      .then(function(r) { if (!r.ok) { throw new Error('HTTP ' + r.status); } return r.text(); })
       .then(function(html) { container.innerHTML = html; })
       .catch(function(e) {
+        var existing = container.querySelector('.error-msg');
+        if (existing) existing.remove();
         var msg = document.createElement('p');
-        msg.className = 'error';
+        msg.className = 'error-msg';
         msg.textContent = 'Failed to refresh logs: ' + (e.message || 'network error');
         container.prepend(msg);
       });

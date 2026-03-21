@@ -439,7 +439,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         default=False,
-        help="output results as JSON (supported: stats)",
+        help="output results as JSON (supported: stats, dlq list)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 

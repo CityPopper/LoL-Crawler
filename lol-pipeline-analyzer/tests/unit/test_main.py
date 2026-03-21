@@ -116,30 +116,36 @@ class TestAnalyzerLock:
         assert await r.exists(f"player:stats:lock:{puuid}") == 0
 
     @pytest.mark.asyncio
-    async def test_lock_stolen_logs_warning(self, r, cfg, log):
+    async def test_lock_stolen_logs_warning(self, r, cfg, log, caplog):
         """AC-04-22: lock expires mid-processing → release returns 0; still ACKs."""
         puuid = "test-puuid-0001"
         await _add_participant(r, "NA1_1", puuid, 1000)
         env = _analyze_envelope(puuid)
         msg_id = await _setup_message(r, env)
 
-        # Set lock to expire immediately (1ms TTL)
-        original_set = r.set
+        # Intercept _refresh_lock to simulate another worker stealing the lock
+        # after processing completes but before release.
+        original_refresh = _refresh_lock
 
-        async def _set_with_tiny_ttl(key, value, **kwargs):
-            if "player:stats:lock" in key and kwargs.get("nx"):
-                kwargs["px"] = 1  # 1ms — will expire instantly
-            return await original_set(key, value, **kwargs)
+        async def _fake_refresh(redis, lock_key, worker_id, ttl_ms):
+            result = await original_refresh(redis, lock_key, worker_id, ttl_ms)
+            # After a successful refresh, delete the lock to simulate expiry
+            # so the final release in the `finally` block returns 0.
+            await redis.delete(lock_key)
+            return result
 
-        r.set = _set_with_tiny_ttl
+        with (
+            patch("lol_analyzer.main._refresh_lock", side_effect=_fake_refresh),
+            caplog.at_level(logging.WARNING, logger="test-analyzer"),
+        ):
+            await _analyze_player(r, cfg, "my-worker", msg_id, env, log)
 
-        # Let the lock expire and another worker grab it
-        import asyncio
+        # Lock was gone at release time → warning logged
+        assert any("lock expired before release" in rec.message for rec in caplog.records)
 
-        await asyncio.sleep(0.01)
-
-        await _analyze_player(r, cfg, "my-worker", msg_id, env, log)
-        # Should still complete without error
+        # Message was still ACK'd (removed from PEL)
+        pending = await r.xpending_range(_IN_STREAM, _GROUP, min="-", max="+", count=10)
+        assert len(pending) == 0
 
 
 class TestAnalyzerCursor:
@@ -853,6 +859,43 @@ class TestPlayerStatsTTL:
 
         ttl_after = await r.ttl(f"player:stats:{puuid}")
         assert ttl_after > 100  # TTL was refreshed back to ~30 days
+
+
+class TestAnalyzerExpirePipeline:
+    """P14-OPT-1: Analyzer batches 4 EXPIRE calls into a single pipeline."""
+
+    @pytest.mark.asyncio
+    async def test_expire_not_called_directly_on_r(self, r, cfg, log):
+        """The 4 EXPIRE calls for player stat keys use a pipeline, not individual calls."""
+        puuid = "test-puuid-0001"
+        await _add_participant(r, "NA1_1", puuid, 1000, kills=5, deaths=1, assists=3)
+        env = _analyze_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        direct_expire_calls: list[str] = []
+        original_expire = r.expire
+
+        async def tracking_expire(key, *args, **kwargs):
+            direct_expire_calls.append(key)
+            return await original_expire(key, *args, **kwargs)
+
+        r.expire = tracking_expire
+
+        await _analyze_player(r, cfg, "w1", msg_id, env, log)
+
+        # Filter to only stat-key expire calls
+        stat_expire_calls = [
+            k
+            for k in direct_expire_calls
+            if "player:stats" in k or "player:champions" in k or "player:roles" in k
+        ]
+        assert stat_expire_calls == [], (
+            f"Expected 0 direct expire calls for stat keys, got: {stat_expire_calls}"
+        )
+        # Verify TTLs were still set (via pipeline)
+        assert await r.ttl(f"player:stats:{puuid}") > 0
+        assert await r.ttl(f"player:champions:{puuid}") > 0
+        assert await r.ttl(f"player:roles:{puuid}") > 0
 
 
 class TestDerivedEdgeCases:

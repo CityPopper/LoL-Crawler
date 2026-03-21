@@ -72,8 +72,9 @@ async def _requeue_delayed(
     r: aioredis.Redis,
     dlq: DLQEnvelope,
     delay_ms: int,
+    msg_id: str,
 ) -> None:
-    """Store a MessageEnvelope in delayed:messages for the Delay Scheduler to pick up."""
+    """Store a MessageEnvelope in delayed:messages and ACK the DLQ entry atomically."""
     # Restore to the original stream with its original type (strip "stream:" prefix)
     original_type = dlq.original_stream.removeprefix("stream:")
     env = MessageEnvelope(
@@ -89,7 +90,10 @@ async def _requeue_delayed(
     )
     ready_ms = int(time.time() * 1000) + delay_ms
     member = json.dumps(env.to_redis_fields())
-    await r.zadd(_DELAYED_KEY, {member: ready_ms})
+    async with r.pipeline(transaction=True) as pipe:
+        await pipe.zadd(_DELAYED_KEY, {member: ready_ms})
+        await pipe.xack(_IN_STREAM, _GROUP, msg_id)
+        await pipe.execute()
 
 
 def _backoff_ms(dlq_attempts: int) -> int:
@@ -107,13 +111,14 @@ async def _handle_transient(
     fc = dlq.failure_code
     if dlq.dlq_attempts >= cfg.dlq_max_attempts:
         await _archive(r, dlq, log)
+        await r.xack(_IN_STREAM, _GROUP, msg_id)
     else:
         delay = (
             dlq.retry_after_ms
             if fc == "http_429" and dlq.retry_after_ms
             else _backoff_ms(dlq.dlq_attempts)
         )
-        await _requeue_delayed(r, dlq, delay)
+        await _requeue_delayed(r, dlq, delay, msg_id)
         log.info(
             "requeued with delay",
             extra={
@@ -123,7 +128,6 @@ async def _handle_transient(
                 "dlq_attempts": dlq.dlq_attempts + 1,
             },
         )
-    await r.xack(_IN_STREAM, _GROUP, msg_id)
 
 
 async def _handle_404(
@@ -168,7 +172,8 @@ async def _process(
     msg_id: str,
     dlq: DLQEnvelope,
     log: logging.Logger,
-) -> None:
+) -> bool:
+    """Process a DLQ entry. Returns True if the message was handled (ACK'd or requeued)."""
     fc = dlq.failure_code
 
     # 403 is always handled immediately, regardless of halt state
@@ -177,14 +182,14 @@ async def _process(
         log.critical("403 in DLQ — system halted, archiving", extra={"id": dlq.id})
         await _archive(r, dlq, log)
         await r.xack(_IN_STREAM, _GROUP, msg_id)
-        return
+        return True
 
     if await r.get("system:halted"):
         log.info(
             "system halted — leaving DLQ entry in PEL",
             extra={"id": dlq.id, "failure_code": fc},
         )
-        return
+        return False
 
     handler = _HANDLERS.get(fc)
     if handler:
@@ -196,6 +201,10 @@ async def _process(
         )
         await _archive(r, dlq, log)
         await r.xack(_IN_STREAM, _GROUP, msg_id)
+    return True
+
+
+_HALT_SLEEP_S = 5.0
 
 
 async def main() -> None:
@@ -215,8 +224,12 @@ async def main() -> None:
     try:
         while not shutdown_event.is_set():
             try:
+                any_handled = False
                 for msg_id, dlq in await _consume_dlq(r, consumer):
-                    await _process(r, cfg, consumer, msg_id, dlq, log)
+                    handled = await _process(r, cfg, consumer, msg_id, dlq, log)
+                    any_handled = any_handled or handled
+                if not any_handled and await r.get("system:halted"):
+                    await asyncio.sleep(_HALT_SLEEP_S)
             except RedisError, OSError:
                 log.exception("consume error — retrying in 1s")
                 await asyncio.sleep(1)

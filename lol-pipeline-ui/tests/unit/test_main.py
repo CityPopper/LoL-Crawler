@@ -3530,7 +3530,7 @@ class TestDlqReplayEndpoint:
         await r.aclose()
 
     @pytest.mark.asyncio
-    async def test_dlq_replay__nonexistent_entry_redirects(self):
+    async def test_dlq_replay__nonexistent_entry_returns_404(self):
         import fakeredis.aioredis
 
         from lol_ui.main import dlq_replay
@@ -3545,12 +3545,14 @@ class TestDlqReplayEndpoint:
 
         resp = await dlq_replay(request, "0-0")
 
-        assert resp.status_code == 303
-        assert resp.headers["location"] == "/dlq"
+        assert resp.status_code == 404
+        body = resp.body.decode()
+        assert "not found" in body.lower()
+        assert "Back to DLQ" in body
         await r.aclose()
 
     @pytest.mark.asyncio
-    async def test_dlq_replay__corrupt_entry_redirects(self):
+    async def test_dlq_replay__corrupt_entry_returns_422(self):
         import fakeredis.aioredis
 
         from lol_ui.main import dlq_replay
@@ -3566,8 +3568,10 @@ class TestDlqReplayEndpoint:
 
         resp = await dlq_replay(request, entry_id)
 
-        assert resp.status_code == 303
-        assert resp.headers["location"] == "/dlq"
+        assert resp.status_code == 422
+        body = resp.body.decode()
+        assert "corrupt" in body.lower()
+        assert "Back to DLQ" in body
         await r.aclose()
 
     @pytest.mark.asyncio
@@ -4272,7 +4276,7 @@ class TestDlqReplayEntryIdValidation:
 
     @pytest.mark.asyncio
     async def test_dlq_replay__valid_entry_id__accepted(self):
-        """Valid entry_id (e.g. '1234567890-0') passes validation."""
+        """Valid entry_id (e.g. '1234567890-0') passes validation (not 400)."""
         from unittest.mock import MagicMock
 
         import fakeredis.aioredis
@@ -4284,9 +4288,9 @@ class TestDlqReplayEntryIdValidation:
         request.app.state.r = r
         request.app.state.cfg = MagicMock(max_attempts=5)
 
-        # Valid format, but no entry exists -> should redirect, not 400
+        # Valid format, but no entry exists -> should return 404, not 400
         resp = await dlq_replay(request, "1234567890-0")
-        assert resp.status_code == 303
+        assert resp.status_code == 404
         await r.aclose()
 
     @pytest.mark.asyncio

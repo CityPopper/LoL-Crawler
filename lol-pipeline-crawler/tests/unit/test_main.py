@@ -424,6 +424,35 @@ class TestCrawlWindowedDedup:
         assert await r.xlen(_STREAM_OUT) == 0  # known match filtered
 
 
+class TestCrawlFromisoformatValueError:
+    """P14-CR-4: Corrupt last_crawled_at falls back to full ZRANGE instead of crashing."""
+
+    @pytest.mark.asyncio
+    async def test_corrupt_last_crawled_at_falls_back_to_zrange(self, r, cfg, log):
+        """Corrupt last_crawled_at (not valid ISO date) falls back to ZRANGE."""
+        puuid = "test-puuid-0001"
+        # Set a corrupt last_crawled_at value
+        await r.hset(f"player:{puuid}", mapping={"last_crawled_at": "not-a-date"})
+        # Add a known match
+        await r.zadd(f"player:matches:{puuid}", {"NA1_KNOWN": 1000.0})
+
+        env = _puuid_envelope(puuid=puuid)
+        msg_id = await _setup_message(r, env)
+
+        with respx.mock:
+            # API returns the known match — should not publish (it's known)
+            respx.get(_match_ids_url(start=0)).mock(
+                return_value=httpx.Response(200, json=["NA1_KNOWN"])
+            )
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        # Should NOT crash, should fall back to ZRANGE and filter known matches
+        assert await r.xlen(_STREAM_OUT) == 0
+        assert await r.hget(f"player:{puuid}", "last_crawled_at") is not None
+
+
 class TestCrawlSingleZrange:
     @pytest.mark.asyncio
     async def test_zrange_called_once(self, r, cfg, log):
@@ -589,6 +618,29 @@ class TestCrawlNotFound:
         assert pending["pending"] == 0
 
 
+class TestCrawl404ClearsPriority:
+    """P14-FV-7: 404 response clears the priority key."""
+
+    @pytest.mark.asyncio
+    async def test_404_clears_priority(self, r, cfg, log):
+        """NotFoundError (404) clears player:priority:{puuid} before ACK."""
+        puuid = "test-puuid-0001"
+        await r.set(f"player:priority:{puuid}", "1", ex=86400)
+        env = _puuid_envelope(puuid=puuid)
+        msg_id = await _setup_message(r, env)
+
+        with respx.mock:
+            respx.get(_match_ids_url(start=0)).mock(return_value=httpx.Response(404))
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        # Priority should be cleared after 404
+        assert await r.get(f"player:priority:{puuid}") is None
+        # Message should be ACK'd (no DLQ)
+        assert await r.xlen("stream:dlq") == 0
+
+
 class TestCrawlEdgeCases:
     """Tier 3 — Crawler edge case tests."""
 
@@ -675,26 +727,16 @@ class TestMainEntryPoint:
         mock_r.aclose.assert_called_once()
 
 
-class TestCrawlerMaxlenPolicy:
-    """I2-H3: crawler publishes to stream:match_id with maxlen=None (no trimming)."""
+class TestCrawlerPublishPipeline:
+    """P14-OPT-4: Crawler batches per-page match ID publishes into a pipeline."""
 
     @pytest.mark.asyncio
-    async def test_publish_to_match_id_uses_no_maxlen(self, r, cfg, log):
-        """publish() for stream:match_id is called with maxlen=None."""
+    async def test_publish_uses_pipeline_not_individual_calls(self, r, cfg, log):
+        """New match IDs are published via pipeline xadd, not individual publish() calls."""
         env = _puuid_envelope()
         msg_id = await _setup_message(r, env)
 
-        publish_calls: list[dict] = []
-        original_publish = publish
-
-        async def tracking_publish(*args, **kwargs):
-            publish_calls.append({"args": args, "kwargs": kwargs})
-            return await original_publish(*args, **kwargs)
-
-        with (
-            respx.mock,
-            patch("lol_crawler.main.publish", side_effect=tracking_publish),
-        ):
+        with respx.mock:
             respx.get(_match_ids_url()).mock(
                 return_value=httpx.Response(200, json=["NA1_NEW_1", "NA1_NEW_2"])
             )
@@ -702,11 +744,15 @@ class TestCrawlerMaxlenPolicy:
             await _crawl_player(r, riot, cfg, msg_id, env, log)
             await riot.close()
 
-        assert len(publish_calls) == 2
-        for call in publish_calls:
-            assert call["kwargs"].get("maxlen") is None, (
-                f"Expected maxlen=None for stream:match_id, got {call['kwargs']}"
-            )
+        # All new match IDs should be in stream:match_id
+        assert await r.xlen(_STREAM_OUT) == 2
+        # Verify the messages have correct content
+        entries = await r.xrange(_STREAM_OUT)
+        match_ids = [
+            MessageEnvelope.from_redis_fields(fields).payload["match_id"] for _, fields in entries
+        ]
+        assert "NA1_NEW_1" in match_ids
+        assert "NA1_NEW_2" in match_ids
 
 
 class TestPaginationHaltCheck:

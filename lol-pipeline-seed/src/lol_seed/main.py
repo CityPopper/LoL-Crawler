@@ -122,6 +122,7 @@ async def seed(
     )
     await r.expire(f"player:{puuid}", 2592000)  # 30 days
     await r.zadd("players:all", {puuid: time.time()})
+    await r.zremrangebyrank("players:all", 0, -50001)
 
     log.info(
         "player seeded",
