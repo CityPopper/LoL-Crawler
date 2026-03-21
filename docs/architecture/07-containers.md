@@ -14,7 +14,7 @@ All service images use a common base:
 
 ```dockerfile
 # base.Dockerfile  (built once; used by all services)
-FROM python:3.12-slim AS base
+FROM python:3.14-slim AS base
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
@@ -28,7 +28,7 @@ ENV PYTHONUNBUFFERED=1 \
 Each service repo has its own Dockerfile following this pattern:
 
 ```dockerfile
-FROM python:3.12-slim AS builder
+FROM python:3.14-slim AS builder
 WORKDIR /build
 
 # Install common library (version pinned via build arg)
@@ -42,13 +42,13 @@ COPY src/ ./src/
 RUN pip install --no-cache-dir .
 
 # ---- runtime ----
-FROM python:3.12-slim AS runtime
+FROM python:3.14-slim AS runtime
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 WORKDIR /app
 
 # Copy installed packages from builder
-COPY --from=builder /usr/local/lib/python3.12/site-packages \
-                    /usr/local/lib/python3.12/site-packages
+COPY --from=builder /usr/local/lib/python3.14/site-packages \
+                    /usr/local/lib/python3.14/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
 # Copy service source

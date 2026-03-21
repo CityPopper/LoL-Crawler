@@ -384,10 +384,13 @@ class TestNogroupCacheInvalidation:
     @pytest.mark.asyncio
     async def test_invalidate_ensured_no_error_when_not_cached(self):
         """_invalidate_ensured is a no-op when the client has no cache entry."""
-        from lol_pipeline.streams import _invalidate_ensured
+        from lol_pipeline.streams import _ensured, _invalidate_ensured
 
         mock_r = AsyncMock()
         _invalidate_ensured(mock_r, "stream:x", "g")  # should not raise
+
+        # Client should have no entry in _ensured (was never cached)
+        assert mock_r not in _ensured
 
 
 class TestPublishErrors:

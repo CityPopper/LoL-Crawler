@@ -890,3 +890,41 @@ class TestCircuitBreakerIntegration:
         assert await r.zcard(_DELAYED_KEY) == 0
         assert await r.xlen("stream:match_id") == 1
         assert member not in _circuit_open
+
+
+class TestCircuitResetClearsFailures:
+    """P14-FV-3: After circuit expires, failure counter is reset."""
+
+    def test_circuit_expire_resets_failure_counter(self):
+        """When circuit TTL expires, _member_failures is also cleared for that member."""
+        member = "test-member-reset"
+        # Simulate 10 failures (circuit opens)
+        _member_failures[member] = 10
+        _circuit_open[member] = time.monotonic() - 301  # expired
+
+        # This should reset the circuit and the failure counter
+        result = _is_circuit_open(member)
+
+        assert result is False
+        assert member not in _circuit_open
+        assert member not in _member_failures, (
+            "Failure counter should be reset when circuit expires"
+        )
+
+    def test_circuit_expire_next_failure_does_not_retrip(self):
+        """After circuit expires and counter resets, a single failure does not re-trip."""
+        member = "test-member-no-retrip"
+        import logging
+
+        log = logging.getLogger("test")
+
+        _member_failures[member] = 10
+        _circuit_open[member] = time.monotonic() - 301
+
+        # Expire circuit
+        _is_circuit_open(member)
+
+        # One new failure should NOT re-trip (count=1 < 10)
+        _record_failure(member, log)
+        assert member not in _circuit_open
+        assert _member_failures[member] == 1

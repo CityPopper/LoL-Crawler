@@ -371,6 +371,7 @@ halted) regardless of system state.
 | `replay-fetch <match_id>` | Re-enqueue a single match ID to `stream:match_id` |
 | `reseed <GameName#TagLine> [--region]` | Clear cooldown and re-enqueue a player to `stream:puuid` |
 | `recalc-priority` | Recalculate `system:priority_count` by scanning `player:priority:*` keys |
+| `recalc-players` | Rebuilds `players:all` sorted set from existing `player:{puuid}` hashes |
 
 **Reads:**
 - `player:stats:{puuid}` (Hash) — for `stats` command

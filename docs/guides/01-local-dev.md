@@ -260,7 +260,7 @@ just check      # lint + typecheck
 
 ```bash
 just lint
-# Runs: ruff check --fix . && ruff format --check .
+# Runs: ruff check . && ruff format --check .
 # For each service directory
 ```
 

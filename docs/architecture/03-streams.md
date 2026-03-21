@@ -31,6 +31,7 @@ Every message on every stream is a flat Redis Stream entry. Fields:
 | `attempts`      | integer  | Delivery attempt count (starts at 0)             |
 | `max_attempts`  | integer  | Max before DLQ (from `MAX_ATTEMPTS` env)         |
 | `enqueued_at`   | string   | ISO 8601 timestamp when first published          |
+| `priority`      | string   | Message priority level (`"normal"` or `"high"`)  |
 
 Redis Streams store entries as flat string maps; `payload` is JSON-serialized within the entry.
 

@@ -100,6 +100,10 @@ class TestRecoveryRequeue:
 
         members = await r.zrange(_DELAYED_KEY, 0, -1)
         assert len(members) == 1
+        fields = json.loads(members[0])
+        env = MessageEnvelope.from_redis_fields(fields)
+        assert env.dlq_attempts == 1
+        assert env.source_stream == "stream:match_id"
 
     @pytest.mark.asyncio
     async def test_http_5xx_higher_attempts_longer_delay(self, r, cfg, log):
@@ -126,14 +130,18 @@ class TestRecoveryArchive:
     @pytest.mark.asyncio
     async def test_max_dlq_attempts_archived(self, r, cfg, log):
         """AC-05-02: http_429 at DLQ_MAX_ATTEMPTS → archived; match.status='failed'."""
-        dlq = _make_dlq(failure_code="http_429", dlq_attempts=cfg.dlq_max_attempts)
+        dlq = _make_dlq(
+            failure_code="http_429",
+            dlq_attempts=cfg.dlq_max_attempts,
+            match_id="NA1_archived",
+        )
         msg_id = await _setup_dlq_msg(r, dlq)
 
         await _process(r, cfg, "test-consumer", msg_id, dlq, log)
 
         assert await r.xlen(_ARCHIVE_STREAM) == 1
-        assert await r.hget("match:NA1_123", "status") == "failed"
-        assert await r.sismember("match:status:failed", "NA1_123")
+        assert await r.hget("match:NA1_archived", "status") == "failed"
+        assert await r.sismember("match:status:failed", "NA1_archived")
         assert await r.zcard(_DELAYED_KEY) == 0
 
 
@@ -141,7 +149,7 @@ class TestRecoveryDiscard:
     @pytest.mark.asyncio
     async def test_http_404_discarded(self, r, cfg, log):
         """AC-05-05: http_404 → ACK'd, discarded; no ZADD; no archive."""
-        dlq = _make_dlq(failure_code="http_404")
+        dlq = _make_dlq(failure_code="http_404", match_id="NA1_404")
         msg_id = await _setup_dlq_msg(r, dlq)
 
         await _process(r, cfg, "test-consumer", msg_id, dlq, log)
@@ -414,6 +422,49 @@ class TestGracefulShutdown:
             mock_cfg.return_value = Config(_env_file=None)
             await main()  # should exit cleanly, not loop forever
         mock_r.aclose.assert_called_once()
+
+
+class TestRecoverySleepWhenHalted:
+    """P14-FV-2: When system:halted and PEL entries are not ACK'd, sleep to prevent busy-spin."""
+
+    @pytest.mark.asyncio
+    async def test_halted_with_pel_entries_sleeps(self, monkeypatch):
+        """When halted, recovery main loop sleeps after processing PEL entries."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_r = AsyncMock()
+        mock_r.get.return_value = "1"  # system:halted
+        call_count = 0
+
+        dlq = _make_dlq(failure_code="http_5xx")
+
+        async def fake_consume_dlq(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return [("msg-1", dlq)]
+            raise KeyboardInterrupt
+
+        sleep_args: list[float] = []
+
+        async def tracking_sleep(seconds, *args, **kwargs):
+            sleep_args.append(seconds)
+
+        mock_loop = MagicMock()
+        mock_loop.add_signal_handler.return_value = None
+
+        with (
+            patch("lol_recovery.main.Config") as mock_cfg,
+            patch("lol_recovery.main.get_redis", return_value=mock_r),
+            patch("lol_recovery.main._consume_dlq", side_effect=fake_consume_dlq),
+            patch("lol_recovery.main.asyncio.sleep", side_effect=tracking_sleep),
+            patch("lol_recovery.main.asyncio.get_running_loop", return_value=mock_loop),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            with pytest.raises(KeyboardInterrupt):
+                await main()
+
+        assert 5.0 in sleep_args, f"Expected 5s halt sleep, got {sleep_args}"
 
 
 class TestMainLoopRetry:
@@ -854,6 +905,33 @@ class TestMainEntryPoint:
             with pytest.raises(KeyboardInterrupt):
                 await main()
         mock_r.aclose.assert_called_once()
+
+
+class TestRequeueDelayedAtomic:
+    """P14-DBG-4: _requeue_delayed uses pipeline for ZADD+XACK atomicity."""
+
+    @pytest.mark.asyncio
+    async def test_requeue_uses_pipeline(self, r, cfg, log):
+        """_handle_transient wraps ZADD+XACK in a pipeline (transaction=True)."""
+        dlq = _make_dlq(failure_code="http_5xx", dlq_attempts=0)
+        msg_id = await _setup_dlq_msg(r, dlq)
+
+        pipeline_calls: list[str] = []
+        original_pipeline = r.pipeline
+
+        def tracking_pipeline(**kwargs):
+            pipeline_calls.append(f"transaction={kwargs.get('transaction')}")
+            return original_pipeline(**kwargs)
+
+        r.pipeline = tracking_pipeline
+
+        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+
+        r.pipeline = original_pipeline
+
+        # Verify pipeline was used and ZADD happened
+        assert len(pipeline_calls) >= 1
+        assert await r.zcard(_DELAYED_KEY) == 1
 
 
 class TestArchiveMatchTTL:

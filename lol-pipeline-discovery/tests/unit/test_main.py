@@ -11,7 +11,7 @@ import pytest
 import respx
 from lol_pipeline.config import Config
 from lol_pipeline.riot_api import RiotClient
-from redis.exceptions import RedisError
+from redis.exceptions import RedisError, ResponseError
 
 from lol_discovery.main import (
     _MAX_STREAM_BACKLOG,
@@ -540,6 +540,36 @@ class TestPromoteBatchEdgeCases:
         await riot.close()
         # Player should still be in queue
         assert await r.zcard("discover:players") == 1
+
+
+class TestIsIdleNarrowResponseError:
+    """P14-CR-6: _is_idle only catches NOGROUP ResponseError, re-raises others."""
+
+    @pytest.mark.asyncio
+    async def test_nogroup_error_treated_as_idle(self, r):
+        """ResponseError containing 'NOGROUP' is caught and stream treated as idle."""
+        with patch.object(
+            r,
+            "xinfo_groups",
+            new_callable=AsyncMock,
+            side_effect=ResponseError("ERR no such key or NOGROUP"),
+        ):
+            result = await _is_idle(r)
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_non_nogroup_error_is_reraised(self, r):
+        """ResponseError NOT containing 'NOGROUP' is re-raised, not swallowed."""
+        with patch.object(
+            r,
+            "xinfo_groups",
+            new_callable=AsyncMock,
+            side_effect=ResponseError(
+                "WRONGTYPE Operation against a key holding the wrong kind of value"
+            ),
+        ):
+            with pytest.raises(ResponseError, match="WRONGTYPE"):
+                await _is_idle(r)
 
 
 class TestDiscoveryTier3EdgeCases:

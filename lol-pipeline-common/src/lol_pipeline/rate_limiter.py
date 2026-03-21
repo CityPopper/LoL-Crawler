@@ -36,6 +36,8 @@ local stored_s = redis.call("GET", KEYS[3])
 local stored_l = redis.call("GET", KEYS[4])
 local limit_s = (stored_s and tonumber(stored_s)) or tonumber(ARGV[2])
 local limit_l = (stored_l and tonumber(stored_l)) or tonumber(ARGV[3])
+if limit_s < 1 then limit_s = tonumber(ARGV[2]) end
+if limit_l < 1 then limit_l = tonumber(ARGV[3]) end
 
 redis.call("ZREMRANGEBYSCORE", key_s, "-inf", now - win_s)
 redis.call("ZREMRANGEBYSCORE", key_l, "-inf", now - win_l)
@@ -93,7 +95,14 @@ async def wait_for_token(
     r: aioredis.Redis,
     key_prefix: str = "ratelimit",
     limit_per_second: int = _SHORT_LIMIT,
+    max_wait_s: float = 60.0,
 ) -> None:
-    """Block until a rate limit token is acquired, polling every 50ms."""
+    """Block until a rate limit token is acquired, polling every 50ms.
+
+    Raises ``TimeoutError`` if *max_wait_s* seconds elapse without acquiring a token.
+    """
+    deadline = time.monotonic() + max_wait_s
     while not await acquire_token(r, key_prefix, limit_per_second):
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"Rate limiter wait exceeded {max_wait_s}s")
         await asyncio.sleep(0.05)

@@ -147,10 +147,10 @@ from environment or `.env`).
 |---------|---------|---------|
 | Redis connection error | Logs exception, sleeps 1 s, retries | Automatic — no data loss |
 | Riot API transient error (5xx, 429) | Player left in `discover:players`, skipped this cycle | Automatic on next poll |
-| Riot API auth error (403) | Sets `system:halted`, exits | Requires valid API key and manual `just admin unhalt` |
+| Riot API auth error (403) | Sets `system:halted`, exits | Requires valid API key and manual `just admin system-resume` |
 | Riot API not found (404) | Player permanently removed from `discover:players` | None — account is deleted/banned |
 | Missing `gameName`/`tagLine` in API response | Player permanently removed from `discover:players` | None — account is unusable |
-| `system:halted` set by any service | Loop exits immediately | Requires `just admin unhalt` |
+| `system:halted` set by any service | Loop exits immediately | Requires `just admin system-resume` |
 | `system:priority_count > 0` | Promotion skipped; pipeline serves seeded players first | Automatic — resumes when priority clears or TTL expires |
 | Process crash mid-promotion | Player remains in `discover:players` (at-least-once) | Re-promoted on next cycle |
 

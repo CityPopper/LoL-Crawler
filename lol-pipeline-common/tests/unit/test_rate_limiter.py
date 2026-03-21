@@ -153,6 +153,36 @@ class TestLuaKeysArray:
         assert results[2] is False
 
 
+class TestLuaFloorGuard:
+    """P14-DBG-2: Stored limit of '0' falls back to default, preventing deadlock."""
+
+    @pytest.mark.asyncio
+    async def test_stored_limit_zero_falls_back_to_default(
+        self, r: fakeredis.aioredis.FakeRedis
+    ) -> None:
+        """Stored short limit of '0' falls back to default — tokens still granted."""
+        await r.set("ratelimit:limits:short", "0")
+
+        # With limit_per_second=5 as fallback, first 5 should succeed
+        results = [await acquire_token(r, limit_per_second=5) for _ in range(6)]
+
+        assert results[:5] == [True, True, True, True, True]
+        assert results[5] is False
+
+    @pytest.mark.asyncio
+    async def test_stored_long_limit_zero_falls_back_to_default(
+        self, r: fakeredis.aioredis.FakeRedis
+    ) -> None:
+        """Stored long limit of '0' falls back to default long limit (100)."""
+        await r.set("ratelimit:limits:long", "0")
+
+        # Short limit fallback = 200 (high), so long limit of 100 is binding
+        results = [await acquire_token(r, limit_per_second=200) for _ in range(101)]
+
+        assert results[:100] == [True] * 100
+        assert results[100] is False
+
+
 class TestRateLimiterBoundary:
     """Tier 3 — Rate limiter boundary conditions."""
 
@@ -241,3 +271,30 @@ class TestWaitForToken:
             ) as mock_sleep:
                 await wait_for_token(r)
                 mock_sleep.assert_called_once_with(0.05)
+
+    @pytest.mark.asyncio
+    async def test_timeout_raises_when_never_acquired(self, r):
+        """P14-ARC-2: wait_for_token raises TimeoutError when max_wait_s exceeded."""
+
+        async def always_deny(*args, **kwargs):
+            return False
+
+        with patch("lol_pipeline.rate_limiter.acquire_token", side_effect=always_deny):
+            with patch("lol_pipeline.rate_limiter.asyncio.sleep", new_callable=AsyncMock):
+                with pytest.raises(TimeoutError, match="Rate limiter wait exceeded"):
+                    await wait_for_token(r, max_wait_s=0.0)
+
+    @pytest.mark.asyncio
+    async def test_timeout_does_not_fire_when_acquired_in_time(self, r):
+        """P14-ARC-2: wait_for_token succeeds if token acquired within max_wait_s."""
+        call_count = 0
+
+        async def deny_then_allow(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return call_count > 1
+
+        with patch("lol_pipeline.rate_limiter.acquire_token", side_effect=deny_then_allow):
+            with patch("lol_pipeline.rate_limiter.asyncio.sleep", new_callable=AsyncMock):
+                await wait_for_token(r, max_wait_s=60.0)
+        assert call_count == 2

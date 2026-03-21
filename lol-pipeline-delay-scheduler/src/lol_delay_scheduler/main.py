@@ -51,8 +51,9 @@ def _is_circuit_open(member: str) -> bool:
     if opened_at is None:
         return False
     if time.monotonic() - opened_at >= _CIRCUIT_OPEN_TTL_S:
-        # TTL expired — allow a single retry
+        # TTL expired — allow a single retry; reset failure counter
         del _circuit_open[member]
+        _member_failures.pop(member, None)
         return False
     return True
 

@@ -74,7 +74,9 @@ async def _is_idle(r: aioredis.Redis) -> bool:
         # Layer 2: consumer group pending/lag check
         try:
             groups: list[Any] = await r.xinfo_groups(stream)
-        except ResponseError:
+        except ResponseError as exc:
+            if "NOGROUP" not in str(exc):
+                raise
             continue  # stream does not exist yet — idle for this stream
         if not groups:
             continue  # no consumer groups registered — idle for this stream
@@ -187,6 +189,7 @@ async def _promote_batch(
             )
             await pipe.expire(f"player:{puuid}", 2592000)  # 30 days
             await pipe.zadd("players:all", {puuid: time.time()})
+            await pipe.zremrangebyrank("players:all", 0, -50001)
             await pipe.zrem(_DISCOVER_KEY, member)
             await pipe.execute()
         promoted += 1

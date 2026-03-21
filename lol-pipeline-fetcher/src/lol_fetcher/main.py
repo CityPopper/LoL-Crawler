@@ -19,6 +19,8 @@ from lol_pipeline.riot_api import AuthError, NotFoundError, RateLimitError, Riot
 from lol_pipeline.service import run_consumer
 from lol_pipeline.streams import ack, nack_to_dlq, publish
 
+MATCH_DATA_TTL_SECONDS: int = int(os.getenv("MATCH_DATA_TTL_SECONDS", "604800"))
+
 _IN_STREAM = "stream:match_id"
 _OUT_STREAM = "stream:parse"
 _GROUP = "fetchers"
@@ -94,6 +96,7 @@ async def _fetch_match(
 
     await raw_store.set(match_id, json.dumps(data))
     await r.hset(f"match:{match_id}", mapping={"status": "fetched"})  # type: ignore[misc]
+    await r.expire(f"match:{match_id}", MATCH_DATA_TTL_SECONDS)
 
     out = MessageEnvelope(
         source_stream=_OUT_STREAM,
