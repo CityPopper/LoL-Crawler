@@ -13,6 +13,7 @@ import redis.asyncio as aioredis
 from redis.exceptions import RedisError
 
 from lol_pipeline.models import MessageEnvelope
+from lol_pipeline.priority import PRIORITY_ORDER
 from lol_pipeline.streams import ack, consume, nack_to_dlq
 
 # Handler receives (msg_id, envelope); r is captured in the closure.
@@ -143,6 +144,11 @@ async def run_consumer(
             log.exception("consume error — retrying in 1s")
             await asyncio.sleep(1)
             continue
+        # R6: Sort batch by priority so higher-priority messages are processed first
+        if len(messages) > 1:
+            messages.sort(
+                key=lambda m: PRIORITY_ORDER.get(m[1].priority, 0), reverse=True
+            )
         if messages:
             idle_polls = 0
         else:

@@ -13,14 +13,14 @@ from typing import Any
 
 import redis.asyncio as aioredis
 from lol_pipeline.config import Config
-from lol_pipeline.constants import VALID_REPLAY_STREAMS
+from lol_pipeline.constants import STREAM_DLQ_ARCHIVE, VALID_REPLAY_STREAMS
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import DLQEnvelope, MessageEnvelope
-from lol_pipeline.priority import set_priority
+from lol_pipeline.priority import PRIORITY_MANUAL_20, set_priority
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.resolve import resolve_puuid
 from lol_pipeline.riot_api import PLATFORM_TO_REGION, RiotClient
-from lol_pipeline.streams import publish, replay_from_dlq
+from lol_pipeline.streams import ANALYZE_STREAM_MAXLEN, MATCH_ID_STREAM_MAXLEN, publish, replay_from_dlq
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import RedisError
 
@@ -29,9 +29,22 @@ _log = get_logger("admin")
 _STREAM_PUUID = "stream:puuid"
 _STREAM_MATCH_ID = "stream:match_id"
 _STREAM_PARSE = "stream:parse"
+_STREAM_ANALYZE = "stream:analyze"
 _STREAM_DLQ = "stream:dlq"
+_DELAYED_MESSAGES = "delayed:messages"
 
 _VALID_REPLAY_STREAMS = VALID_REPLAY_STREAMS
+
+_DEFAULT_MAXLEN = 10_000
+
+
+def _maxlen_for_stream(stream: str) -> int | None:
+    """Return the MAXLEN to use when publishing to *stream*."""
+    if stream == _STREAM_MATCH_ID:
+        return MATCH_ID_STREAM_MAXLEN
+    if stream == "stream:analyze":
+        return ANALYZE_STREAM_MAXLEN
+    return _DEFAULT_MAXLEN
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +103,17 @@ def _print_error(msg: str) -> None:
 def _print_info(msg: str) -> None:
     """Print a neutral informational message."""
     print(f"[--] {msg}")
+
+
+def _confirm(prompt: str, args: argparse.Namespace) -> bool:
+    """Return True if the user confirms a destructive operation.
+
+    Skips the prompt and returns True when ``args.yes`` is set (``-y`` flag).
+    """
+    if getattr(args, "yes", False):
+        return True
+    answer = input(prompt).strip().lower()
+    return answer in ("y", "yes")
 
 
 # Priority stat labels for display ordering
@@ -262,6 +286,9 @@ async def cmd_stats(
 
 
 async def cmd_system_halt(r: aioredis.Redis, args: argparse.Namespace) -> int:
+    if not _confirm("Are you sure you want to halt the pipeline? [y/N]: ", args):
+        _print_info("aborted")
+        return 1
     await r.set("system:halted", "1")
     _print_ok("system halted \u2014 all consumers will stop on next message")
     return 0
@@ -325,6 +352,9 @@ async def cmd_dlq_clear(r: aioredis.Redis, args: argparse.Namespace) -> int:
     if not args.all:
         _print_error("--all is required")
         return 1
+    if not _confirm("Are you sure you want to clear all DLQ entries? [y/N]: ", args):
+        _print_info("aborted")
+        return 1
     entries = await _dlq_entries(r)
     if not entries:
         _print_info("DLQ is empty — nothing to clear")
@@ -351,7 +381,8 @@ async def cmd_replay_parse(r: aioredis.Redis, cfg: Config, args: argparse.Namesp
             payload={"match_id": match_id, "region": region},
             max_attempts=cfg.max_attempts,
         )
-        await r.xadd(_STREAM_PARSE, envelope.to_redis_fields(), maxlen=10_000, approximate=True)  # type: ignore[arg-type]
+        ml = _maxlen_for_stream(_STREAM_PARSE) or _DEFAULT_MAXLEN
+        await r.xadd(_STREAM_PARSE, envelope.to_redis_fields(), maxlen=ml, approximate=True)  # type: ignore[arg-type]
     _print_ok(f"replayed {len(match_ids)} entries to {_STREAM_PARSE}")
     return 0
 
@@ -365,7 +396,12 @@ async def cmd_replay_fetch(r: aioredis.Redis, cfg: Config, args: argparse.Namesp
         payload={"match_id": match_id, "region": region},
         max_attempts=cfg.max_attempts,
     )
-    await r.xadd(_STREAM_MATCH_ID, envelope.to_redis_fields(), maxlen=10_000, approximate=True)  # type: ignore[arg-type]
+    kwargs: dict[str, Any] = {}
+    ml = _maxlen_for_stream(_STREAM_MATCH_ID)
+    if ml is not None:
+        kwargs["maxlen"] = ml
+        kwargs["approximate"] = True
+    await r.xadd(_STREAM_MATCH_ID, envelope.to_redis_fields(), **kwargs)  # type: ignore[arg-type]
     _print_ok(f"enqueued {match_id} \u2192 {_STREAM_MATCH_ID}")
     return 0
 
@@ -418,7 +454,7 @@ async def cmd_reseed(
     # Clear cooldown fields so the next Seed run is not blocked
     await r.hdel(f"player:{puuid}", "seeded_at", "last_crawled_at")  # type: ignore[misc]
 
-    # Publish directly to stream:puuid (high priority, matching Seed service)
+    # Publish directly to stream:puuid (manual_20 priority, matching Seed service)
     envelope = MessageEnvelope(
         source_stream=_STREAM_PUUID,
         type="puuid",
@@ -429,11 +465,286 @@ async def cmd_reseed(
             "region": args.region,
         },
         max_attempts=cfg.max_attempts,
-        priority="high",
+        priority=PRIORITY_MANUAL_20,
     )
     await set_priority(r, puuid)
     entry_id = await publish(r, _STREAM_PUUID, envelope)
     _print_ok(f"reseeded {_sanitize(args.riot_id)} \u2192 {_STREAM_PUUID} ({entry_id})")
+    return 0
+
+
+async def cmd_reset_stats(
+    r: aioredis.Redis, riot: RiotClient, cfg: Config, args: argparse.Namespace
+) -> int:
+    """Wipe player stats and re-trigger analysis."""
+    puuid = await _resolve_puuid(riot, args.riot_id, args.region, r)
+    if puuid is None:
+        return 1
+    keys_to_delete = [
+        f"player:stats:{puuid}",
+        f"player:stats:cursor:{puuid}",
+        f"player:champions:{puuid}",
+        f"player:roles:{puuid}",
+    ]
+    deleted: int = await r.delete(*keys_to_delete)
+    envelope = MessageEnvelope(
+        source_stream=_STREAM_ANALYZE,
+        type="analyze",
+        payload={"puuid": puuid},
+        max_attempts=cfg.max_attempts,
+    )
+    await publish(r, _STREAM_ANALYZE, envelope, maxlen=ANALYZE_STREAM_MAXLEN)
+    safe_rid = _sanitize(args.riot_id)
+    _print_ok(f"deleted {deleted} keys for {safe_rid}; enqueued re-analysis")
+    return 0
+
+
+async def cmd_dlq_archive_list(r: aioredis.Redis, args: argparse.Namespace) -> int:
+    """List entries in stream:dlq:archive."""
+    raw: list[Any] = await r.xrange(STREAM_DLQ_ARCHIVE, "-", "+")
+    if not raw:
+        _print_info("DLQ archive is empty")
+        return 0
+    for entry_id, fields in raw:
+        try:
+            dlq = DLQEnvelope.from_redis_fields(fields)
+            stream = dlq.original_stream[:15]
+            _print_info(f"{entry_id}  {stream:<16}  {dlq.failure_code}")
+        except (KeyError, ValueError, TypeError):
+            code = fields.get("failure_code", "?")
+            stream = fields.get("original_stream", "?")[:15]
+            reason = fields.get("failure_reason", "?")
+            _print_info(f"{entry_id}  {stream:<16}  {code}  ({reason})")
+    _print_ok(f"{len(raw)} archive entries")
+    return 0
+
+
+async def cmd_dlq_archive_clear(r: aioredis.Redis, args: argparse.Namespace) -> int:
+    """Clear all entries from stream:dlq:archive."""
+    if not args.all:
+        _print_error("--all is required")
+        return 1
+    if not _confirm(
+        "Are you sure you want to clear all DLQ archive entries? [y/N]: ", args
+    ):
+        _print_info("aborted")
+        return 1
+    length: int = await r.xlen(STREAM_DLQ_ARCHIVE)
+    if length == 0:
+        _print_info("DLQ archive is empty — nothing to clear")
+        return 0
+    await r.delete(STREAM_DLQ_ARCHIVE)
+    _print_ok(f"cleared {length} entries from {STREAM_DLQ_ARCHIVE}")
+    return 0
+
+
+async def cmd_clear_priority(
+    r: aioredis.Redis, riot: RiotClient, args: argparse.Namespace
+) -> int:
+    """Delete player:priority:* keys for a specific player or all players."""
+    if not getattr(args, "all", False) and not getattr(args, "riot_id", None):
+        _print_error("specify a Riot ID or --all")
+        return 1
+    if getattr(args, "all", False):
+        keys = [key async for key in r.scan_iter(match="player:priority:*", count=100)]
+        if keys:
+            await r.delete(*keys)
+        count = len(keys)
+        _print_ok(f"deleted {count} player:priority:* keys")
+        return 0
+    # Single player
+    puuid = await _resolve_puuid(riot, args.riot_id, args.region, r)
+    if puuid is None:
+        return 1
+    deleted: int = await r.delete(f"player:priority:{puuid}")
+    safe_rid = _sanitize(args.riot_id)
+    if deleted:
+        _print_ok(f"deleted player:priority:{puuid}")
+    else:
+        _print_info(f"no priority key found for {safe_rid}")
+    return 0
+
+
+async def cmd_delayed_list(r: aioredis.Redis, args: argparse.Namespace) -> int:
+    """Show entries in delayed:messages sorted set."""
+    entries: list[tuple[str, float]] = await r.zrangebyscore(  # type: ignore[misc]
+        _DELAYED_MESSAGES, "-inf", "+inf", withscores=True, start=0, num=50
+    )
+    if not entries:
+        _print_info("delayed:messages is empty")
+        return 0
+    now_ms = datetime.now(tz=UTC).timestamp() * 1000
+    for member, score in entries:
+        truncated = member[:80] + ("..." if len(member) > 80 else "")
+        ready_dt = datetime.fromtimestamp(score / 1000, tz=UTC).isoformat()
+        delta_ms = score - now_ms
+        if delta_ms <= 0:
+            eta = "ready now"
+        else:
+            eta = f"in {delta_ms / 1000:.0f}s"
+        _print_info(f"{truncated}  ready={ready_dt}  ({eta})")
+    total: int = await r.zcard(_DELAYED_MESSAGES)
+    _print_ok(f"showing {len(entries)} of {total} delayed messages")
+    return 0
+
+
+_UPDATE_CHAMPION_LUA = """
+local stats_key = KEYS[1]
+local index_key = KEYS[2]
+local patch_list_key = KEYS[3]
+local win     = tonumber(ARGV[1])
+local kills   = tonumber(ARGV[2])
+local deaths  = tonumber(ARGV[3])
+local assists  = tonumber(ARGV[4])
+local gold     = tonumber(ARGV[5])
+local cs       = tonumber(ARGV[6])
+local damage   = tonumber(ARGV[7])
+local vision   = tonumber(ARGV[8])
+local index_member = ARGV[9]
+local game_start   = tonumber(ARGV[10])
+local patch        = ARGV[11]
+local ttl          = tonumber(ARGV[12])
+local double_kills = tonumber(ARGV[13])
+local triple_kills = tonumber(ARGV[14])
+local quadra_kills = tonumber(ARGV[15])
+local penta_kills  = tonumber(ARGV[16])
+
+redis.call('HINCRBY', stats_key, 'games', 1)
+redis.call('HINCRBY', stats_key, 'wins', win)
+redis.call('HINCRBY', stats_key, 'kills', kills)
+redis.call('HINCRBY', stats_key, 'deaths', deaths)
+redis.call('HINCRBY', stats_key, 'assists', assists)
+redis.call('HINCRBY', stats_key, 'gold', gold)
+redis.call('HINCRBY', stats_key, 'cs', cs)
+redis.call('HINCRBY', stats_key, 'damage', damage)
+redis.call('HINCRBY', stats_key, 'vision', vision)
+redis.call('HINCRBY', stats_key, 'double_kills', double_kills)
+redis.call('HINCRBY', stats_key, 'triple_kills', triple_kills)
+redis.call('HINCRBY', stats_key, 'quadra_kills', quadra_kills)
+redis.call('HINCRBY', stats_key, 'penta_kills', penta_kills)
+redis.call('EXPIRE', stats_key, ttl)
+
+redis.call('ZINCRBY', index_key, 1, index_member)
+redis.call('EXPIRE', index_key, ttl)
+
+redis.call('ZADD', patch_list_key, 'NX', game_start, patch)
+redis.call('EXPIRE', patch_list_key, ttl)
+return 1
+"""
+
+
+async def cmd_backfill_champions(
+    r: aioredis.Redis, cfg: Config, args: argparse.Namespace
+) -> int:
+    """Reprocess all parsed ranked matches to populate champion stats."""
+    done_key = "champion:backfill:done"
+    parsed: set[str] = await r.smembers("match:status:parsed")  # type: ignore[misc]
+    already_done: set[str] = await r.smembers(done_key)  # type: ignore[misc]
+    todo = parsed - already_done
+    if not todo:
+        _print_info("No matches to backfill (all already processed)")
+        return 0
+    count = 0
+    batch: list[str] = []
+    for match_id in todo:
+        batch.append(match_id)
+        if len(batch) >= 100:
+            processed = await _backfill_batch(r, batch)
+            count += processed
+            await r.sadd(done_key, *batch)
+            batch = []
+            _print_info(f"Progress: {count} matches backfilled...")
+    if batch:
+        processed = await _backfill_batch(r, batch)
+        count += processed
+        await r.sadd(done_key, *batch)
+    await r.expire(done_key, 90 * 86400)
+    _print_ok(f"Backfilled champion stats from {count} ranked matches")
+    return 0
+
+
+async def _backfill_batch(r: aioredis.Redis, match_ids: list[str]) -> int:
+    """Process a batch of matches for champion stats backfill.
+
+    Returns count of ranked matches processed.
+    """
+    async with r.pipeline(transaction=False) as pipe:
+        for mid in match_ids:
+            pipe.hgetall(f"match:{mid}")
+        metadata_list: list[dict[str, str]] = await pipe.execute()
+    count = 0
+    ttl = 90 * 86400  # 90 days
+    for match_id, meta in zip(match_ids, metadata_list, strict=True):
+        if not meta or meta.get("queue_id") != "420":
+            continue
+        patch = meta.get("patch", "")
+        if not patch:
+            continue
+        participant_keys: list[str] = []
+        async for key in r.scan_iter(
+            match=f"participant:{match_id}:*", count=20
+        ):
+            participant_keys.append(key)
+        if not participant_keys:
+            continue
+        async with r.pipeline(transaction=False) as pipe:
+            for key in participant_keys:
+                pipe.hgetall(key)
+            participants: list[dict[str, str]] = await pipe.execute()
+        for p in participants:
+            if not p:
+                continue
+            team_position = p.get("team_position", "")
+            champion_name = p.get("champion_name", "")
+            if not team_position or not champion_name:
+                continue
+            stats_key = f"champion:stats:{champion_name}:{patch}:{team_position}"
+            index_key = f"champion:index:{patch}"
+            index_member = f"{champion_name}:{team_position}"
+            game_start = meta.get("game_start", "0")
+            await r.eval(
+                _UPDATE_CHAMPION_LUA,
+                3,
+                stats_key,
+                index_key,
+                "patch:list",
+                int(p.get("win", "0")),
+                int(p.get("kills", "0")),
+                int(p.get("deaths", "0")),
+                int(p.get("assists", "0")),
+                int(p.get("gold_earned", "0")),
+                int(p.get("total_minions_killed", "0")),
+                int(p.get("total_damage_dealt_to_champions", "0")),
+                int(p.get("vision_score", "0")),
+                index_member,
+                game_start,
+                patch,
+                ttl,
+                int(p.get("double_kills", "0")),
+                int(p.get("triple_kills", "0")),
+                int(p.get("quadra_kills", "0")),
+                int(p.get("penta_kills", "0")),
+            )
+        count += 1
+    return count
+
+
+async def cmd_delayed_flush(r: aioredis.Redis, args: argparse.Namespace) -> int:
+    """Remove all members from delayed:messages."""
+    if not args.all:
+        _print_error("--all is required")
+        return 1
+    if not _confirm(
+        "Are you sure you want to flush all delayed messages? [y/N]: ", args
+    ):
+        _print_info("aborted")
+        return 1
+    count: int = await r.zcard(_DELAYED_MESSAGES)
+    if count == 0:
+        _print_info("delayed:messages is empty — nothing to flush")
+        return 0
+    await r.delete(_DELAYED_MESSAGES)
+    _print_ok(f"flushed {count} entries from {_DELAYED_MESSAGES}")
     return 0
 
 
@@ -449,6 +760,12 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="output results as JSON (supported: stats, dlq list)",
+    )
+    parser.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        default=False,
+        help="skip confirmation prompts (for scripting)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -470,6 +787,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_clear = dlq_sub.add_parser("clear", help="delete DLQ entries")
     p_clear.add_argument("--all", action="store_true", required=True)
 
+    # DLQ archive subcommands
+    p_archive = dlq_sub.add_parser("archive", help="DLQ archive operations")
+    archive_sub = p_archive.add_subparsers(dest="archive_command", required=True)
+    archive_sub.add_parser("list", help="list DLQ archive entries")
+    p_archive_clear = archive_sub.add_parser("clear", help="clear DLQ archive")
+    p_archive_clear.add_argument("--all", action="store_true", required=True)
+
     p_rp = sub.add_parser("replay-parse", help="re-enqueue parsed matches to stream:parse")
     p_rp.add_argument("--all", action="store_true", required=True)
 
@@ -479,6 +803,15 @@ def _build_parser() -> argparse.ArgumentParser:
     p_rs = sub.add_parser("reseed", help="clear cooldown and re-enqueue player to stream:puuid")
     p_rs.add_argument("riot_id", metavar="GameName#TagLine")
     p_rs.add_argument("--region", default="na1")
+
+    p_reset = sub.add_parser("reset-stats", help="wipe player stats and re-trigger analysis")
+    p_reset.add_argument("riot_id", metavar="GameName#TagLine")
+    p_reset.add_argument("--region", default="na1")
+
+    p_cp = sub.add_parser("clear-priority", help="delete player:priority:* keys")
+    p_cp.add_argument("riot_id", nargs="?", metavar="GameName#TagLine")
+    p_cp.add_argument("--all", action="store_true", help="clear all priority keys")
+    p_cp.add_argument("--region", default="na1")
 
     sub.add_parser(
         "recalc-priority",
@@ -490,6 +823,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="rebuild players:all sorted set from existing player:{puuid} hashes",
     )
 
+    sub.add_parser("delayed-list", help="show entries in delayed:messages sorted set")
+
+    p_df = sub.add_parser("delayed-flush", help="remove all delayed messages")
+    p_df.add_argument("--all", action="store_true", required=True)
+
+    sub.add_parser(
+        "backfill-champions",
+        help="reprocess parsed matches to populate champion stats",
+    )
+
     return parser
 
 
@@ -498,10 +841,16 @@ def _build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 
+_DLQ_ARCHIVE_DISPATCH = {
+    "list": lambda r, cfg, args: cmd_dlq_archive_list(r, args),
+    "clear": lambda r, cfg, args: cmd_dlq_archive_clear(r, args),
+}
+
 _DLQ_DISPATCH = {
     "list": lambda r, cfg, args: cmd_dlq_list(r, args),
     "replay": cmd_dlq_replay,
     "clear": lambda r, cfg, args: cmd_dlq_clear(r, args),
+    "archive": lambda r, cfg, args: _dispatch_dlq_archive(r, cfg, args),
 }
 
 _CMD_DISPATCH = {
@@ -512,8 +861,13 @@ _CMD_DISPATCH = {
     "replay-parse": lambda r, riot, cfg, args: cmd_replay_parse(r, cfg, args),
     "replay-fetch": lambda r, riot, cfg, args: cmd_replay_fetch(r, cfg, args),
     "reseed": cmd_reseed,
+    "reset-stats": cmd_reset_stats,
+    "clear-priority": lambda r, riot, cfg, args: cmd_clear_priority(r, riot, args),
     "recalc-priority": lambda r, riot, cfg, args: cmd_recalc_priority(r, args),
     "recalc-players": lambda r, riot, cfg, args: cmd_recalc_players(r, args),
+    "delayed-list": lambda r, riot, cfg, args: cmd_delayed_list(r, args),
+    "delayed-flush": lambda r, riot, cfg, args: cmd_delayed_flush(r, args),
+    "backfill-champions": lambda r, riot, cfg, args: cmd_backfill_champions(r, cfg, args),
 }
 
 
@@ -533,6 +887,15 @@ async def _dispatch_dlq(r: aioredis.Redis, cfg: Config, args: argparse.Namespace
     handler = _DLQ_DISPATCH.get(args.dlq_command)
     if handler is None:
         raise AssertionError(f"unreachable dlq subcommand: {args.dlq_command}")
+    return await handler(r, cfg, args)  # type: ignore[no-untyped-call]
+
+
+async def _dispatch_dlq_archive(
+    r: aioredis.Redis, cfg: Config, args: argparse.Namespace
+) -> int:
+    handler = _DLQ_ARCHIVE_DISPATCH.get(args.archive_command)
+    if handler is None:
+        raise AssertionError(f"unreachable archive subcommand: {args.archive_command}")
     return await handler(r, cfg, args)  # type: ignore[no-untyped-call]
 
 

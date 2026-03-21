@@ -398,8 +398,8 @@ class TestMainEntryPoint:
 
 class TestSeedPriority:
     @pytest.mark.asyncio
-    async def test_seed__envelope_has_high_priority(self, r, cfg, log):
-        """Seeded envelope has priority='high'."""
+    async def test_seed__envelope_has_manual_20_priority(self, r, cfg, log):
+        """Seeded envelope has priority='manual_20'."""
         with respx.mock:
             respx.get(
                 "https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Faker/KR1"
@@ -412,7 +412,7 @@ class TestSeedPriority:
         assert result == 0
         entries = await r.xrange("stream:puuid")
         assert len(entries) == 1
-        assert entries[0][1]["priority"] == "high"
+        assert entries[0][1]["priority"] == "manual_20"
 
     @pytest.mark.asyncio
     async def test_seed__sets_priority_key(self, r, cfg, log):

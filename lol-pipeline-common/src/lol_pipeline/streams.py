@@ -11,7 +11,7 @@ from typing import Any
 import redis.asyncio as aioredis
 from redis.exceptions import ResponseError
 
-from lol_pipeline.constants import STREAM_DLQ
+from lol_pipeline.constants import STREAM_DLQ, STREAM_DLQ_ARCHIVE
 from lol_pipeline.models import DLQEnvelope, MessageEnvelope
 
 _log = logging.getLogger("streams")
@@ -72,6 +72,34 @@ def _invalidate_ensured(r: aioredis.Redis, stream: str, group: str) -> None:
         pairs.discard((stream, group))
 
 
+async def _archive_corrupt(
+    r: aioredis.Redis,
+    stream: str,
+    msg_id: str,
+    fields: dict[str, Any],
+    error: str,
+) -> None:
+    """Write a corrupt message to stream:dlq:archive for audit, then log a warning.
+
+    This preserves an audit trail for messages that cannot be deserialized.
+    The raw fields are stored as-is so operators can inspect and diagnose.
+    """
+    archive_fields: dict[str, str] = {
+        "failure_code": "corrupt_message",
+        "failure_reason": error,
+        "original_stream": stream,
+        "original_message_id": msg_id,
+        "raw_fields": json.dumps({str(k): str(v) for k, v in fields.items()}),
+    }
+    await r.xadd(  # type: ignore[arg-type]
+        STREAM_DLQ_ARCHIVE, archive_fields, maxlen=50_000, approximate=True,
+    )
+    _log.warning(
+        "corrupt message — archived and acking",
+        extra={"msg_id": msg_id, "stream": stream, "error": error},
+    )
+
+
 async def _deserialize_entries_typed[T](
     r: aioredis.Redis,
     stream: str,
@@ -87,10 +115,7 @@ async def _deserialize_entries_typed[T](
                 env = deserializer(fields)
                 result.append((msg_id, env))
             except (KeyError, json.JSONDecodeError, ValueError, TypeError) as exc:
-                _log.warning(
-                    "corrupt message — acking and skipping",
-                    extra={"msg_id": msg_id, "stream": stream, "error": str(exc)},
-                )
+                await _archive_corrupt(r, stream, msg_id, fields, str(exc))
                 await r.xack(stream, group, msg_id)
     return result
 
@@ -149,10 +174,7 @@ async def consume_typed[T](  # noqa: PLR0913
                 env = deserializer(fields)
                 claimed.append((msg_id, env))
             except (KeyError, json.JSONDecodeError, ValueError, TypeError) as exc:
-                _log.warning(
-                    "corrupt message — acking and skipping",
-                    extra={"msg_id": msg_id, "stream": stream, "error": str(exc)},
-                )
+                await _archive_corrupt(r, stream, msg_id, fields, str(exc))
                 await r.xack(stream, group, msg_id)
         if claimed:
             return claimed

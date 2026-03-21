@@ -17,6 +17,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
+          cache: 'pip'
       - run: pip install ruff
       - name: Ruff check
         run: |
@@ -34,6 +35,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
+          cache: 'pip'
       - name: Install dependencies
         run: |
           pip install -e "lol-pipeline-common/[dev]"
@@ -78,6 +80,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
+          cache: 'pip'
       - name: Install dependencies
         run: |
           pip install -e "lol-pipeline-common/[dev]"
@@ -107,6 +110,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
+          cache: 'pip'
       - name: Install dependencies
         run: |
           pip install -e "lol-pipeline-common/[dev]"
@@ -125,6 +129,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
+          cache: 'pip'
       - name: Install all service dependencies
         run: |
           pip install -e "lol-pipeline-common/[dev]"
@@ -145,6 +150,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
+          cache: 'pip'
       - name: Install pip-audit
         run: pip install pip-audit
       - name: Audit common package
@@ -165,7 +171,7 @@ jobs:
 
   docker-build:
     name: "Docker Build (${{ matrix.service }})"
-    needs: [lint, typecheck, test, contract]
+    needs: [lint, typecheck, test, contract, integration-tests, security-audit]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

@@ -15,11 +15,6 @@ WORKDIR /app
 COPY --from=builder /usr/local/lib/python3.14/site-packages \
                     /usr/local/lib/python3.14/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
-COPY lol-pipeline-ui/src/ ./src/
-
-COPY lol-pipeline-common/ /common/
-COPY lol-pipeline-ui/ /svc/
-RUN pip install --no-cache-dir -q -e /common -e /svc
 
 EXPOSE 8080
 

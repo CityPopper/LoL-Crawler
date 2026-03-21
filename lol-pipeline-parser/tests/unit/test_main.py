@@ -15,9 +15,12 @@ from lol_pipeline.raw_store import RawStore
 from lol_pipeline.streams import consume, publish
 
 from lol_parser.main import (
-    MATCH_DATA_TTL_SECONDS,
-    MAX_DISCOVER_PLAYERS,
+    _extract_perks,
+    _normalize_patch,
     _parse_match,
+    _write_bans,
+    _write_matchups,
+    _parse_timeline,
     main,
 )
 
@@ -634,7 +637,7 @@ class TestMatchDataTTL:
 
     @pytest.mark.asyncio
     async def test_match_key_has_ttl(self, r, cfg, log):
-        """match:{match_id} hash gets MATCH_DATA_TTL_SECONDS TTL after parsing."""
+        """match:{match_id} hash gets match_data_ttl_seconds TTL after parsing."""
         raw_store = RawStore(r)
         match_id = "NA1_1234567890"
         env = _parse_envelope(match_id)
@@ -644,11 +647,11 @@ class TestMatchDataTTL:
         await _parse_match(r, raw_store, cfg, msg_id, env, log)
 
         ttl = await r.ttl(f"match:{match_id}")
-        assert 0 < ttl <= MATCH_DATA_TTL_SECONDS
+        assert 0 < ttl <= cfg.match_data_ttl_seconds
 
     @pytest.mark.asyncio
     async def test_participant_keys_have_ttl(self, r, cfg, log):
-        """participant:{match_id}:{puuid} hashes get MATCH_DATA_TTL_SECONDS TTL."""
+        """participant:{match_id}:{puuid} hashes get match_data_ttl_seconds TTL."""
         raw_store = RawStore(r)
         match_id = "NA1_1234567890"
         env = _parse_envelope(match_id)
@@ -664,12 +667,12 @@ class TestMatchDataTTL:
         assert len(puuids) == 10
         for puuid in puuids:
             ttl = await r.ttl(f"participant:{match_id}:{puuid}")
-            assert 0 < ttl <= MATCH_DATA_TTL_SECONDS
+            assert 0 < ttl <= cfg.match_data_ttl_seconds
 
     @pytest.mark.asyncio
-    async def test_ttl_constant_defaults_to_7_days(self):
-        """MATCH_DATA_TTL_SECONDS defaults to 604800 (7 days)."""
-        assert MATCH_DATA_TTL_SECONDS == 604800
+    async def test_ttl_constant_defaults_to_7_days(self, cfg):
+        """match_data_ttl_seconds defaults to 604800 (7 days)."""
+        assert cfg.match_data_ttl_seconds == 604800
 
 
 class TestAtomicMatchWrite:
@@ -753,7 +756,7 @@ class TestDiscoverPlayersCap:
 
     @pytest.mark.asyncio
     async def test_discover_set_trimmed_after_zadd(self, r, cfg, log):
-        """discover:players is trimmed to MAX_DISCOVER_PLAYERS after ZADD."""
+        """discover:players is trimmed to max_discover_players after ZADD."""
         raw_store = RawStore(r)
         match_id = "NA1_1234567890"
         env = _parse_envelope(match_id)
@@ -763,13 +766,16 @@ class TestDiscoverPlayersCap:
         await _parse_match(r, raw_store, cfg, msg_id, env, log)
 
         count = await r.zcard("discover:players")
-        assert count <= MAX_DISCOVER_PLAYERS
+        assert count <= cfg.max_discover_players
 
     @pytest.mark.asyncio
-    async def test_discover_cap_trims_lowest_scores(self, r, cfg, log, monkeypatch):
+    async def test_discover_cap_trims_lowest_scores(self, r, log, monkeypatch):
         """When discover:players exceeds cap, lowest-scored entries are removed."""
         # Set a tiny cap so we can test trimming
-        monkeypatch.setattr("lol_parser.main.MAX_DISCOVER_PLAYERS", 5)
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        monkeypatch.setenv("MAX_DISCOVER_PLAYERS", "5")
+        small_cfg = Config(_env_file=None)  # type: ignore[call-arg]
 
         # Pre-populate discover:players with 5 entries (older timestamps)
         old_scores = {f"old-puuid-{i}:na1": float(1600000000000 + i) for i in range(5)}
@@ -783,7 +789,7 @@ class TestDiscoverPlayersCap:
         msg_id = await _setup_message(r, env)
         await raw_store.set(match_id, _load_fixture("match_normal.json"))
 
-        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+        await _parse_match(r, raw_store, small_cfg, msg_id, env, log)
 
         # After trimming, should have at most 5 entries
         count = await r.zcard("discover:players")
@@ -796,19 +802,22 @@ class TestDiscoverPlayersCap:
             assert score >= 1700000000000.0
 
     @pytest.mark.asyncio
-    async def test_max_discover_players_default(self):
-        """MAX_DISCOVER_PLAYERS defaults to 50000."""
-        assert MAX_DISCOVER_PLAYERS == 50000
+    async def test_max_discover_players_default(self, cfg):
+        """max_discover_players defaults to 50000."""
+        assert cfg.max_discover_players == 50000
 
 
 class TestPlayerMatchesCap:
     """P10-CR-6: player:matches:{puuid} sorted set capped at PLAYER_MATCHES_MAX."""
 
     @pytest.mark.asyncio
-    async def test_player_matches_trimmed_after_parse(self, r, cfg, log, monkeypatch):
-        """player:matches:{puuid} is trimmed to PLAYER_MATCHES_MAX after parsing."""
+    async def test_player_matches_trimmed_after_parse(self, r, log, monkeypatch):
+        """player:matches:{puuid} is trimmed to player_matches_max after parsing."""
         # Set a tiny cap for testing
-        monkeypatch.setattr("lol_parser.main.PLAYER_MATCHES_MAX", 5)
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        monkeypatch.setenv("PLAYER_MATCHES_MAX", "5")
+        cfg = Config(_env_file=None)  # type: ignore[call-arg]
 
         # Pre-populate player:matches with 5 existing entries
         puuid = "puuid-cap-test"
@@ -870,11 +879,9 @@ class TestPlayerMatchesCap:
             assert s >= 1600000000001.0  # at least the second-oldest survived
 
     @pytest.mark.asyncio
-    async def test_player_matches_max_default(self):
-        """PLAYER_MATCHES_MAX defaults to 500."""
-        from lol_parser.main import PLAYER_MATCHES_MAX
-
-        assert PLAYER_MATCHES_MAX == 500
+    async def test_player_matches_max_default(self, cfg):
+        """player_matches_max defaults to 500."""
+        assert cfg.player_matches_max == 500
 
     @pytest.mark.asyncio
     async def test_player_matches_no_trim_when_under_cap(self, r, cfg, log):
@@ -986,9 +993,7 @@ class TestParserPipelineOptimizations:
 
     @pytest.mark.asyncio
     async def test_player_matches_trimmed_to_max(self, r, cfg, log):
-        """player:matches:{puuid} is trimmed to PLAYER_MATCHES_MAX (OPT-6)."""
-        from lol_parser.main import PLAYER_MATCHES_MAX
-
+        """player:matches:{puuid} is trimmed to player_matches_max (OPT-6)."""
         raw_store = RawStore(r)
         match_id = "NA1_1234567890"
         env = _parse_envelope(match_id)
@@ -996,13 +1001,520 @@ class TestParserPipelineOptimizations:
         fixture_data = json.loads(_load_fixture("match_normal.json"))
         puuid = fixture_data["metadata"]["participants"][0]
 
-        # Pre-fill with more than PLAYER_MATCHES_MAX entries
+        # Pre-fill with more than player_matches_max entries
         overload: dict[str, float] = {
-            f"NA1_OLD{i}": float(1600000000 + i) for i in range(PLAYER_MATCHES_MAX + 10)
+            f"NA1_OLD{i}": float(1600000000 + i) for i in range(cfg.player_matches_max + 10)
         }
         await r.zadd(f"player:matches:{puuid}", overload)
         await raw_store.set(match_id, _load_fixture("match_normal.json"))
         await _parse_match(r, raw_store, cfg, msg_id, env, log)
 
         count = await r.zcard(f"player:matches:{puuid}")
-        assert count <= PLAYER_MATCHES_MAX + 1  # +1 for the new match just added
+        assert count <= cfg.player_matches_max + 1  # +1 for the new match just added
+
+
+class TestNormalizePatch:
+    """_normalize_patch extracts major.minor from game version strings."""
+
+    def test_normalize_three_part(self):
+        assert _normalize_patch("13.24.1") == "13.24"
+
+    def test_normalize_two_part(self):
+        assert _normalize_patch("14.1") == "14.1"
+
+    def test_normalize_single_part(self):
+        assert _normalize_patch("14") == "14"
+
+    def test_normalize_empty(self):
+        assert _normalize_patch("") == ""
+
+
+class TestExtractPerks:
+    """_extract_perks extracts keystone, primary style, and sub style from participant data."""
+
+    def test_extract_perks_normal(self):
+        p = {
+            "perks": {
+                "styles": [
+                    {
+                        "style": 8100,
+                        "selections": [
+                            {"perk": 8112},
+                            {"perk": 8126},
+                        ],
+                    },
+                    {
+                        "style": 8300,
+                        "selections": [
+                            {"perk": 8304},
+                        ],
+                    },
+                ],
+            },
+        }
+        keystone, primary, sub = _extract_perks(p)
+        assert keystone == 8112
+        assert primary == 8100
+        assert sub == 8300
+
+    def test_extract_perks_empty(self):
+        assert _extract_perks({}) == (0, 0, 0)
+        assert _extract_perks({"perks": {}}) == (0, 0, 0)
+        assert _extract_perks({"perks": {"styles": []}}) == (0, 0, 0)
+
+    def test_extract_perks_no_sub_style(self):
+        p = {
+            "perks": {
+                "styles": [
+                    {
+                        "style": 8100,
+                        "selections": [{"perk": 8112}],
+                    },
+                ],
+            },
+        }
+        keystone, primary, sub = _extract_perks(p)
+        assert keystone == 8112
+        assert primary == 8100
+        assert sub == 0
+
+
+def _make_participant(puuid, **overrides):
+    """Build a minimal participant dict with optional overrides."""
+    base = {
+        "puuid": puuid,
+        "championId": 1,
+        "championName": "Annie",
+        "teamId": 100,
+        "teamPosition": "MID",
+        "role": "SOLO",
+        "win": True,
+        "kills": 5,
+        "deaths": 2,
+        "assists": 3,
+        "goldEarned": 10000,
+        "totalDamageDealtToChampions": 15000,
+        "totalMinionsKilled": 100,
+        "visionScore": 10,
+    }
+    base.update(overrides)
+    return base
+
+
+def _make_match_data(match_id, participants, **info_overrides):
+    """Build a minimal match data dict."""
+    info = {
+        "gameStartTimestamp": 1700000000000,
+        "gameDuration": 900,
+        "gameMode": "CLASSIC",
+        "gameType": "MATCHED_GAME",
+        "gameVersion": "14.1.1",
+        "queueId": 420,
+        "platformId": "NA1",
+        "participants": participants,
+    }
+    info.update(info_overrides)
+    return {
+        "metadata": {
+            "matchId": match_id,
+            "participants": [p["puuid"] for p in participants],
+        },
+        "info": info,
+    }
+
+
+class TestExtendedParticipantFields:
+    """Extended participant fields are stored in the participant hash."""
+
+    @pytest.mark.asyncio
+    async def test_participant_has_summoner_spells(self, r, cfg, log):
+        raw_store = RawStore(r)
+        match_id = "NA1_SPELLS"
+        p = _make_participant("puuid-spells", summoner1Id=4, summoner2Id=14)
+        data = _make_match_data(match_id, [p])
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, json.dumps(data))
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        h = await r.hgetall(f"participant:{match_id}:puuid-spells")
+        assert h["summoner1_id"] == "4"
+        assert h["summoner2_id"] == "14"
+
+    @pytest.mark.asyncio
+    async def test_participant_has_perk_fields(self, r, cfg, log):
+        raw_store = RawStore(r)
+        match_id = "NA1_PERKS"
+        p = _make_participant(
+            "puuid-perks",
+            perks={
+                "styles": [
+                    {"style": 8100, "selections": [{"perk": 8112}, {"perk": 8126}]},
+                    {"style": 8300, "selections": [{"perk": 8304}]},
+                ],
+            },
+        )
+        data = _make_match_data(match_id, [p])
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, json.dumps(data))
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        h = await r.hgetall(f"participant:{match_id}:puuid-perks")
+        assert h["perk_keystone"] == "8112"
+        assert h["perk_primary_style"] == "8100"
+        assert h["perk_sub_style"] == "8300"
+
+    @pytest.mark.asyncio
+    async def test_participant_has_multi_kills(self, r, cfg, log):
+        raw_store = RawStore(r)
+        match_id = "NA1_MULTI"
+        p = _make_participant(
+            "puuid-multi",
+            doubleKills=3,
+            tripleKills=2,
+            quadraKills=1,
+            pentaKills=0,
+        )
+        data = _make_match_data(match_id, [p])
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, json.dumps(data))
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        h = await r.hgetall(f"participant:{match_id}:puuid-multi")
+        assert h["double_kills"] == "3"
+        assert h["triple_kills"] == "2"
+        assert h["quadra_kills"] == "1"
+        assert h["penta_kills"] == "0"
+
+    @pytest.mark.asyncio
+    async def test_participant_has_damage_breakdown(self, r, cfg, log):
+        raw_store = RawStore(r)
+        match_id = "NA1_DMG"
+        p = _make_participant(
+            "puuid-dmg",
+            physicalDamageDealtToChampions=8000,
+            magicDamageDealtToChampions=5000,
+            trueDamageDealtToChampions=2000,
+        )
+        data = _make_match_data(match_id, [p])
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, json.dumps(data))
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        h = await r.hgetall(f"participant:{match_id}:puuid-dmg")
+        assert h["physical_damage"] == "8000"
+        assert h["magic_damage"] == "5000"
+        assert h["true_damage"] == "2000"
+
+
+class TestPatchInMatchHash:
+    """Normalized patch field is stored in the match hash."""
+
+    @pytest.mark.asyncio
+    async def test_match_hash_has_patch(self, r, cfg, log):
+        raw_store = RawStore(r)
+        match_id = "NA1_1234567890"
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, _load_fixture("match_normal.json"))
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        # match_normal.json has gameVersion "13.24.1" -> patch "13.24"
+        assert await r.hget(f"match:{match_id}", "patch") == "13.24"
+
+
+def _ranked_info_with_bans(bans_team_100=None, bans_team_200=None):
+    """Build ranked match info dict with teams/bans data."""
+    if bans_team_100 is None:
+        bans_team_100 = [
+            {"championId": 238, "pickTurn": 1},
+            {"championId": 67, "pickTurn": 2},
+        ]
+    if bans_team_200 is None:
+        bans_team_200 = [
+            {"championId": 86, "pickTurn": 3},
+            {"championId": -1, "pickTurn": 4},  # no ban
+        ]
+    return {
+        "queueId": 420,
+        "gameStartTimestamp": 1700000000000,
+        "gameDuration": 1800,
+        "gameMode": "CLASSIC",
+        "gameVersion": "14.1.1",
+        "teams": [
+            {"teamId": 100, "bans": bans_team_100},
+            {"teamId": 200, "bans": bans_team_200},
+        ],
+        "participants": [],
+    }
+
+
+class TestWriteBans:
+    @pytest.mark.asyncio
+    async def test_bans_extracted_for_ranked(self, r, cfg, log):
+        """Ranked match with bans writes to champion:bans:{patch}."""
+        info = _ranked_info_with_bans()
+        await _write_bans(r, "NA1_BAN1", info, "14.1", cfg, log)
+
+        ban_key = "champion:bans:14.1"
+        assert await r.hget(ban_key, "238") == "1"
+        assert await r.hget(ban_key, "67") == "1"
+        assert await r.hget(ban_key, "86") == "1"
+        assert await r.hget(ban_key, "_total_games") == "1"
+        # TTL should be set (90 days)
+        ttl = await r.ttl(ban_key)
+        assert ttl > 0
+
+    @pytest.mark.asyncio
+    async def test_bans_skipped_for_non_ranked(self, r, cfg, log):
+        """ARAM match (queueId=450) does not write bans."""
+        info = _ranked_info_with_bans()
+        info["queueId"] = 450
+        await _write_bans(r, "NA1_ARAM", info, "14.1", cfg, log)
+
+        assert await r.exists("champion:bans:14.1") == 0
+
+    @pytest.mark.asyncio
+    async def test_bans_skipped_when_disabled(self, r, log, monkeypatch):
+        """cfg.track_bans=False skips ban extraction."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        monkeypatch.setenv("TRACK_BANS", "false")
+        disabled_cfg = Config(_env_file=None)  # type: ignore[call-arg]
+        info = _ranked_info_with_bans()
+        await _write_bans(r, "NA1_NOBANS", info, "14.1", disabled_cfg, log)
+
+        assert await r.exists("champion:bans:14.1") == 0
+
+    @pytest.mark.asyncio
+    async def test_bans_negative_champion_id_ignored(self, r, cfg, log):
+        """championId=-1 (no ban) is skipped; only positive IDs stored."""
+        info = _ranked_info_with_bans(
+            bans_team_100=[{"championId": -1, "pickTurn": 1}],
+            bans_team_200=[{"championId": -1, "pickTurn": 2}],
+        )
+        await _write_bans(r, "NA1_NOBANCHAMP", info, "14.1", cfg, log)
+
+        ban_key = "champion:bans:14.1"
+        # _total_games incremented, but no champion IDs stored
+        assert await r.hget(ban_key, "_total_games") == "1"
+        all_fields = await r.hgetall(ban_key)
+        assert len(all_fields) == 1  # only _total_games
+
+
+def _ranked_matchup_participants():
+    """Build participants for a standard ranked 5v5 with all positions filled."""
+    return [
+        _make_participant("puuid-top-a", teamId=100, teamPosition="TOP",
+                          championName="Garen", win=True),
+        _make_participant("puuid-jgl-a", teamId=100, teamPosition="JUNGLE",
+                          championName="LeeSin", win=True),
+        _make_participant("puuid-mid-a", teamId=100, teamPosition="MID",
+                          championName="Annie", win=True),
+        _make_participant("puuid-bot-a", teamId=100, teamPosition="BOTTOM",
+                          championName="Jinx", win=True),
+        _make_participant("puuid-sup-a", teamId=100, teamPosition="UTILITY",
+                          championName="Thresh", win=True),
+        _make_participant("puuid-top-b", teamId=200, teamPosition="TOP",
+                          championName="Renekton", win=False),
+        _make_participant("puuid-jgl-b", teamId=200, teamPosition="JUNGLE",
+                          championName="Sejuani", win=False),
+        _make_participant("puuid-mid-b", teamId=200, teamPosition="MID",
+                          championName="Zed", win=False),
+        _make_participant("puuid-bot-b", teamId=200, teamPosition="BOTTOM",
+                          championName="Caitlyn", win=False),
+        _make_participant("puuid-sup-b", teamId=200, teamPosition="UTILITY",
+                          championName="Janna", win=False),
+    ]
+
+
+class TestWriteMatchups:
+    @pytest.mark.asyncio
+    async def test_matchup_data_written_for_ranked(self, r, cfg, log):
+        """Ranked match writes matchup hashes for each lane."""
+        participants = _ranked_matchup_participants()
+        info = {"queueId": 420, "participants": participants}
+        await _write_matchups(r, "NA1_MU1", info, "14.1", cfg, log)
+
+        # TOP: Garen vs Renekton
+        data = await r.hgetall("matchup:Garen:Renekton:TOP:14.1")
+        assert data["games"] == "1"
+        assert data["wins"] == "1"  # Garen won
+
+    @pytest.mark.asyncio
+    async def test_matchup_reverse_recorded(self, r, cfg, log):
+        """Both A-vs-B and B-vs-A matchup hashes are stored."""
+        participants = _ranked_matchup_participants()
+        info = {"queueId": 420, "participants": participants}
+        await _write_matchups(r, "NA1_MU2", info, "14.1", cfg, log)
+
+        # Forward: Garen vs Renekton
+        fwd = await r.hgetall("matchup:Garen:Renekton:TOP:14.1")
+        assert fwd["games"] == "1"
+        assert fwd["wins"] == "1"
+
+        # Reverse: Renekton vs Garen
+        rev = await r.hgetall("matchup:Renekton:Garen:TOP:14.1")
+        assert rev["games"] == "1"
+        assert rev["wins"] == "0"  # Renekton lost
+
+    @pytest.mark.asyncio
+    async def test_matchup_index_populated(self, r, cfg, log):
+        """matchup:index sets contain opponents."""
+        participants = _ranked_matchup_participants()
+        info = {"queueId": 420, "participants": participants}
+        await _write_matchups(r, "NA1_MU3", info, "14.1", cfg, log)
+
+        # Garen's index at TOP should contain Renekton
+        members = await r.smembers("matchup:index:Garen:TOP:14.1")
+        assert "Renekton" in members
+
+        # Renekton's index at TOP should contain Garen
+        members = await r.smembers("matchup:index:Renekton:TOP:14.1")
+        assert "Garen" in members
+
+    @pytest.mark.asyncio
+    async def test_matchup_skipped_for_non_ranked(self, r, cfg, log):
+        """Non-ranked match (queueId=450) does not write matchups."""
+        participants = _ranked_matchup_participants()
+        info = {"queueId": 450, "participants": participants}
+        await _write_matchups(r, "NA1_MU_ARAM", info, "14.1", cfg, log)
+
+        assert await r.exists("matchup:Garen:Renekton:TOP:14.1") == 0
+
+    @pytest.mark.asyncio
+    async def test_matchup_skipped_when_disabled(self, r, log, monkeypatch):
+        """cfg.track_matchups=False skips matchup computation."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        monkeypatch.setenv("TRACK_MATCHUPS", "false")
+        disabled_cfg = Config(_env_file=None)  # type: ignore[call-arg]
+        participants = _ranked_matchup_participants()
+        info = {"queueId": 420, "participants": participants}
+        await _write_matchups(r, "NA1_MU_OFF", info, "14.1", disabled_cfg, log)
+
+        assert await r.exists("matchup:Garen:Renekton:TOP:14.1") == 0
+
+
+def _make_timeline_data(participants_map):
+    """Build a minimal timeline data dict with item and skill events.
+
+    participants_map: list of {participantId, puuid}
+    """
+    return {
+        "info": {
+            "participants": participants_map,
+            "frames": [
+                {
+                    "events": [
+                        {
+                            "type": "ITEM_PURCHASED",
+                            "participantId": 1,
+                            "itemId": 1001,
+                            "timestamp": 60000,
+                        },
+                        {
+                            "type": "ITEM_PURCHASED",
+                            "participantId": 1,
+                            "itemId": 3006,
+                            "timestamp": 120000,
+                        },
+                        {
+                            "type": "SKILL_LEVEL_UP",
+                            "participantId": 1,
+                            "skillSlot": 1,
+                            "levelUpType": "NORMAL",
+                            "timestamp": 90000,
+                        },
+                        {
+                            "type": "SKILL_LEVEL_UP",
+                            "participantId": 1,
+                            "skillSlot": 2,
+                            "levelUpType": "NORMAL",
+                            "timestamp": 180000,
+                        },
+                        {
+                            "type": "SKILL_LEVEL_UP",
+                            "participantId": 1,
+                            "skillSlot": 1,
+                            "levelUpType": "EVOLVE",  # non-NORMAL, should be skipped
+                            "timestamp": 200000,
+                        },
+                    ],
+                },
+            ],
+        },
+    }
+
+
+class TestParseTimeline:
+    @pytest.fixture
+    def tl_cfg(self, monkeypatch):
+        """Config with fetch_timeline=True for timeline tests."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        monkeypatch.setenv("FETCH_TIMELINE", "true")
+        return Config(_env_file=None)  # type: ignore[call-arg]
+
+    @pytest.mark.asyncio
+    async def test_timeline_build_order_extracted(self, r, tl_cfg, log):
+        """Item purchase events stored as JSON list in build:{match_id}:{puuid}."""
+        match_id = "NA1_TL1"
+        timeline = _make_timeline_data([{"participantId": 1, "puuid": "puuid-tl-1"}])
+        await r.set(f"raw:timeline:{match_id}", json.dumps(timeline))
+
+        await _parse_timeline(r, match_id, tl_cfg, log)
+
+        raw = await r.get(f"build:{match_id}:puuid-tl-1")
+        assert raw is not None
+        items = json.loads(raw)
+        assert items == [1001, 3006]
+
+    @pytest.mark.asyncio
+    async def test_timeline_skill_order_extracted(self, r, tl_cfg, log):
+        """Skill level-up events (NORMAL only) stored as JSON list."""
+        match_id = "NA1_TL2"
+        timeline = _make_timeline_data([{"participantId": 1, "puuid": "puuid-tl-2"}])
+        await r.set(f"raw:timeline:{match_id}", json.dumps(timeline))
+
+        await _parse_timeline(r, match_id, tl_cfg, log)
+
+        raw = await r.get(f"skills:{match_id}:puuid-tl-2")
+        assert raw is not None
+        skills = json.loads(raw)
+        assert skills == [1, 2]  # EVOLVE event excluded
+
+    @pytest.mark.asyncio
+    async def test_timeline_skipped_when_disabled(self, r, log, monkeypatch):
+        """cfg.fetch_timeline=False skips timeline parsing."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        monkeypatch.setenv("FETCH_TIMELINE", "false")
+        disabled_cfg = Config(_env_file=None)  # type: ignore[call-arg]
+        match_id = "NA1_TL_OFF"
+        timeline = _make_timeline_data([{"participantId": 1, "puuid": "puuid-tl-off"}])
+        await r.set(f"raw:timeline:{match_id}", json.dumps(timeline))
+
+        await _parse_timeline(r, match_id, disabled_cfg, log)
+
+        assert await r.exists(f"build:{match_id}:puuid-tl-off") == 0
+
+    @pytest.mark.asyncio
+    async def test_timeline_missing_data_handled(self, r, tl_cfg, log):
+        """Missing raw:timeline key returns gracefully (no error)."""
+        match_id = "NA1_TL_MISSING"
+        # No raw:timeline:{match_id} key set
+
+        await _parse_timeline(r, match_id, tl_cfg, log)
+
+        # No crash, no keys written
+        keys = [k async for k in r.scan_iter(f"build:{match_id}:*")]
+        assert len(keys) == 0

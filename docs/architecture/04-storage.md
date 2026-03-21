@@ -35,6 +35,25 @@ All application state lives in Redis. No other database.
 
 ---
 
+## Champion Analytics Keys
+
+| Key Pattern | Type | TTL | Purpose |
+|-------------|------|-----|---------|
+| `champion:stats:{name}:{patch}:{role}` | Hash | 90d (`CHAMPION_STATS_TTL_SECONDS`) | Per-champion aggregate stats (games, wins, kills, deaths, assists, gold, cs, damage, vision, multikills) |
+| `champion:index:{patch}` | Sorted Set | 90d (`CHAMPION_STATS_TTL_SECONDS`) | Champions per patch index; member=`{name}:{role}`, score=games played |
+| `champion:bans:{patch}` | Hash | 90d (`CHAMPION_STATS_TTL_SECONDS`) | Ban counts per champion per patch |
+| `matchup:{A}:{B}:{position}:{patch}` | Hash | 90d (`CHAMPION_STATS_TTL_SECONDS`) | Head-to-head matchup stats between two champions in a lane |
+| `matchup:index:{champ}:{position}:{patch}` | Set | 90d (`CHAMPION_STATS_TTL_SECONDS`) | Matchup index: all opponents faced by a champion in a position |
+| `player:rank:{puuid}` | Hash | 24h (hardcoded) | Player rank data (tier, rank, LP, wins, losses) from league-v4 |
+| `crawl:cursor:{puuid}` | String | 10m (hardcoded) | Pagination resume cursor for crawler match-list API calls |
+| `seen:matches` | Set | 7d (`SEEN_MATCHES_TTL_SECONDS`) | Global match dedup set; prevents re-fetching already-known matches |
+| `patch:list` | Sorted Set | 90d (`CHAMPION_STATS_TTL_SECONDS`) | Known game patches; member=patch string, score=earliest game_start epoch |
+| `build:{match_id}:{puuid}` | String | 7d (`MATCH_DATA_TTL_SECONDS`) | Item build order from match timeline (when `FETCH_TIMELINE=true`) |
+| `skills:{match_id}:{puuid}` | String | 7d (`MATCH_DATA_TTL_SECONDS`) | Skill order from match timeline (when `FETCH_TIMELINE=true`) |
+| `ratelimit:throttle` | String | 2s (hardcoded) | Near-capacity throttle hint; set when sliding window is >80% full |
+
+---
+
 ## Match Status Lifecycle
 
 Field: `match:{match_id}.status`

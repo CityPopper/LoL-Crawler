@@ -9,7 +9,7 @@ import uuid
 
 import redis.asyncio as aioredis
 from lol_pipeline.config import Config
-from lol_pipeline.constants import PLAYER_DATA_TTL_SECONDS
+from lol_pipeline.constants import CHAMPION_STATS_TTL_SECONDS, PLAYER_DATA_TTL_SECONDS
 from lol_pipeline.helpers import is_system_halted
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
@@ -38,6 +38,83 @@ if val == ARGV[1] then
 else
     return 0
 end
+"""
+
+# V15-1: Atomic stats update + ownership check.
+# KEYS[1] = lock_key, KEYS[2] = stats_key, KEYS[3] = cursor_key
+# Optional: KEYS[4] = champs_key, KEYS[5] = roles_key
+# ARGV[1] = worker_id, ARGV[2] = lock_ttl_ms
+# ARGV[3] = win, ARGV[4] = kills, ARGV[5] = deaths, ARGV[6] = assists
+# ARGV[7] = cursor_score, ARGV[8] = champion_name (or ""), ARGV[9] = role (or "")
+_PROCESS_MATCH_LUA = """
+local lock_key  = KEYS[1]
+local stats_key = KEYS[2]
+local cursor_key = KEYS[3]
+local champs_key = KEYS[4]
+local roles_key  = KEYS[5]
+local worker_id = ARGV[1]
+local ttl_ms    = tonumber(ARGV[2])
+
+if redis.call("GET", lock_key) ~= worker_id then
+    return 0
+end
+
+redis.call("HINCRBY", stats_key, "total_games", 1)
+redis.call("HINCRBY", stats_key, "total_wins", tonumber(ARGV[3]))
+redis.call("HINCRBY", stats_key, "total_kills", tonumber(ARGV[4]))
+redis.call("HINCRBY", stats_key, "total_deaths", tonumber(ARGV[5]))
+redis.call("HINCRBY", stats_key, "total_assists", tonumber(ARGV[6]))
+
+if ARGV[8] ~= "" then
+    redis.call("ZINCRBY", champs_key, 1, ARGV[8])
+end
+if ARGV[9] ~= "" then
+    redis.call("ZINCRBY", roles_key, 1, ARGV[9])
+end
+
+redis.call("SET", cursor_key, ARGV[7])
+redis.call("PEXPIRE", lock_key, ttl_ms)
+return 1
+"""
+
+
+# Champion aggregate stats: atomic HINCRBY + index update + patch list.
+# KEYS[1] = champion:stats:{name}:{patch}:{role}
+# KEYS[2] = champion:index:{patch}
+# KEYS[3] = patch:list
+# ARGV[1] = win (0/1), ARGV[2] = kills, ARGV[3] = deaths, ARGV[4] = assists
+# ARGV[5] = gold, ARGV[6] = cs, ARGV[7] = damage, ARGV[8] = vision
+# ARGV[9] = champion_name:role (index member)
+# ARGV[10] = game_start_epoch (patch:list score)
+# ARGV[11] = patch_string
+# ARGV[12] = ttl_seconds
+# ARGV[13] = double_kills, ARGV[14] = triple_kills
+# ARGV[15] = quadra_kills, ARGV[16] = penta_kills
+_UPDATE_CHAMPION_LUA = """
+local stats_key = KEYS[1]
+local index_key = KEYS[2]
+local patch_key = KEYS[3]
+local ttl = tonumber(ARGV[12])
+
+redis.call("HINCRBY", stats_key, "games", 1)
+redis.call("HINCRBY", stats_key, "wins", tonumber(ARGV[1]))
+redis.call("HINCRBY", stats_key, "kills", tonumber(ARGV[2]))
+redis.call("HINCRBY", stats_key, "deaths", tonumber(ARGV[3]))
+redis.call("HINCRBY", stats_key, "assists", tonumber(ARGV[4]))
+redis.call("HINCRBY", stats_key, "gold", tonumber(ARGV[5]))
+redis.call("HINCRBY", stats_key, "cs", tonumber(ARGV[6]))
+redis.call("HINCRBY", stats_key, "damage", tonumber(ARGV[7]))
+redis.call("HINCRBY", stats_key, "vision", tonumber(ARGV[8]))
+redis.call("HINCRBY", stats_key, "double_kills", tonumber(ARGV[13]))
+redis.call("HINCRBY", stats_key, "triple_kills", tonumber(ARGV[14]))
+redis.call("HINCRBY", stats_key, "quadra_kills", tonumber(ARGV[15]))
+redis.call("HINCRBY", stats_key, "penta_kills", tonumber(ARGV[16]))
+redis.call("EXPIRE", stats_key, ttl)
+redis.call("ZINCRBY", index_key, 1, ARGV[9])
+redis.call("EXPIRE", index_key, ttl)
+redis.call("ZADD", patch_key, "NX", tonumber(ARGV[10]), ARGV[11])
+redis.call("EXPIRE", patch_key, ttl)
+return 1
 """
 
 
@@ -90,41 +167,90 @@ async def _process_matches(  # noqa: PLR0913
 ) -> bool:
     """Process each match atomically and refresh lock. Returns False if lock lost.
 
-    Uses a single pipeline context manager across all matches to avoid per-match
-    pipeline creation overhead.  Each match's commands are executed as a separate
-    MULTI/EXEC (via ``pipe.execute()``) so the cursor advances atomically with
-    that match's stats, and the lock is refreshed between matches.
+    V15-1: Uses a Lua script to combine HINCRBY + cursor SET + ownership check
+    + lock refresh into a single atomic operation.  This eliminates the race
+    window where stats could commit before lock ownership is re-verified.
     """
     stats_key = f"player:stats:{puuid}"
     cursor_key = f"player:stats:cursor:{puuid}"
     champs_key = f"player:champions:{puuid}"
     roles_key = f"player:roles:{puuid}"
-    async with r.pipeline(transaction=True) as pipe:
-        for (_match_id, score), p in zip(new_matches, participant_data, strict=True):
-            if not p:
-                continue
-            pipe.hincrby(stats_key, "total_games", 1)
-            pipe.hincrby(stats_key, "total_wins", int(p.get("win", "0")))
-            pipe.hincrby(stats_key, "total_kills", int(p.get("kills", "0")))
-            pipe.hincrby(stats_key, "total_deaths", int(p.get("deaths", "0")))
-            pipe.hincrby(stats_key, "total_assists", int(p.get("assists", "0")))
-            if champ := p.get("champion_name"):
-                pipe.zincrby(champs_key, 1, champ)
-            if role := p.get("role"):
-                pipe.zincrby(roles_key, 1, role)
-            # Cursor in same MULTI/EXEC as stats —
-            # atomic: either all commit or none, preventing double-count on crash.
-            pipe.set(cursor_key, str(score))
-            await pipe.execute()
-            # Refresh lock outside MULTI/EXEC via Lua ownership check.
-            # If we no longer own the lock, abort to prevent double-counting.
-            if not await _refresh_lock(r, lock_key, worker_id, lock_ttl_ms):
-                log.warning(
-                    "lock ownership lost mid-processing — aborting",
-                    extra={"puuid": puuid},
-                )
-                return False
+    for (_match_id, score), p in zip(new_matches, participant_data, strict=True):
+        if not p:
+            continue
+        result = await r.eval(  # type: ignore[misc]
+            _PROCESS_MATCH_LUA,
+            5,
+            lock_key,
+            stats_key,
+            cursor_key,
+            champs_key,
+            roles_key,
+            worker_id,
+            lock_ttl_ms,
+            int(p.get("win", "0")),
+            int(p.get("kills", "0")),
+            int(p.get("deaths", "0")),
+            int(p.get("assists", "0")),
+            str(score),
+            p.get("champion_name", ""),
+            p.get("team_position", ""),
+        )
+        if not result:
+            log.warning(
+                "lock ownership lost mid-processing — aborting",
+                extra={"puuid": puuid},
+            )
+            return False
     return True
+
+
+async def _update_champion_stats(
+    r: aioredis.Redis,
+    new_matches: list[tuple[str, float]],
+    participant_data: list[dict[str, str]],
+    match_metadata: list[dict[str, str]],
+) -> None:
+    """Update per-champion aggregate stats for ranked matches."""
+    for (_match_id, score), p, meta in zip(
+        new_matches, participant_data, match_metadata, strict=True
+    ):
+        if not p or not meta:
+            continue
+        queue_id = meta.get("queue_id", "")
+        patch = meta.get("patch", "")
+        team_position = p.get("team_position", "")
+        champion_name = p.get("champion_name", "")
+        if queue_id != "420" or not patch or not team_position or not champion_name:
+            continue
+
+        stats_key = f"champion:stats:{champion_name}:{patch}:{team_position}"
+        index_key = f"champion:index:{patch}"
+        index_member = f"{champion_name}:{team_position}"
+
+        await r.eval(  # type: ignore[misc]
+            _UPDATE_CHAMPION_LUA,
+            3,
+            stats_key,
+            index_key,
+            "patch:list",
+            int(p.get("win", "0")),
+            int(p.get("kills", "0")),
+            int(p.get("deaths", "0")),
+            int(p.get("assists", "0")),
+            int(p.get("gold_earned", "0")),
+            int(p.get("total_minions_killed", "0")),
+            int(p.get("total_damage_dealt_to_champions", "0")),
+            int(p.get("vision_score", "0")),
+            index_member,
+            str(int(score)),
+            patch,
+            CHAMPION_STATS_TTL_SECONDS,
+            int(p.get("double_kills", "0")),
+            int(p.get("triple_kills", "0")),
+            int(p.get("quadra_kills", "0")),
+            int(p.get("penta_kills", "0")),
+        )
 
 
 async def _analyze_player(
@@ -163,11 +289,17 @@ async def _analyze_player(
             extra={"puuid": puuid, "cursor": cursor, "new_matches": len(new_matches)},
         )
         if new_matches:
-            # Batch all HGETALL calls into a single pipeline round-trip
+            # Batch all HGETALL calls into a single pipeline round-trip.
+            # Fetch both participant data and match metadata (interleaved).
             async with r.pipeline(transaction=False) as fetch_pipe:
                 for match_id, _score in new_matches:
                     fetch_pipe.hgetall(f"participant:{match_id}:{puuid}")
-                participant_data: list[dict[str, str]] = await fetch_pipe.execute()
+                    fetch_pipe.hgetall(f"match:{match_id}")
+                raw_results: list[dict[str, str]] = await fetch_pipe.execute()
+
+            # De-interleave: even indices = participant, odd indices = match metadata
+            participant_data: list[dict[str, str]] = raw_results[0::2]
+            match_metadata: list[dict[str, str]] = raw_results[1::2]
 
             lock_ok = await _process_matches(
                 r,
@@ -182,6 +314,8 @@ async def _analyze_player(
             if not lock_ok:
                 await ack(r, _IN_STREAM, _GROUP, msg_id)
                 return
+
+            await _update_champion_stats(r, new_matches, participant_data, match_metadata)
             log.info("analyzed", extra={"puuid": puuid, "new_matches": len(new_matches)})
         else:
             log.info("no new matches to process", extra={"puuid": puuid})

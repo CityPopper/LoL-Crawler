@@ -66,7 +66,7 @@
           },
           "$.priority": {
             "matchers": [
-              { "match": "regex", "regex": "^(high|normal)$" }
+              { "match": "regex", "regex": "^(manual_20|manual_20plus|auto_20|auto_new|high|normal)$" }
             ]
           }
         }

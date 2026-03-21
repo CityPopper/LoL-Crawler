@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 import fakeredis.aioredis
 import httpx
@@ -579,6 +580,248 @@ class TestRiotClientUrlEncoding:
         assert route.called
 
 
+class TestCircuitBreaker:
+    """R4: Circuit breaker opens after consecutive 5xx errors."""
+
+    @pytest.mark.asyncio
+    async def test_circuit_breaker_opens_after_consecutive_5xx(self) -> None:
+        """After 5 consecutive 5xx responses, circuit breaker opens and rejects requests."""
+        with respx.mock:
+            url = (
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/X/Y"
+            )
+            respx.get(url).mock(return_value=httpx.Response(500, text="Server Error"))
+            client = RiotClient("RGAPI-test")
+
+            # First 5 calls should raise ServerError from the API
+            for _ in range(5):
+                with pytest.raises(ServerError):
+                    await client.get_account_by_riot_id("X", "Y", "na1")
+
+            # 6th call should raise circuit breaker error without hitting API
+            with pytest.raises(ServerError, match="circuit breaker open"):
+                await client.get_account_by_riot_id("X", "Y", "na1")
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_circuit_breaker_resets_on_success(self) -> None:
+        """A successful response resets the consecutive 5xx counter."""
+        with respx.mock:
+            url = (
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/X/Y"
+            )
+            route = respx.get(url)
+            # 4 failures, then 1 success, then 4 more failures
+            route.side_effect = [
+                httpx.Response(500, text="Error"),
+                httpx.Response(500, text="Error"),
+                httpx.Response(500, text="Error"),
+                httpx.Response(500, text="Error"),
+                httpx.Response(
+                    200,
+                    json={"puuid": "p", "gameName": "X", "tagLine": "Y"},
+                ),
+                httpx.Response(500, text="Error"),
+                httpx.Response(500, text="Error"),
+                httpx.Response(500, text="Error"),
+                httpx.Response(500, text="Error"),
+            ]
+            client = RiotClient("RGAPI-test")
+
+            # 4 failures
+            for _ in range(4):
+                with pytest.raises(ServerError):
+                    await client.get_account_by_riot_id("X", "Y", "na1")
+
+            # 1 success resets the counter
+            await client.get_account_by_riot_id("X", "Y", "na1")
+            assert client._consecutive_5xx == 0
+
+            # 4 more failures — circuit should NOT be open (counter reset at 0)
+            for _ in range(4):
+                with pytest.raises(ServerError):
+                    await client.get_account_by_riot_id("X", "Y", "na1")
+            assert client._consecutive_5xx == 4
+            assert client._circuit_open_until == 0.0  # not tripped
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_circuit_breaker_auto_closes_after_timeout(self) -> None:
+        """After the circuit open duration expires, requests go through again."""
+        import time as _time
+        from unittest.mock import patch as _patch
+
+        with respx.mock:
+            url = (
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/X/Y"
+            )
+            route = respx.get(url)
+            route.side_effect = [
+                httpx.Response(500, text="Error"),
+                httpx.Response(500, text="Error"),
+                httpx.Response(500, text="Error"),
+                httpx.Response(500, text="Error"),
+                httpx.Response(500, text="Error"),
+                # After timeout, this response goes through
+                httpx.Response(
+                    200,
+                    json={"puuid": "p", "gameName": "X", "tagLine": "Y"},
+                ),
+            ]
+            client = RiotClient("RGAPI-test")
+
+            # Trigger circuit breaker
+            for _ in range(5):
+                with pytest.raises(ServerError):
+                    await client.get_account_by_riot_id("X", "Y", "na1")
+
+            # Circuit is open — verify it rejects
+            with pytest.raises(ServerError, match="circuit breaker open"):
+                await client.get_account_by_riot_id("X", "Y", "na1")
+
+            # Fast-forward time past the circuit open duration
+            client._circuit_open_until = _time.monotonic() - 1
+
+            # Circuit should be closed now — request goes through
+            result = await client.get_account_by_riot_id("X", "Y", "na1")
+            assert result["puuid"] == "p"
+            assert client._consecutive_5xx == 0  # reset on success
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_circuit_breaker_counts_network_errors(self) -> None:
+        """Network errors (RequestError) also increment the 5xx counter."""
+        with respx.mock:
+            url = (
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/X/Y"
+            )
+            respx.get(url).mock(side_effect=httpx.ConnectError("connection refused"))
+            client = RiotClient("RGAPI-test")
+
+            for _ in range(5):
+                with pytest.raises(ServerError, match="network error"):
+                    await client.get_account_by_riot_id("X", "Y", "na1")
+
+            # Circuit should now be open
+            with pytest.raises(ServerError, match="circuit breaker open"):
+                await client.get_account_by_riot_id("X", "Y", "na1")
+            await client.close()
+
+
+class TestRateLimitCountParsing:
+    """R5: X-App-Rate-Limit-Count header is parsed for near-limit warnings."""
+
+    @pytest.fixture
+    def fake_redis(self) -> fakeredis.aioredis.FakeRedis:
+        return fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_count_header_parsed(
+        self, fake_redis: fakeredis.aioredis.FakeRedis, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Near-limit usage triggers a warning log."""
+        with respx.mock:
+            respx.get(
+                "https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Faker/KR1"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": "test-puuid", "gameName": "Faker", "tagLine": "KR1"},
+                    headers={
+                        "X-App-Rate-Limit": "20:1,100:120",
+                        "X-App-Rate-Limit-Count": "19:1,95:120",  # 19/20 and 95/100 — both near limit
+                    },
+                )
+            )
+            client = RiotClient("RGAPI-test", r=fake_redis)
+            with caplog.at_level(logging.WARNING, logger="riot_api"):
+                await client.get_account_by_riot_id("Faker", "KR1", "kr")
+            await client.close()
+
+        # Should have logged warnings about near capacity
+        warn_msgs = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("near capacity" in msg for msg in warn_msgs), (
+            f"Expected near-capacity warning, got: {warn_msgs}"
+        )
+        await fake_redis.aclose()
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_count_no_warning_when_under_threshold(
+        self, fake_redis: fakeredis.aioredis.FakeRedis, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Low usage does not trigger a warning."""
+        with respx.mock:
+            respx.get(
+                "https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Faker/KR1"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": "test-puuid", "gameName": "Faker", "tagLine": "KR1"},
+                    headers={
+                        "X-App-Rate-Limit": "20:1,100:120",
+                        "X-App-Rate-Limit-Count": "5:1,30:120",  # well under 90%
+                    },
+                )
+            )
+            client = RiotClient("RGAPI-test", r=fake_redis)
+            with caplog.at_level(logging.WARNING, logger="riot_api"):
+                await client.get_account_by_riot_id("Faker", "KR1", "kr")
+            await client.close()
+
+        warn_msgs = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+        assert not any("near capacity" in msg for msg in warn_msgs), (
+            f"Did not expect near-capacity warning, got: {warn_msgs}"
+        )
+        await fake_redis.aclose()
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_count_missing_header_no_crash(
+        self, fake_redis: fakeredis.aioredis.FakeRedis,
+    ) -> None:
+        """Missing X-App-Rate-Limit-Count does not crash."""
+        with respx.mock:
+            respx.get(
+                "https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Faker/KR1"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": "test-puuid", "gameName": "Faker", "tagLine": "KR1"},
+                    headers={"X-App-Rate-Limit": "20:1,100:120"},
+                    # No X-App-Rate-Limit-Count header
+                )
+            )
+            client = RiotClient("RGAPI-test", r=fake_redis)
+            result = await client.get_account_by_riot_id("Faker", "KR1", "kr")
+            await client.close()
+
+        assert result["puuid"] == "test-puuid"
+        await fake_redis.aclose()
+
+
+class TestParseRateLimitCount:
+    """R5: Unit tests for _parse_rate_limit_count."""
+
+    def test_valid_count_header(self) -> None:
+        from lol_pipeline.riot_api import _parse_rate_limit_count
+
+        assert _parse_rate_limit_count("19:1,85:120") == (19, 85)
+
+    def test_empty_string(self) -> None:
+        from lol_pipeline.riot_api import _parse_rate_limit_count
+
+        assert _parse_rate_limit_count("") is None
+
+    def test_malformed_string(self) -> None:
+        from lol_pipeline.riot_api import _parse_rate_limit_count
+
+        assert _parse_rate_limit_count("garbage") is None
+
+    def test_missing_window(self) -> None:
+        from lol_pipeline.riot_api import _parse_rate_limit_count
+
+        assert _parse_rate_limit_count("19:1") is None  # no 120s window
+
+
 class TestRiotClientMalformedResponse:
     @pytest.mark.asyncio
     async def test_malformed_json_response__raises(self) -> None:
@@ -615,3 +858,277 @@ class TestRiotClientMalformedResponse:
             result = await client.get_account_by_riot_id("X", "Y", "na1")
             await client.close()
         assert "puuid" not in result
+
+
+# ---------------------------------------------------------------------------
+# New API methods
+# ---------------------------------------------------------------------------
+
+
+class TestGetSummonerByPuuid:
+    @pytest.mark.asyncio
+    async def test_resolves_puuid_to_summoner(self) -> None:
+        """get_summoner_by_puuid uses platform routing (na1) not regional (americas)."""
+        with respx.mock:
+            route = respx.get(
+                "https://na1.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/test-puuid"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "id": "encrypted-summoner-id",
+                        "puuid": "test-puuid",
+                        "profileIconId": 4567,
+                        "summonerLevel": 250,
+                    },
+                )
+            )
+            client = RiotClient("RGAPI-test")
+            result = await client.get_summoner_by_puuid("test-puuid", "na1")
+            await client.close()
+
+        assert route.called
+        assert result["id"] == "encrypted-summoner-id"
+        assert result["summonerLevel"] == 250
+
+    @pytest.mark.asyncio
+    async def test_uses_kr_platform_routing(self) -> None:
+        """KR region routes to kr platform, not asia."""
+        with respx.mock:
+            route = respx.get(
+                "https://kr.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/kr-puuid"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"id": "kr-id", "puuid": "kr-puuid", "summonerLevel": 100},
+                )
+            )
+            client = RiotClient("RGAPI-test")
+            result = await client.get_summoner_by_puuid("kr-puuid", "kr")
+            await client.close()
+
+        assert route.called
+        assert result["id"] == "kr-id"
+
+    @pytest.mark.asyncio
+    async def test_404_raises_not_found(self) -> None:
+        with respx.mock:
+            respx.get(
+                "https://na1.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/unknown"
+            ).mock(return_value=httpx.Response(404))
+            client = RiotClient("RGAPI-test")
+            with pytest.raises(NotFoundError):
+                await client.get_summoner_by_puuid("unknown", "na1")
+            await client.close()
+
+
+class TestGetLeagueEntries:
+    @pytest.mark.asyncio
+    async def test_returns_ranked_entries(self) -> None:
+        """get_league_entries uses platform routing and returns a list."""
+        with respx.mock:
+            route = respx.get(
+                "https://na1.api.riotgames.com/lol/league/v4/entries/by-summoner/enc-id-123"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json=[
+                        {
+                            "queueType": "RANKED_SOLO_5x5",
+                            "tier": "DIAMOND",
+                            "rank": "II",
+                            "leaguePoints": 45,
+                        }
+                    ],
+                )
+            )
+            client = RiotClient("RGAPI-test")
+            result = await client.get_league_entries("enc-id-123", "na1")
+            await client.close()
+
+        assert route.called
+        assert isinstance(result, list)
+        assert result[0]["tier"] == "DIAMOND"
+
+    @pytest.mark.asyncio
+    async def test_uses_euw1_platform_routing(self) -> None:
+        """EUW1 region routes to euw1 platform, not europe."""
+        with respx.mock:
+            route = respx.get(
+                "https://euw1.api.riotgames.com/lol/league/v4/entries/by-summoner/euw-id"
+            ).mock(return_value=httpx.Response(200, json=[]))
+            client = RiotClient("RGAPI-test")
+            result = await client.get_league_entries("euw-id", "euw1")
+            await client.close()
+
+        assert route.called
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_404_raises_not_found(self) -> None:
+        with respx.mock:
+            respx.get(
+                "https://na1.api.riotgames.com/lol/league/v4/entries/by-summoner/bad-id"
+            ).mock(return_value=httpx.Response(404))
+            client = RiotClient("RGAPI-test")
+            with pytest.raises(NotFoundError):
+                await client.get_league_entries("bad-id", "na1")
+            await client.close()
+
+
+class TestGetMatchTimeline:
+    @pytest.mark.asyncio
+    async def test_returns_timeline_data(self) -> None:
+        """get_match_timeline uses regional routing (americas) like get_match."""
+        with respx.mock:
+            route = respx.get(
+                "https://americas.api.riotgames.com/lol/match/v5/matches/NA1_1234/timeline"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "metadata": {"matchId": "NA1_1234"},
+                        "info": {"frameInterval": 60000, "frames": []},
+                    },
+                )
+            )
+            client = RiotClient("RGAPI-test")
+            result = await client.get_match_timeline("NA1_1234", "na1")
+            await client.close()
+
+        assert route.called
+        assert result["metadata"]["matchId"] == "NA1_1234"
+
+    @pytest.mark.asyncio
+    async def test_uses_asia_regional_routing_for_kr(self) -> None:
+        """KR platform routes to asia regional routing for match timeline."""
+        with respx.mock:
+            route = respx.get(
+                "https://asia.api.riotgames.com/lol/match/v5/matches/KR_9999/timeline"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"metadata": {"matchId": "KR_9999"}, "info": {"frames": []}},
+                )
+            )
+            client = RiotClient("RGAPI-test")
+            result = await client.get_match_timeline("KR_9999", "kr")
+            await client.close()
+
+        assert route.called
+        assert result["metadata"]["matchId"] == "KR_9999"
+
+    @pytest.mark.asyncio
+    async def test_uses_europe_regional_routing_for_euw1(self) -> None:
+        """EUW1 platform routes to europe regional routing."""
+        with respx.mock:
+            route = respx.get(
+                "https://europe.api.riotgames.com/lol/match/v5/matches/EUW1_555/timeline"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"metadata": {"matchId": "EUW1_555"}, "info": {"frames": []}},
+                )
+            )
+            client = RiotClient("RGAPI-test")
+            result = await client.get_match_timeline("EUW1_555", "euw1")
+            await client.close()
+
+        assert route.called
+
+    @pytest.mark.asyncio
+    async def test_404_raises_not_found(self) -> None:
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/lol/match/v5/matches/NA1_0000/timeline"
+            ).mock(return_value=httpx.Response(404))
+            client = RiotClient("RGAPI-test")
+            with pytest.raises(NotFoundError):
+                await client.get_match_timeline("NA1_0000", "na1")
+            await client.close()
+
+
+class TestThrottleHint:
+    """Proactive throttle hint set when near rate limit capacity."""
+
+    @pytest.fixture
+    def fake_redis(self) -> fakeredis.aioredis.FakeRedis:
+        return fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+    @pytest.mark.asyncio
+    async def test_throttle_hint_set_when_near_capacity(
+        self, fake_redis: fakeredis.aioredis.FakeRedis,
+    ) -> None:
+        """When < 5% capacity remains, ratelimit:throttle is set in Redis."""
+        with respx.mock:
+            respx.get(
+                "https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/F/KR1"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": "p", "gameName": "F", "tagLine": "KR1"},
+                    headers={
+                        "X-App-Rate-Limit": "20:1,100:120",
+                        "X-App-Rate-Limit-Count": "19:1,96:120",  # 96/100 = 4% remaining
+                    },
+                )
+            )
+            client = RiotClient("RGAPI-test", r=fake_redis)
+            await client.get_account_by_riot_id("F", "KR1", "kr")
+            await client.close()
+
+        throttle = await fake_redis.get("ratelimit:throttle")
+        assert throttle == "1"
+        await fake_redis.aclose()
+
+    @pytest.mark.asyncio
+    async def test_throttle_hint_not_set_when_under_threshold(
+        self, fake_redis: fakeredis.aioredis.FakeRedis,
+    ) -> None:
+        """When plenty of capacity remains, no throttle hint is set."""
+        with respx.mock:
+            respx.get(
+                "https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/F/KR1"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": "p", "gameName": "F", "tagLine": "KR1"},
+                    headers={
+                        "X-App-Rate-Limit": "20:1,100:120",
+                        "X-App-Rate-Limit-Count": "5:1,30:120",  # lots of headroom
+                    },
+                )
+            )
+            client = RiotClient("RGAPI-test", r=fake_redis)
+            await client.get_account_by_riot_id("F", "KR1", "kr")
+            await client.close()
+
+        throttle = await fake_redis.get("ratelimit:throttle")
+        assert throttle is None
+        await fake_redis.aclose()
+
+    @pytest.mark.asyncio
+    async def test_throttle_hint_has_ttl(
+        self, fake_redis: fakeredis.aioredis.FakeRedis,
+    ) -> None:
+        """Throttle hint key expires after a short TTL."""
+        with respx.mock:
+            respx.get(
+                "https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/F/KR1"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": "p", "gameName": "F", "tagLine": "KR1"},
+                    headers={
+                        "X-App-Rate-Limit": "20:1,100:120",
+                        "X-App-Rate-Limit-Count": "19:1,96:120",
+                    },
+                )
+            )
+            client = RiotClient("RGAPI-test", r=fake_redis)
+            await client.get_account_by_riot_id("F", "KR1", "kr")
+            await client.close()
+
+        ttl = await fake_redis.ttl("ratelimit:throttle")
+        assert 0 < ttl <= 2
+        await fake_redis.aclose()

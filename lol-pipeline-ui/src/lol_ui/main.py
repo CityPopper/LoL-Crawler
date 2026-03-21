@@ -8,7 +8,6 @@ import heapq
 import html
 import json
 import math
-import os
 import re
 import time
 from collections.abc import AsyncIterator
@@ -28,7 +27,7 @@ from lol_pipeline.constants import PLAYER_DATA_TTL_SECONDS, VALID_REPLAY_STREAMS
 from lol_pipeline.helpers import name_cache_key
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import DLQEnvelope, MessageEnvelope
-from lol_pipeline.priority import has_priority_players, set_priority
+from lol_pipeline.priority import PRIORITY_MANUAL_20, has_priority_players, set_priority
 from lol_pipeline.rate_limiter import wait_for_token
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.resolve import CACHE_TTL_S
@@ -45,6 +44,9 @@ from starlette.responses import Response
 _STREAM_PUUID = "stream:puuid"
 _VALID_REPLAY_STREAMS = VALID_REPLAY_STREAMS
 _PUUID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
+_CHAMPION_NAME_RE = re.compile(r"^[a-zA-Z0-9 '.&-]{1,50}$")
+_PATCH_RE = re.compile(r"^\d{1,2}\.\d{1,2}$")
+_MATCHUP_ROLES = frozenset({"TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"})
 _STREAM_ENTRY_ID_RE = re.compile(r"^\d+-\d+$")
 _NAME_CACHE_INDEX = "name_cache:index"
 _NAME_CACHE_MAX = 10_000
@@ -77,6 +79,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 _NAV_ITEMS = [
     ("/", "Dashboard"),
     ("/stats", "Stats"),
+    ("/champions", "Champions"),
+    ("/matchups", "Matchups"),
     ("/players", "Players"),
     ("/streams", "Streams"),
     ("/dlq", "DLQ"),
@@ -85,17 +89,23 @@ _NAV_ITEMS = [
 
 _CSS = """
 :root {
-  --color-bg: #1a1a2e;
-  --color-surface: #16213e;
-  --color-text: #e0e0e0;
-  --color-muted: #999;
-  --color-border: #333;
+  --color-bg: #1c1c1e;
+  --color-surface: #31313c;
+  --color-text: #e8e8e8;
+  --color-muted: #7b7b8d;
+  --color-border: #3f3f4a;
   --color-success: #2ecc40;
   --color-error: #ff4136;
   --color-warning: #ffdc00;
   --color-info: #5a9eff;
   --color-critical: #c00;
   --color-error-bg: #cc3333;
+  --color-surface2: #3d3d48;
+  --color-win: #5383e8;
+  --color-win-bg: rgba(83, 131, 232, 0.08);
+  --color-loss: #e84057;
+  --color-loss-bg: rgba(232, 64, 87, 0.06);
+  --font-sans: system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: 'Fira Code', 'JetBrains Mono', 'Cascadia Code', monospace;
   --font-size-sm: 12px;
   --font-size-base: 14px;
@@ -109,13 +119,16 @@ _CSS = """
   --space-lg: 24px;
   --space-xl: 32px;
   --radius: 4px;
+  --icon-champ-sm: 28px;
+  --icon-champ-md: 48px;
+  --icon-item: 28px;
 }
 body {
   font-family: var(--font-mono);
   font-size: var(--font-size-base);
   background: var(--color-bg);
   color: var(--color-text);
-  max-width: min(900px, calc(100% - 2rem));
+  max-width: min(1100px, calc(100% - 2rem));
   margin: 2rem auto;
   padding: 0 var(--space-sm);
   line-height: var(--line-height);
@@ -123,18 +136,17 @@ body {
 a { color: var(--color-info); }
 h1 { border-bottom: 2px solid var(--color-border); padding-bottom: 0.5rem; }
 hr { border: none; border-top: 1px solid var(--color-border); }
-nav { display: flex; gap: var(--space-sm); overflow-x: auto; padding-bottom: var(--space-xs); }
-nav a {
-  white-space: nowrap;
-  padding: var(--space-sm) var(--space-md);
-  min-height: 44px;
-  display: inline-flex;
-  align-items: center;
-  border-radius: var(--radius);
-  text-decoration: none;
-}
-nav a:hover { background: var(--color-surface); }
-nav a.active { border-bottom: 2px solid var(--color-info); font-weight: bold; }
+nav { display: flex; gap: 0; overflow-x: auto; padding-bottom: 0;
+  border-bottom: 2px solid var(--color-border); margin-bottom: var(--space-md); }
+nav a { white-space: nowrap; padding: var(--space-sm) var(--space-md);
+  min-height: 44px; display: inline-flex; align-items: center;
+  border-radius: 0; text-decoration: none; color: var(--color-muted);
+  border-bottom: 2px solid transparent; margin-bottom: -2px;
+  font-size: var(--font-size-sm); }
+nav a:hover { background: transparent; color: var(--color-text);
+  border-bottom-color: var(--color-border); }
+nav a.active { color: var(--color-win); border-bottom-color: var(--color-win);
+  font-weight: 600; border-bottom: 2px solid var(--color-win); }
 :focus-visible { outline: 2px solid var(--color-info); outline-offset: 2px; }
 form { margin: 1rem 0; }
 input, select {
@@ -167,9 +179,12 @@ button:hover, .btn:hover { filter: brightness(1.1); }
 .error-msg { color: var(--color-error); padding: var(--space-sm) 0; }
 .warning { color: var(--color-warning); }
 .unverified { color: var(--color-warning); }
-table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
-td, th { border: 1px solid var(--color-border); padding: 0.4rem 0.8rem; text-align: left; }
-th { background: var(--color-surface); color: var(--color-muted); }
+table { border-collapse: collapse; width: 100%; margin-top: 0.5rem; }
+td, th { border: none; border-bottom: 1px solid var(--color-border);
+  padding: 0.5rem 0.75rem; text-align: left; font-size: var(--font-size-sm); }
+th { background: var(--color-surface2); color: var(--color-muted); font-weight: 600;
+  font-family: var(--font-sans); text-transform: uppercase; letter-spacing: 0.06em;
+  font-size: 11px; }
 pre { background: var(--color-surface); padding: 12px;
   overflow-x: auto; border-radius: var(--radius); }
 code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--radius); }
@@ -179,6 +194,7 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
 .card { background: var(--color-surface); border: 1px solid var(--color-border);
         border-radius: var(--radius); padding: var(--space-md); margin: var(--space-md) 0; }
 .card__title { margin-top: 0; font-size: var(--font-size-lg); color: var(--color-muted); }
+.card a { display: inline-flex; align-items: center; min-height: 44px; }
 
 /* Badges */
 .badge { display: inline-block; padding: 2px 8px; border-radius: var(--radius);
@@ -203,6 +219,8 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
 /* Table scroll wrapper */
 .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .table-scroll td, .table-scroll th { white-space: nowrap; }
+.table-scroll td.cell-wrap { white-space: normal; word-break: break-word;
+  max-width: 300px; }
 
 /* Small button */
 .btn-sm { padding: var(--space-xs) var(--space-sm); font-size: var(--font-size-sm);
@@ -271,6 +289,8 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
 @media (max-width: 767px) {
   body { margin: 1rem auto; }
   .site-footer { padding: var(--space-md) var(--space-sm); }
+  .form-inline label { font-size: var(--font-size-base); }
+  td, th { padding: 0.3rem 0.4rem; }
 }
 
 /* Tablet (768px+) */
@@ -336,8 +356,54 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
   color: var(--color-muted); padding: var(--space-lg); }
 
 /* Champion icons */
-.champion-icon { width: 32px; height: 32px; border-radius: 4px;
-  vertical-align: middle; margin-right: var(--space-xs); }
+.champion-icon { width: var(--icon-champ-sm); height: var(--icon-champ-sm);
+  border-radius: 50%; vertical-align: middle; margin-right: var(--space-xs);
+  object-fit: cover; border: 2px solid var(--color-border); flex-shrink: 0; }
+
+.match-list { display: flex; flex-direction: column; gap: 3px; margin-top: var(--space-sm); }
+.match-row { display: flex; align-items: center; gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md); border-radius: var(--radius);
+  border-left: 4px solid transparent; background: var(--color-surface);
+  min-height: 72px; }
+.match-row--win { border-left-color: var(--color-win); background: var(--color-win-bg); }
+.match-row--loss { border-left-color: var(--color-loss); background: var(--color-loss-bg); }
+.match-result { width: 40px; flex-shrink: 0; font-size: var(--font-size-sm);
+  font-weight: 700; font-family: var(--font-sans); text-align: center; }
+.match-result--win { color: var(--color-win); }
+.match-result--loss { color: var(--color-loss); }
+.match-champ { display: flex; flex-direction: column; align-items: center;
+  gap: 3px; width: 56px; flex-shrink: 0; }
+.match-champ__name { font-size: 10px; color: var(--color-muted); text-align: center;
+  max-width: 56px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--font-sans); }
+.match-kda { display: flex; flex-direction: column; gap: 2px; min-width: 80px; flex-shrink: 0; }
+.match-kda__score { font-size: var(--font-size-base); font-weight: 700;
+  font-family: var(--font-sans); }
+.match-kda__sep { color: var(--color-muted); padding: 0 1px; }
+.match-kda__deaths { color: var(--color-loss); }
+.match-kda__ratio { font-size: var(--font-size-sm); color: var(--color-muted);
+  font-family: var(--font-sans); }
+.match-kda__ratio--good { color: var(--color-win); }
+.match-meta-col { display: flex; flex-direction: column; gap: 2px; min-width: 70px; flex-shrink: 0; }
+.match-meta-col__value { font-size: var(--font-size-sm); font-family: var(--font-sans); }
+.match-meta-col__label { font-size: 10px; color: var(--color-muted); font-family: var(--font-sans); }
+.match-items { display: flex; gap: 2px; flex-wrap: nowrap; flex-shrink: 0; }
+.match-item { width: var(--icon-item); height: var(--icon-item); border-radius: 4px;
+  background: var(--color-surface2); object-fit: cover; border: 1px solid var(--color-border); }
+.match-item--empty { display: inline-block; width: var(--icon-item); height: var(--icon-item);
+  border-radius: 4px; background: var(--color-surface2); border: 1px solid var(--color-border);
+  opacity: 0.4; }
+.match-info-col { margin-left: auto; display: flex; flex-direction: column;
+  align-items: flex-end; gap: 3px; flex-shrink: 0; }
+.match-info-col span { font-size: 10px; color: var(--color-muted); font-family: var(--font-sans); }
+.match-load-more { display: block; width: 100%; padding: var(--space-sm);
+  margin-top: var(--space-sm); text-align: center; background: var(--color-surface);
+  border: 1px solid var(--color-border); border-radius: var(--radius);
+  color: var(--color-muted); cursor: pointer; font-size: var(--font-size-sm); }
+.match-load-more:hover { background: var(--color-surface2); color: var(--color-text); }
+@media (max-width: 600px) {
+  .match-meta-col, .match-items { display: none; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important;
@@ -443,6 +509,7 @@ def _empty_state(title: str, body_html: str) -> str:
 # ---------------------------------------------------------------------------
 
 _DDRAGON_VERSION_KEY = "ddragon:version"
+_DDRAGON_CHAMPION_IDS_KEY = "ddragon:champion_ids"
 _DDRAGON_TTL_S = 86400  # 24 hours
 
 
@@ -463,6 +530,42 @@ async def _get_ddragon_version(r: aioredis.Redis) -> str | None:
         return None
 
 
+async def _get_champion_id_map(r: aioredis.Redis) -> dict[str, str]:
+    """Return {champion_numeric_id: champion_name} mapping from Data Dragon.
+
+    Cached in Redis for 24h. Returns empty dict on failure.
+    """
+    cached = await r.get(_DDRAGON_CHAMPION_IDS_KEY)
+    if cached:
+        return json.loads(str(cached))
+    version = await _get_ddragon_version(r)
+    if not version:
+        return {}
+    try:
+        url = (
+            f"https://ddragon.leagueoflegends.com/cdn/{version}"
+            "/data/en_US/champion.json"
+        )
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data: dict[str, Any] = resp.json()
+            mapping: dict[str, str] = {}
+            for champ_data in data.get("data", {}).values():
+                key = champ_data.get("key", "")
+                name = champ_data.get("id", "")
+                if key and name:
+                    mapping[key] = name
+            await r.set(
+                _DDRAGON_CHAMPION_IDS_KEY,
+                json.dumps(mapping),
+                ex=_DDRAGON_TTL_S,
+            )
+            return mapping
+    except Exception:
+        return {}
+
+
 def _champion_icon_html(champion_name: str, version: str | None) -> str:
     """Return an <img> tag for the champion icon, or empty string on failure.
 
@@ -477,6 +580,51 @@ def _champion_icon_html(champion_name: str, version: str | None) -> str:
         f'<img src="{url}" alt="{safe_name}" class="champion-icon"'
         f' loading="lazy" onerror="this.style.display=\'none\'">'
     )
+
+
+def _item_icon_html(item_id: str, version: str | None) -> str:
+    """Return an <img> for a DDragon item ID, or an empty-slot span."""
+    if not item_id or item_id.strip() in ("", "0") or not version:
+        return '<span class="match-item match-item--empty"></span>'
+    safe_v = html.escape(version)
+    safe_id = html.escape(item_id.strip())
+    url = f"https://ddragon.leagueoflegends.com/cdn/{safe_v}/img/item/{safe_id}.png"
+    return (
+        f'<img src="{url}" alt="item {safe_id}" class="match-item"'
+        f" loading=\"lazy\" onerror=\"this.style.display='none'\">"
+    )
+
+
+def _kda_ratio_html(kills: str, deaths: str, assists: str) -> str:
+    """Format KDA ratio with color coding."""
+    try:
+        k, d, a = float(kills), float(deaths), float(assists)
+        ratio = (k + a) / max(d, 1.0)
+        cls = "match-kda__ratio--good" if ratio >= 3.0 else "match-kda__ratio"
+        return f'<span class="{cls}">{ratio:.2f} KDA</span>'
+    except ValueError:
+        return ""
+
+
+def _time_ago(game_start_ms: int) -> str:
+    """Return human-readable time-ago string from game start milliseconds."""
+    if not game_start_ms:
+        return ""
+    diff_s = int(time.time()) - game_start_ms // 1000
+    if diff_s < 0:
+        return "just now"
+    if diff_s < 3600:
+        return f"{diff_s // 60}m ago"
+    if diff_s < 86400:
+        return f"{diff_s // 3600}h ago"
+    return f"{diff_s // 86400}d ago"
+
+
+def _duration_fmt(seconds: int) -> str:
+    """Format game duration as mm:ss."""
+    if not seconds:
+        return ""
+    return f"{seconds // 60}:{seconds % 60:02d}"
 
 
 def _page(title: str, body: str, path: str = "") -> str:
@@ -518,9 +666,10 @@ def _page(title: str, body: str, path: str = "") -> str:
 
 
 _HALT_BANNER = (
-    '<div class="banner banner--error">&#9888; System is HALTED — all workers have stopped. '
+    '<div class="banner banner--error" role="alert">&#9888; Pipeline is HALTED '
+    "&mdash; all consumers are stopped. "
     "To recover: fix the API key in <code>.env</code>, restart with "
-    "<code>just up</code>, then run <code>just admin system-resume</code>.</div>"
+    "<code>just up</code>, then run <code>just admin system-resume</code> to resume.</div>"
 )
 
 
@@ -528,7 +677,6 @@ _VALID_MSG_CLASSES = frozenset({"", "success", "warning", "error"})
 
 _DLQ_DEFAULT_PER_PAGE = 25
 _DLQ_MAX_PER_PAGE = 50
-_DLQ_MAX_PAGE = 1000
 
 
 def _make_replay_envelope(dlq: DLQEnvelope, max_attempts: int) -> MessageEnvelope:
@@ -588,14 +736,12 @@ def _stats_form(
 <h2>Player Stats</h2>
 {msg_html}
 <form class="form-inline" method="get" action="/stats">
-  <label>Riot ID:
-    <input name="riot_id" placeholder="GameName#TagLine" required value="{escaped_value}">
-  </label>
-  <label>Region:
-    <select name="region">
+  <label for="stats-riot-id">Riot ID:</label>
+  <input id="stats-riot-id" name="riot_id" placeholder="GameName#TagLine" required value="{escaped_value}">
+  <label for="stats-region">Region:</label>
+  <select id="stats-region" name="region">
       {options}
-    </select>
-  </label>
+  </select>
   <button type="submit">Look Up</button>
 </form>
 {stats_html}
@@ -620,21 +766,22 @@ def _stats_table(
     return f"""
 <h3>Verified (Riot API) {_badge_html("success", "&#10003; Verified")}</h3>
 <div class="table-scroll">
-<table><tr><th>Stat</th><th>Value</th></tr>{rows}</table>
+<table><thead><tr><th scope="col">Stat</th><th scope="col">Value</th></tr></thead>\
+<tbody>{rows}</tbody></table>
 </div>
 <div class="stats-grid">
 <div>
 <h3>Top Champions</h3>
 <div class="table-scroll">
-<table><tr><th>Champion</th><th>Games</th></tr>
-{champ_rows or "<tr><td colspan='2'>No data</td></tr>"}</table>
+<table><thead><tr><th scope="col">Champion</th><th scope="col">Games</th></tr></thead>
+<tbody>{champ_rows or "<tr><td colspan='2'>No data</td></tr>"}</tbody></table>
 </div>
 </div>
 <div>
 <h3>Roles</h3>
 <div class="table-scroll">
-<table><tr><th>Role</th><th>Games</th></tr>
-{role_rows or "<tr><td colspan='2'>No data</td></tr>"}</table>
+<table><thead><tr><th scope="col">Role</th><th scope="col">Games</th></tr></thead>
+<tbody>{role_rows or "<tr><td colspan='2'>No data</td></tr>"}</tbody></table>
 </div>
 </div>
 </div>
@@ -646,30 +793,21 @@ def _match_history_section(puuid: str, region: str, riot_id: str) -> str:
     safe_puuid = html.escape(puuid, quote=True)
     safe_region = html.escape(region, quote=True)
     safe_id = html.escape(riot_id, quote=True)
-    href = (
-        f"/stats/matches?puuid={safe_puuid}"
-        f"&amp;region={safe_region}&amp;riot_id={safe_id}&amp;page=0"
-    )
     return f"""
 <h3>Match History</h3>
-<div id="match-history-container">
-  <p><a href="{href}" class="load-matches"
-     data-puuid="{safe_puuid}" data-region="{safe_region}"
-     data-riot-id="{safe_id}" data-page="0">Load match history</a></p>
-</div>
+<div id="match-history-container" data-puuid="{safe_puuid}" data-region="{safe_region}" data-riot-id="{safe_id}">
+<div class="loading-state"><span class="spinner"></span> Loading\u2026</div></div>
 <script>
 var _loadingMatches = false;
+var _matchObserver = null;
 function loadMatches(puuid, region, riotId, page) {{
   if (_loadingMatches) return;
   _loadingMatches = true;
   var container = document.getElementById('match-history-container');
   var isFirst = page === 0;
   var btn = null;
-  if (isFirst) {{
-    container.innerHTML = '<div class="loading-state">'
-      + '<span class="spinner"></span> Loading match history\u2026</div>';
-  }} else {{
-    btn = container.querySelector('.load-matches');
+  if (!isFirst) {{
+    btn = container.querySelector('.match-load-more');
     if (btn) {{ btn.textContent = 'Loading\u2026'; btn.style.pointerEvents = 'none'; }}
   }}
   var url = '/stats/matches?puuid=' + encodeURIComponent(puuid)
@@ -678,28 +816,29 @@ function loadMatches(puuid, region, riotId, page) {{
     + '&page=' + page;
   fetch(url, {{headers: {{'Accept': 'text/html'}}}})
     .then(function(r) {{ if (!r.ok) {{ throw new Error('HTTP ' + r.status); }} return r.text(); }})
-    .then(function(html) {{
+    .then(function(h) {{
       if (isFirst) {{
-        container.innerHTML = html;
+        container.innerHTML = h;
       }} else {{
         var tmp = document.createElement('div');
-        tmp.innerHTML = html;
-        var existingTbl = container.querySelector('table');
-        var newTbl = tmp.querySelector('table');
-        if (existingTbl && newTbl) {{
-          Array.from(newTbl.rows).slice(1).forEach(function(row) {{
-            existingTbl.appendChild(row.cloneNode(true));
+        tmp.innerHTML = h;
+        var existingList = container.querySelector('.match-list');
+        var newList = tmp.querySelector('.match-list');
+        if (existingList && newList) {{
+          Array.from(newList.children).forEach(function(row) {{
+            existingList.appendChild(row.cloneNode(true));
           }});
         }}
-        var oldLink = container.querySelector('.load-matches');
-        if (oldLink) {{ oldLink.closest('p').remove(); }}
-        var newLink = tmp.querySelector('.load-matches');
-        if (newLink) {{ container.appendChild(newLink.closest('p')); }}
+        var oldBtn = container.querySelector('.match-load-more');
+        if (oldBtn) {{ oldBtn.remove(); }}
+        var newBtn = tmp.querySelector('.match-load-more');
+        if (newBtn) {{ container.appendChild(newBtn.cloneNode(true)); }}
       }}
+      _observeLoadMore();
     }})
     .catch(function(e) {{
       if (btn) {{
-        btn.textContent = 'Load more (page ' + (page + 1) + ')';
+        btn.textContent = 'Load more';
         btn.style.pointerEvents = '';
       }}
       var existing = container.querySelector('.error');
@@ -711,12 +850,27 @@ function loadMatches(puuid, region, riotId, page) {{
     }})
     .finally(function() {{ _loadingMatches = false; }});
 }}
-document.addEventListener('click', function(e) {{
-  var el = e.target.closest('.load-matches');
-  if (!el) return;
-  e.preventDefault();
-  loadMatches(el.dataset.puuid, el.dataset.region, el.dataset.riotId, +el.dataset.page);
-}});
+function _observeLoadMore() {{
+  if (_matchObserver) {{ _matchObserver.disconnect(); }}
+  var btn = document.querySelector('.match-load-more');
+  if (!btn) return;
+  _matchObserver = new IntersectionObserver(function(entries) {{
+    if (entries[0].isIntersecting) {{
+      btn.click();
+    }}
+  }}, {{rootMargin: '200px'}});
+  _matchObserver.observe(btn);
+  btn.addEventListener('click', function(e) {{
+    e.preventDefault();
+    loadMatches(btn.dataset.puuid, btn.dataset.region, btn.dataset.riotId, +btn.dataset.page);
+  }});
+}}
+(function() {{
+  var c = document.getElementById('match-history-container');
+  if (c) {{
+    loadMatches(c.dataset.puuid, c.dataset.region, c.dataset.riotId, 0);
+  }}
+}})();
 </script>
 """
 
@@ -843,8 +997,8 @@ async def index(request: Request) -> HTMLResponse:
   <h3 class="card__title">Stream Depths</h3>
   <div class="table-scroll">
   <table class="streams">
-    <tr><th>Key</th><th class="text-right">Length</th><th>Status</th></tr>
-    {stream_rows}
+    <thead><tr><th scope="col">Key</th><th scope="col" class="text-right">Length</th><th scope="col">Status</th></tr></thead>
+    <tbody>{stream_rows}</tbody>
   </table>
   </div>
 </div>
@@ -855,14 +1009,12 @@ async def index(request: Request) -> HTMLResponse:
     Enter a Riot ID to view stats or auto-seed the player into the pipeline.
   </p>
   <form class="form-inline" method="get" action="/stats">
-    <label>Riot ID:
-      <input name="riot_id" placeholder="GameName#TagLine" required>
-    </label>
-    <label>Region:
-      <select name="region">
+    <label for="dash-riot-id">Riot ID:</label>
+    <input id="dash-riot-id" name="riot_id" placeholder="GameName#TagLine" required>
+    <label for="dash-region">Region:</label>
+    <select id="dash-region" name="region">
         {region_options}
-      </select>
-    </label>
+    </select>
     <button type="submit">Look Up</button>
   </form>
   <p><a href="/stats">All regions &rarr;</a></p>
@@ -898,7 +1050,9 @@ async def _resolve_and_cache_puuid(
     if cached_puuid:
         return cached_puuid
     try:
-        await wait_for_token(r, limit_per_second=cfg.api_rate_limit_per_second)
+        await wait_for_token(
+            r, limit_per_second=cfg.api_rate_limit_per_second, region=region,
+        )
         account = await riot.get_account_by_riot_id(game_name, tag_line, region)
     except NotFoundError:
         return HTMLResponse(
@@ -959,7 +1113,13 @@ async def _auto_seed_player(
     """Auto-seed a player if not yet seeded, returning an appropriate status page."""
     riot_id = f"{game_name}#{tag_line}"
     safe_id = html.escape(riot_id)
-    if await r.get("system:halted"):
+    cooldown_key = f"autoseed:cooldown:{puuid}"
+    async with r.pipeline(transaction=False) as pipe:
+        pipe.get("system:halted")
+        pipe.get(cooldown_key)
+        pipe.hget(f"player:{puuid}", "seeded_at")
+        halted, cooldown, existing_seeded = await pipe.execute()
+    if halted:
         return HTMLResponse(
             _stats_form(
                 f"System halted. No stats yet for {safe_id}.",
@@ -968,8 +1128,7 @@ async def _auto_seed_player(
                 value=riot_id,
             )
         )
-    cooldown_key = f"autoseed:cooldown:{puuid}"
-    if await r.get(cooldown_key):
+    if cooldown:
         return HTMLResponse(
             _stats_form(
                 f"{safe_id} was seeded recently — pipeline processing. Check back soon.",
@@ -978,7 +1137,6 @@ async def _auto_seed_player(
                 value=riot_id,
             )
         )
-    existing_seeded: str | None = await r.hget(f"player:{puuid}", "seeded_at")
     if existing_seeded:
         return HTMLResponse(
             _stats_form(
@@ -998,14 +1156,14 @@ async def _auto_seed_player(
             "region": region,
         },
         max_attempts=cfg.max_attempts,
-        priority="high",
+        priority=PRIORITY_MANUAL_20,
     )
     # Set priority before publishing so clear_priority() by downstream
     # services cannot race against a not-yet-set priority key.
     await set_priority(r, puuid)
     now_ts = time.time()
     await r.zadd("players:all", {puuid: now_ts})
-    await r.zremrangebyrank("players:all", 0, -50001)
+    await r.zremrangebyrank("players:all", 0, -(cfg.players_all_max + 1))
     await publish(r, _STREAM_PUUID, envelope)
     now_iso = datetime.now(tz=UTC).isoformat()
     await r.hset(
@@ -1030,6 +1188,58 @@ async def _auto_seed_player(
     )
 
 
+def _rank_card_html(rank: dict[str, str]) -> str:
+    """Render a rank card from player:rank:{puuid} hash data."""
+    if not rank:
+        return ""
+    tier = rank.get("tier", "")
+    division = rank.get("division", "")
+    lp = html.escape(rank.get("lp", "0"))
+    wins = int(rank.get("wins", "0"))
+    losses = int(rank.get("losses", "0"))
+    total = wins + losses
+    wr = round(wins / total * 100) if total else 0
+    wr_color = "var(--color-win)" if wr >= 50 else "var(--color-loss)"
+    return (
+        f'<div class="card" style="display:flex;align-items:center;gap:var(--space-md)">'
+        f"<div>"
+        f'<div style="font-family:var(--font-sans);font-size:var(--font-size-lg);font-weight:700">'
+        f"{html.escape(tier)} {html.escape(division)}</div>"
+        f'<div style="font-size:var(--font-size-sm);color:var(--color-muted)">'
+        f"{lp} LP &mdash; {wins}W {losses}L</div>"
+        f'<div style="background:var(--color-surface2);border-radius:4px;height:6px;margin-top:6px">'
+        f'<div style="background:{wr_color};width:{wr}%;height:6px;border-radius:4px"></div></div>'
+        f"</div>"
+        f'<div style="margin-left:auto;text-align:right">'
+        f'<span style="font-family:var(--font-sans);font-size:var(--font-size-xl);font-weight:700;color:{wr_color}">{wr}%</span>'
+        f'<div style="font-size:10px;color:var(--color-muted)">Win Rate</div></div></div>'
+    )
+
+
+def _profile_header_html(game_name: str, tag_line: str, rank: dict[str, str]) -> str:
+    """Render a profile header with avatar initial, name, and rank summary."""
+    safe_name = html.escape(game_name)
+    safe_tag = html.escape(tag_line)
+    tier = rank.get("tier", "UNRANKED") if rank else "UNRANKED"
+    division = rank.get("division", "") if rank else ""
+    lp = rank.get("lp", "0") if rank else "0"
+    rank_text = f"{tier} {division}".strip() if tier != "UNRANKED" else "Unranked"
+    return (
+        f'<div class="card" style="display:flex;align-items:center;gap:var(--space-lg);padding:var(--space-lg)">'
+        f'<div style="width:64px;height:64px;border-radius:50%;background:var(--color-surface2);'
+        f"display:flex;align-items:center;justify-content:center;"
+        f"border:3px solid var(--color-win);flex-shrink:0;"
+        f'font-family:var(--font-sans);font-size:28px;font-weight:700;color:var(--color-win)">'
+        f"{html.escape(game_name[:1].upper())}</div>"
+        f"<div>"
+        f'<div style="font-family:var(--font-sans);font-size:var(--font-size-xl);font-weight:700">'
+        f'{safe_name}<span style="color:var(--color-muted);font-size:var(--font-size-base)">#{safe_tag}</span></div>'
+        f'<div style="font-size:var(--font-size-sm);color:var(--color-muted);margin-top:2px">'
+        f"{html.escape(rank_text)} &mdash; {html.escape(lp)} LP</div>"
+        f"</div></div>"
+    )
+
+
 async def _build_stats_response(
     r: Any,
     puuid: str,
@@ -1040,16 +1250,20 @@ async def _build_stats_response(
     stats: dict[str, str],
 ) -> HTMLResponse:
     """Read Redis hashes and build the stats HTML response."""
-    # P16-PERF-2: batch the three independent reads into a single pipeline RTT.
+    # Batch the four independent reads into a single pipeline RTT.
     async with r.pipeline(transaction=False) as pipe:
         pipe.get(f"player:priority:{puuid}")
         pipe.zrevrange(f"player:champions:{puuid}", 0, 9, withscores=True)
         pipe.zrevrange(f"player:roles:{puuid}", 0, -1, withscores=True)
-        priority_key, champs, roles = await pipe.execute()
+        pipe.hgetall(f"player:rank:{puuid}")
+        priority_key, champs, roles, rank = await pipe.execute()
 
     champs = champs or []
     roles = roles or []
+    rank = rank or {}
     priority_html = f" {_badge('info', 'Priority')}" if priority_key else ""
+    profile_html = _profile_header_html(game_name, tag_line, rank)
+    rank_html = _rank_card_html(rank)
     api_html = (
         _stats_table(stats, champs, roles)
         if stats
@@ -1060,7 +1274,11 @@ async def _build_stats_response(
     heading = f"Stats for {safe_name}{priority_html}"
     return HTMLResponse(
         _stats_form(
-            heading, "success", api_html + history_html, selected_region=region, value=riot_id
+            heading,
+            "success",
+            profile_html + rank_html + api_html + history_html,
+            selected_region=region,
+            value=riot_id,
         )
     )
 
@@ -1213,14 +1431,15 @@ async def show_players(request: Request) -> HTMLResponse:
         else ""
     )
     page_indicator = f"page {page + 1} of {total_pages}"
-    sep = "&nbsp;&nbsp;" if has_prev else ""
     next_link = (
         f'<a class="page-link" href="/players?sort={sort}&amp;page={page + 1}">Next &rarr;</a>'
         if has_next
         else ""
     )
-    sep2 = "&nbsp;&nbsp;" if has_next else ""
-    pagination = f"<p>{prev_link}{sep}{page_indicator}{sep2}{next_link}</p>"
+    pagination = (
+        f'<p style="display:flex;gap:var(--space-md);align-items:center">'
+        f"{prev_link}{page_indicator}{next_link}</p>"
+    )
 
     filter_script = """
 <script>
@@ -1246,7 +1465,7 @@ async def show_players(request: Request) -> HTMLResponse:
   aria-label="Filter players by name">
 <div class="table-scroll">
 <table id="players-table">
-  <thead><tr><th>Riot ID</th><th>Region</th><th>Seeded</th></tr></thead>
+  <thead><tr><th scope="col">Riot ID</th><th scope="col">Region</th><th scope="col">Seeded</th></tr></thead>
   <tbody>
   {rows}
   </tbody>
@@ -1309,8 +1528,9 @@ async def _streams_fragment_html(r: Any) -> str:
 <p>Priority players in-flight: <strong>{priority_display}</strong></p>
 <div class="table-scroll">
 <table class="streams">
-  <tr><th>Key</th><th class="text-right">Length</th><th>Status</th></tr>
-  {rows}
+  <thead><tr><th scope="col">Key</th><th scope="col" class="text-right">Length</th>\
+<th scope="col">Status</th></tr></thead>
+  <tbody>{rows}</tbody>
 </table>
 </div>
 """
@@ -1382,14 +1602,10 @@ async def show_streams(request: Request) -> HTMLResponse:
 
 @app.get("/dlq", response_class=HTMLResponse)
 async def show_dlq(request: Request) -> HTMLResponse:
-    """Display dead-letter queue entries with pagination."""
+    """Display dead-letter queue entries with cursor-based pagination."""
     r = request.app.state.r
     halted = await r.get("system:halted")
     halt_html = _HALT_BANNER if halted else ""
-    try:
-        page = int(request.query_params.get("page", "0"))
-    except ValueError:
-        page = 0
     try:
         per_page = min(
             int(request.query_params.get("per_page", str(_DLQ_DEFAULT_PER_PAGE))), _DLQ_MAX_PER_PAGE
@@ -1397,15 +1613,21 @@ async def show_dlq(request: Request) -> HTMLResponse:
     except ValueError:
         per_page = _DLQ_DEFAULT_PER_PAGE
     per_page = max(per_page, 1)
-    page = min(max(page, 0), _DLQ_MAX_PAGE)
 
-    # Fetch one extra to detect next page
-    fetch_count = page * per_page + per_page + 1
-    all_entries: list[tuple[str, dict[str, str]]] = await r.xrange("stream:dlq", count=fetch_count)
-    if not all_entries:
+    cursor = request.query_params.get("cursor", "-")
+    if cursor != "-" and not _STREAM_ENTRY_ID_RE.match(cursor):
+        cursor = "-"
+
+    total_count: int = await r.xlen("stream:dlq")
+
+    entries: list[tuple[str, dict[str, str]]] = await r.xrange(
+        "stream:dlq", min=cursor, max="+", count=per_page + 1
+    )
+    if not entries:
         body = (
             halt_html
             + "<h2>Dead Letter Queue</h2>"
+            + f"<p>Total entries: {total_count}</p>"
             + _empty_state(
                 "DLQ is empty",
                 "No failed messages. The pipeline is healthy.",
@@ -1413,10 +1635,9 @@ async def show_dlq(request: Request) -> HTMLResponse:
         )
         return HTMLResponse(_page("Dead Letter Queue", body, path="/dlq"))
 
-    start = page * per_page
-    page_entries = all_entries[start : start + per_page]
-    has_next = len(all_entries) > start + per_page
-    has_prev = page > 0
+    has_next = len(entries) > per_page
+    page_entries = entries[:per_page]
+    next_cursor = entries[per_page][0] if has_next else None
 
     rows = ""
     for entry_id, fields in page_entries:
@@ -1445,33 +1666,30 @@ async def show_dlq(request: Request) -> HTMLResponse:
         rows += (
             f"<tr><td>{safe_id}</td><td>{fc_badge}</td>"
             f"<td>{orig_stream}</td><td>{service}</td><td>{attempts}</td>"
-            f"<td><code>{payload_preview}</code></td><td>{replay_form}</td></tr>"
+            f'<td class="cell-wrap"><code>{payload_preview}</code></td><td>{replay_form}</td></tr>'
         )
 
-    prev_link = (
-        f'<a class="page-link" href="/dlq?page={page - 1}&amp;per_page={per_page}">&larr; Prev</a>'
-        if has_prev
-        else ""
-    )
     next_link = (
-        f'<a class="page-link" href="/dlq?page={page + 1}&amp;per_page={per_page}">Next &rarr;</a>'
-        if has_next
+        f'<a class="page-link" href="/dlq?cursor={html.escape(next_cursor)}'
+        f"&amp;per_page={per_page}\">Next &rarr;</a>"
+        if next_cursor
         else ""
     )
-    sep = "&nbsp;&nbsp;" if has_prev and has_next else ""
-    page_label = f"page {page + 1}"
     pagination = (
-        f"<p>{prev_link}{sep}{page_label}{sep}{next_link}</p>" if prev_link or next_link else ""
+        f'<p style="display:flex;gap:var(--space-md);align-items:center">{next_link}</p>'
+        if next_link
+        else ""
     )
 
     body = f"""{halt_html}<h2>Dead Letter Queue</h2>
-<p>Showing {per_page} entries per page.</p>
+<p>Total entries: {total_count}. Showing {per_page} per page.</p>
 <div class="table-scroll">
 <table>
-  <tr><th>Entry ID</th><th>Failure Code</th>
-      <th>Original Stream</th><th>Service</th><th>Attempts</th>
-      <th>Payload</th><th>Action</th></tr>
-  {rows}
+  <thead><tr><th scope="col">Entry ID</th><th scope="col">Failure Code</th>
+      <th scope="col">Original Stream</th><th scope="col">Service</th>\
+<th scope="col">Attempts</th>
+      <th scope="col">Payload</th><th scope="col">Action</th></tr></thead>
+  <tbody>{rows}</tbody>
 </table>
 </div>
 {pagination}
@@ -1531,7 +1749,7 @@ async def dlq_replay(request: Request, entry_id: str) -> Response:
 _MATCH_PAGE_SIZE = 20
 
 
-def _match_history_html(
+def _match_history_html(  # noqa: PLR0912
     matches: list[tuple[str, dict[str, str], dict[str, str]]],
     puuid: str,
     region: str,
@@ -1540,49 +1758,79 @@ def _match_history_html(
     has_more: bool,
     version: str | None = None,
 ) -> str:
-    """Render match history rows + optional next-page link."""
+    """Render match history rows + optional next-page button."""
     if not matches:
-        return "<p>No match history found.</p>"
-    rows = ""
-    for _match_id, match, participant in matches:
-        game_start = int(match.get("game_start", 0))
-        dt = (
-            datetime.fromtimestamp(game_start / 1000, tz=UTC).strftime("%Y-%m-%d")
-            if game_start
-            else "?"
-        )
+        return _empty_state("No match history", "This player has no parsed matches yet.")
+    cards = ""
+    for _match_id, match_meta, participant in matches:
         win = participant.get("win") == "1"
-        result = _badge("success", "Win") if win else _badge("error", "Loss")
-        raw_champ = participant.get("champion_name", "?")
-        champ = html.escape(raw_champ)
-        icon = _champion_icon_html(raw_champ, version)
-        role = html.escape(participant.get("team_position", participant.get("role", "?")))
+        row_cls = "match-row--win" if win else "match-row--loss"
+        result_cls = "match-result--win" if win else "match-result--loss"
+        result_text = "WIN" if win else "LOSS"
+
+        champ_name = participant.get("champion_name", "?")
+        icon = _champion_icon_html(champ_name, version)
         k = html.escape(participant.get("kills", "0"))
         d = html.escape(participant.get("deaths", "0"))
         a = html.escape(participant.get("assists", "0"))
-        mode = html.escape(match.get("game_mode", "?"))
-        rows += (
-            f"<tr><td>{dt}</td><td>{result}</td><td>{icon}{champ}</td><td>{role}</td>"
-            f"<td>{k}/{d}/{a}</td><td>{mode}</td></tr>"
+        cs = html.escape(participant.get("total_minions_killed", "0"))
+        try:
+            duration = _duration_fmt(int(match_meta.get("game_duration", "0")))
+        except ValueError:
+            duration = ""
+        role = html.escape(participant.get("team_position", ""))
+        mode = html.escape(match_meta.get("game_mode", ""))
+        try:
+            game_start = int(match_meta.get("game_start", "0"))
+        except ValueError:
+            game_start = 0
+        ago = _time_ago(game_start)
+        kda = _kda_ratio_html(k, d, a)
+
+        # Items: parse the JSON items field
+        raw_items = participant.get("items", "")
+        try:
+            item_list = (
+                json.loads(raw_items) if raw_items.startswith("[") else raw_items.split(",")
+            )
+        except (json.JSONDecodeError, AttributeError):
+            item_list = []
+        item_ids = (list(map(str, item_list)) + ["0"] * 7)[:7]
+        items_html = "".join(_item_icon_html(iid, version) for iid in item_ids)
+
+        cards += (
+            f'<div class="match-row {row_cls}">'
+            f'<div class="match-result {result_cls}">{result_text}</div>'
+            f'<div class="match-champ">{icon}'
+            f'<span class="match-champ__name">{html.escape(champ_name)}</span></div>'
+            f'<div class="match-kda">'
+            f'<div class="match-kda__score"><span>{k}</span>'
+            f'<span class="match-kda__sep">/</span>'
+            f'<span class="match-kda__deaths">{d}</span>'
+            f'<span class="match-kda__sep">/</span>'
+            f"<span>{a}</span></div>"
+            f"{kda}</div>"
+            f'<div class="match-meta-col">'
+            f'<span class="match-meta-col__value">{cs} CS</span>'
+            f'<span class="match-meta-col__label">{duration}</span></div>'
+            f'<div class="match-items">{items_html}</div>'
+            f'<div class="match-info-col">'
+            f"<span>{mode}</span><span>{role}</span><span>{ago}</span></div>"
+            f"</div>"
         )
     safe_puuid = html.escape(puuid, quote=True)
     safe_region = html.escape(region, quote=True)
     safe_id = html.escape(riot_id, quote=True)
-    next_page = ""
+    next_btn = ""
     if has_more:
         next_p = page + 1
-        next_page = (
-            f'<p><a href="#" class="load-matches"'
+        next_btn = (
+            f'<button class="match-load-more"'
             f' data-puuid="{safe_puuid}" data-region="{safe_region}"'
             f' data-riot-id="{safe_id}" data-page="{next_p}">'
-            f"Load more (page {next_p + 1})</a></p>"
+            f"Load more matches</button>"
         )
-    return (
-        f'<div class="table-scroll">'
-        f"<table><tr><th>Date</th><th>Result</th><th>Champion</th><th>Role</th>"
-        f"<th>K/D/A</th><th>Mode</th></tr>{rows}</table>"
-        f"</div>{next_page}"
-    )
+    return f'<div class="match-list">{cards}</div>{next_btn}'
 
 
 @app.get("/stats/matches", response_class=HTMLResponse)
@@ -1634,6 +1882,522 @@ async def stats_matches(request: Request) -> HTMLResponse:
 
 
 # ---------------------------------------------------------------------------
+# Champions
+# ---------------------------------------------------------------------------
+
+_CHAMPION_ROLES = ["TOP", "JUNGLE", "MID", "BOTTOM", "UTILITY"]
+_CHAMPION_ROLES_SET = frozenset(_CHAMPION_ROLES)
+_CHAMPION_ROLE_LABELS: dict[str, str] = {
+    "": "ALL",
+    "TOP": "TOP",
+    "JUNGLE": "JGL",
+    "MID": "MID",
+    "BOTTOM": "BOT",
+    "UTILITY": "SUP",
+}
+
+
+def _champion_tier_table(
+    rows: list[dict[str, object]],
+    patch: str,
+    version: str | None,
+) -> str:
+    """Render the champion tier list table HTML."""
+    if not rows:
+        return _empty_state(
+            "No champion data for this patch",
+            "Try a different patch or role filter.",
+        )
+    trs = ""
+    for row in rows:
+        name = str(row["name"])
+        role = str(row["role"])
+        games = int(row["games"])  # type: ignore[arg-type]
+        win_rate = float(row["win_rate"])  # type: ignore[arg-type]
+        pick_rate = float(row["pick_rate"])  # type: ignore[arg-type]
+        kda = float(row["kda"])  # type: ignore[arg-type]
+        cs = float(row["cs"])  # type: ignore[arg-type]
+        ban_rate = float(row.get("ban_rate", 0.0))  # type: ignore[arg-type]
+        safe_name = html.escape(name)
+        icon = _champion_icon_html(name, version)
+        wr_color = (
+            "var(--color-win)" if win_rate >= 52
+            else ("var(--color-warning)" if win_rate >= 48 else "var(--color-loss)")
+        )
+        wr_cell = (
+            f'<td style="min-width:120px"><div style="display:flex;align-items:center;gap:6px">'
+            f'<div style="flex:1;background:var(--color-surface2);border-radius:3px;height:5px">'
+            f'<div style="background:{wr_color};width:{min(win_rate, 100):.0f}%;height:5px;border-radius:3px"></div></div>'
+            f'<span style="font-family:var(--font-sans);font-size:var(--font-size-sm);color:{wr_color};min-width:42px">'
+            f"{win_rate:.1f}%</span></div></td>"
+        )
+        href = (
+            f"/champions/{_url_quote(name)}"
+            f"?patch={_url_quote(patch)}&amp;role={_url_quote(role)}"
+        )
+        trs += (
+            f'<tr><td><a href="{href}">{icon}{safe_name}</a></td>'
+            f"<td>{html.escape(role)}</td>"
+            f"<td>{games}</td>"
+            f"{wr_cell}"
+            f"<td>{pick_rate:.1f}%</td>"
+            f"<td>{ban_rate:.1f}%</td>"
+            f"<td>{kda:.2f}</td>"
+            f"<td>{cs:.0f}</td></tr>"
+        )
+    return (
+        '<div class="table-scroll">'
+        "<table>"
+        "<thead><tr>"
+        '<th scope="col">Champion</th>'
+        '<th scope="col">Role</th>'
+        '<th scope="col">Games</th>'
+        '<th scope="col">Win Rate</th>'
+        '<th scope="col">Pick Rate</th>'
+        '<th scope="col">Ban %</th>'
+        '<th scope="col">Avg KDA</th>'
+        '<th scope="col">Avg CS</th>'
+        "</tr></thead>"
+        f"<tbody>{trs}</tbody>"
+        "</table></div>"
+    )
+
+
+def _champion_filter_html(
+    patches: list[str],
+    selected_patch: str,
+    selected_role: str,
+) -> str:
+    """Render patch selector and role filter buttons."""
+    patch_options = "\n      ".join(
+        f'<option value="{html.escape(p)}"'
+        f'{" selected" if p == selected_patch else ""}>'
+        f"{html.escape(p)}</option>"
+        for p in patches
+    )
+    role_links = []
+    for role_key, role_label in _CHAMPION_ROLE_LABELS.items():
+        active = ' class="active"' if role_key == selected_role else ""
+        href = (
+            f"/champions?patch={_url_quote(selected_patch)}"
+            f"&amp;role={_url_quote(role_key)}"
+        )
+        role_links.append(
+            f'<a href="{href}"{active}'
+            f' aria-label="Filter by {html.escape(role_label)}">'
+            f"{html.escape(role_label)}</a>"
+        )
+    role_html = "\n  ".join(role_links)
+    return f"""<form class="form-inline" method="get" action="/champions">
+  <label for="champ-patch">Patch:</label>
+  <select id="champ-patch" name="patch">
+      {patch_options}
+  </select>
+  <input type="hidden" name="role" value="{html.escape(selected_role, quote=True)}">
+  <button type="submit">Apply</button>
+</form>
+<div class="sort-controls">
+  <span>Role:</span>
+  {role_html}
+</div>"""
+
+
+async def _build_champion_rows(
+    r: aioredis.Redis,
+    patch: str,
+    role: str,
+    ban_hash: dict[str, str] | None = None,
+    name_to_id: dict[str, str] | None = None,
+) -> list[dict[str, object]]:
+    """Fetch champion index and stats for a given patch/role, return row dicts."""
+    index_key = f"champion:index:{patch}"
+    members: list[tuple[str, float]] = await r.zrevrange(
+        index_key, 0, -1, withscores=True
+    )
+    if role:
+        members = [(m, s) for m, s in members if m.endswith(f":{role}")]
+    if not members:
+        return []
+    async with r.pipeline(transaction=False) as pipe:
+        for member, _score in members:
+            name, pos = member.rsplit(":", 1)
+            pipe.hgetall(f"champion:stats:{name}:{patch}:{pos}")
+        stats_list: list[dict[str, str]] = await pipe.execute()
+    # total games for pick rate (divide by 10 participants per game)
+    total_all = sum(int(s.get("games", "0")) for s in stats_list if s) // 10
+    if total_all == 0:
+        total_all = 1
+    total_ban_games = int((ban_hash or {}).get("_total_games", "0"))
+    _name_to_id = name_to_id or {}
+    rows: list[dict[str, object]] = []
+    for (member, _score), stats in zip(members, stats_list, strict=True):
+        if not stats:
+            continue
+        name, pos = member.rsplit(":", 1)
+        games = int(stats.get("games", "0"))
+        wins = int(stats.get("wins", "0"))
+        kills = int(stats.get("kills", "0"))
+        deaths = int(stats.get("deaths", "0"))
+        assists = int(stats.get("assists", "0"))
+        wr = (wins / games * 100) if games > 0 else 0.0
+        avg_kda = (kills + assists) / max(deaths, 1) if games > 0 else 0.0
+        avg_cs = int(stats.get("cs", "0")) / max(games, 1)
+        pr = (games / total_all * 100) if total_all > 0 else 0.0
+        # Ban rate: look up champion numeric ID, then count from ban hash
+        champ_id = _name_to_id.get(name, "")
+        bans = int((ban_hash or {}).get(champ_id, "0")) if champ_id else 0
+        br = (bans / total_ban_games * 100) if total_ban_games > 0 else 0.0
+        rows.append({
+            "name": name, "role": pos, "games": games,
+            "win_rate": wr, "kda": avg_kda, "cs": avg_cs, "pick_rate": pr,
+            "ban_rate": br,
+        })
+    rows.sort(key=lambda x: int(x["games"]), reverse=True)  # type: ignore[arg-type]
+    return rows
+
+
+@app.get("/champions", response_class=HTMLResponse)
+async def show_champions(request: Request) -> HTMLResponse:
+    """Champion tier list page."""
+    r: aioredis.Redis = request.app.state.r
+    patches_raw: list[tuple[str, float]] = await r.zrevrange(
+        "patch:list", 0, 19, withscores=True
+    )
+    if not patches_raw:
+        body = _empty_state(
+            "No champion data yet",
+            "Seed some players and wait for matches to be analyzed.",
+        )
+        return HTMLResponse(_page("Champions", body, path="/champions"))
+    patch_list = [p for p, _s in patches_raw]
+    patch = request.query_params.get("patch", "")
+    if not patch or patch not in patch_list:
+        patch = patch_list[0]
+    role = request.query_params.get("role", "")
+    if role and role not in _CHAMPION_ROLES_SET:
+        role = ""
+    # Fetch ban data and champion ID→name mapping concurrently
+    ban_hash_coro = r.hgetall(f"champion:bans:{patch}")
+    id_map_coro = _get_champion_id_map(r)
+    ban_hash, champ_id_map = await asyncio.gather(ban_hash_coro, id_map_coro)
+    # Build reverse mapping: champion_name → numeric_id
+    name_to_id = {v: k for k, v in champ_id_map.items()}
+    rows = await _build_champion_rows(
+        r, patch, role, ban_hash=ban_hash, name_to_id=name_to_id,
+    )
+    version = await _get_ddragon_version(r)
+    filter_html = _champion_filter_html(patch_list, patch, role)
+    table_html = _champion_tier_table(rows, patch, version)
+    body = f"<h2>Champions &mdash; Patch {html.escape(patch)}</h2>\n{filter_html}\n{table_html}"
+    return HTMLResponse(_page("Champions", body, path="/champions"))
+
+
+def _champion_detail_html(
+    name: str,
+    role: str,
+    stats: dict[str, str],
+    patch_history: list[tuple[str, dict[str, str]]],
+    all_roles: list[str],
+    version: str | None,
+    matchups_html: str = "",
+) -> str:
+    """Render champion detail page body."""
+    safe_name = html.escape(name)
+    icon = _champion_icon_html(name, version)
+    games = int(stats.get("games", "0"))
+    wins = int(stats.get("wins", "0"))
+    wr = (wins / games * 100) if games > 0 else 0.0
+    kills = int(stats.get("kills", "0"))
+    deaths = int(stats.get("deaths", "0"))
+    assists = int(stats.get("assists", "0"))
+    kda = (kills + assists) / max(deaths, 1) if games > 0 else 0.0
+    gold = int(stats.get("gold", "0"))
+    cs = int(stats.get("cs", "0"))
+    damage = int(stats.get("damage", "0"))
+    vis = int(stats.get("vision", "0"))
+    # Per-game averages
+    g = max(games, 1)
+    stat_rows = (
+        f"<tr><td>Games</td><td>{games}</td></tr>"
+        f"<tr><td>Win Rate</td><td>{wr:.1f}%</td></tr>"
+        f"<tr><td>Avg KDA</td><td>{kda:.2f}</td></tr>"
+        f"<tr><td>Avg Kills</td><td>{kills / g:.1f}</td></tr>"
+        f"<tr><td>Avg Deaths</td><td>{deaths / g:.1f}</td></tr>"
+        f"<tr><td>Avg Assists</td><td>{assists / g:.1f}</td></tr>"
+        f"<tr><td>Avg CS</td><td>{cs / g:.0f}</td></tr>"
+        f"<tr><td>Avg Gold</td><td>{gold / g:.0f}</td></tr>"
+        f"<tr><td>Avg Damage</td><td>{damage / g:.0f}</td></tr>"
+        f"<tr><td>Avg Vision</td><td>{vis / g:.1f}</td></tr>"
+    )
+    # Multi-kill stats (optional)
+    for mk in ("double_kills", "triple_kills", "quadra_kills", "penta_kills"):
+        val = stats.get(mk, "0")
+        label = mk.replace("_", " ").title()
+        stat_rows += f"<tr><td>{html.escape(label)}</td><td>{val}</td></tr>"
+    role_links = " ".join(
+        f'<a href="/champions/{_url_quote(name)}?role={_url_quote(rl)}"'
+        f' class="btn-sm{" active" if rl == role else ""}">'
+        f"{html.escape(rl)}</a>"
+        for rl in all_roles
+    )
+    # Patch history table
+    ph_rows = ""
+    for ph_patch, ph_stats in patch_history:
+        ph_games = int(ph_stats.get("games", "0"))
+        ph_wins = int(ph_stats.get("wins", "0"))
+        ph_wr = (ph_wins / ph_games * 100) if ph_games > 0 else 0.0
+        ph_k = int(ph_stats.get("kills", "0"))
+        ph_d = int(ph_stats.get("deaths", "0"))
+        ph_a = int(ph_stats.get("assists", "0"))
+        ph_kda = (ph_k + ph_a) / max(ph_d, 1) if ph_games > 0 else 0.0
+        ph_rows += (
+            f"<tr><td>{html.escape(ph_patch)}</td>"
+            f"<td>{ph_games}</td>"
+            f"<td>{ph_wr:.1f}%</td>"
+            f"<td>{ph_kda:.2f}</td></tr>"
+        )
+    patch_table = ""
+    if ph_rows:
+        patch_table = (
+            '<h3>Patch History</h3><div class="table-scroll"><table>'
+            "<thead><tr>"
+            '<th scope="col">Patch</th>'
+            '<th scope="col">Games</th>'
+            '<th scope="col">Win Rate</th>'
+            '<th scope="col">KDA</th>'
+            "</tr></thead>"
+            f"<tbody>{ph_rows}</tbody></table></div>"
+        )
+    return f"""<h2>{icon}{safe_name} &mdash; {html.escape(role)}</h2>
+<p>Roles: {role_links}</p>
+<div class="table-scroll">
+<table>
+<thead><tr><th scope="col">Stat</th><th scope="col">Value</th></tr></thead>
+<tbody>{stat_rows}</tbody>
+</table>
+</div>
+{patch_table}
+{matchups_html}
+<p><a href="/champions">&larr; Back to Champions</a></p>"""
+
+
+def _matchup_table_html(
+    matchups: list[tuple[str, int, float]],
+) -> str:
+    """Render a matchup table from (opponent, games, win_rate) tuples."""
+    if not matchups:
+        return ""
+    trs = ""
+    for opponent, games, wr in matchups:
+        wr_cls = "success" if wr >= 52 else ("error" if wr < 48 else "")
+        safe_opp = html.escape(opponent)
+        trs += (
+            f"<tr><td>{safe_opp}</td>"
+            f"<td>{games}</td>"
+            f'<td class="{wr_cls}">{wr:.1f}%</td></tr>'
+        )
+    return (
+        '<h3>Matchups</h3><div class="table-scroll"><table>'
+        "<thead><tr>"
+        '<th scope="col">vs Champion</th>'
+        '<th scope="col">Games</th>'
+        '<th scope="col">Win Rate</th>'
+        "</tr></thead>"
+        f"<tbody>{trs}</tbody></table></div>"
+    )
+
+
+async def _fetch_champion_matchups(
+    r: aioredis.Redis,
+    name: str,
+    role: str,
+    patch: str,
+) -> list[tuple[str, int, float]]:
+    """Fetch matchup data for a champion/role/patch from Redis.
+
+    Returns (opponent, games, win_rate) tuples sorted by games descending.
+    """
+    index_key = f"matchup:index:{name}:{role}:{patch}"
+    opponents: set[str] = await r.smembers(index_key)
+    if not opponents:
+        return []
+    sorted_opponents = sorted(opponents)
+    async with r.pipeline(transaction=False) as pipe:
+        for opp in sorted_opponents:
+            pipe.hgetall(f"matchup:{name}:{opp}:{role}:{patch}")
+        results: list[dict[str, str]] = await pipe.execute()
+    matchups: list[tuple[str, int, float]] = []
+    for opp, mdata in zip(sorted_opponents, results, strict=True):
+        if not mdata:
+            continue
+        mg = int(mdata.get("games", "0"))
+        mw = int(mdata.get("wins", "0"))
+        mwr = (mw / mg * 100) if mg > 0 else 0.0
+        matchups.append((opp, mg, mwr))
+    matchups.sort(key=lambda x: x[1], reverse=True)
+    return matchups
+
+
+@app.get("/champions/{name}", response_class=HTMLResponse)
+async def show_champion_detail(request: Request, name: str) -> HTMLResponse:
+    """Single champion detail page."""
+    if not _CHAMPION_NAME_RE.match(name):
+        raise HTTPException(status_code=400, detail="Invalid champion name")
+    r: aioredis.Redis = request.app.state.r
+    patches_raw: list[tuple[str, float]] = await r.zrevrange(
+        "patch:list", 0, 19, withscores=True
+    )
+    if not patches_raw:
+        body = _empty_state(
+            "No champion data yet",
+            "Seed some players and wait for matches to be analyzed.",
+        )
+        return HTMLResponse(_page("Champion Detail", body, path="/champions"))
+    patch_list = [p for p, _s in patches_raw]
+    patch = request.query_params.get("patch", "")
+    if not patch or patch not in patch_list:
+        patch = patch_list[0]
+    role = request.query_params.get("role", "")
+    # Determine all roles this champion appears in on this patch
+    index_key = f"champion:index:{patch}"
+    all_members: list[tuple[str, float]] = await r.zrevrange(
+        index_key, 0, -1, withscores=True
+    )
+    all_roles = [
+        m.rsplit(":", 1)[1]
+        for m, _s in all_members
+        if m.rsplit(":", 1)[0] == name
+    ]
+    if not all_roles:
+        body = _empty_state(
+            f"No data for {html.escape(name)}",
+            "This champion has no stats on this patch.",
+        )
+        return HTMLResponse(
+            _page(f"{html.escape(name)}", body, path="/champions")
+        )
+    if not role or role not in all_roles:
+        role = all_roles[0]
+    # Fetch current stats
+    stats: dict[str, str] = await r.hgetall(
+        f"champion:stats:{name}:{patch}:{role}"
+    )
+    if not stats:
+        stats = {}
+    # Fetch patch history (last 10 patches)
+    history: list[tuple[str, dict[str, str]]] = []
+    if patch_list:
+        async with r.pipeline(transaction=False) as pipe:
+            for p in patch_list[:10]:
+                pipe.hgetall(f"champion:stats:{name}:{p}:{role}")
+            patch_stats_list: list[dict[str, str]] = await pipe.execute()
+        for p, ps in zip(patch_list[:10], patch_stats_list, strict=True):
+            if ps:
+                history.append((p, ps))
+    version = await _get_ddragon_version(r)
+    matchups = await _fetch_champion_matchups(r, name, role, patch)
+    mu_html = _matchup_table_html(matchups)
+    detail = _champion_detail_html(
+        name, role, stats, history, all_roles, version, matchups_html=mu_html
+    )
+    safe_name = html.escape(name)
+    return HTMLResponse(
+        _page(f"{safe_name} — Champions", detail, path="/champions")
+    )
+
+
+# ---------------------------------------------------------------------------
+# Matchups
+# ---------------------------------------------------------------------------
+
+
+@app.get("/matchups", response_class=HTMLResponse)
+async def show_matchups(request: Request) -> HTMLResponse:
+    """Champion matchup lookup page."""
+    r: aioredis.Redis = request.app.state.r
+    champ_a = request.query_params.get("champ_a", "")
+    champ_b = request.query_params.get("champ_b", "")
+    role = request.query_params.get("role", "")
+    patch = request.query_params.get("patch", "")
+
+    # Validate inputs to prevent Redis key injection
+    if champ_a and not _CHAMPION_NAME_RE.match(champ_a):
+        raise HTTPException(status_code=400, detail="Invalid champion name")
+    if champ_b and not _CHAMPION_NAME_RE.match(champ_b):
+        raise HTTPException(status_code=400, detail="Invalid champion name")
+    if role and role not in _MATCHUP_ROLES:
+        raise HTTPException(status_code=400, detail="Invalid role")
+    if patch and not _PATCH_RE.match(patch):
+        raise HTTPException(status_code=400, detail="Invalid patch format")
+
+    if not champ_a or not champ_b:
+        body = """<h2>Champion Matchups</h2>
+<form class="form-inline" method="get" action="/matchups">
+  <label for="matchup-a">Champion A:</label>
+  <input id="matchup-a" name="champ_a" placeholder="e.g. Jinx" required>
+  <label for="matchup-b">Champion B:</label>
+  <input id="matchup-b" name="champ_b" placeholder="e.g. Caitlyn" required>
+  <label for="matchup-role">Role:</label>
+  <select id="matchup-role" name="role">
+    <option value="TOP">Top</option>
+    <option value="JUNGLE">Jungle</option>
+    <option value="MIDDLE">Mid</option>
+    <option value="BOTTOM">Bot</option>
+    <option value="UTILITY">Support</option>
+  </select>
+  <label for="matchup-patch">Patch (optional):</label>
+  <input id="matchup-patch" name="patch" placeholder="e.g. 14.5">
+  <button type="submit">Compare</button>
+</form>"""
+        return HTMLResponse(_page("Matchups", body, path="/matchups"))
+
+    # Resolve current patch if not provided
+    if not patch:
+        patches_raw: list[tuple[str, float]] = await r.zrevrange(
+            "patch:list", 0, 0, withscores=True
+        )
+        patch = patches_raw[0][0] if patches_raw else ""
+
+    if not patch:
+        body = _empty_state(
+            "No patch data",
+            "No patches found. Seed players and wait for analysis.",
+        )
+        return HTMLResponse(_page("Matchups", body, path="/matchups"))
+
+    key = f"matchup:{champ_a}:{champ_b}:{role}:{patch}"
+    data: dict[str, str] = await r.hgetall(key)
+
+    if not data:
+        safe_a = html.escape(champ_a)
+        safe_b = html.escape(champ_b)
+        safe_role = html.escape(role)
+        body = _empty_state(
+            "No matchup data",
+            f"No games found for {safe_a} vs {safe_b} as {safe_role}.",
+        )
+        return HTMLResponse(_page("Matchups", body, path="/matchups"))
+
+    games = int(data.get("games", "0"))
+    wins = int(data.get("wins", "0"))
+    win_rate = (wins / games * 100) if games > 0 else 0.0
+    safe_a = html.escape(champ_a)
+    safe_b = html.escape(champ_b)
+    safe_role = html.escape(role)
+    safe_patch = html.escape(patch)
+    wr_a = f"{win_rate:.1f}%"
+    wr_b = f"{100 - win_rate:.1f}%"
+    body = f"""<h2>{safe_a} vs {safe_b} ({safe_role})</h2>
+<p>Patch {safe_patch} &mdash; {games} games</p>
+<div class="card">
+  <p>Win Rate ({safe_a}): <strong>{wr_a}</strong></p>
+  <p>Win Rate ({safe_b}): <strong>{wr_b}</strong></p>
+</div>
+<p><a href="/matchups">&larr; New matchup lookup</a></p>"""
+    return HTMLResponse(_page("Matchups", body, path="/matchups"))
+
+
+# ---------------------------------------------------------------------------
 # Logs
 # ---------------------------------------------------------------------------
 
@@ -1679,7 +2443,7 @@ def _parse_log_line(line: str) -> tuple[str, str, str, str, str]:
         msg = str(d.pop("message", line))
         extra = "  ".join(f"{k}={v}" for k, v in d.items() if not str(k).startswith("_"))
         return ts, level, logger, msg, extra
-    except json.JSONDecodeError, TypeError, AttributeError:
+    except (json.JSONDecodeError, TypeError, AttributeError):
         return "", "INFO", "", line, ""
 
 
@@ -1698,7 +2462,11 @@ def _render_log_lines(raw_lines: list[str]) -> str:
             + (f'<span class="log-extra">{html.escape(extra)}</span>' if extra else "")
             + "</div>"
         )
-    return "\n".join(rows) if rows else "<p>No log entries found.</p>"
+    return (
+        "\n".join(rows)
+        if rows
+        else _empty_state("No log entries", "Services may not have written any logs yet.")
+    )
 
 
 def _merged_log_lines(log_dir: Path, n: int) -> list[str]:
@@ -1718,7 +2486,7 @@ def _merged_log_lines(log_dir: Path, n: int) -> list[str]:
             try:
                 d = json.loads(line)
                 ts = str(d.get("timestamp", ""))
-            except json.JSONDecodeError, TypeError:
+            except (json.JSONDecodeError, TypeError):
                 ts = ""
             result.append((ts, line))
         return result
@@ -1730,12 +2498,14 @@ def _merged_log_lines(log_dir: Path, n: int) -> list[str]:
 
 
 @app.get("/logs/fragment", response_class=HTMLResponse)
-async def logs_fragment() -> HTMLResponse:
+async def logs_fragment(request: Request) -> HTMLResponse:
     """Return just the log lines HTML for AJAX polling."""
-    log_dir_env = os.getenv("LOG_DIR", "")
-    if not log_dir_env:
-        return HTMLResponse("<p>LOG_DIR not configured.</p>")
-    log_dir = Path(log_dir_env)
+    cfg: Config = request.app.state.cfg
+    if not cfg.log_dir:
+        return HTMLResponse(
+            _empty_state("LOG_DIR not configured", "Add it to docker-compose.yml.")
+        )
+    log_dir = Path(cfg.log_dir)
     lines = await asyncio.to_thread(_merged_log_lines, log_dir, _LOG_LINES)
     return HTMLResponse(_render_log_lines(lines))
 
@@ -1746,26 +2516,31 @@ async def show_logs(request: Request) -> HTMLResponse:
     halted = await r.get("system:halted")
     halt_html = _HALT_BANNER if halted else ""
 
-    log_dir_env = os.getenv("LOG_DIR", "")
-    if not log_dir_env:
+    cfg: Config = request.app.state.cfg
+    if not cfg.log_dir:
         return HTMLResponse(
             _page(
                 "Logs",
                 halt_html
-                + "<h2>Logs</h2><p>LOG_DIR not configured. Add it to docker-compose.yml.</p>",
+                + "<h2>Logs</h2>"
+                + _empty_state("LOG_DIR not configured", "Add it to docker-compose.yml."),
                 path="/logs",
             )
         )
 
-    log_dir = Path(log_dir_env)
+    log_dir = Path(cfg.log_dir)
     log_files = sorted(log_dir.glob("*.log"))
     if not log_files:
         return HTMLResponse(
             _page(
                 "Logs",
                 halt_html
-                + f"<h2>Logs</h2><p>No log files found in <code>{html.escape(log_dir_env)}</code>."
-                " Services may not have started yet.</p>",
+                + "<h2>Logs</h2>"
+                + _empty_state(
+                    "No log files found",
+                    f"No <code>.log</code> files in <code>{html.escape(cfg.log_dir)}</code>."
+                    " Services may not have started yet.",
+                ),
                 path="/logs",
             )
         )

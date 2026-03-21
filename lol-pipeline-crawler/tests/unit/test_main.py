@@ -14,7 +14,7 @@ from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.riot_api import RiotClient
 from lol_pipeline.streams import consume, publish
 
-from lol_crawler.main import _crawl_player, main
+from lol_crawler.main import _compute_activity_rate, _crawl_player, _fetch_rank, main
 
 _STREAM_IN = "stream:puuid"
 _STREAM_OUT = "stream:match_id"
@@ -906,3 +906,502 @@ class TestPaginationHaltCheck:
             await riot.close()
 
         assert await r.xlen(_STREAM_OUT) == 150
+
+
+class TestCrawlPriorityDowngrade:
+    """4-tier priority: after 20 published match IDs, priority downgrades."""
+
+    @pytest.mark.asyncio
+    async def test_manual_20__first_20_keep_manual_20(self, r, cfg, log):
+        """With manual_20, first 20 match IDs keep manual_20 priority."""
+        env = MessageEnvelope(
+            source_stream=_STREAM_IN,
+            type="puuid",
+            payload={"puuid": "puuid-m20", "region": "na1", "game_name": "M", "tag_line": "20"},
+            max_attempts=5,
+            priority="manual_20",
+        )
+        msg_id = await _setup_message(r, env)
+        page = [f"NA1_{i}" for i in range(15)]  # fewer than 20
+
+        with respx.mock:
+            respx.get(_match_ids_url(puuid="puuid-m20", start=0)).mock(
+                return_value=httpx.Response(200, json=page)
+            )
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        entries = await r.xrange(_STREAM_OUT)
+        assert len(entries) == 15
+        for _, fields in entries:
+            assert fields["priority"] == "manual_20"
+
+    @pytest.mark.asyncio
+    async def test_manual_20__after_20_downgrades_to_manual_20plus(self, r, cfg, log):
+        """With manual_20, match IDs beyond 20 get manual_20plus priority."""
+        env = MessageEnvelope(
+            source_stream=_STREAM_IN,
+            type="puuid",
+            payload={"puuid": "puuid-dg", "region": "na1", "game_name": "D", "tag_line": "G"},
+            max_attempts=5,
+            priority="manual_20",
+        )
+        msg_id = await _setup_message(r, env)
+        page = [f"NA1_{i}" for i in range(25)]
+
+        with respx.mock:
+            respx.get(_match_ids_url(puuid="puuid-dg", start=0)).mock(
+                return_value=httpx.Response(200, json=page)
+            )
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        entries = await r.xrange(_STREAM_OUT)
+        assert len(entries) == 25
+        priorities = [fields["priority"] for _, fields in entries]
+        # First 20 keep manual_20
+        assert all(p == "manual_20" for p in priorities[:20])
+        # Remaining 5 downgraded to manual_20plus
+        assert all(p == "manual_20plus" for p in priorities[20:])
+
+    @pytest.mark.asyncio
+    async def test_auto_20__after_20_downgrades_to_auto_new(self, r, cfg, log):
+        """With auto_20, match IDs beyond 20 get auto_new priority."""
+        env = MessageEnvelope(
+            source_stream=_STREAM_IN,
+            type="puuid",
+            payload={"puuid": "puuid-a20", "region": "na1", "game_name": "A", "tag_line": "20"},
+            max_attempts=5,
+            priority="auto_20",
+        )
+        msg_id = await _setup_message(r, env)
+        page = [f"NA1_{i}" for i in range(30)]
+
+        with respx.mock:
+            respx.get(_match_ids_url(puuid="puuid-a20", start=0)).mock(
+                return_value=httpx.Response(200, json=page)
+            )
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        entries = await r.xrange(_STREAM_OUT)
+        assert len(entries) == 30
+        priorities = [fields["priority"] for _, fields in entries]
+        assert all(p == "auto_20" for p in priorities[:20])
+        assert all(p == "auto_new" for p in priorities[20:])
+
+    @pytest.mark.asyncio
+    async def test_normal_priority__no_downgrade(self, r, cfg, log):
+        """Legacy 'normal' priority has no downgrade — all messages keep 'normal'."""
+        env = _puuid_envelope()  # default priority='normal'
+        msg_id = await _setup_message(r, env)
+        page = [f"NA1_{i}" for i in range(25)]
+
+        with respx.mock:
+            respx.get(_match_ids_url(start=0)).mock(
+                return_value=httpx.Response(200, json=page)
+            )
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        entries = await r.xrange(_STREAM_OUT)
+        assert len(entries) == 25
+        for _, fields in entries:
+            assert fields["priority"] == "normal"
+
+    @pytest.mark.asyncio
+    async def test_downgrade_across_pages(self, r, cfg, log):
+        """Priority downgrade works correctly across page boundaries (100+10)."""
+        env = MessageEnvelope(
+            source_stream=_STREAM_IN,
+            type="puuid",
+            payload={
+                "puuid": "puuid-pg2",
+                "region": "na1",
+                "game_name": "PG",
+                "tag_line": "2",
+            },
+            max_attempts=5,
+            priority="manual_20",
+        )
+        msg_id = await _setup_message(r, env)
+        page1_full = [f"NA1_{i}" for i in range(100)]
+        page2_partial = [f"NA1_{i}" for i in range(100, 110)]
+
+        with respx.mock:
+            respx.get(_match_ids_url(puuid="puuid-pg2", start=0)).mock(
+                return_value=httpx.Response(200, json=page1_full)
+            )
+            respx.get(_match_ids_url(puuid="puuid-pg2", start=100)).mock(
+                return_value=httpx.Response(200, json=page2_partial)
+            )
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        entries = await r.xrange(_STREAM_OUT)
+        assert len(entries) == 110
+        priorities = [fields["priority"] for _, fields in entries]
+        assert all(p == "manual_20" for p in priorities[:20])
+        assert all(p == "manual_20plus" for p in priorities[20:])
+
+
+class TestBackpressure:
+    """R1: Crawler pauses crawl when stream:match_id exceeds backpressure threshold."""
+
+    @pytest.mark.asyncio
+    async def test_backpressure_pauses_crawl_when_queue_deep(self, r, cfg, log):
+        """When stream:match_id depth > threshold, crawler breaks out of pagination."""
+        # Set a very low threshold
+        cfg.match_id_backpressure_threshold = 5
+
+        # Pre-fill stream:match_id with enough entries to exceed the threshold
+        for i in range(10):
+            await r.xadd(_STREAM_OUT, {"data": f"existing_{i}"})
+
+        env = _puuid_envelope()
+        msg_id = await _setup_message(r, env)
+
+        with respx.mock:
+            # The API should NOT be called because backpressure triggers first
+            route = respx.get(_match_ids_url(start=0)).mock(
+                return_value=httpx.Response(200, json=["NA1_NEW_1"])
+            )
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        # API should not have been called — backpressure triggered before API call
+        assert not route.called
+        # No new matches published
+        assert await r.xlen(_STREAM_OUT) == 10  # only pre-existing entries
+
+    @pytest.mark.asyncio
+    async def test_backpressure_threshold_zero_disables_check(self, r, cfg, log):
+        """When threshold is 0, backpressure check is skipped entirely."""
+        cfg.match_id_backpressure_threshold = 0
+
+        # Fill stream with many entries
+        for i in range(100):
+            await r.xadd(_STREAM_OUT, {"data": f"existing_{i}"})
+
+        env = _puuid_envelope()
+        msg_id = await _setup_message(r, env)
+
+        with respx.mock:
+            respx.get(_match_ids_url(start=0)).mock(
+                return_value=httpx.Response(200, json=["NA1_NEW_1"])
+            )
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        # Match was published despite deep queue — threshold=0 means disabled
+        assert await r.xlen(_STREAM_OUT) == 101  # 100 existing + 1 new
+
+    @pytest.mark.asyncio
+    async def test_backpressure_allows_crawl_when_below_threshold(self, r, cfg, log):
+        """When depth is below threshold, crawl proceeds normally."""
+        cfg.match_id_backpressure_threshold = 5000
+
+        env = _puuid_envelope()
+        msg_id = await _setup_message(r, env)
+
+        with respx.mock:
+            respx.get(_match_ids_url(start=0)).mock(
+                return_value=httpx.Response(200, json=["NA1_1", "NA1_2"])
+            )
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        assert await r.xlen(_STREAM_OUT) == 2
+
+
+class TestCrawlCursorPersistence:
+    """R2: Crawler persists pagination offset so interrupted crawls can resume."""
+
+    @pytest.mark.asyncio
+    async def test_crawl_cursor_resumes_from_saved_offset(self, r, cfg, log):
+        """When a cursor exists, pagination starts from the saved offset."""
+        puuid = "test-puuid-0001"
+        # Set a saved cursor at offset 200
+        await r.set(f"crawl:cursor:{puuid}", "200", ex=600)
+
+        env = _puuid_envelope(puuid=puuid)
+        msg_id = await _setup_message(r, env)
+
+        with respx.mock:
+            # start=0 and start=100 should NOT be called
+            respx.get(_match_ids_url(start=0)).mock(
+                return_value=httpx.Response(200, json=[f"NA1_{i}" for i in range(100)])
+            )
+            respx.get(_match_ids_url(start=100)).mock(
+                return_value=httpx.Response(200, json=[f"NA1_{i}" for i in range(100, 200)])
+            )
+            # start=200 SHOULD be called (resume point)
+            respx.get(_match_ids_url(start=200)).mock(
+                return_value=httpx.Response(200, json=["NA1_RESUMED_1", "NA1_RESUMED_2"])
+            )
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        # Only the 2 matches from the resume page should be published
+        assert await r.xlen(_STREAM_OUT) == 2
+        entries = await r.xrange(_STREAM_OUT)
+        match_ids = [
+            MessageEnvelope.from_redis_fields(fields).payload["match_id"]
+            for _, fields in entries
+        ]
+        assert "NA1_RESUMED_1" in match_ids
+        assert "NA1_RESUMED_2" in match_ids
+
+    @pytest.mark.asyncio
+    async def test_crawl_cursor_deleted_on_completion(self, r, cfg, log):
+        """After successful crawl completion, the cursor key is deleted."""
+        puuid = "test-puuid-0001"
+        cursor_key = f"crawl:cursor:{puuid}"
+        env = _puuid_envelope(puuid=puuid)
+        msg_id = await _setup_message(r, env)
+
+        with respx.mock:
+            respx.get(_match_ids_url(start=0)).mock(
+                return_value=httpx.Response(200, json=["NA1_1", "NA1_2"])
+            )
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        # Cursor should be deleted after completion
+        assert await r.get(cursor_key) is None
+
+    @pytest.mark.asyncio
+    async def test_crawl_cursor_invalid_value_ignored(self, r, cfg, log):
+        """Invalid cursor value is ignored, crawl starts from 0."""
+        puuid = "test-puuid-0001"
+        # Set an invalid cursor value
+        await r.set(f"crawl:cursor:{puuid}", "not-a-number", ex=600)
+
+        env = _puuid_envelope(puuid=puuid)
+        msg_id = await _setup_message(r, env)
+
+        with respx.mock:
+            # start=0 should be called (invalid cursor ignored)
+            respx.get(_match_ids_url(start=0)).mock(
+                return_value=httpx.Response(200, json=["NA1_1"])
+            )
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        assert await r.xlen(_STREAM_OUT) == 1
+
+
+class TestFetchRank:
+    """Rank data fetching after successful crawl."""
+
+    def _summoner_url(self, puuid="test-puuid-0001", region="na1"):
+        return f"https://{region}.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/{puuid}"
+
+    def _league_url(self, summoner_id="summ-id-1", region="na1"):
+        return f"https://{region}.api.riotgames.com/lol/league/v4/entries/by-summoner/{summoner_id}"
+
+    @pytest.mark.asyncio
+    async def test_fetch_rank__stores_ranked_solo(self, r, cfg, log):
+        """Rank data for RANKED_SOLO_5x5 is stored in player:rank:{puuid}."""
+        puuid = "test-puuid-0001"
+        with respx.mock:
+            respx.get(self._summoner_url(puuid)).mock(
+                return_value=httpx.Response(
+                    200, json={"id": "summ-id-1", "summonerLevel": 150}
+                )
+            )
+            respx.get(self._league_url("summ-id-1")).mock(
+                return_value=httpx.Response(200, json=[
+                    {
+                        "queueType": "RANKED_SOLO_5x5",
+                        "tier": "GOLD",
+                        "rank": "II",
+                        "leaguePoints": 75,
+                        "wins": 100,
+                        "losses": 80,
+                    },
+                    {
+                        "queueType": "RANKED_FLEX_SR",
+                        "tier": "SILVER",
+                        "rank": "I",
+                        "leaguePoints": 50,
+                        "wins": 20,
+                        "losses": 15,
+                    },
+                ])
+            )
+            riot = RiotClient("RGAPI-test")
+            await _fetch_rank(r, riot, cfg, puuid, "na1", log)
+            await riot.close()
+
+        rank = await r.hgetall(f"player:rank:{puuid}")
+        assert rank["tier"] == "GOLD"
+        assert rank["division"] == "II"
+        assert rank["lp"] == "75"
+        assert rank["wins"] == "100"
+        assert rank["losses"] == "80"
+        ttl = await r.ttl(f"player:rank:{puuid}")
+        assert ttl > 0
+
+    @pytest.mark.asyncio
+    async def test_fetch_rank__stores_summoner_level(self, r, cfg, log):
+        """Summoner level is stored on player:{puuid} hash."""
+        puuid = "test-puuid-0001"
+        with respx.mock:
+            respx.get(self._summoner_url(puuid)).mock(
+                return_value=httpx.Response(200, json={"id": "summ-id-1", "summonerLevel": 250})
+            )
+            respx.get(self._league_url("summ-id-1")).mock(
+                return_value=httpx.Response(200, json=[])
+            )
+            riot = RiotClient("RGAPI-test")
+            await _fetch_rank(r, riot, cfg, puuid, "na1", log)
+            await riot.close()
+
+        assert await r.hget(f"player:{puuid}", "summoner_level") == "250"
+
+    @pytest.mark.asyncio
+    async def test_fetch_rank__skips_when_disabled(self, r, cfg, log):
+        """When fetch_rank_on_crawl is False, no API calls are made."""
+        cfg.fetch_rank_on_crawl = False
+        puuid = "test-puuid-0001"
+        with respx.mock:
+            route = respx.get(url__regex=r".*summoner.*").mock(
+                return_value=httpx.Response(200, json={"id": "x"})
+            )
+            riot = RiotClient("RGAPI-test")
+            await _fetch_rank(r, riot, cfg, puuid, "na1", log)
+            await riot.close()
+
+        assert not route.called
+
+    @pytest.mark.asyncio
+    async def test_fetch_rank__failure_non_fatal(self, r, cfg, log):
+        """Rank fetch failure does not raise — it is non-critical."""
+        puuid = "test-puuid-0001"
+        with respx.mock:
+            respx.get(self._summoner_url(puuid)).mock(
+                return_value=httpx.Response(500, text="Server Error")
+            )
+            riot = RiotClient("RGAPI-test")
+            # Should NOT raise
+            await _fetch_rank(r, riot, cfg, puuid, "na1", log)
+            await riot.close()
+
+        # No rank data stored
+        assert not await r.exists(f"player:rank:{puuid}")
+
+    @pytest.mark.asyncio
+    async def test_fetch_rank__no_summoner_id__skips_league(self, r, cfg, log):
+        """When summoner response has no 'id', league API is not called."""
+        puuid = "test-puuid-0001"
+        with respx.mock:
+            respx.get(self._summoner_url(puuid)).mock(
+                return_value=httpx.Response(200, json={"summonerLevel": 50})
+            )
+            league_route = respx.get(url__regex=r".*league.*").mock(
+                return_value=httpx.Response(200, json=[])
+            )
+            riot = RiotClient("RGAPI-test")
+            await _fetch_rank(r, riot, cfg, puuid, "na1", log)
+            await riot.close()
+
+        assert not league_route.called
+
+
+class TestGlobalDedup:
+    """Global match dedup via seen:matches SET in crawler."""
+
+    @pytest.mark.asyncio
+    async def test_global_dedup__filters_seen_matches(self, r, cfg, log):
+        """Matches in seen:matches are filtered out during crawl."""
+        puuid = "test-puuid-0001"
+        # Mark NA1_SEEN as already globally seen
+        await r.sadd("seen:matches", "NA1_SEEN")
+
+        env = _puuid_envelope(puuid=puuid)
+        msg_id = await _setup_message(r, env)
+
+        with respx.mock:
+            respx.get(_match_ids_url(start=0)).mock(
+                return_value=httpx.Response(200, json=["NA1_SEEN", "NA1_NEW"])
+            )
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        # Only NA1_NEW should be published (NA1_SEEN filtered by global dedup)
+        assert await r.xlen(_STREAM_OUT) == 1
+        entries = await r.xrange(_STREAM_OUT)
+        payload = MessageEnvelope.from_redis_fields(entries[0][1]).payload
+        assert payload["match_id"] == "NA1_NEW"
+
+
+class TestActivityRate:
+    """Activity rate computation after successful crawl."""
+
+    @pytest.mark.asyncio
+    async def test_activity_rate__computed_after_crawl(self, r, cfg, log):
+        """Activity rate is stored on player:{puuid} after crawl with new matches."""
+        import time
+
+        puuid = "test-puuid-0001"
+        # Pre-populate match history: 10 matches over ~10 days
+        now_ms = time.time() * 1000
+        for i in range(10):
+            await r.zadd(
+                f"player:matches:{puuid}",
+                {f"NA1_{i}": now_ms - (i * 86400 * 1000)},
+            )
+
+        await _compute_activity_rate(r, puuid, log)
+
+        rate_str = await r.hget(f"player:{puuid}", "activity_rate")
+        assert rate_str is not None
+        rate = float(rate_str)
+        assert rate > 0
+
+        # Should also set recrawl_after
+        recrawl = await r.hget(f"player:{puuid}", "recrawl_after")
+        assert recrawl is not None
+        assert float(recrawl) > time.time()
+
+    @pytest.mark.asyncio
+    async def test_activity_rate__high_rate_short_cooldown(self, r, cfg, log):
+        """Players with >5 games/day get a 2-hour cooldown."""
+        import time
+
+        puuid = "test-puuid-fast"
+        # 60 matches in ~1 day = high rate
+        now_ms = time.time() * 1000
+        one_day_ago_ms = now_ms - 86400 * 1000
+        for i in range(60):
+            score = one_day_ago_ms + (i * 1440 * 1000)  # spread within 1 day
+            await r.zadd(f"player:matches:{puuid}", {f"NA1_{i}": score})
+
+        await _compute_activity_rate(r, puuid, log)
+
+        recrawl = float(await r.hget(f"player:{puuid}", "recrawl_after"))
+        # 2h cooldown = time.time() + 7200 (±120s tolerance)
+        expected = time.time() + 7200
+        assert abs(recrawl - expected) < 120
+
+    @pytest.mark.asyncio
+    async def test_activity_rate__no_matches__skips(self, r, cfg, log):
+        """When player has no match history, activity rate is not computed."""
+        puuid = "test-puuid-empty"
+        await _compute_activity_rate(r, puuid, log)
+
+        assert await r.hget(f"player:{puuid}", "activity_rate") is None
+        assert await r.hget(f"player:{puuid}", "recrawl_after") is None
