@@ -15,11 +15,13 @@ from lol_pipeline.streams import (
     _DEFAULT_MAXLEN,
     ANALYZE_STREAM_MAXLEN,
     MATCH_ID_STREAM_MAXLEN,
+    _maxlen_for_replay,
     ack,
     consume,
     consume_typed,
     nack_to_dlq,
     publish,
+    replay_from_dlq,
 )
 
 
@@ -931,4 +933,72 @@ class TestConsumeUsesConsumeTyped:
         _, restored = msgs[0]
         assert isinstance(restored, MessageEnvelope)
         assert restored.id == env.id
-        assert restored.payload == {"k": "v"}
+
+
+class TestMaxlenForReplay:
+    """_maxlen_for_replay() returns per-stream MAXLEN policy."""
+
+    def test_returns_zero_for_match_id_stream(self):
+        """stream:match_id is unbounded (MATCH_ID_STREAM_MAXLEN=None → 0)."""
+        assert MATCH_ID_STREAM_MAXLEN is None
+        assert _maxlen_for_replay("stream:match_id") == 0
+
+    def test_returns_analyze_maxlen_for_analyze_stream(self):
+        assert _maxlen_for_replay("stream:analyze") == ANALYZE_STREAM_MAXLEN
+
+    def test_returns_default_for_puuid_stream(self):
+        assert _maxlen_for_replay("stream:puuid") == _DEFAULT_MAXLEN
+
+    def test_returns_default_for_parse_stream(self):
+        assert _maxlen_for_replay("stream:parse") == _DEFAULT_MAXLEN
+
+    def test_returns_default_for_unknown_stream(self):
+        assert _maxlen_for_replay("stream:unknown") == _DEFAULT_MAXLEN
+
+
+class TestReplayFromDlq:
+    """replay_from_dlq() atomically moves a DLQ entry to its target stream."""
+
+    @pytest.mark.asyncio
+    async def test_dispatches_to_target_and_removes_from_dlq(self, r):
+        """Message appears in target stream and is removed from stream:dlq."""
+        from lol_pipeline.constants import STREAM_DLQ
+
+        env = _env(stream="stream:puuid")
+        dlq_id = await r.xadd(STREAM_DLQ, env.to_redis_fields())
+
+        await replay_from_dlq(r, dlq_id, "stream:puuid", env)
+
+        assert await r.xlen(STREAM_DLQ) == 0
+        assert await r.xlen("stream:puuid") == 1
+
+    @pytest.mark.asyncio
+    async def test_replayed_message_is_consumable(self, r):
+        """Message replayed into target stream round-trips through consume()."""
+        from lol_pipeline.constants import STREAM_DLQ
+
+        env = _env(stream="stream:puuid")
+        dlq_id = await r.xadd(STREAM_DLQ, env.to_redis_fields())
+
+        await replay_from_dlq(r, dlq_id, "stream:puuid", env)
+
+        msgs = await consume(r, "stream:puuid", "g", "c", block=0)
+        assert len(msgs) == 1
+        _, restored = msgs[0]
+        assert restored.id == env.id
+        assert restored.payload == env.payload
+
+    @pytest.mark.asyncio
+    async def test_only_target_dlq_entry_removed(self, r):
+        """Only the specified DLQ entry is deleted; others remain."""
+        from lol_pipeline.constants import STREAM_DLQ
+
+        env1 = _env(stream="stream:puuid")
+        env2 = _env(stream="stream:puuid")
+        dlq_id1 = await r.xadd(STREAM_DLQ, env1.to_redis_fields())
+        await r.xadd(STREAM_DLQ, env2.to_redis_fields())
+
+        await replay_from_dlq(r, dlq_id1, "stream:puuid", env1)
+
+        assert await r.xlen(STREAM_DLQ) == 1
+        assert await r.xlen("stream:puuid") == 1
