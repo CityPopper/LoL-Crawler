@@ -103,3 +103,32 @@ Platform: macOS. Container runtime: Podman (default). Switch with `RUNTIME=docke
 ### Complexity Refactors (already in Cycle 2)
 - [x] C1: `_crawl_player` — extract `_fetch_match_ids_paginated()` + `_handle_crawl_error()` helpers
 - [x] C2: `show_stats` — extract `_resolve_and_cache_puuid()`, `_auto_seed_player()`, `_build_stats_response()`
+
+## TODO — Orchestrator Cycle 4 (Phase 15 HORIZON — deferred items)
+
+### Code Quality
+- [ ] R5: Crawler only clears priority when `published == 0` — if matches stall in pipeline, priority never cleared (also in Cycle 2 TODO)
+- [ ] V15-1: Analyzer lock expiry race — stats committed before ownership re-verified; `_refresh_lock` is post-hoc; fix requires Lua script combining HINCRBY + ownership check atomically (extremely rare window, formal-verifier VIOLATED verdict)
+
+### Operator Gaps
+- [ ] P15-OPS-1: No `admin reset-stats` command — operator must use raw Redis to wipe player stats and re-trigger analysis
+- [ ] P15-OPS-2: `stream:dlq:archive` has no CLI or UI action — permanently-failed messages inaccessible without raw redis-cli
+- [ ] P15-OPS-3: `system-halt` and `dlq clear --all` have no confirmation prompt — one typo stops production
+- [ ] P15-OPS-5: `just status` shows stream depth but not PEL size — stalled consumer appears healthy
+
+### Architecture
+- [ ] P15-ARC-1: `players:all` size cap hardcoded 50000 in 3 services (seed, ui, discovery) — not configurable via env like MAX_DISCOVER_PLAYERS
+- [ ] P15-ARC-3: Admin `replay-parse`/`replay-fetch` use hardcoded `maxlen=10_000` instead of per-stream constants
+
+### UX
+- [ ] UX-01: Tables missing `<thead>`/`<tbody>` in 5 of 7 table sites — breaks screen-reader column headers and JS row-slicing assumption
+- [ ] UX-08: DLQ page shows no total entry count (no `r.xlen("stream:dlq")` context)
+- [ ] UX-09: Form inputs have implicit label association instead of explicit `id`/`for` pairing
+- [ ] UX-13: Pagination uses `&nbsp;&nbsp;` for spacing — should use flex gap
+
+### DevEx
+- [ ] DX-03: `just setup` does not validate prerequisites (Python version, Podman/Docker presence)
+- [ ] DX-04: No `just venv` recipe for root-level venv setup (documented as 5-step manual process)
+- [ ] DX-09: No `just logs-all` for merged live tail of all services
+- [ ] DX-15: `just check` runs lint+typecheck sequentially — could be parallelized
+- [ ] DX-16: No `just lint-svc`/`just typecheck-svc` for single-service iteration
