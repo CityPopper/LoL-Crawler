@@ -33,6 +33,7 @@ services:
       --save 60 10000
       --maxmemory 800mb
       --maxmemory-policy noeviction
+      --stop-writes-on-bgsave-error no
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
