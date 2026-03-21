@@ -219,18 +219,27 @@ class TestRecoveryHalted:
 
 class TestBackoffMs:
     def test_attempt_0(self):
-        assert _backoff_ms(0) == 5_000
+        # Base 5000 with jitter [0.5, 1.5] → range [2500, 7500]
+        val = _backoff_ms(0)
+        assert 2500 <= val <= 7500
 
     def test_attempt_1(self):
-        assert _backoff_ms(1) == 15_000
+        # Base 15000 with jitter → range [7500, 22500]
+        val = _backoff_ms(1)
+        assert 7500 <= val <= 22500
 
     def test_attempt_3(self):
-        assert _backoff_ms(3) == 300_000
+        # Base 300000 with jitter → range [150000, 450000]
+        val = _backoff_ms(3)
+        assert 150000 <= val <= 450000
 
     def test_attempt_beyond_array_clamps(self):
-        """Attempts beyond backoff array length clamp to max value."""
-        assert _backoff_ms(10) == 300_000
-        assert _backoff_ms(100) == 300_000
+        """Attempts beyond backoff array length clamp to max value (with jitter)."""
+        val10 = _backoff_ms(10)
+        val100 = _backoff_ms(100)
+        # Both should use base 300000 (clamped) with jitter
+        assert 150000 <= val10 <= 450000
+        assert 150000 <= val100 <= 450000
 
 
 class TestRecoveryEdgeCases:
@@ -253,7 +262,7 @@ class TestRecoveryEdgeCases:
 
     @pytest.mark.asyncio
     async def test_5xx_without_retry_after_uses_backoff(self, r, cfg, log):
-        """http_5xx (no retry_after) should use exponential backoff."""
+        """http_5xx (no retry_after) should use exponential backoff with jitter."""
         dlq = _make_dlq(failure_code="http_5xx", dlq_attempts=2)
         msg_id = await _setup_dlq_msg(r, dlq)
         await _process(r, cfg, "test-consumer", msg_id, dlq, log)
@@ -264,8 +273,9 @@ class TestRecoveryEdgeCases:
 
         now_ms = int(time.time() * 1000)
         score = members[0][1]
-        # dlq_attempts=2 → backoff=60000
-        assert abs(score - (now_ms + 60000)) < 2000
+        # dlq_attempts=2 → base 60000, jitter [0.5, 1.5] → [30000, 90000]
+        delay = score - now_ms
+        assert 28000 <= delay <= 92000, f"Expected jittered backoff ~30k-90k, got {delay}"
 
     @pytest.mark.asyncio
     async def test_5xx_at_max_attempts_archived(self, r, cfg, log):
@@ -349,8 +359,9 @@ class TestRecoveryRetryAfterEdgeCases:
 
         now_ms = int(time.time() * 1000)
         score = members[0][1]
-        # Should use backoff (5000ms for attempt 0), not 0
-        assert abs(score - (now_ms + 5000)) < 2000
+        # Should use jittered backoff (base 5000ms, range [2500, 7500]), not 0
+        delay = score - now_ms
+        assert 500 <= delay <= 9500, f"Expected jittered backoff ~2.5k-7.5k, got {delay}"
 
     @pytest.mark.asyncio
     async def test_retry_after_negative_uses_value(self, r, cfg, log):
@@ -954,28 +965,28 @@ class TestArchiveMatchTTL:
         )
 
     @pytest.mark.asyncio
-    async def test_archive_sets_ttl_on_match_key(self, r, log, _dlq_with_match):
+    async def test_archive_sets_ttl_on_match_key(self, r, cfg, log, _dlq_with_match):
         """_archive() sets EXPIRE on match:{match_id} so it doesn't grow unbounded."""
         from lol_recovery.main import _archive
 
-        await _archive(r, _dlq_with_match, log)
+        await _archive(r, _dlq_with_match, log, cfg)
 
         ttl = await r.ttl("match:NA1_TTL99")
         assert ttl > 0, "match:{match_id} must have a TTL after _archive()"
 
     @pytest.mark.asyncio
-    async def test_archive_ttl_approx_7_days(self, r, log, _dlq_with_match):
-        """TTL is approximately 7 days (MATCH_DATA_TTL_SECONDS default)."""
+    async def test_archive_ttl_approx_7_days(self, r, cfg, log, _dlq_with_match):
+        """TTL is approximately 7 days (match_data_ttl_seconds default)."""
         from lol_recovery.main import _archive
 
-        await _archive(r, _dlq_with_match, log)
+        await _archive(r, _dlq_with_match, log, cfg)
 
         ttl = await r.ttl("match:NA1_TTL99")
         # Default 604800s = 7 days; allow sub-second drift
         assert abs(ttl - 604800) <= 60, f"Expected ~604800s TTL, got {ttl}s"
 
     @pytest.mark.asyncio
-    async def test_archive_no_match_id_no_ttl_set(self, r, log):
+    async def test_archive_no_match_id_no_ttl_set(self, r, cfg, log):
         """_archive() without match_id in payload skips the match key entirely."""
         from lol_recovery.main import _archive
 
@@ -992,6 +1003,35 @@ class TestArchiveMatchTTL:
             original_message_id="1-0",
             dlq_attempts=3,
         )
-        await _archive(r, dlq, log)
+        await _archive(r, dlq, log, cfg)
         # No match key should have been created
         assert await r.exists("match:") == 0
+
+
+class TestBackoffJitter:
+    """R3: Backoff delay includes jitter to avoid thundering herd."""
+
+    def test_backoff_has_jitter(self):
+        """_backoff_ms returns different values on repeated calls (jitter)."""
+        # Call _backoff_ms many times with the same attempt and collect results.
+        # With jitter in the range [0.5*base, 1.5*base], values should vary.
+        results = {_backoff_ms(0) for _ in range(50)}
+        # Base for attempt 0 is 5000.  Jitter gives [2500, 7500].
+        # With 50 calls, we should see more than 1 unique value.
+        assert len(results) > 1, f"Expected jitter variation, got constant {results}"
+
+    def test_backoff_jitter_range(self):
+        """_backoff_ms output is within [0.5*base, 1.5*base]."""
+        base = 5000  # _BACKOFF_MS[0]
+        for _ in range(100):
+            val = _backoff_ms(0)
+            assert val >= int(base * 0.5), f"Jittered value {val} below 0.5*base"
+            assert val <= int(base * 1.5), f"Jittered value {val} above 1.5*base"
+
+    def test_backoff_jitter_higher_attempts(self):
+        """Jitter works for higher attempt indices too."""
+        base = 60000  # _BACKOFF_MS[2]
+        results = {_backoff_ms(2) for _ in range(50)}
+        assert len(results) > 1
+        for val in results:
+            assert int(base * 0.5) <= val <= int(base * 1.5)

@@ -96,11 +96,23 @@ async def wait_for_token(
     key_prefix: str = "ratelimit",
     limit_per_second: int = _SHORT_LIMIT,
     max_wait_s: float = 60.0,
+    region: str = "",  # kept for API compat, not used
 ) -> None:
     """Block until a rate limit token is acquired, polling every 50ms.
 
+    Riot API rate limits are global (not per-region), so the *region*
+    parameter is accepted for API compatibility but ignored.  All callers
+    share a single ``ratelimit`` sliding window.
+
+    When a ``ratelimit:throttle`` key exists (set by RiotClient when API
+    capacity drops below 5%), adds a 200ms sleep to proactively slow down.
+
     Raises ``TimeoutError`` if *max_wait_s* seconds elapse without acquiring a token.
     """
+    # Proactive throttle: slow down when RiotClient signals near-capacity
+    throttled: str | None = await r.get("ratelimit:throttle")  # type: ignore[assignment]
+    if throttled:
+        await asyncio.sleep(0.2)
     deadline = time.monotonic() + max_wait_s
     while not await acquire_token(r, key_prefix, limit_per_second):
         if time.monotonic() >= deadline:

@@ -298,3 +298,64 @@ class TestWaitForToken:
             with patch("lol_pipeline.rate_limiter.asyncio.sleep", new_callable=AsyncMock):
                 await wait_for_token(r, max_wait_s=60.0)
         assert call_count == 2
+
+
+class TestWaitForTokenWithRegion:
+    @pytest.mark.asyncio
+    async def test_region_sets_key_prefix(self, r):
+        """When region is set, acquire_token uses ratelimit:{region} as key prefix."""
+        # Set a very low limit on the region-specific key
+        await r.set("ratelimit:limits:short", "2")
+
+        # Acquire with region="na1" — tokens go to ratelimit:na1:short/long
+        results = []
+        for _ in range(3):
+            got = await acquire_token(r, key_prefix="ratelimit:na1", limit_per_second=20)
+            results.append(got)
+
+        assert results[:2] == [True, True]
+        assert results[2] is False
+
+        # Default prefix tokens should be independent
+        got_default = await acquire_token(r, key_prefix="ratelimit", limit_per_second=20)
+        assert got_default is True
+
+    @pytest.mark.asyncio
+    async def test_wait_for_token_passes_region_prefix(self, r):
+        """wait_for_token(region='na1') uses key_prefix='ratelimit:na1'."""
+        call_args_list = []
+        original_acquire = acquire_token
+
+        async def capturing_acquire(r, key_prefix="ratelimit", limit_per_second=20):
+            call_args_list.append(key_prefix)
+            return await original_acquire(r, key_prefix, limit_per_second)
+
+        with patch("lol_pipeline.rate_limiter.acquire_token", side_effect=capturing_acquire):
+            await wait_for_token(r, region="na1", limit_per_second=20)
+
+        assert call_args_list[0] == "ratelimit:na1"
+
+
+class TestThrottleHintSlowsDown:
+    @pytest.mark.asyncio
+    async def test_throttle_key_causes_additional_sleep(self, r):
+        """When ratelimit:throttle is set, wait_for_token sleeps 0.2s before proceeding."""
+        await r.set("ratelimit:throttle", "1", ex=2)
+
+        with patch(
+            "lol_pipeline.rate_limiter.asyncio.sleep", new_callable=AsyncMock
+        ) as mock_sleep:
+            await wait_for_token(r, limit_per_second=20)
+
+        # Should have slept 0.2s for throttle hint (token acquired immediately, no 0.05 sleep)
+        mock_sleep.assert_called_once_with(0.2)
+
+    @pytest.mark.asyncio
+    async def test_no_extra_sleep_without_throttle_key(self, r):
+        """Without ratelimit:throttle, no extra sleep occurs."""
+        with patch(
+            "lol_pipeline.rate_limiter.asyncio.sleep", new_callable=AsyncMock
+        ) as mock_sleep:
+            await wait_for_token(r, limit_per_second=20)
+
+        mock_sleep.assert_not_called()

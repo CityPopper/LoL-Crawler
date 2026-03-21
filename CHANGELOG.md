@@ -11,6 +11,89 @@ This project uses semantic versioning.
 
 ---
 
+## [2.2.0] — 2026-03-21
+
+Phase 20 INSIGHT: champion analytics, priority tiers, crawler improvements, UI redesign.
+
+### Added
+
+- Champion aggregate stats pipeline: per-champion win rate, KDA, gold, damage, and
+  multikill tracking keyed by patch and role (`analyzer/main.py`, `parser/main.py`)
+- Champion ban and matchup tracking in Parser for ranked solo queue
+- `CHAMPION_STATS_TTL_SECONDS` env-configurable TTL for champion analytics keys
+  (default 90 days)
+- Admin `backfill-champions` command to reprocess existing parsed matches into champion stats
+- Admin `reset-stats` command to wipe player stats and re-trigger analysis
+- Admin `clear-priority` command to delete stalled priority keys
+- Admin `delayed-list` and `delayed-flush` commands for delayed:messages visibility
+- 12 new Redis key patterns for champion analytics, matchups, bans, player rank,
+  and crawler state (documented in `docs/architecture/04-storage.md`)
+
+### Fixed
+
+- Admin `_UPDATE_CHAMPION_LUA` ZADD for `patch:list` now uses NX flag, matching the
+  analyzer version (prevents overwriting patch scores)
+- Admin `_UPDATE_CHAMPION_LUA` uses ZINCRBY for champion index, matching the analyzer
+  version (was incorrectly using ZADD with absolute game count)
+- DLQ archive list now displays raw fields (`failure_code`, `original_stream`,
+  `failure_reason`) for corrupt entries instead of a bare `(corrupt entry)` message
+- README test count updated to 1161 unit + 44 contract tests
+
+### Changed
+
+- `CHAMPION_STATS_TTL_SECONDS` in `constants.py` now reads from env var with 90-day default
+
+---
+
+## [2.1.0] — 2026-03-21
+
+Phase 19 FINALIZE: replay tests, admin whitelist tests, doc fixes.
+
+### Added
+
+- Tests for atomic DLQ replay (`replay_from_dlq` Lua script) covering race conditions
+- Admin whitelist validation tests for `_VALID_REPLAY_STREAMS`
+- Documentation fixes across architecture and service docs
+
+---
+
+## [2.0.0] — 2026-03-21
+
+Phase 18 INTEGRITY: atomic DLQ replay, constants DRY, tests, docs.
+
+### Added
+
+- `replay_from_dlq` Lua script in `streams.py` for atomic XADD + XDEL replay from DLQ
+  (eliminates crash-induced duplicate replays)
+- `VALID_REPLAY_STREAMS` constant in `constants.py` as the DRY source for replay whitelist
+  (admin and UI both import from `constants.py`)
+
+### Changed
+
+- Admin and UI DLQ replay now use `replay_from_dlq()` instead of separate XADD + XDEL calls
+- `_VALID_REPLAY_STREAMS` in admin and UI replaced with import from `constants.py`
+
+---
+
+## [1.9.0] — 2026-03-20
+
+Phase 17 RESOLUTION: delay scheduler starvation, DLQ whitelist, docs, perf.
+
+### Fixed
+
+- Delay Scheduler starvation: failing members no longer monopolize the poll loop;
+  per-member backoff prevents hot-loop retries on persistent failures
+- DLQ replay whitelist (`_VALID_REPLAY_STREAMS`) added to admin CLI and UI to reject
+  replay to arbitrary Redis streams
+- UI `_build_stats_response` pipelined (3 sequential reads collapsed into 1 pipeline call)
+
+### Added
+
+- `docs/services/delay-scheduler.md` service documentation
+- Performance improvements to UI stats rendering
+
+---
+
 ## [1.8.0] — 2026-03-20
 
 Phase 16 HORIZON: Discovery idle-check simplification, crawler atomicity, UI hardening.
@@ -381,7 +464,10 @@ initial test coverage expansion to 560 unit tests + 61 contract tests.
 - `Justfile` with setup/build/run/test/lint/typecheck recipes
 - `docker-compose.yml` with Redis + all worker services
 
-[Unreleased]: https://github.com/abhiregmi/LoL-Crawler/compare/v1.8.0...HEAD
+[Unreleased]: https://github.com/abhiregmi/LoL-Crawler/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/abhiregmi/LoL-Crawler/compare/v2.0.0...v2.1.0
+[2.0.0]: https://github.com/abhiregmi/LoL-Crawler/compare/v1.9.0...v2.0.0
+[1.9.0]: https://github.com/abhiregmi/LoL-Crawler/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/abhiregmi/LoL-Crawler/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/abhiregmi/LoL-Crawler/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/abhiregmi/LoL-Crawler/compare/v1.5.0...v1.6.0

@@ -417,3 +417,120 @@ class TestMainEntryPoint:
             with pytest.raises(KeyboardInterrupt):
                 await main()
         mock_r.aclose.assert_called_once()
+
+
+class TestTimelineFetch:
+    """Timeline fetching when cfg.fetch_timeline is enabled."""
+
+    @pytest.mark.asyncio
+    async def test_timeline_fetched_when_enabled(self, r, cfg, log):
+        """When fetch_timeline=True, timeline is fetched and stored in raw:timeline:{id}."""
+        cfg.fetch_timeline = True
+        raw_store = RawStore(r)
+        env = _match_envelope()
+        msg_id = await _setup_message(r, env)
+
+        with respx.mock:
+            respx.get(_match_url()).mock(
+                return_value=httpx.Response(200, json={"info": {"gameDuration": 1800}})
+            )
+            respx.get(_match_url() + "/timeline").mock(
+                return_value=httpx.Response(200, json={"info": {"frames": []}})
+            )
+            riot = RiotClient("RGAPI-test")
+            await _fetch_match(r, riot, raw_store, cfg, msg_id, env, log)
+            await riot.close()
+
+        # Timeline stored
+        timeline_raw = await r.get("raw:timeline:NA1_123")
+        assert timeline_raw is not None
+        assert "frames" in timeline_raw
+        # TTL set
+        ttl = await r.ttl("raw:timeline:NA1_123")
+        assert ttl > 0
+
+    @pytest.mark.asyncio
+    async def test_timeline_skipped_when_disabled(self, r, cfg, log):
+        """When fetch_timeline=False (default), no timeline API call is made."""
+        cfg.fetch_timeline = False
+        raw_store = RawStore(r)
+        env = _match_envelope()
+        msg_id = await _setup_message(r, env)
+
+        with respx.mock:
+            respx.get(_match_url()).mock(
+                return_value=httpx.Response(200, json={"info": {"gameDuration": 1800}})
+            )
+            timeline_route = respx.get(_match_url() + "/timeline").mock(
+                return_value=httpx.Response(200, json={"info": {"frames": []}})
+            )
+            riot = RiotClient("RGAPI-test")
+            await _fetch_match(r, riot, raw_store, cfg, msg_id, env, log)
+            await riot.close()
+
+        assert not timeline_route.called
+        assert await r.get("raw:timeline:NA1_123") is None
+
+    @pytest.mark.asyncio
+    async def test_timeline_failure_non_fatal(self, r, cfg, log):
+        """Timeline fetch failure does not prevent match data from being stored."""
+        cfg.fetch_timeline = True
+        raw_store = RawStore(r)
+        env = _match_envelope()
+        msg_id = await _setup_message(r, env)
+
+        with respx.mock:
+            respx.get(_match_url()).mock(
+                return_value=httpx.Response(200, json={"info": {"gameDuration": 1800}})
+            )
+            respx.get(_match_url() + "/timeline").mock(
+                return_value=httpx.Response(500, text="Server Error")
+            )
+            riot = RiotClient("RGAPI-test")
+            await _fetch_match(r, riot, raw_store, cfg, msg_id, env, log)
+            await riot.close()
+
+        # Main match data still stored and published
+        assert await raw_store.exists("NA1_123") is True
+        assert await r.xlen(_STREAM_OUT) == 1
+        # Timeline not stored
+        assert await r.get("raw:timeline:NA1_123") is None
+
+
+class TestSeenMatches:
+    """Global dedup: fetcher adds match_id to seen:matches SET."""
+
+    @pytest.mark.asyncio
+    async def test_fetcher_adds_to_seen_set(self, r, cfg, log):
+        """After successful fetch, match_id is added to seen:matches."""
+        raw_store = RawStore(r)
+        env = _match_envelope()
+        msg_id = await _setup_message(r, env)
+
+        with respx.mock:
+            respx.get(_match_url()).mock(
+                return_value=httpx.Response(200, json={"info": {"gameDuration": 1800}})
+            )
+            riot = RiotClient("RGAPI-test")
+            await _fetch_match(r, riot, raw_store, cfg, msg_id, env, log)
+            await riot.close()
+
+        assert await r.sismember("seen:matches", "NA1_123")
+        # TTL refreshed on set
+        ttl = await r.ttl("seen:matches")
+        assert ttl > 0
+
+    @pytest.mark.asyncio
+    async def test_seen_set_not_written_on_error(self, r, cfg, log):
+        """When fetch fails (404), match_id is NOT added to seen:matches."""
+        raw_store = RawStore(r)
+        env = _match_envelope()
+        msg_id = await _setup_message(r, env)
+
+        with respx.mock:
+            respx.get(_match_url()).mock(return_value=httpx.Response(404))
+            riot = RiotClient("RGAPI-test")
+            await _fetch_match(r, riot, raw_store, cfg, msg_id, env, log)
+            await riot.close()
+
+        assert not await r.sismember("seen:matches", "NA1_123")

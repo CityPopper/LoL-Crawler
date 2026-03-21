@@ -58,9 +58,9 @@
     },
     "priority": {
       "type": "string",
-      "enum": ["high", "normal"],
+      "enum": ["manual_20", "manual_20plus", "auto_20", "auto_new", "high", "normal"],
       "default": "normal",
-      "description": "Processing priority — high for manual seeds, normal for auto-discovery"
+      "description": "Processing priority tier — manual_20 (highest) > manual_20plus > auto_20 > auto_new (lowest). 'high' and 'normal' are backwards-compat aliases."
     }
   }
 }

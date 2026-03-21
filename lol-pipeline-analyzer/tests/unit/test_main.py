@@ -11,7 +11,14 @@ from lol_pipeline.config import Config
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.streams import consume, publish
 
-from lol_analyzer.main import _analyze_player, _derived, _process_matches, _refresh_lock, main
+from lol_analyzer.main import (
+    _analyze_player,
+    _derived,
+    _process_matches,
+    _refresh_lock,
+    _update_champion_stats,
+    main,
+)
 
 _IN_STREAM = "stream:analyze"
 _GROUP = "analyzers"
@@ -898,6 +905,110 @@ class TestAnalyzerExpirePipeline:
         assert await r.ttl(f"player:roles:{puuid}") > 0
 
 
+class TestProcessMatchesSkipsEmptyParticipant:
+    """T16-2: _process_matches skips entries where participant data is empty."""
+
+    @pytest.mark.asyncio
+    async def test_process_matches__skips_empty_participant_data(self, r, cfg, log):
+        """Empty participant dicts are skipped — stats only count non-empty entries."""
+        puuid = "test-puuid-skip"
+        worker_id = "skip-worker"
+        lock_key = f"player:stats:lock:{puuid}"
+        lock_ttl_ms = cfg.analyzer_lock_ttl_seconds * 1000
+
+        # Acquire lock
+        await r.set(lock_key, worker_id, nx=True, px=lock_ttl_ms)
+
+        # 3 matches, but middle one has empty participant data
+        new_matches = [
+            ("NA1_A", 1000.0),
+            ("NA1_B", 2000.0),
+            ("NA1_C", 3000.0),
+        ]
+        participant_data = [
+            {
+                "win": "1", "kills": "5", "deaths": "1", "assists": "3",
+                "champion_name": "Annie", "role": "SOLO",
+            },
+            {},  # empty — should be skipped
+            {
+                "win": "0", "kills": "2", "deaths": "4", "assists": "1",
+                "champion_name": "Jinx", "role": "DUO",
+            },
+        ]
+
+        result = await _process_matches(
+            r, puuid, new_matches, participant_data,
+            lock_key, worker_id, lock_ttl_ms, log,
+        )
+
+        assert result is True
+        # Only 2 matches counted (empty dict skipped)
+        assert await r.hget(f"player:stats:{puuid}", "total_games") == "2"
+        assert await r.hget(f"player:stats:{puuid}", "total_kills") == "7"
+        assert await r.hget(f"player:stats:{puuid}", "total_deaths") == "5"
+        assert await r.hget(f"player:stats:{puuid}", "total_assists") == "4"
+        # Cursor should advance to the last match (3000), not the skipped one (2000)
+        cursor = await r.get(f"player:stats:cursor:{puuid}")
+        assert float(cursor) == 3000.0
+        # Champions: Annie=1, Jinx=1 (skipped match not counted)
+        assert await r.zscore(f"player:champions:{puuid}", "Annie") == 1.0
+        assert await r.zscore(f"player:champions:{puuid}", "Jinx") == 1.0
+
+    @pytest.mark.asyncio
+    async def test_process_matches__all_empty__no_stats_written(self, r, cfg, log):
+        """When all participant entries are empty, no stats are written."""
+        puuid = "test-puuid-all-empty"
+        worker_id = "empty-worker"
+        lock_key = f"player:stats:lock:{puuid}"
+        lock_ttl_ms = cfg.analyzer_lock_ttl_seconds * 1000
+
+        await r.set(lock_key, worker_id, nx=True, px=lock_ttl_ms)
+
+        new_matches = [("NA1_X", 1000.0), ("NA1_Y", 2000.0)]
+        participant_data = [{}, {}]  # both empty
+
+        result = await _process_matches(
+            r, puuid, new_matches, participant_data,
+            lock_key, worker_id, lock_ttl_ms, log,
+        )
+
+        assert result is True
+        # No stats should have been written
+        assert await r.hget(f"player:stats:{puuid}", "total_games") is None
+
+    @pytest.mark.asyncio
+    async def test_process_matches__first_empty_rest_valid(self, r, cfg, log):
+        """First entry empty, second valid — only second counted."""
+        puuid = "test-puuid-first-empty"
+        worker_id = "first-empty-worker"
+        lock_key = f"player:stats:lock:{puuid}"
+        lock_ttl_ms = cfg.analyzer_lock_ttl_seconds * 1000
+
+        await r.set(lock_key, worker_id, nx=True, px=lock_ttl_ms)
+
+        new_matches = [("NA1_E", 500.0), ("NA1_F", 1500.0)]
+        participant_data = [
+            {},  # empty — skipped
+            {
+                "win": "1", "kills": "10", "deaths": "0", "assists": "5",
+                "champion_name": "Lux", "role": "SUPPORT",
+            },
+        ]
+
+        result = await _process_matches(
+            r, puuid, new_matches, participant_data,
+            lock_key, worker_id, lock_ttl_ms, log,
+        )
+
+        assert result is True
+        assert await r.hget(f"player:stats:{puuid}", "total_games") == "1"
+        assert await r.hget(f"player:stats:{puuid}", "total_kills") == "10"
+        # Cursor at second match
+        cursor = await r.get(f"player:stats:cursor:{puuid}")
+        assert float(cursor) == 1500.0
+
+
 class TestDerivedEdgeCases:
     """Edge cases for the _derived() helper function."""
 
@@ -982,3 +1093,306 @@ class TestDerivedEdgeCases:
         assert result["avg_assists"] == "11.0000"
         # kda = (7 + 11) / max(3, 1) = 6.0
         assert result["kda"] == "6.0000"
+
+
+async def _add_ranked_participant(  # noqa: PLR0913
+    r,
+    match_id,
+    puuid,
+    game_start,
+    *,
+    win=True,
+    kills=10,
+    deaths=2,
+    assists=5,
+    champion="Annie",
+    team_position="TOP",
+    patch="14.5",
+    queue_id="420",
+    gold_earned=12000,
+    total_minions_killed=180,
+    total_damage_dealt_to_champions=25000,
+    vision_score=30,
+    double_kills=1,
+    triple_kills=0,
+    quadra_kills=0,
+    penta_kills=0,
+):
+    """Write participant + match metadata for a ranked match and add to sorted set."""
+    await r.hset(
+        f"participant:{match_id}:{puuid}",
+        mapping={
+            "champion_name": champion,
+            "team_position": team_position,
+            "role": "SOLO",
+            "win": "1" if win else "0",
+            "kills": str(kills),
+            "deaths": str(deaths),
+            "assists": str(assists),
+            "gold_earned": str(gold_earned),
+            "total_minions_killed": str(total_minions_killed),
+            "total_damage_dealt_to_champions": str(total_damage_dealt_to_champions),
+            "vision_score": str(vision_score),
+            "double_kills": str(double_kills),
+            "triple_kills": str(triple_kills),
+            "quadra_kills": str(quadra_kills),
+            "penta_kills": str(penta_kills),
+        },
+    )
+    await r.hset(
+        f"match:{match_id}",
+        mapping={
+            "queue_id": str(queue_id),
+            "patch": patch,
+            "game_mode": "CLASSIC",
+            "duration": "1800",
+        },
+    )
+    await r.zadd(f"player:matches:{puuid}", {match_id: float(game_start)})
+
+
+class TestChampionStatsAggregation:
+    """Champion aggregate stats updated for ranked matches during analysis."""
+
+    _90_DAYS = 90 * 24 * 3600
+
+    @pytest.mark.asyncio
+    async def test_champion_stats_ranked_match_updates(self, r, cfg, log):
+        """Ranked match (queue_id=420) with valid patch/position increments champion stats."""
+        puuid = "test-puuid-champ"
+        await _add_ranked_participant(
+            r, "NA1_R1", puuid, 1000,
+            champion="Annie", team_position="MID", patch="14.5",
+            kills=8, deaths=3, assists=5, win=True,
+            gold_earned=14000, total_minions_killed=200,
+            total_damage_dealt_to_champions=30000, vision_score=25,
+            double_kills=2, triple_kills=1, quadra_kills=0, penta_kills=0,
+        )
+        env = _analyze_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        await _analyze_player(r, cfg, "w1", msg_id, env, log)
+
+        stats = await r.hgetall("champion:stats:Annie:14.5:MID")
+        assert stats["games"] == "1"
+        assert stats["wins"] == "1"
+        assert stats["kills"] == "8"
+        assert stats["deaths"] == "3"
+        assert stats["assists"] == "5"
+        assert stats["gold"] == "14000"
+        assert stats["cs"] == "200"
+        assert stats["damage"] == "30000"
+        assert stats["vision"] == "25"
+        assert stats["double_kills"] == "2"
+        assert stats["triple_kills"] == "1"
+        assert stats["quadra_kills"] == "0"
+        assert stats["penta_kills"] == "0"
+
+    @pytest.mark.asyncio
+    async def test_champion_stats_skips_non_ranked(self, r, cfg, log):
+        """queue_id != 420 does not update champion stats."""
+        puuid = "test-puuid-aram"
+        await _add_ranked_participant(
+            r, "NA1_ARAM", puuid, 1000,
+            champion="Annie", team_position="MID", patch="14.5",
+            queue_id="450",  # ARAM
+        )
+        env = _analyze_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        await _analyze_player(r, cfg, "w1", msg_id, env, log)
+
+        assert not await r.exists("champion:stats:Annie:14.5:MID")
+
+    @pytest.mark.asyncio
+    async def test_champion_stats_skips_missing_patch(self, r, cfg, log):
+        """Empty patch string skips champion stats update."""
+        puuid = "test-puuid-nopatch"
+        await _add_ranked_participant(
+            r, "NA1_NP", puuid, 1000,
+            champion="Annie", team_position="MID", patch="",
+        )
+        env = _analyze_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        await _analyze_player(r, cfg, "w1", msg_id, env, log)
+
+        # No champion stats keys should exist for empty patch
+        assert not await r.exists("champion:stats:Annie::MID")
+
+    @pytest.mark.asyncio
+    async def test_champion_stats_skips_missing_position(self, r, cfg, log):
+        """Empty team_position skips champion stats update."""
+        puuid = "test-puuid-nopos"
+        await _add_ranked_participant(
+            r, "NA1_NP2", puuid, 1000,
+            champion="Annie", team_position="", patch="14.5",
+        )
+        env = _analyze_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        await _analyze_player(r, cfg, "w1", msg_id, env, log)
+
+        # Index should not have any entries
+        assert await r.zcard("champion:index:14.5") == 0
+
+    @pytest.mark.asyncio
+    async def test_champion_stats_skips_empty_participant(self, r, cfg, log):
+        """Empty participant data skips champion stats update."""
+        puuid = "test-puuid-empty-p"
+        # Set up match metadata without participant data
+        await r.hset(
+            "match:NA1_EP",
+            mapping={"queue_id": "420", "patch": "14.5", "game_mode": "CLASSIC"},
+        )
+        await r.zadd(f"player:matches:{puuid}", {"NA1_EP": 1000.0})
+        env = _analyze_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        await _analyze_player(r, cfg, "w1", msg_id, env, log)
+
+        assert await r.zcard("champion:index:14.5") == 0
+
+    @pytest.mark.asyncio
+    async def test_champion_index_incremented(self, r, cfg, log):
+        """champion:index:{patch} ZINCRBY tracks champion:position combinations."""
+        puuid = "test-puuid-idx"
+        await _add_ranked_participant(
+            r, "NA1_I1", puuid, 1000,
+            champion="Annie", team_position="MID", patch="14.5",
+        )
+        await _add_ranked_participant(
+            r, "NA1_I2", puuid, 2000,
+            champion="Annie", team_position="MID", patch="14.5",
+        )
+        await _add_ranked_participant(
+            r, "NA1_I3", puuid, 3000,
+            champion="Jinx", team_position="BOTTOM", patch="14.5",
+        )
+        env = _analyze_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        await _analyze_player(r, cfg, "w1", msg_id, env, log)
+
+        assert await r.zscore("champion:index:14.5", "Annie:MID") == 2.0
+        assert await r.zscore("champion:index:14.5", "Jinx:BOTTOM") == 1.0
+
+    @pytest.mark.asyncio
+    async def test_patch_list_recorded(self, r, cfg, log):
+        """patch:list ZADD NX records patch with game_start as score."""
+        puuid = "test-puuid-patch"
+        await _add_ranked_participant(
+            r, "NA1_P1", puuid, 5000,
+            champion="Annie", team_position="MID", patch="14.5",
+        )
+        env = _analyze_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        await _analyze_player(r, cfg, "w1", msg_id, env, log)
+
+        # patch:list should contain "14.5" with score 5000
+        score = await r.zscore("patch:list", "14.5")
+        assert score == 5000.0
+
+    @pytest.mark.asyncio
+    async def test_patch_list_nx_does_not_overwrite(self, r, cfg, log):
+        """patch:list ZADD NX keeps the first score, does not overwrite."""
+        puuid = "test-puuid-pnx"
+        # Pre-set patch:list with an earlier score
+        await r.zadd("patch:list", {"14.5": 1000.0})
+
+        await _add_ranked_participant(
+            r, "NA1_PNX", puuid, 9000,
+            champion="Annie", team_position="MID", patch="14.5",
+        )
+        env = _analyze_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        await _analyze_player(r, cfg, "w1", msg_id, env, log)
+
+        # Score should still be 1000 (NX = don't overwrite)
+        score = await r.zscore("patch:list", "14.5")
+        assert score == 1000.0
+
+    @pytest.mark.asyncio
+    async def test_champion_stats_ttl_set(self, r, cfg, log):
+        """Champion stats and index keys get 90-day TTL."""
+        puuid = "test-puuid-ttl"
+        await _add_ranked_participant(
+            r, "NA1_T1", puuid, 1000,
+            champion="Annie", team_position="MID", patch="14.5",
+        )
+        env = _analyze_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        await _analyze_player(r, cfg, "w1", msg_id, env, log)
+
+        stats_ttl = await r.ttl("champion:stats:Annie:14.5:MID")
+        assert 0 < stats_ttl <= self._90_DAYS
+
+        index_ttl = await r.ttl("champion:index:14.5")
+        assert 0 < index_ttl <= self._90_DAYS
+
+    @pytest.mark.asyncio
+    async def test_champion_stats_accumulates_across_matches(self, r, cfg, log):
+        """Multiple ranked matches on same champion/patch/role accumulate stats."""
+        puuid = "test-puuid-accum"
+        await _add_ranked_participant(
+            r, "NA1_AC1", puuid, 1000,
+            champion="Annie", team_position="MID", patch="14.5",
+            kills=5, deaths=2, assists=3, win=True,
+            gold_earned=10000, total_minions_killed=150,
+            total_damage_dealt_to_champions=20000, vision_score=20,
+            double_kills=1, triple_kills=0, quadra_kills=0, penta_kills=0,
+        )
+        await _add_ranked_participant(
+            r, "NA1_AC2", puuid, 2000,
+            champion="Annie", team_position="MID", patch="14.5",
+            kills=3, deaths=4, assists=7, win=False,
+            gold_earned=8000, total_minions_killed=120,
+            total_damage_dealt_to_champions=15000, vision_score=18,
+            double_kills=0, triple_kills=1, quadra_kills=0, penta_kills=0,
+        )
+        env = _analyze_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        await _analyze_player(r, cfg, "w1", msg_id, env, log)
+
+        stats = await r.hgetall("champion:stats:Annie:14.5:MID")
+        assert stats["games"] == "2"
+        assert stats["wins"] == "1"
+        assert stats["kills"] == "8"
+        assert stats["deaths"] == "6"
+        assert stats["assists"] == "10"
+        assert stats["gold"] == "18000"
+        assert stats["cs"] == "270"
+        assert stats["damage"] == "35000"
+        assert stats["vision"] == "38"
+        assert stats["double_kills"] == "1"
+        assert stats["triple_kills"] == "1"
+
+
+class TestUpdateChampionStatsDirect:
+    """Direct unit tests for _update_champion_stats function."""
+
+    @pytest.mark.asyncio
+    async def test_update_champion_stats_skips_empty_meta(self, r):
+        """Empty match metadata causes skip — no champion stats written."""
+        new_matches = [("NA1_X", 1000.0)]
+        participant_data = [{"champion_name": "Annie", "team_position": "MID", "win": "1"}]
+        match_metadata = [{}]
+
+        await _update_champion_stats(r, new_matches, participant_data, match_metadata)
+
+        assert await r.zcard("champion:index:14.5") == 0
+
+    @pytest.mark.asyncio
+    async def test_update_champion_stats_skips_missing_champion_name(self, r):
+        """Missing champion_name in participant data causes skip."""
+        new_matches = [("NA1_X", 1000.0)]
+        participant_data = [{"team_position": "MID", "win": "1"}]
+        match_metadata = [{"queue_id": "420", "patch": "14.5"}]
+
+        await _update_champion_stats(r, new_matches, participant_data, match_metadata)
+
+        assert await r.zcard("champion:index:14.5") == 0

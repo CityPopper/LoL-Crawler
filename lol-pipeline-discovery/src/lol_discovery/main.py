@@ -15,7 +15,7 @@ from lol_pipeline.config import Config
 from lol_pipeline.constants import PLAYER_DATA_TTL_SECONDS
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
-from lol_pipeline.priority import has_priority_players
+from lol_pipeline.priority import PRIORITY_AUTO_20, has_priority_players
 from lol_pipeline.rate_limiter import wait_for_token
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.riot_api import AuthError, NotFoundError, RiotAPIError, RiotClient
@@ -91,7 +91,7 @@ async def _resolve_names(
         return game_name, tag_line
 
     try:
-        await wait_for_token(r)
+        await wait_for_token(r, region=region)
         account = await riot.get_account_by_puuid(puuid, region)
     except NotFoundError:
         log.warning("account not found by puuid", extra={"puuid": puuid})
@@ -117,25 +117,51 @@ async def _promote_batch(
     """Promote up to discovery_batch_size players from discover:players to stream:puuid."""
     if await r.get("system:halted"):
         return 0
+    # P16-DB-2: Trim stale entries from players:all whose player hash has expired.
+    # Entries older than PLAYER_DATA_TTL_SECONDS are unlikely to still have a live
+    # player:{puuid} hash.  This runs once per batch — O(log N) amortised.
+    cutoff = time.time() - PLAYER_DATA_TTL_SECONDS
+    removed = await r.zremrangebyscore("players:all", "-inf", cutoff)
+    if removed:
+        log.info("trimmed stale players:all entries", extra={"removed": removed})
     # ZREVRANGE: highest score first (newest game_start = most recent activity)
     members: list[Any] = await r.zrevrange(_DISCOVER_KEY, 0, cfg.discovery_batch_size - 1)
     if not members:
         return 0
 
-    # Batch HEXISTS for all members to avoid N sequential round-trips
+    # Batch HEXISTS + HGET recrawl_after for all members to avoid N sequential round-trips
     async with r.pipeline(transaction=False) as hex_pipe:
         for member in members:
             puuid_check, _ = _parse_member(str(member))
             hex_pipe.hexists(f"player:{puuid_check}", "seeded_at")
-        seeded_results: list[bool] = await hex_pipe.execute()
+            hex_pipe.hget(f"player:{puuid_check}", "recrawl_after")
+        pipe_results: list[Any] = await hex_pipe.execute()
+
+    # Results alternate: [seeded_0, recrawl_0, seeded_1, recrawl_1, ...]
+    seeded_results: list[bool] = [pipe_results[i * 2] for i in range(len(members))]
+    recrawl_values: list[str | None] = [pipe_results[i * 2 + 1] for i in range(len(members))]
 
     promoted = 0
-    for member, already_seeded in zip(members, seeded_results, strict=True):
+    now = time.time()
+    for member, already_seeded, recrawl_after in zip(
+        members, seeded_results, recrawl_values, strict=True
+    ):
         puuid, region = _parse_member(str(member))
 
         if already_seeded:
-            await r.zrem(_DISCOVER_KEY, member)
-            continue
+            # Check if this player is due for re-crawl
+            if recrawl_after:
+                try:
+                    if float(recrawl_after) > now:
+                        # Not yet due — remove from discover queue, will be re-added later
+                        await r.zrem(_DISCOVER_KEY, member)
+                        continue
+                except (ValueError, TypeError):
+                    pass
+                # recrawl_after has passed — allow re-promotion by falling through
+            else:
+                await r.zrem(_DISCOVER_KEY, member)
+                continue
 
         try:
             names = await _resolve_names(r, riot, puuid, region, log)
@@ -161,6 +187,7 @@ async def _promote_batch(
                 "region": region,
             },
             max_attempts=cfg.max_attempts,
+            priority=PRIORITY_AUTO_20,
         )
         # I2-H12: Atomic promotion ordering — at-least-once safe.
         # 1. XADD to stream:puuid FIRST.  If we crash here the player stays
@@ -183,7 +210,7 @@ async def _promote_batch(
             )
             await pipe.expire(f"player:{puuid}", PLAYER_DATA_TTL_SECONDS)  # 30 days
             await pipe.zadd("players:all", {puuid: time.time()})
-            await pipe.zremrangebyrank("players:all", 0, -50001)
+            await pipe.zremrangebyrank("players:all", 0, -(cfg.players_all_max + 1))
             await pipe.zrem(_DISCOVER_KEY, member)
             await pipe.execute()
         promoted += 1
@@ -236,7 +263,7 @@ async def main() -> None:
                         extra={"idle": idle, "queue": queue_size},
                     )
                     polls_since_log = 0
-            except RedisError, OSError:
+            except (RedisError, OSError):
                 log.exception("Redis error — retrying in 1s")
                 await asyncio.sleep(1)
                 continue

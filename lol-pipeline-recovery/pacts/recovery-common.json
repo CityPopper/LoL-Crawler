@@ -59,7 +59,7 @@
           "$.retry_after_ms": { "matchers": [ { "match": "integer" } ] },
           "$.original_stream": { "matchers": [ { "match": "type" } ] },
           "$.original_message_id": { "matchers": [ { "match": "type" } ] },
-          "$.priority": { "matchers": [ { "match": "regex", "regex": "^(high|normal)$" } ] }
+          "$.priority": { "matchers": [ { "match": "regex", "regex": "^(manual_20|manual_20plus|auto_20|auto_new|high|normal)$" } ] }
         }
       },
       "metadata": { "contentType": "application/json" }
@@ -117,7 +117,7 @@
           "$.retry_after_ms": { "matchers": [ { "match": "null" } ] },
           "$.original_stream": { "matchers": [ { "match": "type" } ] },
           "$.original_message_id": { "matchers": [ { "match": "type" } ] },
-          "$.priority": { "matchers": [ { "match": "regex", "regex": "^(high|normal)$" } ] }
+          "$.priority": { "matchers": [ { "match": "regex", "regex": "^(manual_20|manual_20plus|auto_20|auto_new|high|normal)$" } ] }
         }
       },
       "metadata": { "contentType": "application/json" }
@@ -166,7 +166,7 @@
           "$.retry_after_ms": { "matchers": [ { "match": "null" } ] },
           "$.original_stream": { "matchers": [ { "match": "type" } ] },
           "$.original_message_id": { "matchers": [ { "match": "type" } ] },
-          "$.priority": { "matchers": [ { "match": "regex", "regex": "^(high|normal)$" } ] }
+          "$.priority": { "matchers": [ { "match": "regex", "regex": "^(manual_20|manual_20plus|auto_20|auto_new|high|normal)$" } ] }
         }
       },
       "metadata": { "contentType": "application/json" }
@@ -215,7 +215,7 @@
           "$.retry_after_ms": { "matchers": [ { "match": "null" } ] },
           "$.original_stream": { "matchers": [ { "match": "type" } ] },
           "$.original_message_id": { "matchers": [ { "match": "type" } ] },
-          "$.priority": { "matchers": [ { "match": "regex", "regex": "^(high|normal)$" } ] }
+          "$.priority": { "matchers": [ { "match": "regex", "regex": "^(manual_20|manual_20plus|auto_20|auto_new|high|normal)$" } ] }
         }
       },
       "metadata": { "contentType": "application/json" }
@@ -264,7 +264,7 @@
           "$.retry_after_ms": { "matchers": [ { "match": "null" } ] },
           "$.original_stream": { "matchers": [ { "match": "type" } ] },
           "$.original_message_id": { "matchers": [ { "match": "type" } ] },
-          "$.priority": { "matchers": [ { "match": "regex", "regex": "^(high|normal)$" } ] }
+          "$.priority": { "matchers": [ { "match": "regex", "regex": "^(manual_20|manual_20plus|auto_20|auto_new|high|normal)$" } ] }
         }
       },
       "metadata": { "contentType": "application/json" }

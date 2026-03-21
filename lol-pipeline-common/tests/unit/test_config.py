@@ -42,6 +42,11 @@ class TestConfig:
         assert cfg.dlq_max_attempts == 3
         assert cfg.api_rate_limit_per_second == 20
         assert cfg.analyzer_lock_ttl_seconds == 300
+        assert cfg.match_data_ttl_seconds == 604800
+        assert cfg.max_discover_players == 50000
+        assert cfg.players_all_max == 50000
+        assert cfg.player_matches_max == 500
+        assert cfg.log_dir == ""
 
     def test_override_from_env(self, monkeypatch):
         """Config can be overridden via env vars."""
@@ -95,6 +100,10 @@ class TestConfig:
             "API_RATE_LIMIT_PER_SECOND",
             "DISCOVERY_POLL_INTERVAL_MS",
             "DISCOVERY_BATCH_SIZE",
+            "MATCH_DATA_TTL_SECONDS",
+            "MAX_DISCOVER_PLAYERS",
+            "PLAYERS_ALL_MAX",
+            "PLAYER_MATCHES_MAX",
         ],
     )
     def test_numeric_fields_reject_zero(self, monkeypatch, field_name):

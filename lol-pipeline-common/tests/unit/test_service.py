@@ -423,3 +423,63 @@ class TestRedisBackedRetryCounter:
 
         await _clear_retry(r, _STREAM, "msg-clear-test")
         assert await r.exists(key) == 0
+
+
+class TestPriorityReordering:
+    """R6: Consumer sorts messages within a batch by priority before dispatching."""
+
+    @pytest.mark.asyncio
+    async def test_consumer_sorts_batch_by_priority(self, r, log):
+        """Messages in a batch are dispatched highest-priority first."""
+        # Publish 3 messages with different priorities
+        envs = [
+            MessageEnvelope(
+                source_stream=_STREAM,
+                type="test",
+                payload={"order": "low"},
+                max_attempts=5,
+                priority="auto_new",
+            ),
+            MessageEnvelope(
+                source_stream=_STREAM,
+                type="test",
+                payload={"order": "high"},
+                max_attempts=5,
+                priority="manual_20",
+            ),
+            MessageEnvelope(
+                source_stream=_STREAM,
+                type="test",
+                payload={"order": "mid"},
+                max_attempts=5,
+                priority="auto_20",
+            ),
+        ]
+        for e in envs:
+            await publish(r, _STREAM, e)
+
+        processed_priorities = []
+
+        async def handler(mid, envelope):
+            processed_priorities.append(envelope.priority)
+            await ack(r, _STREAM, _GROUP, mid)
+
+        # Set halted after processing to exit the loop
+        call_count = 0
+        original_consume = consume
+
+        async def consume_then_halt(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                msgs = await original_consume(*args, **kwargs)
+                return msgs
+            # After first batch, halt to exit
+            await r.set("system:halted", "1")
+            return []
+
+        with patch("lol_pipeline.service.consume", side_effect=consume_then_halt):
+            await run_consumer(r, _STREAM, _GROUP, "c", handler, log)
+
+        # Should be sorted: manual_20 (4) > auto_20 (2) > auto_new (1)
+        assert processed_priorities == ["manual_20", "auto_20", "auto_new"]

@@ -16,6 +16,17 @@ default:
 setup:
     #!/usr/bin/env bash
     set -euo pipefail
+    PY_VERSION=$(python3 --version 2>&1 | awk '{print $2}')
+    PY_MAJOR=$(echo "$PY_VERSION" | cut -d. -f1)
+    PY_MINOR=$(echo "$PY_VERSION" | cut -d. -f2)
+    if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 14 ]; }; then
+        echo "ERROR: Python 3.14+ required (found $PY_VERSION)" >&2
+        exit 1
+    fi
+    if ! command -v {{RUNTIME}} &>/dev/null; then
+        echo "ERROR: '{{RUNTIME}}' not found. Install it or set RUNTIME=docker." >&2
+        exit 1
+    fi
     if [ ! -f .env ]; then
         cp .env.example .env
         echo "Created  .env — set RIOT_API_KEY before running 'just build'."
@@ -28,6 +39,20 @@ setup:
     else
         echo "pre-commit not found — run 'pip install pre-commit && pre-commit install' to enable hooks."
     fi
+
+# Create and populate a root-level virtual environment
+venv:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    python3 -m venv .venv
+    .venv/bin/pip install --upgrade pip
+    .venv/bin/pip install -e "lol-pipeline-common/[dev]"
+    for dir in lol-pipeline-*/; do
+        if [ "$dir" != "lol-pipeline-common/" ] && [ -f "$dir/pyproject.toml" ]; then
+            .venv/bin/pip install -e "$dir[dev]" 2>/dev/null || .venv/bin/pip install -e "$dir" || true
+        fi
+    done
+    echo "Venv ready — activate with: source .venv/bin/activate"
 
 # 2. Build all Docker images (including one-shot tools)
 build:
@@ -86,9 +111,17 @@ reset:
 logs svc:
     {{DC}} logs -f {{svc}}
 
+# Tail merged logs from all services
+logs-all:
+    {{DC}} logs -f
+
 # Restart a single service (e.g. just restart crawler)
 restart svc:
     {{DC}} restart {{svc}}
+
+# Open an interactive redis-cli session inside the Redis container
+redis-cli:
+    {{RUNTIME}} exec -it {{_redis_ctr}} redis-cli
 
 # Scale a service (e.g. just scale fetcher 3)
 scale svc count:
@@ -109,6 +142,19 @@ _stream_depths:
     printf "%-24s %s\n" "stream:dlq:"        "$(exec_redis XLEN stream:dlq)"
     printf "%-24s %s\n" "stream:dlq:archive:" "$(exec_redis XLEN stream:dlq:archive)"
     printf "%-24s %s\n" "delayed:messages:"  "$(exec_redis ZCARD delayed:messages)"
+    printf "%-24s %s\n" "discover:players:"  "$(exec_redis ZCARD discover:players)"
+    priority_count=$(exec_redis --no-auth-warning SCAN 0 MATCH "player:priority:*" COUNT 10000 | tail -n +2 | grep -v "^0$" | wc -w | tr -d ' ')
+    printf "%-24s %s\n" "player:priority:*:" "$priority_count"
+    echo ""
+    printf "%-32s %s\n" "PEL (pending)"      "Pending"
+    printf "%-32s %s\n" "──────────────────────────────" "──────"
+    for stream in stream:puuid stream:match_id stream:parse stream:analyze stream:dlq; do
+        groups=$(exec_redis XINFO GROUPS "$stream" 2>/dev/null) || continue
+        echo "$groups" | awk -v stream="$stream" '
+            /^name$/ { getline; grp=$0 }
+            /^pel-count$/ { getline; printf "%-32s %s\n", stream " / " grp ":", $0 }
+        '
+    done
     echo ""
     halted=$(exec_redis GET system:halted)
     if [ "$halted" = "1" ]; then
@@ -198,8 +244,35 @@ typecheck:
         fi
     done
 
-# Lint + type-check all service repos
-check: lint typecheck
+# Lint + type-check all service repos (parallel)
+check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    OUTTMP=$(mktemp -d)
+    (just lint       > "$OUTTMP/lint.out"      2>&1; echo $? > "$OUTTMP/lint.rc")      &
+    (just typecheck  > "$OUTTMP/typecheck.out"  2>&1; echo $? > "$OUTTMP/typecheck.rc") &
+    wait
+    echo "=== lint ===" && cat "$OUTTMP/lint.out"
+    echo "=== typecheck ===" && cat "$OUTTMP/typecheck.out"
+    FAILED=0
+    [ "$(cat "$OUTTMP/lint.rc")" -ne 0 ]      && FAILED=1
+    [ "$(cat "$OUTTMP/typecheck.rc")" -ne 0 ]  && FAILED=1
+    rm -rf "$OUTTMP"
+    exit $FAILED
+
+# Lint a single service (e.g. just lint-svc crawler)
+lint-svc name:
+    cd lol-pipeline-{{name}} && ruff check . && ruff format --check .
+
+# Type-check a single service (e.g. just typecheck-svc crawler)
+typecheck-svc name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    COMMON_SRC="$PWD/lol-pipeline-common/src"
+    cd lol-pipeline-{{name}} && MYPYPATH="$COMMON_SRC" mypy src/
+
+# Quick post-change validation without API key (lint + typecheck + unit tests)
+smoke: lint typecheck test
 
 # Update API mock fixtures from live Riot API (uses Pwnerer#1337)
 update-mocks:

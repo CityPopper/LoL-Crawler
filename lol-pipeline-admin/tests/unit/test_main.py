@@ -15,6 +15,7 @@ from lol_pipeline.models import DLQEnvelope
 from lol_pipeline.riot_api import RiotClient
 
 from lol_admin.main import (
+    _confirm,
     _dispatch,
     _dlq_entries,
     _format_dlq_table,
@@ -23,6 +24,11 @@ from lol_admin.main import (
     _make_replay_envelope,
     _region_from_match_id,
     _resolve_puuid,
+    cmd_clear_priority,
+    cmd_delayed_flush,
+    cmd_delayed_list,
+    cmd_dlq_archive_clear,
+    cmd_dlq_archive_list,
     cmd_dlq_clear,
     cmd_dlq_list,
     cmd_dlq_replay,
@@ -31,6 +37,7 @@ from lol_admin.main import (
     cmd_replay_fetch,
     cmd_replay_parse,
     cmd_reseed,
+    cmd_reset_stats,
     cmd_stats,
     cmd_system_halt,
     cmd_system_resume,
@@ -197,7 +204,7 @@ class TestDlqClear:
     async def test_clear_all(self, r):
         """AC-06-05: dlq clear --all → DLQ empty."""
         await _add_dlq_entries(r, 3)
-        args = argparse.Namespace(all=True)
+        args = argparse.Namespace(all=True, yes=True)
         result = await cmd_dlq_clear(r, args)
         assert result == 0
         assert await r.xlen(_DLQ_STREAM) == 0
@@ -259,7 +266,7 @@ class TestSystemHalt:
     @pytest.mark.asyncio
     async def test_system_halt(self, r, capsys):
         """system-halt → system:halted set to '1'."""
-        args = argparse.Namespace()
+        args = argparse.Namespace(yes=True)
         result = await cmd_system_halt(r, args)
         assert result == 0
         assert await r.get("system:halted") == "1"
@@ -269,7 +276,7 @@ class TestSystemHalt:
     async def test_system_halt_already_halted(self, r, capsys):
         """system-halt when already halted → still succeeds."""
         await r.set("system:halted", "1")
-        args = argparse.Namespace()
+        args = argparse.Namespace(yes=True)
         result = await cmd_system_halt(r, args)
         assert result == 0
         assert await r.get("system:halted") == "1"
@@ -740,7 +747,7 @@ class TestDlqClearNoAll:
     async def test_clear_no_all__returns_error(self, r, capsys):
         """cmd_dlq_clear with all=False → prints error to stderr, returns 1."""
         await _add_dlq_entries(r, 2)
-        args = argparse.Namespace(all=False)
+        args = argparse.Namespace(all=False, yes=True)
         result = await cmd_dlq_clear(r, args)
         assert result == 1
         captured = capsys.readouterr()
@@ -912,12 +919,12 @@ class TestMakeReplayEnvelopePreservesMetadata:
         assert envelope.priority == "normal"
 
 
-class TestReseedHighPriority:
-    """I2-H8: cmd_reseed must use high priority and set_priority(), matching Seed service."""
+class TestReseedManualPriority:
+    """I2-H8: cmd_reseed must use manual_20 priority and set_priority(), matching Seed service."""
 
     @pytest.mark.asyncio
-    async def test_reseed__uses_high_priority(self, r, cfg):
-        """Reseed envelope has priority='high', not default 'normal'."""
+    async def test_reseed__uses_manual_20_priority(self, r, cfg):
+        """Reseed envelope has priority='manual_20'."""
         puuid = "test-puuid-high"
         await r.hset(
             f"player:{puuid}",
@@ -945,7 +952,7 @@ class TestReseedHighPriority:
         from lol_pipeline.models import MessageEnvelope
 
         env = MessageEnvelope.from_redis_fields(entries[0][1])
-        assert env.priority == "high"
+        assert env.priority == "manual_20"
 
     @pytest.mark.asyncio
     async def test_reseed__sets_priority_key(self, r, cfg):
@@ -1406,7 +1413,7 @@ class TestErrorPrefixes:
     @pytest.mark.asyncio
     async def test_system_halt__ok_prefix(self, r, capsys):
         """system-halt success message uses [OK] prefix."""
-        args = argparse.Namespace()
+        args = argparse.Namespace(yes=True)
         await cmd_system_halt(r, args)
         output = capsys.readouterr().out
         assert output.strip().startswith("[OK]")
@@ -1435,7 +1442,7 @@ class TestErrorPrefixes:
     async def test_dlq_clear__ok_prefix(self, r, capsys):
         """dlq clear success message uses [OK] prefix."""
         await _add_dlq_entries(r, 2)
-        args = argparse.Namespace(all=True)
+        args = argparse.Namespace(all=True, yes=True)
         await cmd_dlq_clear(r, args)
         output = capsys.readouterr().out
         assert output.strip().startswith("[OK]")
@@ -1532,3 +1539,789 @@ class TestFormatStatValueNanInf:
         assert _format_stat_value("win_rate", "0.5", {"total_games": "10"}) == "50.0%  (10 games)"
         assert _format_stat_value("kda", "3.4", {}) == "3.40"
         assert _format_stat_value("total_games", "42", {}) == "42"
+
+
+# ---------------------------------------------------------------------------
+# P15-OPS-3: Confirmation prompts
+# ---------------------------------------------------------------------------
+
+
+class TestConfirmHelper:
+    """_confirm helper respects --yes flag and user input."""
+
+    def test_confirm__yes_flag__returns_true(self):
+        """--yes flag bypasses prompt entirely."""
+        args = argparse.Namespace(yes=True)
+        assert _confirm("Are you sure?", args) is True
+
+    def test_confirm__user_types_y__returns_true(self, monkeypatch):
+        """User typing 'y' returns True."""
+        monkeypatch.setattr("builtins.input", lambda _: "y")
+        args = argparse.Namespace(yes=False)
+        assert _confirm("Are you sure?", args) is True
+
+    def test_confirm__user_types_yes__returns_true(self, monkeypatch):
+        """User typing 'yes' returns True."""
+        monkeypatch.setattr("builtins.input", lambda _: "yes")
+        args = argparse.Namespace(yes=False)
+        assert _confirm("Are you sure?", args) is True
+
+    def test_confirm__user_types_YES__returns_true(self, monkeypatch):
+        """User typing 'YES' (uppercase) returns True."""
+        monkeypatch.setattr("builtins.input", lambda _: "YES")
+        args = argparse.Namespace(yes=False)
+        assert _confirm("Are you sure?", args) is True
+
+    def test_confirm__user_types_n__returns_false(self, monkeypatch):
+        """User typing 'n' returns False."""
+        monkeypatch.setattr("builtins.input", lambda _: "n")
+        args = argparse.Namespace(yes=False)
+        assert _confirm("Are you sure?", args) is False
+
+    def test_confirm__user_types_empty__returns_false(self, monkeypatch):
+        """User pressing Enter (empty string) returns False."""
+        monkeypatch.setattr("builtins.input", lambda _: "")
+        args = argparse.Namespace(yes=False)
+        assert _confirm("Are you sure?", args) is False
+
+    def test_confirm__user_types_no__returns_false(self, monkeypatch):
+        """User typing 'no' returns False."""
+        monkeypatch.setattr("builtins.input", lambda _: "no")
+        args = argparse.Namespace(yes=False)
+        assert _confirm("Are you sure?", args) is False
+
+
+class TestSystemHaltConfirmation:
+    """P15-OPS-3: system-halt requires confirmation."""
+
+    @pytest.mark.asyncio
+    async def test_system_halt__no_confirm__aborts(self, r, monkeypatch, capsys):
+        """system-halt without confirmation returns 1 and does not set system:halted."""
+        monkeypatch.setattr("builtins.input", lambda _: "n")
+        args = argparse.Namespace(yes=False)
+        result = await cmd_system_halt(r, args)
+        assert result == 1
+        assert await r.exists("system:halted") == 0
+        assert "aborted" in capsys.readouterr().out
+
+    @pytest.mark.asyncio
+    async def test_system_halt__confirm_y__proceeds(self, r, monkeypatch, capsys):
+        """system-halt with 'y' confirmation proceeds."""
+        monkeypatch.setattr("builtins.input", lambda _: "y")
+        args = argparse.Namespace(yes=False)
+        result = await cmd_system_halt(r, args)
+        assert result == 0
+        assert await r.get("system:halted") == "1"
+
+
+class TestDlqClearConfirmation:
+    """P15-OPS-3: dlq clear --all requires confirmation."""
+
+    @pytest.mark.asyncio
+    async def test_dlq_clear__no_confirm__aborts(self, r, monkeypatch, capsys):
+        """dlq clear --all without confirmation returns 1."""
+        await _add_dlq_entries(r, 2)
+        monkeypatch.setattr("builtins.input", lambda _: "n")
+        args = argparse.Namespace(all=True, yes=False)
+        result = await cmd_dlq_clear(r, args)
+        assert result == 1
+        assert await r.xlen(_DLQ_STREAM) == 2
+        assert "aborted" in capsys.readouterr().out
+
+    @pytest.mark.asyncio
+    async def test_dlq_clear__confirm_yes__proceeds(self, r, monkeypatch, capsys):
+        """dlq clear --all with 'yes' confirmation proceeds."""
+        await _add_dlq_entries(r, 2)
+        monkeypatch.setattr("builtins.input", lambda _: "yes")
+        args = argparse.Namespace(all=True, yes=False)
+        result = await cmd_dlq_clear(r, args)
+        assert result == 0
+        assert await r.xlen(_DLQ_STREAM) == 0
+
+
+class TestBuildParserYesFlag:
+    """--yes / -y flag is available on the top-level parser."""
+
+    def test_build_parser__yes_flag_defaults_false(self):
+        """_build_parser produces --yes flag that defaults to False."""
+        from lol_admin.main import _build_parser
+
+        parser = _build_parser()
+        args = parser.parse_args(["system-halt"])
+        assert args.yes is False
+
+    def test_build_parser__yes_flag_can_be_set(self):
+        """_build_parser --yes flag sets yes=True when provided."""
+        from lol_admin.main import _build_parser
+
+        parser = _build_parser()
+        args = parser.parse_args(["--yes", "system-halt"])
+        assert args.yes is True
+
+    def test_build_parser__y_short_flag(self):
+        """-y is a shorthand for --yes."""
+        from lol_admin.main import _build_parser
+
+        parser = _build_parser()
+        args = parser.parse_args(["-y", "system-halt"])
+        assert args.yes is True
+
+
+# ---------------------------------------------------------------------------
+# P15-OPS-1: reset-stats
+# ---------------------------------------------------------------------------
+
+
+class TestResetStats:
+    """P15-OPS-1: admin reset-stats wipes stats and re-triggers analysis."""
+
+    @pytest.mark.asyncio
+    async def test_reset_stats__deletes_keys_and_enqueues(self, r, cfg, capsys):
+        """reset-stats deletes 4 keys and enqueues stream:analyze message."""
+        puuid = "test-puuid-reset"
+        await r.hset(f"player:stats:{puuid}", mapping={"total_games": "10"})
+        await r.set(f"player:stats:cursor:{puuid}", "12345")
+        await r.zadd(f"player:champions:{puuid}", {"Ahri": 5})
+        await r.zadd(f"player:roles:{puuid}", {"MID": 5})
+
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1"
+                "/accounts/by-riot-id/Reset/NA1"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": puuid, "gameName": "Reset", "tagLine": "NA1"},
+                )
+            )
+            riot = RiotClient("RGAPI-test")
+            args = argparse.Namespace(riot_id="Reset#NA1", region="na1")
+            result = await cmd_reset_stats(r, riot, cfg, args)
+            await riot.close()
+
+        assert result == 0
+        # All stats keys deleted
+        assert await r.exists(f"player:stats:{puuid}") == 0
+        assert await r.exists(f"player:stats:cursor:{puuid}") == 0
+        assert await r.exists(f"player:champions:{puuid}") == 0
+        assert await r.exists(f"player:roles:{puuid}") == 0
+        # Analysis re-triggered
+        assert await r.xlen("stream:analyze") == 1
+        output = capsys.readouterr().out
+        assert "[OK]" in output
+        assert "deleted" in output
+
+    @pytest.mark.asyncio
+    async def test_reset_stats__invalid_riot_id__returns_1(self, r, cfg, capsys):
+        """reset-stats with invalid Riot ID returns 1."""
+        riot = RiotClient("RGAPI-test")
+        args = argparse.Namespace(riot_id="NoHash", region="na1")
+        result = await cmd_reset_stats(r, riot, cfg, args)
+        await riot.close()
+        assert result == 1
+
+    @pytest.mark.asyncio
+    async def test_reset_stats__analyze_envelope_has_correct_payload(self, r, cfg):
+        """The analyze envelope payload contains just {puuid}."""
+        puuid = "test-puuid-env"
+        await r.hset(f"player:stats:{puuid}", mapping={"total_games": "5"})
+
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1"
+                "/accounts/by-riot-id/Env/NA1"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": puuid, "gameName": "Env", "tagLine": "NA1"},
+                )
+            )
+            riot = RiotClient("RGAPI-test")
+            args = argparse.Namespace(riot_id="Env#NA1", region="na1")
+            await cmd_reset_stats(r, riot, cfg, args)
+            await riot.close()
+
+        from lol_pipeline.models import MessageEnvelope
+
+        entries = await r.xrange("stream:analyze", "-", "+")
+        assert len(entries) == 1
+        env = MessageEnvelope.from_redis_fields(entries[0][1])
+        assert env.payload == {"puuid": puuid}
+        assert env.type == "analyze"
+        assert env.source_stream == "stream:analyze"
+
+
+# ---------------------------------------------------------------------------
+# P15-OPS-2: DLQ archive subcommands
+# ---------------------------------------------------------------------------
+
+_DLQ_ARCHIVE_STREAM = "stream:dlq:archive"
+
+
+class TestDlqArchiveList:
+    """P15-OPS-2: dlq archive list shows entries from stream:dlq:archive."""
+
+    @pytest.mark.asyncio
+    async def test_archive_list__empty(self, r, capsys):
+        """Empty archive → info message, returns 0."""
+        args = argparse.Namespace()
+        result = await cmd_dlq_archive_list(r, args)
+        assert result == 0
+        assert "empty" in capsys.readouterr().out
+
+    @pytest.mark.asyncio
+    async def test_archive_list__with_entries(self, r, capsys):
+        """Archive with entries → prints each one, returns 0."""
+        dlq = _make_dlq(match_id="NA1_arch1")
+        await r.xadd(_DLQ_ARCHIVE_STREAM, dlq.to_redis_fields())
+        await r.xadd(_DLQ_ARCHIVE_STREAM, dlq.to_redis_fields())
+        args = argparse.Namespace()
+        result = await cmd_dlq_archive_list(r, args)
+        assert result == 0
+        output = capsys.readouterr().out
+        assert "2 archive entries" in output
+
+    @pytest.mark.asyncio
+    async def test_archive_list__corrupt_entry__shows_corrupt_label(self, r, capsys):
+        """Corrupt entry in archive → displays (corrupt entry) label."""
+        await r.xadd(_DLQ_ARCHIVE_STREAM, {"garbage": "data"})
+        args = argparse.Namespace()
+        result = await cmd_dlq_archive_list(r, args)
+        assert result == 0
+        output = capsys.readouterr().out
+        assert "corrupt entry" in output
+
+
+class TestDlqArchiveClear:
+    """P15-OPS-2: dlq archive clear --all clears the archive stream."""
+
+    @pytest.mark.asyncio
+    async def test_archive_clear__deletes_all(self, r, capsys):
+        """dlq archive clear --all → archive emptied."""
+        dlq = _make_dlq(match_id="NA1_arch2")
+        await r.xadd(_DLQ_ARCHIVE_STREAM, dlq.to_redis_fields())
+        await r.xadd(_DLQ_ARCHIVE_STREAM, dlq.to_redis_fields())
+        args = argparse.Namespace(all=True, yes=True)
+        result = await cmd_dlq_archive_clear(r, args)
+        assert result == 0
+        assert await r.xlen(_DLQ_ARCHIVE_STREAM) == 0
+        output = capsys.readouterr().out
+        assert "cleared 2" in output
+
+    @pytest.mark.asyncio
+    async def test_archive_clear__empty__info_message(self, r, capsys):
+        """dlq archive clear --all on empty archive → info message."""
+        args = argparse.Namespace(all=True, yes=True)
+        result = await cmd_dlq_archive_clear(r, args)
+        assert result == 0
+        assert "empty" in capsys.readouterr().out
+
+    @pytest.mark.asyncio
+    async def test_archive_clear__no_all__returns_error(self, r, capsys):
+        """dlq archive clear without --all → error."""
+        args = argparse.Namespace(all=False, yes=True)
+        result = await cmd_dlq_archive_clear(r, args)
+        assert result == 1
+        assert "--all is required" in capsys.readouterr().err
+
+    @pytest.mark.asyncio
+    async def test_archive_clear__no_confirm__aborts(self, r, monkeypatch, capsys):
+        """dlq archive clear --all without confirmation aborts."""
+        await r.xadd(_DLQ_ARCHIVE_STREAM, {"dummy": "1"})
+        monkeypatch.setattr("builtins.input", lambda _: "n")
+        args = argparse.Namespace(all=True, yes=False)
+        result = await cmd_dlq_archive_clear(r, args)
+        assert result == 1
+        assert "aborted" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# OPS-16-01: clear-priority
+# ---------------------------------------------------------------------------
+
+
+class TestClearPriority:
+    """OPS-16-01: admin clear-priority deletes priority keys."""
+
+    @pytest.mark.asyncio
+    async def test_clear_priority__all__deletes_all_keys(self, r, capsys):
+        """clear-priority --all deletes all player:priority:* keys."""
+        await r.set("player:priority:p1", "1")
+        await r.set("player:priority:p2", "1")
+        await r.set("player:priority:p3", "1")
+        riot = RiotClient("RGAPI-test")
+        args = argparse.Namespace(all=True, riot_id=None, region="na1")
+        result = await cmd_clear_priority(r, riot, args)
+        await riot.close()
+        assert result == 0
+        assert await r.exists("player:priority:p1") == 0
+        assert await r.exists("player:priority:p2") == 0
+        assert await r.exists("player:priority:p3") == 0
+        output = capsys.readouterr().out
+        assert "deleted 3" in output
+
+    @pytest.mark.asyncio
+    async def test_clear_priority__all__no_keys__zero(self, r, capsys):
+        """clear-priority --all with no keys reports 0."""
+        riot = RiotClient("RGAPI-test")
+        args = argparse.Namespace(all=True, riot_id=None, region="na1")
+        result = await cmd_clear_priority(r, riot, args)
+        await riot.close()
+        assert result == 0
+        assert "deleted 0" in capsys.readouterr().out
+
+    @pytest.mark.asyncio
+    async def test_clear_priority__single_player__deletes_key(self, r, capsys):
+        """clear-priority <riot_id> deletes only that player's priority key."""
+        puuid = "test-puuid-prio-clear"
+        await r.set(f"player:priority:{puuid}", "1")
+        await r.set("player:priority:other", "1")
+
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1"
+                "/accounts/by-riot-id/Prio/NA1"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": puuid, "gameName": "Prio", "tagLine": "NA1"},
+                )
+            )
+            riot = RiotClient("RGAPI-test")
+            args = argparse.Namespace(all=False, riot_id="Prio#NA1", region="na1")
+            result = await cmd_clear_priority(r, riot, args)
+            await riot.close()
+
+        assert result == 0
+        assert await r.exists(f"player:priority:{puuid}") == 0
+        assert await r.exists("player:priority:other") == 1
+        assert "[OK]" in capsys.readouterr().out
+
+    @pytest.mark.asyncio
+    async def test_clear_priority__single_player__no_key__info(self, r, capsys):
+        """clear-priority <riot_id> when no priority key exists → info message."""
+        puuid = "test-puuid-noprio"
+
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1"
+                "/accounts/by-riot-id/NoKey/NA1"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": puuid, "gameName": "NoKey", "tagLine": "NA1"},
+                )
+            )
+            riot = RiotClient("RGAPI-test")
+            args = argparse.Namespace(all=False, riot_id="NoKey#NA1", region="na1")
+            result = await cmd_clear_priority(r, riot, args)
+            await riot.close()
+
+        assert result == 0
+        assert "no priority key" in capsys.readouterr().out
+
+    @pytest.mark.asyncio
+    async def test_clear_priority__no_args__returns_error(self, r, capsys):
+        """clear-priority with neither riot_id nor --all → error."""
+        riot = RiotClient("RGAPI-test")
+        args = argparse.Namespace(all=False, riot_id=None, region="na1")
+        result = await cmd_clear_priority(r, riot, args)
+        await riot.close()
+        assert result == 1
+        assert "specify a Riot ID or --all" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# OPS-16-07: delayed-list and delayed-flush
+# ---------------------------------------------------------------------------
+
+
+class TestDelayedList:
+    """OPS-16-07: admin delayed-list shows delayed:messages entries."""
+
+    @pytest.mark.asyncio
+    async def test_delayed_list__empty(self, r, capsys):
+        """Empty delayed:messages → info message."""
+        args = argparse.Namespace()
+        result = await cmd_delayed_list(r, args)
+        assert result == 0
+        assert "empty" in capsys.readouterr().out
+
+    @pytest.mark.asyncio
+    async def test_delayed_list__with_entries(self, r, capsys):
+        """delayed-list with entries → shows them with OK summary."""
+        now_ms = 1700000000000.0
+        await r.zadd("delayed:messages", {"member1": now_ms, "member2": now_ms + 60000})
+        args = argparse.Namespace()
+        result = await cmd_delayed_list(r, args)
+        assert result == 0
+        output = capsys.readouterr().out
+        assert "showing 2 of 2" in output
+        assert "member1" in output
+        assert "member2" in output
+
+
+class TestDelayedFlush:
+    """OPS-16-07: admin delayed-flush removes all delayed messages."""
+
+    @pytest.mark.asyncio
+    async def test_delayed_flush__deletes_all(self, r, capsys):
+        """delayed-flush --all → delayed:messages emptied."""
+        await r.zadd("delayed:messages", {"m1": 100, "m2": 200, "m3": 300})
+        args = argparse.Namespace(all=True, yes=True)
+        result = await cmd_delayed_flush(r, args)
+        assert result == 0
+        assert await r.exists("delayed:messages") == 0
+        output = capsys.readouterr().out
+        assert "flushed 3" in output
+
+    @pytest.mark.asyncio
+    async def test_delayed_flush__empty__info_message(self, r, capsys):
+        """delayed-flush --all on empty set → info message."""
+        args = argparse.Namespace(all=True, yes=True)
+        result = await cmd_delayed_flush(r, args)
+        assert result == 0
+        assert "empty" in capsys.readouterr().out
+
+    @pytest.mark.asyncio
+    async def test_delayed_flush__no_all__returns_error(self, r, capsys):
+        """delayed-flush without --all → error."""
+        args = argparse.Namespace(all=False, yes=True)
+        result = await cmd_delayed_flush(r, args)
+        assert result == 1
+        assert "--all is required" in capsys.readouterr().err
+
+    @pytest.mark.asyncio
+    async def test_delayed_flush__no_confirm__aborts(self, r, monkeypatch, capsys):
+        """delayed-flush --all without confirmation aborts."""
+        await r.zadd("delayed:messages", {"m1": 100})
+        monkeypatch.setattr("builtins.input", lambda _: "n")
+        args = argparse.Namespace(all=True, yes=False)
+        result = await cmd_delayed_flush(r, args)
+        assert result == 1
+        assert "aborted" in capsys.readouterr().out
+        # Entries remain
+        assert await r.zcard("delayed:messages") == 1
+
+
+# ---------------------------------------------------------------------------
+# Dispatch: new commands
+# ---------------------------------------------------------------------------
+
+
+class TestDispatchNewCommands:
+    """New commands dispatch correctly through _dispatch."""
+
+    @pytest.mark.asyncio
+    async def test_reset_stats_dispatches(self, monkeypatch):
+        """main(['admin', 'reset-stats', 'Faker#KR1']) dispatches command='reset-stats'."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_dispatch = AsyncMock(return_value=0)
+        with (
+            patch("lol_admin.main._dispatch", mock_dispatch),
+            patch("lol_admin.main.get_redis") as mock_redis,
+            patch("lol_admin.main.RiotClient") as mock_riot,
+        ):
+            mock_redis.return_value = AsyncMock()
+            mock_riot.return_value = AsyncMock()
+            result = await main(["admin", "reset-stats", "Faker#KR1"])
+        assert result == 0
+        args = mock_dispatch.call_args[0][3]
+        assert args.command == "reset-stats"
+        assert args.riot_id == "Faker#KR1"
+
+    @pytest.mark.asyncio
+    async def test_clear_priority_all_dispatches(self, monkeypatch):
+        """main(['admin', 'clear-priority', '--all']) dispatches correctly."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_dispatch = AsyncMock(return_value=0)
+        with (
+            patch("lol_admin.main._dispatch", mock_dispatch),
+            patch("lol_admin.main.get_redis") as mock_redis,
+            patch("lol_admin.main.RiotClient") as mock_riot,
+        ):
+            mock_redis.return_value = AsyncMock()
+            mock_riot.return_value = AsyncMock()
+            result = await main(["admin", "clear-priority", "--all"])
+        assert result == 0
+        args = mock_dispatch.call_args[0][3]
+        assert args.command == "clear-priority"
+        assert args.all is True
+
+    @pytest.mark.asyncio
+    async def test_delayed_list_dispatches(self, monkeypatch):
+        """main(['admin', 'delayed-list']) dispatches correctly."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_dispatch = AsyncMock(return_value=0)
+        with (
+            patch("lol_admin.main._dispatch", mock_dispatch),
+            patch("lol_admin.main.get_redis") as mock_redis,
+            patch("lol_admin.main.RiotClient") as mock_riot,
+        ):
+            mock_redis.return_value = AsyncMock()
+            mock_riot.return_value = AsyncMock()
+            result = await main(["admin", "delayed-list"])
+        assert result == 0
+        args = mock_dispatch.call_args[0][3]
+        assert args.command == "delayed-list"
+
+    @pytest.mark.asyncio
+    async def test_delayed_flush_dispatches(self, monkeypatch):
+        """main(['admin', 'delayed-flush', '--all']) dispatches correctly."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_dispatch = AsyncMock(return_value=0)
+        with (
+            patch("lol_admin.main._dispatch", mock_dispatch),
+            patch("lol_admin.main.get_redis") as mock_redis,
+            patch("lol_admin.main.RiotClient") as mock_riot,
+        ):
+            mock_redis.return_value = AsyncMock()
+            mock_riot.return_value = AsyncMock()
+            result = await main(["admin", "delayed-flush", "--all"])
+        assert result == 0
+        args = mock_dispatch.call_args[0][3]
+        assert args.command == "delayed-flush"
+        assert args.all is True
+
+    @pytest.mark.asyncio
+    async def test_dlq_archive_list_dispatches(self, monkeypatch):
+        """main(['admin', 'dlq', 'archive', 'list']) dispatches correctly."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_dispatch = AsyncMock(return_value=0)
+        with (
+            patch("lol_admin.main._dispatch", mock_dispatch),
+            patch("lol_admin.main.get_redis") as mock_redis,
+            patch("lol_admin.main.RiotClient") as mock_riot,
+        ):
+            mock_redis.return_value = AsyncMock()
+            mock_riot.return_value = AsyncMock()
+            result = await main(["admin", "dlq", "archive", "list"])
+        assert result == 0
+        args = mock_dispatch.call_args[0][3]
+        assert args.command == "dlq"
+        assert args.dlq_command == "archive"
+        assert args.archive_command == "list"
+
+    @pytest.mark.asyncio
+    async def test_dlq_archive_clear_dispatches(self, monkeypatch):
+        """main(['admin', 'dlq', 'archive', 'clear', '--all']) dispatches correctly."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_dispatch = AsyncMock(return_value=0)
+        with (
+            patch("lol_admin.main._dispatch", mock_dispatch),
+            patch("lol_admin.main.get_redis") as mock_redis,
+            patch("lol_admin.main.RiotClient") as mock_riot,
+        ):
+            mock_redis.return_value = AsyncMock()
+            mock_riot.return_value = AsyncMock()
+            result = await main(["admin", "dlq", "archive", "clear", "--all"])
+        assert result == 0
+        args = mock_dispatch.call_args[0][3]
+        assert args.command == "dlq"
+        assert args.dlq_command == "archive"
+        assert args.archive_command == "clear"
+        assert args.all is True
+
+    @pytest.mark.asyncio
+    async def test_yes_flag_passed_through(self, monkeypatch):
+        """main(['admin', '-y', 'system-halt']) passes yes=True to args."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_dispatch = AsyncMock(return_value=0)
+        with (
+            patch("lol_admin.main._dispatch", mock_dispatch),
+            patch("lol_admin.main.get_redis") as mock_redis,
+            patch("lol_admin.main.RiotClient") as mock_riot,
+        ):
+            mock_redis.return_value = AsyncMock()
+            mock_riot.return_value = AsyncMock()
+            result = await main(["admin", "-y", "system-halt"])
+        assert result == 0
+        args = mock_dispatch.call_args[0][3]
+        assert args.yes is True
+
+
+# ---------------------------------------------------------------------------
+# Sprint 4: backfill-champions
+# ---------------------------------------------------------------------------
+
+try:
+    import lupa  # noqa: F401
+
+    _LUPA_AVAILABLE = True
+except ImportError:
+    _LUPA_AVAILABLE = False
+
+
+class TestBackfillChampionsNoMatches:
+    """Empty match:status:parsed → nothing to backfill."""
+
+    @pytest.mark.asyncio
+    async def test_backfill_champions_no_matches(self, r, cfg, capsys):
+        """No parsed matches → info message, returns 0."""
+        args = argparse.Namespace()
+        from lol_admin.main import cmd_backfill_champions
+
+        result = await cmd_backfill_champions(r, cfg, args)
+        assert result == 0
+        assert "No matches to backfill" in capsys.readouterr().out
+
+
+class TestBackfillChampionsProcessesRanked:
+    """Ranked match (queue_id=420) gets processed."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not _LUPA_AVAILABLE, reason="lupa required for Lua scripts")
+    async def test_backfill_champions_processes_ranked(self, r, cfg, capsys):
+        """Ranked match with participants populates champion stats."""
+        from lol_admin.main import cmd_backfill_champions
+
+        # Seed a parsed ranked match
+        await r.sadd("match:status:parsed", "NA1_100")
+        await r.hset(
+            "match:NA1_100",
+            mapping={
+                "queue_id": "420",
+                "patch": "14.5",
+                "game_start": "1710000000000",
+                "game_mode": "CLASSIC",
+            },
+        )
+        await r.hset(
+            "participant:NA1_100:puuid-1",
+            mapping={
+                "champion_name": "Zed",
+                "team_position": "MID",
+                "win": "1",
+                "kills": "10",
+                "deaths": "3",
+                "assists": "5",
+                "gold_earned": "15000",
+                "total_minions_killed": "200",
+                "total_damage_dealt_to_champions": "25000",
+                "vision_score": "30",
+                "double_kills": "2",
+                "triple_kills": "1",
+                "quadra_kills": "0",
+                "penta_kills": "0",
+            },
+        )
+        args = argparse.Namespace()
+        result = await cmd_backfill_champions(r, cfg, args)
+        assert result == 0
+        output = capsys.readouterr().out
+        assert "Backfilled champion stats from 1 ranked" in output
+        # Verify champion stats were written
+        stats = await r.hgetall("champion:stats:Zed:14.5:MID")
+        assert stats["games"] == "1"
+        assert stats["wins"] == "1"
+        assert stats["kills"] == "10"
+        assert stats["deaths"] == "3"
+        assert stats["assists"] == "5"
+        # Verify champion index
+        score = await r.zscore("champion:index:14.5", "Zed:MID")
+        assert score is not None
+        assert score == 1.0
+        # Verify patch list
+        assert await r.zscore("patch:list", "14.5") is not None
+        # Verify backfill done tracking
+        assert await r.sismember("champion:backfill:done", "NA1_100")
+
+
+class TestBackfillChampionsSkipsNonRanked:
+    """Non-ranked match skipped."""
+
+    @pytest.mark.asyncio
+    async def test_backfill_champions_skips_non_ranked(self, r, cfg, capsys):
+        """Match with queue_id != 420 is skipped."""
+        from lol_admin.main import cmd_backfill_champions
+
+        await r.sadd("match:status:parsed", "NA1_200")
+        await r.hset(
+            "match:NA1_200",
+            mapping={
+                "queue_id": "450",  # ARAM
+                "patch": "14.5",
+                "game_start": "1710000000000",
+            },
+        )
+        await r.hset(
+            "participant:NA1_200:puuid-2",
+            mapping={
+                "champion_name": "Ahri",
+                "team_position": "MID",
+                "win": "0",
+                "kills": "5",
+                "deaths": "7",
+                "assists": "10",
+            },
+        )
+        args = argparse.Namespace()
+        result = await cmd_backfill_champions(r, cfg, args)
+        assert result == 0
+        output = capsys.readouterr().out
+        assert "Backfilled champion stats from 0 ranked" in output
+        # No champion stats should exist
+        assert await r.exists("champion:stats:Ahri:14.5:MID") == 0
+
+
+class TestBackfillChampionsIdempotent:
+    """Second run skips already-done matches."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not _LUPA_AVAILABLE, reason="lupa required for Lua scripts")
+    async def test_backfill_champions_idempotent(self, r, cfg, capsys):
+        """Second run with same parsed matches does nothing."""
+        from lol_admin.main import cmd_backfill_champions
+
+        await r.sadd("match:status:parsed", "NA1_300")
+        await r.hset(
+            "match:NA1_300",
+            mapping={
+                "queue_id": "420",
+                "patch": "14.5",
+                "game_start": "1710000000000",
+            },
+        )
+        await r.hset(
+            "participant:NA1_300:puuid-3",
+            mapping={
+                "champion_name": "Yasuo",
+                "team_position": "MID",
+                "win": "1",
+                "kills": "8",
+                "deaths": "4",
+                "assists": "6",
+                "gold_earned": "12000",
+                "total_minions_killed": "180",
+                "total_damage_dealt_to_champions": "20000",
+                "vision_score": "25",
+                "double_kills": "1",
+                "triple_kills": "0",
+                "quadra_kills": "0",
+                "penta_kills": "0",
+            },
+        )
+        # First run
+        args = argparse.Namespace()
+        result = await cmd_backfill_champions(r, cfg, args)
+        assert result == 0
+        first_output = capsys.readouterr().out
+        assert "1 ranked" in first_output
+        # Verify stats after first run
+        stats1 = await r.hgetall("champion:stats:Yasuo:14.5:MID")
+        assert stats1["games"] == "1"
+        # Second run — same matches already done
+        result2 = await cmd_backfill_champions(r, cfg, args)
+        assert result2 == 0
+        second_output = capsys.readouterr().out
+        assert "No matches to backfill" in second_output
+        # Stats should NOT have doubled
+        stats2 = await r.hgetall("champion:stats:Yasuo:14.5:MID")
+        assert stats2["games"] == "1"

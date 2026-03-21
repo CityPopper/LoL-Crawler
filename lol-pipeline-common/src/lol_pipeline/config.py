@@ -23,3 +23,20 @@ class Config(BaseSettings):
     match_data_dir: str = ""  # if set, raw match JSON is also persisted to disk
     discovery_poll_interval_ms: int = Field(default=5000, ge=1)
     discovery_batch_size: int = Field(default=10, ge=1)
+    match_data_ttl_seconds: int = Field(default=604800, ge=1)
+    max_discover_players: int = Field(default=50000, ge=1)
+    players_all_max: int = Field(default=50000, ge=1)
+    player_matches_max: int = Field(default=500, ge=1)
+    match_id_backpressure_threshold: int = Field(default=5000, ge=0)
+    log_dir: str = ""
+    # Rank data
+    fetch_rank_on_crawl: bool = True  # fetch league-v4 rank after crawling
+    # Timeline
+    fetch_timeline: bool = False  # fetch match timeline (doubles API usage)
+    # Matchup / ban tracking
+    track_matchups: bool = True  # compute head-to-head lane matchup stats
+    track_bans: bool = True  # track champion ban rates
+    # Dedup
+    seen_matches_ttl_seconds: int = Field(default=604800, ge=1)  # 7 days
+    # Activity-rate discovery
+    activity_rate_weight: float = Field(default=1.0, ge=0.0)  # weight for activity rate in discovery scoring

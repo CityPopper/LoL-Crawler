@@ -19,8 +19,6 @@ from lol_pipeline.riot_api import AuthError, NotFoundError, RateLimitError, Riot
 from lol_pipeline.service import run_consumer
 from lol_pipeline.streams import ack, nack_to_dlq, publish
 
-MATCH_DATA_TTL_SECONDS: int = int(os.getenv("MATCH_DATA_TTL_SECONDS", "604800"))
-
 _IN_STREAM = "stream:match_id"
 _OUT_STREAM = "stream:parse"
 _GROUP = "fetchers"
@@ -60,7 +58,9 @@ async def _fetch_match(
         return
 
     try:
-        await wait_for_token(r, limit_per_second=cfg.api_rate_limit_per_second)
+        await wait_for_token(
+            r, limit_per_second=cfg.api_rate_limit_per_second, region=region,
+        )
         data = await riot.get_match(match_id, region)
     except TimeoutError:
         log.warning(
@@ -70,7 +70,7 @@ async def _fetch_match(
         return
     except NotFoundError:
         await r.hset(f"match:{match_id}", mapping={"status": "not_found"})  # type: ignore[misc]
-        await r.expire(f"match:{match_id}", MATCH_DATA_TTL_SECONDS)
+        await r.expire(f"match:{match_id}", cfg.match_data_ttl_seconds)
         await ack(r, _IN_STREAM, _GROUP, msg_id)
         log.info("match not found — discarding", extra={"match_id": match_id})
         return
@@ -103,7 +103,30 @@ async def _fetch_match(
 
     await raw_store.set(match_id, json.dumps(data))
     await r.hset(f"match:{match_id}", mapping={"status": "fetched"})  # type: ignore[misc]
-    await r.expire(f"match:{match_id}", MATCH_DATA_TTL_SECONDS)
+    await r.expire(f"match:{match_id}", cfg.match_data_ttl_seconds)
+
+    # Global dedup: mark match as seen.
+    # Only set TTL when none exists (ttl < 0) to avoid resetting expiry on every write.
+    await r.sadd("seen:matches", match_id)
+    ttl = await r.ttl("seen:matches")
+    if ttl < 0:
+        await r.expire("seen:matches", cfg.seen_matches_ttl_seconds)
+
+    # Timeline fetch (non-critical, doubles API usage)
+    if cfg.fetch_timeline:
+        try:
+            await wait_for_token(
+                r, limit_per_second=cfg.api_rate_limit_per_second, region=region,
+            )
+            timeline = await riot.get_match_timeline(match_id, region)
+            timeline_json = json.dumps(timeline)
+            await r.set(f"raw:timeline:{match_id}", timeline_json, ex=cfg.match_data_ttl_seconds)
+        except Exception:
+            log.debug(
+                "timeline fetch failed — non-critical",
+                extra={"match_id": match_id},
+                exc_info=True,
+            )
 
     out = MessageEnvelope(
         source_stream=_OUT_STREAM,

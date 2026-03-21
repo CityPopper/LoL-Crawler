@@ -18,7 +18,9 @@ from lol_pipeline.riot_api import (
 from lol_ui.main import (
     _AUTOSEED_COOLDOWN_S,
     _BADGE_VARIANTS,
+    _CHAMPION_ROLES,
     _CSS,
+    _DDRAGON_CHAMPION_IDS_KEY,
     _HALT_BANNER,
     _NAME_CACHE_INDEX,
     _NAME_CACHE_MAX,
@@ -30,9 +32,11 @@ from lol_ui.main import (
     _badge,
     _badge_html,
     _champion_icon_html,
+    _champion_tier_table,
     _depth_badge,
     _empty_state,
     _format_stat_value,
+    _get_champion_id_map,
     _match_history_html,
     _match_history_section,
     _merged_log_lines,
@@ -111,6 +115,7 @@ class TestPage:
     def test_contains_navigation_links(self):
         result = _page("X", "")
         assert "/stats" in result
+        assert "/champions" in result
         assert "/players" in result
         assert "/streams" in result
         assert "/logs" in result
@@ -730,10 +735,10 @@ class TestAutoSeedPriority:
 
         await show_stats(request)
 
-        # Check envelope in stream has priority=high
+        # Check envelope in stream has priority=manual_20
         entries = await r.xrange("stream:puuid")
         assert len(entries) == 1
-        assert entries[0][1]["priority"] == "high"
+        assert entries[0][1]["priority"] == "manual_20"
 
         # Check priority key was set
         assert await r.get("player:priority:test-puuid-ui") == "1"
@@ -775,11 +780,18 @@ class TestAutoSeedOrdering:
 
         call_order: list[str] = []
 
+        mock_seed_pipe = AsyncMock()
+        mock_seed_pipe.execute.return_value = [None, None, None]
+
+        mock_seed_ctx = MagicMock()
+        mock_seed_ctx.__aenter__ = AsyncMock(return_value=mock_seed_pipe)
+        mock_seed_ctx.__aexit__ = AsyncMock(return_value=False)
+
         mock_r = AsyncMock()
         mock_r.get.return_value = None  # no system:halted, no cached puuid
-        mock_r.hget.return_value = None  # no existing seeded_at
         mock_r.hgetall.return_value = {}  # no stats
         mock_r.set.return_value = True
+        mock_r.pipeline = MagicMock(return_value=mock_seed_ctx)
 
         original_hset = mock_r.hset
 
@@ -1084,12 +1096,12 @@ class TestPlayersPageCount:
 class TestStatsHeading:
     """Sprint 2.1: /stats heading shows Riot ID name only (no PUUID)."""
 
-    def _make_mock_r(self, *, puuid: str, stats: dict, priority_key=None, champs=None, roles=None):
+    def _make_mock_r(self, *, puuid: str, stats: dict, priority_key=None, champs=None, roles=None, rank=None):
         """Build an AsyncMock Redis client that supports the pipeline context manager."""
         from unittest.mock import AsyncMock, MagicMock
 
         mock_pipe = AsyncMock()
-        mock_pipe.execute.return_value = [priority_key, champs or [], roles or []]
+        mock_pipe.execute.return_value = [priority_key, champs or [], roles or [], rank or {}]
 
         mock_pipeline_ctx = MagicMock()
         mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
@@ -1441,7 +1453,7 @@ class TestNameCacheTTLInUI:
         from lol_ui.main import show_stats
 
         mock_pipe = AsyncMock()
-        mock_pipe.execute.return_value = [None, [], []]  # priority_key, champs, roles
+        mock_pipe.execute.return_value = [None, [], [], {}]  # priority_key, champs, roles, rank
 
         mock_pipeline_ctx = MagicMock()
         mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
@@ -1534,7 +1546,7 @@ class TestPriorityBadge:
         from lol_ui.main import show_stats
 
         mock_pipe = AsyncMock()
-        mock_pipe.execute.return_value = ["high", [], []]  # priority_key, champs, roles
+        mock_pipe.execute.return_value = ["high", [], [], {}]  # priority_key, champs, roles, rank
 
         mock_pipeline_ctx = MagicMock()
         mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
@@ -1568,7 +1580,7 @@ class TestPriorityBadge:
         from lol_ui.main import show_stats
 
         mock_pipe = AsyncMock()
-        mock_pipe.execute.return_value = [None, [], []]  # priority_key, champs, roles
+        mock_pipe.execute.return_value = [None, [], [], {}]  # priority_key, champs, roles, rank
 
         mock_pipeline_ctx = MagicMock()
         mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
@@ -2360,7 +2372,7 @@ class TestRateLimitBeforeRiotCall:
         call_order: list[str] = []
 
         mock_pipe = AsyncMock()
-        mock_pipe.execute.return_value = [None, [], []]
+        mock_pipe.execute.return_value = [None, [], [], {}]
 
         mock_pipeline_ctx = MagicMock()
         mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
@@ -2413,7 +2425,7 @@ class TestRateLimitBeforeRiotCall:
         from lol_ui.main import show_stats
 
         mock_pipe = AsyncMock()
-        mock_pipe.execute.return_value = [None, [], []]
+        mock_pipe.execute.return_value = [None, [], [], {}]
 
         mock_pipeline_ctx = MagicMock()
         mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
@@ -2449,7 +2461,7 @@ class TestRateLimitBeforeRiotCall:
         from lol_ui.main import show_stats
 
         mock_pipe = AsyncMock()
-        mock_pipe.execute.return_value = [None, [], []]
+        mock_pipe.execute.return_value = [None, [], [], {}]
 
         mock_pipeline_ctx = MagicMock()
         mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
@@ -2713,15 +2725,21 @@ class TestAutoSeedCooldown:
 
         from lol_ui.main import show_stats
 
+        mock_seed_pipe = AsyncMock()
+        mock_seed_pipe.execute.return_value = [None, "1", None]
+
+        mock_seed_ctx = MagicMock()
+        mock_seed_ctx.__aenter__ = AsyncMock(return_value=mock_seed_pipe)
+        mock_seed_ctx.__aexit__ = AsyncMock(return_value=False)
+
         mock_r = AsyncMock()
         mock_r.get.side_effect = lambda key: {
             "player:name:blocked#na1": "blocked-puuid-123",
             "system:halted": None,
             "player:priority:blocked-puuid-123": None,
-            "autoseed:cooldown:blocked-puuid-123": "1",
         }.get(key)
         mock_r.hgetall.return_value = {}  # no stats, triggers auto-seed path
-        mock_r.hget.return_value = None  # no seeded_at
+        mock_r.pipeline = MagicMock(return_value=mock_seed_ctx)
 
         request = MagicMock()
         request.query_params = {"riot_id": "Blocked#NA1", "region": "na1"}
@@ -2743,16 +2761,22 @@ class TestAutoSeedCooldown:
 
         from lol_ui.main import show_stats
 
+        mock_seed_pipe = AsyncMock()
+        mock_seed_pipe.execute.return_value = [None, None, None]
+
+        mock_seed_ctx = MagicMock()
+        mock_seed_ctx.__aenter__ = AsyncMock(return_value=mock_seed_pipe)
+        mock_seed_ctx.__aexit__ = AsyncMock(return_value=False)
+
         mock_r = AsyncMock()
         mock_r.get.side_effect = lambda key: {
             "player:name:proceed#na1": "proceed-puuid-456",
             "system:halted": None,
             "player:priority:proceed-puuid-456": None,
-            "autoseed:cooldown:proceed-puuid-456": None,
         }.get(key)
         mock_r.hgetall.return_value = {}  # no stats
-        mock_r.hget.return_value = None  # no seeded_at
         mock_r.set.return_value = True
+        mock_r.pipeline = MagicMock(return_value=mock_seed_ctx)
 
         request = MagicMock()
         request.query_params = {"riot_id": "Proceed#NA1", "region": "na1"}
@@ -3353,11 +3377,13 @@ class TestHaltBannerLogs:
 
         from unittest.mock import MagicMock
 
+        mock_cfg = MagicMock()
+        mock_cfg.log_dir = ""
         request = MagicMock()
         request.app.state.r = r
+        request.app.state.cfg = mock_cfg
 
-        with patch.dict("os.environ", {"LOG_DIR": ""}):
-            resp = await show_logs(request)
+        resp = await show_logs(request)
         body = resp.body.decode()
 
         assert "HALTED" in body
@@ -3374,11 +3400,13 @@ class TestHaltBannerLogs:
 
         from unittest.mock import MagicMock
 
+        mock_cfg = MagicMock()
+        mock_cfg.log_dir = ""
         request = MagicMock()
         request.app.state.r = r
+        request.app.state.cfg = mock_cfg
 
-        with patch.dict("os.environ", {"LOG_DIR": ""}):
-            resp = await show_logs(request)
+        resp = await show_logs(request)
         body = resp.body.decode()
 
         assert "HALTED" not in body
@@ -3400,11 +3428,13 @@ class TestHaltBannerLogs:
 
         from unittest.mock import MagicMock
 
+        mock_cfg = MagicMock()
+        mock_cfg.log_dir = str(tmp_path)
         request = MagicMock()
         request.app.state.r = r
+        request.app.state.cfg = mock_cfg
 
-        with patch.dict("os.environ", {"LOG_DIR": str(tmp_path)}):
-            resp = await show_logs(request)
+        resp = await show_logs(request)
         body = resp.body.decode()
 
         assert "HALTED" in body
@@ -3543,7 +3573,7 @@ class TestDlqReplayButton:
         resp = await show_dlq(request)
         body = resp.body.decode()
 
-        assert "<th>Action</th>" in body
+        assert "Action</th>" in body
         await r.aclose()
 
 
@@ -3817,13 +3847,14 @@ class TestDlqPagination:
         await r.aclose()
 
     @pytest.mark.asyncio
-    async def test_dlq__page1_shows_remaining(self):
+    async def test_dlq__cursor_shows_remaining(self):
         import fakeredis.aioredis
         from lol_pipeline.models import DLQEnvelope
 
         from lol_ui.main import show_dlq
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        entry_ids = []
         for i in range(30):
             dlq = DLQEnvelope(
                 source_stream="stream:dlq",
@@ -3837,21 +3868,21 @@ class TestDlqPagination:
                 original_stream="stream:match_id",
                 original_message_id=f"orig-{i}",
             )
-            await r.xadd("stream:dlq", dlq.to_redis_fields())
+            eid = await r.xadd("stream:dlq", dlq.to_redis_fields())
+            entry_ids.append(eid)
 
         from unittest.mock import MagicMock
 
         request = MagicMock()
         request.app.state.r = r
-        request.query_params = {"page": "1"}
+        request.query_params = {"cursor": entry_ids[25]}
 
         resp = await show_dlq(request)
         body = resp.body.decode()
 
-        # 30 entries, page 0 shows 25, page 1 shows 5
         row_count = body.count("<tr><td>")
         assert row_count == 5
-        assert "Prev" in body
+        assert "Next" not in body
         await r.aclose()
 
     @pytest.mark.asyncio
@@ -3928,7 +3959,7 @@ class TestDlqPagination:
         await r.aclose()
 
     @pytest.mark.asyncio
-    async def test_dlq__prev_next_links_include_per_page(self):
+    async def test_dlq__next_link_includes_cursor_and_per_page(self):
         import fakeredis.aioredis
         from lol_pipeline.models import DLQEnvelope
 
@@ -3954,13 +3985,13 @@ class TestDlqPagination:
 
         request = MagicMock()
         request.app.state.r = r
-        request.query_params = {"page": "1", "per_page": "5"}
+        request.query_params = {"per_page": "5"}
 
         resp = await show_dlq(request)
         body = resp.body.decode()
 
         assert "per_page=5" in body
-        assert "Prev" in body
+        assert "cursor=" in body
         assert "Next" in body
         await r.aclose()
 
@@ -3995,7 +4026,8 @@ class TestDlqPagination:
         resp = await show_dlq(request)
         body = resp.body.decode()
 
-        assert "entries per page" in body
+        assert "per page" in body
+        assert "Total entries:" in body
         await r.aclose()
 
 
@@ -4077,9 +4109,15 @@ class TestAutoSeedPriorityBeforePublish:
 
         call_order: list[str] = []
 
+        mock_pipe = AsyncMock()
+        mock_pipe.execute.return_value = [None, None, None]
+
+        mock_pipeline_ctx = MagicMock()
+        mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
+        mock_pipeline_ctx.__aexit__ = AsyncMock(return_value=False)
+
         mock_r = AsyncMock()
-        mock_r.get.return_value = None  # no halted, no cooldown
-        mock_r.hget.return_value = None  # no existing seeded_at
+        mock_r.pipeline = MagicMock(return_value=mock_pipeline_ctx)
         mock_r.set.return_value = True
 
         mock_cfg = MagicMock()
@@ -4116,9 +4154,15 @@ class TestAutoSeedWritesPlayersAll:
 
         from lol_ui.main import _auto_seed_player
 
+        mock_pipe = AsyncMock()
+        mock_pipe.execute.return_value = [None, None, None]
+
+        mock_pipeline_ctx = MagicMock()
+        mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
+        mock_pipeline_ctx.__aexit__ = AsyncMock(return_value=False)
+
         mock_r = AsyncMock()
-        mock_r.get.return_value = None
-        mock_r.hget.return_value = None
+        mock_r.pipeline = MagicMock(return_value=mock_pipeline_ctx)
         mock_r.set.return_value = True
 
         mock_cfg = MagicMock()
@@ -4468,12 +4512,19 @@ class TestLogsAsyncIo:
     @pytest.mark.asyncio
     async def test_logs_fragment__calls_merged_log_lines_in_thread(self, tmp_path):
         """logs_fragment wraps _merged_log_lines in asyncio.to_thread."""
+        from unittest.mock import MagicMock
+
         from lol_ui.main import logs_fragment
 
         log_file = tmp_path / "svc.log"
         log_file.write_text(
             json.dumps({"timestamp": "2026-01-01T00:00:00", "message": "test"}) + "\n"
         )
+
+        mock_cfg = MagicMock()
+        mock_cfg.log_dir = str(tmp_path)
+        request = MagicMock()
+        request.app.state.cfg = mock_cfg
 
         call_tracker: dict[str, object] = {"called": False, "func": None}
         original_to_thread = __import__("asyncio").to_thread
@@ -4483,12 +4534,9 @@ class TestLogsAsyncIo:
             call_tracker["func"] = func.__name__ if hasattr(func, "__name__") else str(func)
             return await original_to_thread(func, *args, **kwargs)
 
-        with (
-            patch.dict("os.environ", {"LOG_DIR": str(tmp_path)}),
-            patch("lol_ui.main.asyncio") as mock_asyncio,
-        ):
+        with patch("lol_ui.main.asyncio") as mock_asyncio:
             mock_asyncio.to_thread = tracking_to_thread
-            await logs_fragment()
+            await logs_fragment(request)
 
         assert call_tracker["called"], "asyncio.to_thread was not called in logs_fragment"
         assert call_tracker["func"] == "_merged_log_lines"
@@ -4509,8 +4557,11 @@ class TestLogsAsyncIo:
 
         from unittest.mock import MagicMock
 
+        mock_cfg = MagicMock()
+        mock_cfg.log_dir = str(tmp_path)
         request = MagicMock()
         request.app.state.r = r
+        request.app.state.cfg = mock_cfg
 
         call_tracker: dict[str, object] = {"called": False, "func": None}
         original_to_thread = __import__("asyncio").to_thread
@@ -4520,13 +4571,750 @@ class TestLogsAsyncIo:
             call_tracker["func"] = func.__name__ if hasattr(func, "__name__") else str(func)
             return await original_to_thread(func, *args, **kwargs)
 
-        with (
-            patch.dict("os.environ", {"LOG_DIR": str(tmp_path)}),
-            patch("lol_ui.main.asyncio") as mock_asyncio,
-        ):
+        with patch("lol_ui.main.asyncio") as mock_asyncio:
             mock_asyncio.to_thread = tracking_to_thread
             await show_logs(request)
 
         assert call_tracker["called"], "asyncio.to_thread was not called in show_logs"
         assert call_tracker["func"] == "_merged_log_lines"
+        await r.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Sprint 3: Champion Pages
+# ---------------------------------------------------------------------------
+
+
+class TestChampionsPageEmpty:
+    """No patch:list data shows empty state."""
+
+    @pytest.mark.asyncio
+    async def test_champions_page_empty(self):
+        """No champion data → empty state message."""
+        from unittest.mock import MagicMock
+
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_champions
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {}
+
+        resp = await show_champions(request)
+        body = resp.body.decode()
+
+        assert "No champion data yet" in body
+        assert "empty-state" in body
+        await r.aclose()
+
+
+class TestChampionsPageWithData:
+    """Mock champion data → verify table renders."""
+
+    @pytest.mark.asyncio
+    async def test_champions_page_with_data(self):
+        """Champion data exists → table with champion names renders."""
+        from unittest.mock import MagicMock
+
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_champions
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        # Seed patch:list
+        await r.zadd("patch:list", {"14.5": 1710000000})
+        # Seed champion index
+        await r.zadd("champion:index:14.5", {"Zed:MID": 50, "Ahri:MID": 40})
+        # Seed champion stats
+        await r.hset(
+            "champion:stats:Zed:14.5:MID",
+            mapping={
+                "games": "50", "wins": "28", "kills": "400",
+                "deaths": "200", "assists": "150", "cs": "10000",
+                "gold": "500000", "damage": "750000", "vision": "500",
+            },
+        )
+        await r.hset(
+            "champion:stats:Ahri:14.5:MID",
+            mapping={
+                "games": "40", "wins": "22", "kills": "300",
+                "deaths": "160", "assists": "200", "cs": "8000",
+                "gold": "400000", "damage": "600000", "vision": "400",
+            },
+        )
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {}
+
+        resp = await show_champions(request)
+        body = resp.body.decode()
+
+        assert "Zed" in body
+        assert "Ahri" in body
+        assert "MID" in body
+        assert "<thead>" in body
+        assert "<tbody>" in body
+        assert 'scope="col"' in body
+        assert "Win Rate" in body
+        assert "Games" in body
+        await r.aclose()
+
+
+class TestChampionsPageRoleFilter:
+    """Only shows filtered role."""
+
+    @pytest.mark.asyncio
+    async def test_champions_page_role_filter(self):
+        """Role filter TOP hides MID champions."""
+        from unittest.mock import MagicMock
+
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_champions
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.zadd("patch:list", {"14.5": 1710000000})
+        await r.zadd("champion:index:14.5", {"Zed:MID": 50, "Garen:TOP": 30})
+        await r.hset(
+            "champion:stats:Zed:14.5:MID",
+            mapping={"games": "50", "wins": "25", "kills": "200",
+                     "deaths": "100", "assists": "100", "cs": "5000"},
+        )
+        await r.hset(
+            "champion:stats:Garen:14.5:TOP",
+            mapping={"games": "30", "wins": "18", "kills": "120",
+                     "deaths": "80", "assists": "50", "cs": "4000"},
+        )
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {"role": "TOP"}
+
+        resp = await show_champions(request)
+        body = resp.body.decode()
+
+        assert "Garen" in body
+        # Zed is MID, should not appear in TOP filter
+        assert "Zed" not in body
+        await r.aclose()
+
+
+class TestChampionsPagePatchSelector:
+    """Defaults to latest patch."""
+
+    @pytest.mark.asyncio
+    async def test_champions_page_patch_selector(self):
+        """Without patch param, uses latest (highest score) patch."""
+        from unittest.mock import MagicMock
+
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_champions
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.zadd("patch:list", {"14.4": 1709000000, "14.5": 1710000000})
+        await r.zadd("champion:index:14.5", {"Zed:MID": 10})
+        await r.hset(
+            "champion:stats:Zed:14.5:MID",
+            mapping={"games": "10", "wins": "5", "kills": "50",
+                     "deaths": "30", "assists": "20", "cs": "1000"},
+        )
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {}
+
+        resp = await show_champions(request)
+        body = resp.body.decode()
+
+        # Should show 14.5 (latest), not 14.4
+        assert "Patch 14.5" in body
+        assert "Zed" in body
+        await r.aclose()
+
+
+class TestChampionDetailPage:
+    """Shows single champion stats."""
+
+    @pytest.mark.asyncio
+    async def test_champion_detail_page(self):
+        """Detail page for Zed shows stats table and patch history."""
+        from unittest.mock import MagicMock
+
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_champion_detail
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.zadd("patch:list", {"14.5": 1710000000, "14.4": 1709000000})
+        await r.zadd("champion:index:14.5", {"Zed:MID": 50})
+        await r.hset(
+            "champion:stats:Zed:14.5:MID",
+            mapping={
+                "games": "50", "wins": "28", "kills": "400",
+                "deaths": "200", "assists": "150", "cs": "10000",
+                "gold": "500000", "damage": "750000", "vision": "500",
+                "double_kills": "20", "triple_kills": "5",
+                "quadra_kills": "1", "penta_kills": "0",
+            },
+        )
+        await r.hset(
+            "champion:stats:Zed:14.4:MID",
+            mapping={
+                "games": "30", "wins": "15", "kills": "200",
+                "deaths": "120", "assists": "80", "cs": "6000",
+                "gold": "300000", "damage": "400000", "vision": "300",
+            },
+        )
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {"patch": "14.5", "role": "MID"}
+
+        resp = await show_champion_detail(request, "Zed")
+        body = resp.body.decode()
+
+        assert "Zed" in body
+        assert "MID" in body
+        assert "Win Rate" in body
+        assert "56.0%" in body  # 28/50
+        assert "Patch History" in body
+        assert "14.4" in body
+        assert "14.5" in body
+        assert "Double Kills" in body
+        assert '<thead>' in body
+        assert 'scope="col"' in body
+        await r.aclose()
+
+
+class TestChampionDetailNotFound:
+    """Unknown champion shows empty state."""
+
+    @pytest.mark.asyncio
+    async def test_champion_detail_not_found(self):
+        """Non-existent champion → empty state."""
+        from unittest.mock import MagicMock
+
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_champion_detail
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.zadd("patch:list", {"14.5": 1710000000})
+        # No champion index entries for "FakeChamp"
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {}
+
+        resp = await show_champion_detail(request, "FakeChamp")
+        body = resp.body.decode()
+
+        assert "No data for FakeChamp" in body
+        assert "empty-state" in body
+        await r.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Rank display on stats page
+# ---------------------------------------------------------------------------
+
+
+class TestStatsPageRankDisplay:
+    """Rank data from player:rank:{puuid} is shown on the stats page."""
+
+    @pytest.mark.asyncio
+    async def test_stats_page__shows_rank_when_available(self):
+        """When player:rank:{puuid} exists, tier/division/LP/W/L are rendered."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from lol_ui.main import _build_stats_response
+
+        import fakeredis.aioredis
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        puuid = "rank-test-puuid"
+        await r.hset(
+            f"player:rank:{puuid}",
+            mapping={
+                "tier": "GOLD",
+                "division": "II",
+                "lp": "47",
+                "wins": "120",
+                "losses": "115",
+            },
+        )
+        # Set up pipeline data (priority, champs, roles)
+        await r.zadd(f"player:champions:{puuid}", {"Zed": 15.0})
+        await r.zadd(f"player:roles:{puuid}", {"MID": 20.0})
+
+        stats = {"total_games": "235", "win_rate": "0.511"}
+        resp = await _build_stats_response(
+            r, puuid, "TestPlayer", "NA1", "na1", "TestPlayer#NA1", stats
+        )
+        body = resp.body.decode()
+
+        assert "Ranked Solo/Duo" in body
+        assert "GOLD" in body
+        assert "II" in body
+        assert "47 LP" in body
+        assert "120W" in body
+        assert "115L" in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_stats_page__no_rank_still_renders(self):
+        """When player:rank:{puuid} does not exist, page still renders without rank card."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from lol_ui.main import _build_stats_response
+
+        import fakeredis.aioredis
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        puuid = "no-rank-puuid"
+
+        stats = {"total_games": "10"}
+        resp = await _build_stats_response(
+            r, puuid, "NoRank", "NA1", "na1", "NoRank#NA1", stats
+        )
+        body = resp.body.decode()
+
+        assert "Ranked Solo/Duo" not in body
+        # Page still renders stats
+        assert "Stats for NoRank#NA1" in body
+        await r.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Matchups page
+# ---------------------------------------------------------------------------
+
+
+class TestMatchupsPage:
+    """The /matchups page shows a form and matchup data."""
+
+    @pytest.mark.asyncio
+    async def test_matchups_page__form_shown_without_params(self):
+        """When no champion params are provided, the search form is rendered."""
+        from unittest.mock import MagicMock
+
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_matchups
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {}
+
+        resp = await show_matchups(request)
+        body = resp.body.decode()
+
+        assert "Champion Matchups" in body
+        assert "Champion A" in body
+        assert "Champion B" in body
+        assert "Compare" in body
+        assert "form" in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_matchups_page__shows_data_when_available(self):
+        """When matchup data exists, win rates are shown for both champions."""
+        from unittest.mock import MagicMock
+
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_matchups
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.zadd("patch:list", {"14.5": 1710000000})
+        await r.hset(
+            "matchup:Jinx:Caitlyn:BOTTOM:14.5",
+            mapping={"games": "100", "wins": "55"},
+        )
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {
+            "champ_a": "Jinx",
+            "champ_b": "Caitlyn",
+            "role": "BOTTOM",
+            "patch": "14.5",
+        }
+
+        resp = await show_matchups(request)
+        body = resp.body.decode()
+
+        assert "Jinx" in body
+        assert "Caitlyn" in body
+        assert "100" in body  # games count
+        assert "55.0%" in body  # Jinx win rate
+        assert "45.0%" in body  # Caitlyn win rate
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_matchups_page__no_data_shows_empty_state(self):
+        """When no matchup data exists, an empty state message is shown."""
+        from unittest.mock import MagicMock
+
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_matchups
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.zadd("patch:list", {"14.5": 1710000000})
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {
+            "champ_a": "Jinx",
+            "champ_b": "Caitlyn",
+            "role": "BOTTOM",
+            "patch": "14.5",
+        }
+
+        resp = await show_matchups(request)
+        body = resp.body.decode()
+
+        assert "No matchup data" in body
+        assert "empty-state" in body
+        await r.aclose()
+
+    def test_matchups_in_nav(self):
+        """Matchups link is present in _NAV_ITEMS."""
+        nav_paths = [href for href, _label in _NAV_ITEMS]
+        assert "/matchups" in nav_paths
+
+
+# ---------------------------------------------------------------------------
+# Champion detail matchups section
+# ---------------------------------------------------------------------------
+
+
+class TestChampionDetailMatchups:
+    """Champion detail page includes matchup section when data is available."""
+
+    @pytest.mark.asyncio
+    async def test_champion_detail__shows_matchups(self):
+        """When matchup index data exists, a matchups table is rendered."""
+        from unittest.mock import MagicMock
+
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_champion_detail
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.zadd("patch:list", {"14.5": 1710000000})
+        await r.zadd("champion:index:14.5", {"Zed:MID": 50})
+        await r.hset(
+            "champion:stats:Zed:14.5:MID",
+            mapping={
+                "games": "50", "wins": "28", "kills": "400",
+                "deaths": "200", "assists": "150", "cs": "10000",
+                "gold": "500000", "damage": "750000", "vision": "500",
+            },
+        )
+        # Matchup index and data
+        await r.sadd("matchup:index:Zed:MID:14.5", "Yasuo", "Ahri")
+        await r.hset(
+            "matchup:Zed:Yasuo:MID:14.5",
+            mapping={"games": "20", "wins": "12"},
+        )
+        await r.hset(
+            "matchup:Zed:Ahri:MID:14.5",
+            mapping={"games": "15", "wins": "6"},
+        )
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {"patch": "14.5", "role": "MID"}
+
+        resp = await show_champion_detail(request, "Zed")
+        body = resp.body.decode()
+
+        assert "Matchups" in body
+        assert "Yasuo" in body
+        assert "Ahri" in body
+        assert "60.0%" in body  # 12/20
+        assert "40.0%" in body  # 6/15
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_champion_detail__no_matchups_no_section(self):
+        """When no matchup index exists, no matchup section is rendered."""
+        from unittest.mock import MagicMock
+
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_champion_detail
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.zadd("patch:list", {"14.5": 1710000000})
+        await r.zadd("champion:index:14.5", {"Zed:MID": 50})
+        await r.hset(
+            "champion:stats:Zed:14.5:MID",
+            mapping={
+                "games": "50", "wins": "28", "kills": "400",
+                "deaths": "200", "assists": "150", "cs": "10000",
+                "gold": "500000", "damage": "750000", "vision": "500",
+            },
+        )
+        # No matchup data
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {"patch": "14.5", "role": "MID"}
+
+        resp = await show_champion_detail(request, "Zed")
+        body = resp.body.decode()
+
+        assert "Zed" in body
+        assert "vs Champion" not in body
+        await r.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Match history items display
+# ---------------------------------------------------------------------------
+
+
+class TestMatchHistoryItems:
+    """Match history rows show final items when participant data includes them."""
+
+    def test_match_history__shows_items_column(self):
+        """When participant has items field, an Items column is rendered."""
+        from lol_ui.main import _match_history_html
+
+        matches = [
+            (
+                "NA1_123",
+                {"game_start": "1700000000000", "game_mode": "CLASSIC"},
+                {
+                    "win": "1",
+                    "champion_name": "Zed",
+                    "kills": "10",
+                    "deaths": "2",
+                    "assists": "5",
+                    "items": "3142,6693,3158,3814,6696,3134",
+                },
+            ),
+        ]
+        result = _match_history_html(matches, "puuid", "na1", "P#1", 0, False)
+        assert "Items" in result
+        assert "3142" in result
+
+    def test_match_history__no_items_shows_dash(self):
+        """When participant has no items field, Items column shows '-'."""
+        from lol_ui.main import _match_history_html
+
+        matches = [
+            (
+                "NA1_123",
+                {"game_start": "1700000000000", "game_mode": "CLASSIC"},
+                {
+                    "win": "1",
+                    "champion_name": "Zed",
+                    "kills": "10",
+                    "deaths": "2",
+                    "assists": "5",
+                },
+            ),
+        ]
+        result = _match_history_html(matches, "puuid", "na1", "P#1", 0, False)
+        assert "Items" in result
+
+
+class TestGetChampionIdMap:
+    """_get_champion_id_map returns {numeric_id: champion_name} from DDragon."""
+
+    @pytest.mark.asyncio
+    async def test_champion_id_map__returns_from_cache(self):
+        """When ddragon:champion_ids exists in Redis, returns cached mapping."""
+        import fakeredis.aioredis
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        mapping = {"266": "Aatrox", "103": "Ahri", "238": "Zed"}
+        await r.set(_DDRAGON_CHAMPION_IDS_KEY, json.dumps(mapping), ex=86400)
+
+        result = await _get_champion_id_map(r)
+
+        assert result == mapping
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_champion_id_map__fetches_and_caches(self):
+        """When no cache, fetches from DDragon and stores in Redis."""
+        import fakeredis.aioredis
+        import httpx
+        import respx
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.set("ddragon:version", "14.5.1")
+
+        ddragon_data = {
+            "data": {
+                "Aatrox": {"key": "266", "id": "Aatrox"},
+                "Ahri": {"key": "103", "id": "Ahri"},
+                "Zed": {"key": "238", "id": "Zed"},
+            }
+        }
+        with respx.mock(assert_all_called=False):
+            respx.get(
+                "https://ddragon.leagueoflegends.com/cdn/14.5.1/data/en_US/champion.json"
+            ).mock(return_value=httpx.Response(200, json=ddragon_data))
+
+            result = await _get_champion_id_map(r)
+
+        assert result == {"266": "Aatrox", "103": "Ahri", "238": "Zed"}
+        # Verify it was cached
+        cached = await r.get(_DDRAGON_CHAMPION_IDS_KEY)
+        assert cached is not None
+        assert json.loads(cached) == result
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_champion_id_map__no_version_returns_empty(self):
+        """When no DDragon version available, returns empty dict."""
+        import fakeredis.aioredis
+        import respx
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        # No ddragon:version in Redis; block real HTTP to prevent flaky results
+        with respx.mock(assert_all_called=False):
+            result = await _get_champion_id_map(r)
+
+        assert result == {}
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_champion_id_map__http_error_returns_empty(self):
+        """When DDragon HTTP request fails, returns empty dict."""
+        import fakeredis.aioredis
+        import httpx
+        import respx
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.set("ddragon:version", "14.5.1")
+
+        with respx.mock(assert_all_called=False):
+            respx.get(
+                "https://ddragon.leagueoflegends.com/cdn/14.5.1/data/en_US/champion.json"
+            ).mock(return_value=httpx.Response(500))
+
+            result = await _get_champion_id_map(r)
+
+        assert result == {}
+        await r.aclose()
+
+
+class TestChampionTierTableBanRate:
+    """Ban % column appears in champion tier table."""
+
+    def test_champion_tier_table__shows_ban_rate_header(self):
+        """Ban % column header appears in the tier table."""
+        rows = [
+            {
+                "name": "Zed", "role": "MID", "games": 50,
+                "win_rate": 56.0, "pick_rate": 10.0, "kda": 2.75,
+                "cs": 200, "ban_rate": 25.0,
+            },
+        ]
+        result = _champion_tier_table(rows, "14.5", "14.5.1")
+        assert "Ban %" in result
+
+    def test_champion_tier_table__shows_ban_rate_value(self):
+        """Ban rate value appears in the table row."""
+        rows = [
+            {
+                "name": "Zed", "role": "MID", "games": 50,
+                "win_rate": 56.0, "pick_rate": 10.0, "kda": 2.75,
+                "cs": 200, "ban_rate": 25.0,
+            },
+        ]
+        result = _champion_tier_table(rows, "14.5", "14.5.1")
+        assert "25.0%" in result
+
+    def test_champion_tier_table__zero_ban_rate(self):
+        """When ban_rate is 0.0, still shows 0.0% in the table."""
+        rows = [
+            {
+                "name": "Ahri", "role": "MID", "games": 40,
+                "win_rate": 55.0, "pick_rate": 8.0, "kda": 3.0,
+                "cs": 180, "ban_rate": 0.0,
+            },
+        ]
+        result = _champion_tier_table(rows, "14.5", "14.5.1")
+        assert "0.0%" in result
+
+
+class TestChampionsPageBanRate:
+    """Integration: /champions page shows Ban % column with ban data."""
+
+    @pytest.mark.asyncio
+    async def test_champions_page__shows_ban_rate_column(self):
+        """When ban data exists, Ban % column shows in the champions table."""
+        from unittest.mock import MagicMock
+
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_champions
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.zadd("patch:list", {"14.5": 1710000000})
+        await r.zadd("champion:index:14.5", {"Zed:MID": 50})
+        await r.hset(
+            "champion:stats:Zed:14.5:MID",
+            mapping={
+                "games": "50", "wins": "28", "kills": "400",
+                "deaths": "200", "assists": "150", "cs": "10000",
+            },
+        )
+        # Ban data: Zed (champion ID 238) banned 15 times in 60 games
+        await r.hset(
+            "champion:bans:14.5",
+            mapping={"238": "15", "_total_games": "60"},
+        )
+        # Champion ID mapping cache
+        mapping = {"238": "Zed"}
+        await r.set(_DDRAGON_CHAMPION_IDS_KEY, json.dumps(mapping), ex=86400)
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {}
+
+        resp = await show_champions(request)
+        body = resp.body.decode()
+
+        assert "Ban %" in body
+        assert "25.0%" in body  # 15/60 * 100
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_champions_page__no_ban_data_shows_zero(self):
+        """When no ban data exists, Ban % column shows 0.0%."""
+        from unittest.mock import MagicMock
+
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_champions
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.zadd("patch:list", {"14.5": 1710000000})
+        await r.zadd("champion:index:14.5", {"Zed:MID": 50})
+        await r.hset(
+            "champion:stats:Zed:14.5:MID",
+            mapping={
+                "games": "50", "wins": "28", "kills": "400",
+                "deaths": "200", "assists": "150", "cs": "10000",
+            },
+        )
+        # No ban data at all — no champion:bans:14.5 key
+        # Empty champion ID map so no DDragon fetch needed
+        await r.set(_DDRAGON_CHAMPION_IDS_KEY, json.dumps({}), ex=86400)
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {}
+
+        resp = await show_champions(request)
+        body = resp.body.decode()
+
+        assert "Ban %" in body
+        assert "0.0%" in body
         await r.aclose()

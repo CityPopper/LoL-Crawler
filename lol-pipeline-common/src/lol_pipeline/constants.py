@@ -5,6 +5,8 @@ keep using their own local ``_STREAM_*`` aliases today — this module provides 
 single source of truth when they're ready to migrate.
 """
 
+import os
+
 # Redis Streams
 STREAM_PUUID: str = "stream:puuid"
 STREAM_MATCH_ID: str = "stream:match_id"
@@ -26,3 +28,8 @@ VALID_REPLAY_STREAMS: frozenset[str] = frozenset(
 # TTL for player-scoped Redis keys (player:{puuid}, player:matches:{puuid}).
 # 30 days expressed as seconds.
 PLAYER_DATA_TTL_SECONDS: int = 30 * 24 * 3600  # 2592000
+
+# TTL for champion aggregate stats keys. 90 days default; configurable via env.
+CHAMPION_STATS_TTL_SECONDS: int = int(
+    os.getenv("CHAMPION_STATS_TTL_SECONDS", str(90 * 24 * 3600))
+)

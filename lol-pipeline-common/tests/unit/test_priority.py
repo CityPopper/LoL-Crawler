@@ -5,7 +5,18 @@ from __future__ import annotations
 import fakeredis.aioredis
 import pytest
 
-from lol_pipeline.priority import clear_priority, has_priority_players, set_priority
+from lol_pipeline.priority import (
+    PRIORITY_AUTO_20,
+    PRIORITY_AUTO_NEW,
+    PRIORITY_DOWNGRADE_THRESHOLD,
+    PRIORITY_MANUAL_20,
+    PRIORITY_MANUAL_20PLUS,
+    PRIORITY_ORDER,
+    clear_priority,
+    downgrade_priority,
+    has_priority_players,
+    set_priority,
+)
 
 
 @pytest.fixture
@@ -184,3 +195,74 @@ class TestPriorityKeyTTLValue:
         ttl2 = await r.ttl("player:priority:puuid-dup-ttl")
         # Should still be close to original TTL, NOT 5000
         assert ttl2 <= 100
+
+
+class TestPriorityConstants:
+    """4-tier priority constants and ordering."""
+
+    def test_constants_are_strings(self):
+        """All priority constants are strings."""
+        assert isinstance(PRIORITY_MANUAL_20, str)
+        assert isinstance(PRIORITY_MANUAL_20PLUS, str)
+        assert isinstance(PRIORITY_AUTO_20, str)
+        assert isinstance(PRIORITY_AUTO_NEW, str)
+
+    def test_constants_unique(self):
+        """All four tier constants are distinct."""
+        tiers = {PRIORITY_MANUAL_20, PRIORITY_MANUAL_20PLUS, PRIORITY_AUTO_20, PRIORITY_AUTO_NEW}
+        assert len(tiers) == 4
+
+    def test_priority_order__manual_20_highest(self):
+        """manual_20 has the highest numeric order."""
+        assert PRIORITY_ORDER[PRIORITY_MANUAL_20] == 4
+
+    def test_priority_order__descending(self):
+        """Tiers are strictly descending: manual_20 > manual_20plus > auto_20 > auto_new."""
+        assert (
+            PRIORITY_ORDER[PRIORITY_MANUAL_20]
+            > PRIORITY_ORDER[PRIORITY_MANUAL_20PLUS]
+            > PRIORITY_ORDER[PRIORITY_AUTO_20]
+            > PRIORITY_ORDER[PRIORITY_AUTO_NEW]
+        )
+
+    def test_priority_order__backwards_compat_high(self):
+        """Legacy 'high' maps to same order as manual_20."""
+        assert PRIORITY_ORDER["high"] == PRIORITY_ORDER[PRIORITY_MANUAL_20]
+
+    def test_priority_order__backwards_compat_normal(self):
+        """Legacy 'normal' maps to same order as auto_new."""
+        assert PRIORITY_ORDER["normal"] == PRIORITY_ORDER[PRIORITY_AUTO_NEW]
+
+    def test_downgrade_threshold_is_20(self):
+        """Downgrade threshold is 20 match IDs."""
+        assert PRIORITY_DOWNGRADE_THRESHOLD == 20
+
+
+class TestDowngradePriority:
+    """downgrade_priority() maps tier to its lower counterpart."""
+
+    def test_manual_20__downgrades_to_manual_20plus(self):
+        assert downgrade_priority(PRIORITY_MANUAL_20) == PRIORITY_MANUAL_20PLUS
+
+    def test_auto_20__downgrades_to_auto_new(self):
+        assert downgrade_priority(PRIORITY_AUTO_20) == PRIORITY_AUTO_NEW
+
+    def test_manual_20plus__no_further_downgrade(self):
+        """manual_20plus has no downgrade — returns itself."""
+        assert downgrade_priority(PRIORITY_MANUAL_20PLUS) == PRIORITY_MANUAL_20PLUS
+
+    def test_auto_new__no_further_downgrade(self):
+        """auto_new has no downgrade — returns itself."""
+        assert downgrade_priority(PRIORITY_AUTO_NEW) == PRIORITY_AUTO_NEW
+
+    def test_unknown_value__returns_itself(self):
+        """Unknown priority string passes through unchanged."""
+        assert downgrade_priority("unknown_tier") == "unknown_tier"
+
+    def test_legacy_high__returns_itself(self):
+        """Legacy 'high' is not in downgrade map — returns itself."""
+        assert downgrade_priority("high") == "high"
+
+    def test_legacy_normal__returns_itself(self):
+        """Legacy 'normal' is not in downgrade map — returns itself."""
+        assert downgrade_priority("normal") == "normal"

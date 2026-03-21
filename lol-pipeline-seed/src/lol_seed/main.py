@@ -13,7 +13,7 @@ from lol_pipeline.config import Config
 from lol_pipeline.constants import PLAYER_DATA_TTL_SECONDS
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
-from lol_pipeline.priority import set_priority
+from lol_pipeline.priority import PRIORITY_MANUAL_20, set_priority
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.resolve import resolve_puuid
 from lol_pipeline.riot_api import RiotClient
@@ -104,7 +104,7 @@ async def seed(
         type=_MSG_TYPE,
         payload={"puuid": puuid, "game_name": game_name, "tag_line": tag_line, "region": region},
         max_attempts=cfg.max_attempts,
-        priority="high",
+        priority=PRIORITY_MANUAL_20,
     )
     # Set priority before publishing so clear_priority() by downstream
     # services cannot race against a not-yet-set priority key.
@@ -123,7 +123,7 @@ async def seed(
     )
     await r.expire(f"player:{puuid}", PLAYER_DATA_TTL_SECONDS)  # 30 days
     await r.zadd("players:all", {puuid: time.time()})
-    await r.zremrangebyrank("players:all", 0, -50001)
+    await r.zremrangebyrank("players:all", 0, -(cfg.players_all_max + 1))
 
     log.info(
         "player seeded",

@@ -1285,6 +1285,47 @@ class TestResolveNamesRateLimiting:
         assert mock_wft.call_args[0][0] is r
 
 
+class TestPromoteBatchStaleCleanup:
+    """P16-DB-2: _promote_batch trims stale entries from players:all."""
+
+    @pytest.mark.asyncio
+    async def test_promote__trims_stale_players_all_entries(self, r, cfg, log):
+        """Entries in players:all older than 30 days are removed."""
+        import time as time_mod
+
+        from lol_pipeline.constants import PLAYER_DATA_TTL_SECONDS
+
+        now = time_mod.time()
+        # Stale entry: 31 days old
+        stale_score = now - PLAYER_DATA_TTL_SECONDS - 86400
+        await r.zadd("players:all", {"puuid-stale": stale_score})
+        # Fresh entry: 1 day old
+        fresh_score = now - 86400
+        await r.zadd("players:all", {"puuid-fresh": fresh_score})
+
+        riot = RiotClient("RGAPI-test")
+        await _promote_batch(r, cfg, log, riot)
+        await riot.close()
+
+        # Stale entry should be trimmed
+        assert await r.zscore("players:all", "puuid-stale") is None
+        # Fresh entry should remain
+        assert await r.zscore("players:all", "puuid-fresh") is not None
+
+    @pytest.mark.asyncio
+    async def test_promote__no_stale_entries__no_removal(self, r, cfg, log):
+        """When all entries are fresh, nothing is trimmed."""
+        import time as time_mod
+
+        await r.zadd("players:all", {"puuid-current": time_mod.time()})
+
+        riot = RiotClient("RGAPI-test")
+        await _promote_batch(r, cfg, log, riot)
+        await riot.close()
+
+        assert await r.zcard("players:all") == 1
+
+
 class TestPromoteBatchPlayersAll:
     """Promotion adds player to the players:all sorted set."""
 
@@ -1374,3 +1415,111 @@ class TestPromoteBatchPlayerTTL:
         ttl = await r.ttl("player:puuid-ttl2")
         # 30 days = 2592000s; allow for sub-second timing drift
         assert abs(ttl - 2592000) <= 60, f"Expected ~2592000s TTL, got {ttl}s"
+
+
+class TestPromoteBatchPriority:
+    """Discovery-promoted players get auto_20 priority tier."""
+
+    @pytest.mark.asyncio
+    async def test_promoted_envelope_has_auto_20_priority(self, r, cfg, log):
+        """Promoted player envelope has priority='auto_20'."""
+        await r.hset(
+            "player:puuid-prio",
+            mapping={"game_name": "PrioTest", "tag_line": "PT"},
+        )
+        await r.zadd("discover:players", {"puuid-prio:na1": 1700000000000.0})
+
+        riot = RiotClient("RGAPI-test")
+        promoted = await _promote_batch(r, cfg, log, riot)
+        await riot.close()
+
+        assert promoted == 1
+        entries = await r.xrange("stream:puuid")
+        assert len(entries) == 1
+        from lol_pipeline.models import MessageEnvelope
+
+        env = MessageEnvelope.from_redis_fields(entries[0][1])
+        assert env.priority == "auto_20"
+
+
+class TestRecrawlAfterScheduling:
+    """Activity-rate re-crawl scheduling in Discovery."""
+
+    @pytest.mark.asyncio
+    async def test_already_seeded__recrawl_due__promotes(self, r, cfg, log):
+        """Already-seeded player with recrawl_after in the past is re-promoted."""
+        import time as time_mod
+
+        puuid = "puuid-recrawl"
+        # Set as previously seeded with recrawl_after in the past
+        past_ts = str(time_mod.time() - 3600)  # 1 hour ago
+        await r.hset(
+            f"player:{puuid}",
+            mapping={
+                "game_name": "RecrawlPlayer",
+                "tag_line": "RC1",
+                "region": "na1",
+                "seeded_at": "2024-01-01T00:00:00+00:00",
+                "recrawl_after": past_ts,
+            },
+        )
+        await r.zadd("discover:players", {f"{puuid}:na1": 1700000000000.0})
+
+        riot = RiotClient("RGAPI-test")
+        promoted = await _promote_batch(r, cfg, log, riot)
+        await riot.close()
+
+        # Player should be re-promoted (recrawl_after has passed)
+        assert promoted == 1
+        assert await r.xlen("stream:puuid") == 1
+
+    @pytest.mark.asyncio
+    async def test_already_seeded__recrawl_not_due__skips(self, r, cfg, log):
+        """Already-seeded player with recrawl_after in the future is NOT promoted."""
+        import time as time_mod
+
+        puuid = "puuid-notdue"
+        future_ts = str(time_mod.time() + 7200)  # 2 hours from now
+        await r.hset(
+            f"player:{puuid}",
+            mapping={
+                "game_name": "NotDuePlayer",
+                "tag_line": "ND1",
+                "region": "na1",
+                "seeded_at": "2024-01-01T00:00:00+00:00",
+                "recrawl_after": future_ts,
+            },
+        )
+        await r.zadd("discover:players", {f"{puuid}:na1": 1700000000000.0})
+
+        riot = RiotClient("RGAPI-test")
+        promoted = await _promote_batch(r, cfg, log, riot)
+        await riot.close()
+
+        # Player should NOT be promoted (recrawl_after has not passed)
+        assert promoted == 0
+        assert await r.xlen("stream:puuid") == 0
+        # Player removed from discover queue (will be re-added by parser later)
+        assert await r.zcard("discover:players") == 0
+
+    @pytest.mark.asyncio
+    async def test_already_seeded__no_recrawl_after__skips(self, r, cfg, log):
+        """Already-seeded player without recrawl_after is skipped (existing behavior)."""
+        puuid = "puuid-norecrawl"
+        await r.hset(
+            f"player:{puuid}",
+            mapping={
+                "game_name": "NoRecrawl",
+                "tag_line": "NR1",
+                "region": "na1",
+                "seeded_at": "2024-01-01T00:00:00+00:00",
+            },
+        )
+        await r.zadd("discover:players", {f"{puuid}:na1": 1700000000000.0})
+
+        riot = RiotClient("RGAPI-test")
+        promoted = await _promote_batch(r, cfg, log, riot)
+        await riot.close()
+
+        assert promoted == 0
+        assert await r.zcard("discover:players") == 0

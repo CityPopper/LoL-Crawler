@@ -333,7 +333,9 @@ class TestEnvelopeSchemaIncludesPriority:
         props = schema["properties"]
         assert "priority" in props, "priority missing from envelope.json properties"
         assert props["priority"]["type"] == "string"
-        assert props["priority"]["enum"] == ["high", "normal"]
+        assert props["priority"]["enum"] == [
+            "manual_20", "manual_20plus", "auto_20", "auto_new", "high", "normal",
+        ]
         assert props["priority"]["default"] == "normal"
 
     def test_priority_in_dlq_envelope_schema(self):
@@ -344,7 +346,9 @@ class TestEnvelopeSchemaIncludesPriority:
         props = schema["properties"]
         assert "priority" in props, "priority missing from dlq_envelope.json properties"
         assert props["priority"]["type"] == "string"
-        assert props["priority"]["enum"] == ["high", "normal"]
+        assert props["priority"]["enum"] == [
+            "manual_20", "manual_20plus", "auto_20", "auto_new", "high", "normal",
+        ]
         assert props["priority"]["default"] == "normal"
 
     def test_priority_not_in_required(self):

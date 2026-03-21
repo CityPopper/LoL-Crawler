@@ -7,6 +7,7 @@ import contextlib
 import json
 import logging
 import os
+import random
 import signal
 import socket
 import time
@@ -18,8 +19,6 @@ from lol_pipeline.models import DLQEnvelope, MessageEnvelope
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.streams import consume_typed
 from redis.exceptions import RedisError
-
-MATCH_DATA_TTL_SECONDS: int = int(os.getenv("MATCH_DATA_TTL_SECONDS", "604800"))
 
 _IN_STREAM = "stream:dlq"
 _ARCHIVE_STREAM = "stream:dlq:archive"
@@ -54,12 +53,13 @@ async def _archive(
     r: aioredis.Redis,
     dlq: DLQEnvelope,
     log: logging.Logger,
+    cfg: Config,
 ) -> None:
     await r.xadd(_ARCHIVE_STREAM, dlq.to_redis_fields(), maxlen=50_000, approximate=True)  # type: ignore[arg-type]
     match_id: str | None = dlq.payload.get("match_id")
     if match_id:
         await r.hset(f"match:{match_id}", mapping={"status": "failed"})  # type: ignore[misc]
-        await r.expire(f"match:{match_id}", MATCH_DATA_TTL_SECONDS)
+        await r.expire(f"match:{match_id}", cfg.match_data_ttl_seconds)
         await r.sadd("match:status:failed", match_id)  # type: ignore[misc]
         await r.expire("match:status:failed", 7776000)  # 90 days
     log.warning(
@@ -98,7 +98,9 @@ async def _requeue_delayed(
 
 def _backoff_ms(dlq_attempts: int) -> int:
     idx = min(dlq_attempts, len(_BACKOFF_MS) - 1)
-    return _BACKOFF_MS[idx]
+    base = _BACKOFF_MS[idx]
+    # R3: Jitter — multiply by 0.5..1.5 to avoid thundering herd
+    return int(base * (0.5 + random.random()))  # noqa: S311
 
 
 async def _handle_transient(
@@ -110,7 +112,7 @@ async def _handle_transient(
 ) -> None:
     fc = dlq.failure_code
     if dlq.dlq_attempts >= cfg.dlq_max_attempts:
-        await _archive(r, dlq, log)
+        await _archive(r, dlq, log, cfg)
         await r.xack(_IN_STREAM, _GROUP, msg_id)
     else:
         delay = (
@@ -152,7 +154,7 @@ async def _handle_parse_error(
         "parse_error — archiving for operator review",
         extra={"id": dlq.id, "payload": dlq.payload},
     )
-    await _archive(r, dlq, log)
+    await _archive(r, dlq, log, cfg)
     await r.xack(_IN_STREAM, _GROUP, msg_id)
 
 
@@ -180,7 +182,7 @@ async def _process(
     if fc == "http_403":
         await r.set("system:halted", "1")
         log.critical("403 in DLQ — system halted, archiving", extra={"id": dlq.id})
-        await _archive(r, dlq, log)
+        await _archive(r, dlq, log, cfg)
         await r.xack(_IN_STREAM, _GROUP, msg_id)
         return True
 
@@ -199,7 +201,7 @@ async def _process(
             "unknown failure_code — archiving for operator review",
             extra={"id": dlq.id, "failure_code": fc},
         )
-        await _archive(r, dlq, log)
+        await _archive(r, dlq, log, cfg)
         await r.xack(_IN_STREAM, _GROUP, msg_id)
     return True
 
@@ -230,7 +232,7 @@ async def main() -> None:
                     any_handled = any_handled or handled
                 if not any_handled and await r.get("system:halted"):
                     await asyncio.sleep(_HALT_SLEEP_S)
-            except RedisError, OSError:
+            except (RedisError, OSError):
                 log.exception("consume error — retrying in 1s")
                 await asyncio.sleep(1)
         log.info("SIGTERM received — shutting down gracefully")
