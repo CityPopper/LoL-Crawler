@@ -51,15 +51,6 @@ Platform: macOS. Container runtime: Podman (default). Switch with `RUNTIME=docke
 | Integration tests | `tests/integration/` (IT-01 through IT-12, testcontainers) |
 | Rejected ideas (do not re-propose) | `.claude/archive/REJECTED.md` |
 
-## TODO — Phase 24 MATCH INTELLIGENCE UI
+## TODO
 
-- [x] S0-S5: All sprint tasks complete
-- [x] Split admin service into modules (`cmd_*.py`, `_helpers.py`, `_formatting.py`)
-- [x] Docs cleanup: XAUTOCLAIM fix in `03-streams.md`, admin README updated
-- [x] Delete `docs/SPRINT-PLAN.md` (implemented)
-- [ ] Future: Full localization (zh-CN translations, language switcher, extract to JSON)
-- [ ] Future: Summoner icon + level badge on profile
-- [x] Profile tabs (Summary/Mastery/ARAM) on player stats page
-- [x] Enhanced `/health` JSON endpoint with Redis/stream status
-- [x] `just monitor` recipe for one-shot health summary
-- [x] `just streams-json` recipe for machine-readable stream depths
+_(Phase 24 complete. All sprints, future tasks, and directives implemented.)_
