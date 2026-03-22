@@ -67,6 +67,11 @@ _STRINGS: dict[str, dict[str, str]] = {
         "insight_dominant_role_prefix": "Primarily plays",
         # -- Gold chart --
         "gold_over_time": "Gold Over Time",
+        # -- Sprint 5 --
+        "recently_played_with": "Recently Played With",
+        "games_shared": "games",
+        "minimap": "Kill Map",
+        "sparkline_7d": "7-Day Win Rate",
     },
     "zh-CN": {
         # -- Tab labels --
@@ -125,6 +130,11 @@ _STRINGS: dict[str, dict[str, str]] = {
         "insight_dominant_role_prefix": "[CN] Primarily plays",
         # -- Gold chart --
         "gold_over_time": "[CN] Gold Over Time",
+        # -- Sprint 5 --
+        "recently_played_with": "[CN] Recently Played With",
+        "games_shared": "[CN] games",
+        "minimap": "[CN] Kill Map",
+        "sparkline_7d": "[CN] 7-Day Win Rate",
     },
 }
 
