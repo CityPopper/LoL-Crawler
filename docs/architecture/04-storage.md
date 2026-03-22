@@ -47,7 +47,8 @@ All application state lives in Redis. No other database.
 | `champion:bans:{patch}` | Hash | 90d (`CHAMPION_STATS_TTL_SECONDS`) | Ban counts per champion per patch |
 | `matchup:{A}:{B}:{position}:{patch}` | Hash | 90d (`CHAMPION_STATS_TTL_SECONDS`) | Head-to-head matchup stats between two champions in a lane |
 | `matchup:index:{champ}:{position}:{patch}` | Set | 90d (`CHAMPION_STATS_TTL_SECONDS`) | Matchup index: all opponents faced by a champion in a position |
-| `player:rank:{puuid}` | Hash | 24h (hardcoded) | Player rank data (tier, rank, LP, wins, losses) from league-v4 |
+| `player:rank:{puuid}` | Hash | 24h (hardcoded) | Player rank data (`tier`, `division`, `lp`, `wins`, `losses`) from league-v4 |
+| `player:rank:history:{puuid}` | Sorted Set | 30d (`PLAYER_DATA_TTL_SECONDS`) | Rank history timeline; member=`{tier}:{division}:{lp}`, score=epoch ms; capped at 500 entries |
 | `crawl:cursor:{puuid}` | String | 10m (hardcoded) | Pagination resume cursor for crawler match-list API calls |
 | `seen:matches` | Set | 7d (`SEEN_MATCHES_TTL_SECONDS`) | Global match dedup set; prevents re-fetching already-known matches |
 | `patch:list` | Sorted Set | 90d (`CHAMPION_STATS_TTL_SECONDS`) | Known game patches; member=patch string, score=earliest game_start epoch |
