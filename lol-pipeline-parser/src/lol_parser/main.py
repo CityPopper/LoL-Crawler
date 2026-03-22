@@ -430,7 +430,7 @@ async def _parse_match(
     # (first writer wins) or 0 if it already existed (another worker parsed
     # this match first). This eliminates the TOCTOU race where two workers
     # could both see SISMEMBER=False and double-count HINCRBY in bans/matchups.
-    first_parse: int = await r.sadd("match:status:parsed", match_id)
+    first_parse: int = await r.sadd("match:status:parsed", match_id)  # type: ignore[misc]
     # Only set TTL when none exists (ttl < 0) to avoid resetting expiry on every write.
     parsed_ttl: int = await r.ttl("match:status:parsed")
     if parsed_ttl < 0:

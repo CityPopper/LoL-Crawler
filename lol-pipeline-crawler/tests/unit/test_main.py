@@ -120,13 +120,13 @@ class TestCrawlPriority:
 
 
 class TestCrawlPriorityPreservation:
-    """Priority key behavior depends on whether new matches were published."""
+    """R5: Priority is always cleared after a successful crawl."""
 
     @pytest.mark.asyncio
-    async def test_crawl__matches_found__priority_not_cleared(self, r, cfg, log):
-        """When published > 0, clear_priority() is NOT called — priority key remains."""
+    async def test_crawl__matches_found__priority_cleared(self, r, cfg, log):
+        """When published > 0, clear_priority() IS called — priority key removed."""
         puuid = "test-puuid-0001"
-        # Set a priority key to verify it is NOT cleared
+        # Set a priority key to verify it gets cleared
         await r.set(f"player:priority:{puuid}", "1", ex=86400)
 
         env = _puuid_envelope(puuid=puuid)
@@ -140,9 +140,9 @@ class TestCrawlPriorityPreservation:
             await _crawl_player(r, riot, cfg, msg_id, env, log)
             await riot.close()
 
-        # Matches were published, so priority must be preserved
+        # R5: Always clear priority after a successful crawl
         assert await r.xlen(_STREAM_OUT) == 2
-        assert await r.get(f"player:priority:{puuid}") == "1"
+        assert await r.get(f"player:priority:{puuid}") is None
 
     @pytest.mark.asyncio
     async def test_crawl__no_matches__priority_cleared(self, r, cfg, log):
@@ -165,11 +165,11 @@ class TestCrawlPriorityPreservation:
 
 
 class TestCrawlPriorityClearCallBehavior:
-    """clear_priority call depends on whether new matches were published."""
+    """R5: clear_priority is always called after a successful crawl."""
 
     @pytest.mark.asyncio
-    async def test_crawl__published_gt_zero__clear_priority_not_called(self, r, cfg, log):
-        """When published > 0, clear_priority() must NOT be called."""
+    async def test_crawl__published_gt_zero__clear_priority_called(self, r, cfg, log):
+        """R5: When published > 0, clear_priority() IS called."""
         puuid = "test-puuid-0001"
         await r.set(f"player:priority:{puuid}", "high")
         env = _puuid_envelope(puuid=puuid)
@@ -186,8 +186,8 @@ class TestCrawlPriorityClearCallBehavior:
             await _crawl_player(r, riot, cfg, msg_id, env, log)
             await riot.close()
 
-        # Matches were published, so clear_priority must NOT have been called
-        mock_clear.assert_not_called()
+        # R5: Always clear priority after a successful crawl
+        mock_clear.assert_called_once_with(r, puuid)
 
     @pytest.mark.asyncio
     async def test_crawl__published_eq_zero__clear_priority_called(self, r, cfg, log):
@@ -461,8 +461,8 @@ class TestCrawlFromisoformatValueError:
 
 class TestCrawlSingleZrange:
     @pytest.mark.asyncio
-    async def test_zrange_called_once(self, r, cfg, log):
-        """AC-03-17: ZRANGE called exactly once per crawl."""
+    async def test_zrange_called_twice_with_activity(self, r, cfg, log):
+        """ZRANGE called once for known-set + once in _compute_activity_rate."""
         env = _puuid_envelope()
         msg_id = await _setup_message(r, env)
 
@@ -484,7 +484,8 @@ class TestCrawlSingleZrange:
             await _crawl_player(r, riot, cfg, msg_id, env, log)
             await riot.close()
 
-        assert call_count == 1
+        # 1 for known-matches set + 1 for _compute_activity_rate (when published > 0)
+        assert call_count == 2
 
 
 class TestCrawlFailureMidPage:
