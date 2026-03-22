@@ -343,7 +343,9 @@ class TestRateLimitKeyTTL:
             await fake_redis.expire("ratelimit:limits:short", 100)
             # Simulate that the write interval has elapsed so the client
             # will re-write on the next call and refresh the TTL
-            client._limits_last_written_at = 0.0
+            import time as _time
+
+            client._limits_last_written_at = _time.monotonic() - 3600
             await client.get_account_by_riot_id("Test", "NA1", "na1")
             await client.close()
 
@@ -471,8 +473,10 @@ class TestRateLimitWriteCaching:
             client = RiotClient("RGAPI-test", r=fake_redis)
             await client.get_account_by_riot_id("Test", "NA1", "na1")
             # Overwrite with marker, then simulate write interval elapsed
+            import time as _time
+
             await fake_redis.set("ratelimit:limits:short", "MARKER")
-            client._limits_last_written_at = 0.0
+            client._limits_last_written_at = _time.monotonic() - 3600
             await client.get_account_by_riot_id("Test", "NA1", "na1")
             await client.close()
 
