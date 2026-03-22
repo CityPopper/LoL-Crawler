@@ -85,7 +85,7 @@ async def _add_participant(  # noqa: PLR0913
         f"participant:{match_id}:{puuid}",
         mapping={
             "champion_name": champion,
-            "role": role,
+            "team_position": role,
             "win": "1" if win else "0",
             "kills": str(kills),
             "deaths": str(deaths),
@@ -130,24 +130,20 @@ class TestAnalyzerLock:
         env = _analyze_envelope(puuid)
         msg_id = await _setup_message(r, env)
 
-        # Intercept _refresh_lock to simulate another worker stealing the lock
-        # after processing completes but before release.
-        original_refresh = _refresh_lock
+        lock_key = f"player:stats:lock:{puuid}"
 
-        async def _fake_refresh(redis, lock_key, worker_id, ttl_ms):
-            result = await original_refresh(redis, lock_key, worker_id, ttl_ms)
-            # After a successful refresh, delete the lock to simulate expiry
-            # so the final release in the `finally` block returns 0.
-            await redis.delete(lock_key)
-            return result
+        # Intercept _safe_clear_priority to simulate another worker stealing the
+        # lock after processing completes but before the finally-block release.
+        async def _steal_lock(redis, puuid_arg, log_arg):
+            await redis.set(lock_key, "other-worker", px=30000)
 
         with (
-            patch("lol_analyzer.main._refresh_lock", side_effect=_fake_refresh),
+            patch("lol_analyzer.main._safe_clear_priority", side_effect=_steal_lock),
             caplog.at_level(logging.WARNING, logger="test-analyzer"),
         ):
             await _analyze_player(r, cfg, "my-worker", msg_id, env, log)
 
-        # Lock was gone at release time → warning logged
+        # Lock was stolen at release time → warning logged
         assert any("lock expired before release" in rec.message for rec in caplog.records)
 
         # Message was still ACK'd (removed from PEL)
@@ -547,40 +543,23 @@ class TestAnalyzerAtomicCursorAdvancement:
         assert await r.hget(f"player:stats:{puuid}", "total_kills") == "6"
 
     @pytest.mark.asyncio
-    async def test_source_has_cursor_in_pipeline_and_lua_lock_refresh(self, r, cfg, log):
-        """Source inspection: cursor SET inside MULTI/EXEC; lock refresh via Lua."""
+    async def test_source_uses_lua_for_atomic_stats_and_lock(self, r, cfg, log):
+        """Source inspection: stats + cursor + lock refresh are atomic via Lua."""
         import inspect
 
         source = inspect.getsource(_process_matches)
-        # Find the transaction pipeline block
-        lines = source.splitlines()
-        in_pipe_block = False
-        pipe_indent = 0
-        pipe_contents: list[str] = []
-        for line in lines:
-            stripped = line.lstrip()
-            if "r.pipeline(transaction=True)" in line:
-                in_pipe_block = True
-                pipe_indent = len(line) - len(stripped)
-                continue
-            if in_pipe_block:
-                current_indent = len(line) - len(stripped) if stripped else pipe_indent + 1
-                if current_indent > pipe_indent or not stripped:
-                    pipe_contents.append(stripped)
-                else:
-                    in_pipe_block = False
-
-        pipe_block = "\n".join(pipe_contents)
-        assert "pipe.set(" in pipe_block, (
-            "cursor SET must use pipe.set() inside the transaction pipeline"
+        # V15-1: all stats operations (HINCRBY, cursor SET, lock refresh) are
+        # handled inside _PROCESS_MATCH_LUA — no separate pipeline or refresh call.
+        assert "r.eval(" in source, (
+            "_process_matches must use r.eval() to run the atomic Lua script"
         )
-        # PEXPIRE must NOT be in the pipeline — lock refresh uses Lua ownership check
-        assert "pipe.pexpire(" not in pipe_block, (
-            "lock PEXPIRE must NOT be in the pipeline — use Lua ownership-check refresh"
+        assert "_PROCESS_MATCH_LUA" in source, (
+            "_process_matches must reference _PROCESS_MATCH_LUA for atomic operations"
         )
-        # Lock refresh uses _refresh_lock (Lua script) after the pipeline
-        assert "_refresh_lock(" in source, (
-            "lock refresh must use _refresh_lock() (Lua ownership check) after pipeline"
+        # The Lua script handles lock ownership check + refresh — no separate
+        # pipeline or _refresh_lock() call should be present.
+        assert "r.pipeline(transaction=True)" not in source, (
+            "Lua script replaces the old MULTI/EXEC pipeline approach"
         )
 
 
@@ -588,12 +567,13 @@ class TestAnalyzerPipelineContextManager:
     """Fix 4: Stats pipeline uses async context manager for proper cleanup."""
 
     @pytest.mark.asyncio
-    async def test_pipeline_context_manager_in_source(self, r, cfg, log):
-        """Stats update pipeline uses 'async with r.pipeline(transaction=True) as pipe:'."""
+    async def test_lua_script_used_in_source(self, r, cfg, log):
+        """Stats update uses Lua script for atomic ownership-checked operations."""
         import inspect
 
         source = inspect.getsource(_process_matches)
-        assert "async with r.pipeline(transaction=True) as pipe:" in source
+        # V15-1: Lua script replaces the old pipeline(transaction=True) approach
+        assert "_PROCESS_MATCH_LUA" in source
 
     @pytest.mark.asyncio
     async def test_pipeline_context_manager_still_writes_stats(self, r, cfg, log):
@@ -701,6 +681,7 @@ class TestLockOwnershipRefresh:
         """When lock is stolen mid-processing, remaining matches are skipped
         and derived stats are NOT written."""
         puuid = "test-puuid-0001"
+        lock_key = f"player:stats:lock:{puuid}"
         # Set up 3 matches
         await _add_participant(r, "NA1_1", puuid, 1000, kills=5, deaths=1, assists=3)
         await _add_participant(r, "NA1_2", puuid, 2000, kills=3, deaths=2, assists=7)
@@ -708,16 +689,31 @@ class TestLockOwnershipRefresh:
         env = _analyze_envelope(puuid)
         msg_id = await _setup_message(r, env)
 
-        # Patch _refresh_lock to simulate lock loss on the very first refresh
-        # (after match 1 stats are committed but before match 2 is processed)
-        async def _always_fail(*_args, **_kwargs):
-            return False
+        # Intercept r.eval to steal the lock after the first successful
+        # _PROCESS_MATCH_LUA call.  The Lua script checks ownership at the
+        # start, so stealing the lock between calls makes the 2nd call return 0.
+        eval_call_count = 0
+        original_eval = r.eval
 
-        with patch("lol_analyzer.main._refresh_lock", side_effect=_always_fail):
+        async def _steal_after_first(*args, **kwargs):
+            nonlocal eval_call_count
+            result = await original_eval(*args, **kwargs)
+            # _PROCESS_MATCH_LUA uses 5 keys; only intercept those calls
+            if len(args) >= 2 and args[1] == 5:
+                eval_call_count += 1
+                if eval_call_count == 1 and result:
+                    # Steal the lock after the first match is processed
+                    await r.set(lock_key, "other-worker", px=30000)
+            return result
+
+        r.eval = _steal_after_first  # type: ignore[assignment]
+        try:
             await _analyze_player(r, cfg, "my-worker", msg_id, env, log)
+        finally:
+            r.eval = original_eval  # type: ignore[assignment]
 
-        # Only the first match should have been processed (stats committed
-        # before the refresh check returned False)
+        # Only the first match should have been processed (lock stolen before
+        # the 2nd Lua call, which returns 0 → aborts)
         assert await r.hget(f"player:stats:{puuid}", "total_games") == "1"
         assert await r.hget(f"player:stats:{puuid}", "total_kills") == "5"
         # Cursor should be at first match only
@@ -732,34 +728,42 @@ class TestLockOwnershipRefresh:
 
     @pytest.mark.asyncio
     async def test_ownership_lost__does_not_extend_other_workers_lock(self, r, cfg, log):
-        """When lock is stolen, we must NOT extend the other worker's lock TTL."""
+        """When lock is stolen, the Lua script must NOT extend the thief's TTL."""
         puuid = "test-puuid-0001"
+        lock_key = f"player:stats:lock:{puuid}"
+        # Two matches: we steal the lock between them.
         await _add_participant(r, "NA1_1", puuid, 1000, kills=5, deaths=1, assists=3)
+        await _add_participant(r, "NA1_2", puuid, 2000, kills=3, deaths=2, assists=7)
         env = _analyze_envelope(puuid)
         msg_id = await _setup_message(r, env)
 
-        # Simulate lock being stolen after stats pipeline but before refresh check
-        original_refresh = _refresh_lock
+        # Steal the lock after the first _PROCESS_MATCH_LUA call succeeds.
+        eval_call_count = 0
+        original_eval = r.eval
 
-        async def _steal_and_check(r, lock_key, worker_id, ttl_ms):
-            # Replace lock with another worker's value before the Lua check
-            await r.set(lock_key, "other-worker", px=5000)
-            result = await original_refresh(r, lock_key, worker_id, ttl_ms)
-            # Verify the Lua script did NOT extend the TTL
-            assert result is False
-            # The other worker's lock should still have its original short TTL
-            remaining = await r.pttl(lock_key)
-            assert remaining <= 5000, (
-                f"Other worker's lock TTL was extended to {remaining}ms — "
-                "Lua ownership check failed to protect it"
-            )
+        async def _steal_after_first(*args, **kwargs):
+            nonlocal eval_call_count
+            result = await original_eval(*args, **kwargs)
+            if len(args) >= 2 and args[1] == 5:
+                eval_call_count += 1
+                if eval_call_count == 1 and result:
+                    await r.set(lock_key, "other-worker", px=5000)
             return result
 
-        with patch("lol_analyzer.main._refresh_lock", side_effect=_steal_and_check):
+        r.eval = _steal_after_first  # type: ignore[assignment]
+        try:
             await _analyze_player(r, cfg, "my-worker", msg_id, env, log)
+        finally:
+            r.eval = original_eval  # type: ignore[assignment]
 
+        # The Lua script should NOT have extended the thief's lock TTL
+        remaining = await r.pttl(lock_key)
+        assert remaining <= 5000, (
+            f"Other worker's lock TTL was extended to {remaining}ms — "
+            "Lua ownership check failed to protect it"
+        )
         # Other worker's lock should still be intact
-        assert await r.get(f"player:stats:lock:{puuid}") == "other-worker"
+        assert await r.get(lock_key) == "other-worker"
 
     @pytest.mark.asyncio
     async def test_two_workers_no_double_count(self, r, cfg, log):

@@ -720,7 +720,7 @@ async def _get_champion_id_map(r: aioredis.Redis) -> dict[str, str]:
     """
     cached = await r.get(_DDRAGON_CHAMPION_IDS_KEY)
     if cached:
-        return json.loads(str(cached))
+        return json.loads(str(cached))  # type: ignore[no-any-return]
     version = await _get_ddragon_version(r)
     if not version:
         return {}
@@ -2620,8 +2620,8 @@ def _patch_delta(
 
     Returns None when either patch has fewer than DELTA_MIN_GAMES games.
     """
-    cur_games = int(current_stats.get("games", 0))  # type: ignore[arg-type]
-    prev_games = int(prev_stats.get("games", 0))  # type: ignore[arg-type]
+    cur_games = int(current_stats.get("games", 0))  # type: ignore[call-overload]
+    prev_games = int(prev_stats.get("games", 0))  # type: ignore[call-overload]
     if cur_games < _DELTA_MIN_GAMES or prev_games < _DELTA_MIN_GAMES:
         return None
     cur_wr = float(current_stats.get("win_rate", 0.0))  # type: ignore[arg-type]
@@ -2655,7 +2655,7 @@ def _assign_tiers(rows: list[dict[str, object]]) -> None:
     """Assign PBI-based tier letters to rows in-place using percentile rank."""
     scored: list[tuple[int, float]] = []
     for i, row in enumerate(rows):
-        games = int(row.get("games", 0))  # type: ignore[arg-type]
+        games = int(row.get("games", 0))  # type: ignore[call-overload]
         if games < _PBI_MIN_GAMES:
             row["tier"] = ""
             row["tier_color"] = ""
@@ -2713,7 +2713,7 @@ def _champion_tier_table(
     for row in rows:
         name = str(row["name"])
         role = str(row["role"])
-        games = int(row["games"])  # type: ignore[arg-type]
+        games = int(row["games"])  # type: ignore[call-overload]
         win_rate = float(row["win_rate"])  # type: ignore[arg-type]
         pick_rate = float(row["pick_rate"])  # type: ignore[arg-type]
         kda = float(row["kda"])  # type: ignore[arg-type]
@@ -2883,7 +2883,7 @@ async def _build_champion_rows(
                 "ban_rate": br,
             }
         )
-    rows.sort(key=lambda x: int(x["games"]), reverse=True)  # type: ignore[arg-type]
+    rows.sort(key=lambda x: int(x["games"]), reverse=True)  # type: ignore[call-overload]
     return rows
 
 
@@ -2908,7 +2908,7 @@ async def show_champions(request: Request) -> HTMLResponse:
     # Fetch ban data and champion ID→name mapping concurrently
     ban_hash_coro = r.hgetall(f"champion:bans:{patch}")
     id_map_coro = _get_champion_id_map(r)
-    ban_hash, champ_id_map = await asyncio.gather(ban_hash_coro, id_map_coro)
+    ban_hash, champ_id_map = await asyncio.gather(ban_hash_coro, id_map_coro)  # type: ignore[arg-type]
     # Build reverse mapping: champion_name → numeric_id
     name_to_id = {v: k for k, v in champ_id_map.items()}
     rows = await _build_champion_rows(
@@ -2923,7 +2923,7 @@ async def show_champions(request: Request) -> HTMLResponse:
     prev_rows: list[dict[str, object]] | None = None
     if patch_idx + 1 < len(patch_list):
         prev_patch = patch_list[patch_idx + 1]
-        prev_ban_hash: dict[str, str] = await r.hgetall(f"champion:bans:{prev_patch}")
+        prev_ban_hash: dict[str, str] = await r.hgetall(f"champion:bans:{prev_patch}")  # type: ignore[misc]
         prev_rows = await _build_champion_rows(
             r,
             prev_patch,
@@ -3060,7 +3060,7 @@ async def _fetch_champion_matchups(
     Returns (opponent, games, win_rate) tuples sorted by games descending.
     """
     index_key = f"matchup:index:{name}:{role}:{patch}"
-    opponents: set[str] = await r.smembers(index_key)
+    opponents: set[str] = await r.smembers(index_key)  # type: ignore[misc]
     if not opponents:
         return []
     sorted_opponents = sorted(opponents)
@@ -3127,7 +3127,7 @@ async def show_champion_detail(request: Request, name: str) -> HTMLResponse:
     if not role or role not in all_roles:
         role = all_roles[0]
     # Fetch current stats
-    stats: dict[str, str] = await r.hgetall(f"champion:stats:{name}:{patch}:{role}")
+    stats: dict[str, str] = await r.hgetall(f"champion:stats:{name}:{patch}:{role}")  # type: ignore[misc]
     if not stats:
         stats = {}
     history = await _fetch_patch_history(r, name, role, patch_list)
@@ -3201,7 +3201,7 @@ async def show_matchups(request: Request) -> HTMLResponse:
         return HTMLResponse(_page("Matchups", body, path="/matchups"))
 
     key = f"matchup:{champ_a}:{champ_b}:{role}:{patch}"
-    data: dict[str, str] = await r.hgetall(key)
+    data: dict[str, str] = await r.hgetall(key)  # type: ignore[misc]
 
     if not data:
         safe_a = html.escape(champ_a)

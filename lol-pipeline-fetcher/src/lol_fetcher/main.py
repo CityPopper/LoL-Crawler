@@ -52,7 +52,7 @@ async def _store_and_publish(
     # Batch independent metadata writes into a single Redis round-trip.
     match_key = f"match:{match_id}"
     async with r.pipeline(transaction=False) as pipe:
-        pipe.hset(match_key, mapping={"status": "fetched"})  # type: ignore[misc]
+        pipe.hset(match_key, mapping={"status": "fetched"})
         pipe.expire(match_key, cfg.match_data_ttl_seconds)
         pipe.sadd("seen:matches", match_id)
         pipe.ttl("seen:matches")

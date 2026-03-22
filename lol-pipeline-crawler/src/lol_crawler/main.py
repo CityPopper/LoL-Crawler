@@ -101,9 +101,9 @@ async def _publish_batch(  # noqa: PLR0913
                 priority=current_priority,
                 correlation_id=correlation_id,
             )
-            pipe.xadd(  # type: ignore[arg-type]
+            pipe.xadd(
                 _OUT_STREAM,
-                env.to_redis_fields(),
+                env.to_redis_fields(),  # type: ignore[arg-type]
                 maxlen=MATCH_ID_STREAM_MAXLEN,
                 approximate=True,
             )
@@ -145,7 +145,7 @@ async def _resume_cursor(r: aioredis.Redis, puuid: str) -> int:
     saved = await r.get(f"crawl:cursor:{puuid}")
     if saved:
         try:
-            return int(saved)  # type: ignore[arg-type]
+            return int(saved)
         except (ValueError, TypeError):
             pass
     return 0

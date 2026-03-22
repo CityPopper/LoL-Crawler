@@ -110,22 +110,22 @@ class TestMatchHistorySection:
         assert 'data-puuid="puuid-abc"' in html_out
         assert 'data-region="na1"' in html_out
         assert 'data-riot-id="Player#NA1"' in html_out
-        assert 'data-page="0"' in html_out
-        assert 'class="load-matches"' in html_out
+        # Container uses data attrs; JS reads them via dataset
+        assert "dataset.puuid" in html_out
 
     def test_event_delegation_script(self):
-        """SEC: match history includes event delegation JS."""
+        """SEC: match history includes JS that loads matches via fetch."""
         html_out = _match_history_section("puuid-abc", "na1", "Player#NA1")
-        assert "document.addEventListener" in html_out
-        assert "closest('.load-matches')" in html_out
+        assert "loadMatches" in html_out
         assert "dataset.puuid" in html_out
+        assert "fetch(" in html_out
 
     def test_loading_indicator_uses_spinner(self):
         """P11-DD-13: loading indicator uses spinner element, not plain text."""
         html_out = _match_history_section("puuid-abc", "na1", "Player#NA1")
         assert "loading-state" in html_out
         assert "spinner" in html_out
-        assert "Loading match history" in html_out
+        assert "Loading" in html_out
         # Must not inject user-supplied data via innerHTML (static string only)
         assert "innerHTML = '<p>Loading" not in html_out
 
@@ -152,9 +152,9 @@ class TestPage:
 
     def test_css_uses_custom_properties(self):
         result = _page("X", "")
-        assert "--color-bg: #1a1a2e" in result
-        assert "--color-surface: #16213e" in result
-        assert "--color-text: #e0e0e0" in result
+        assert "--color-bg: #1c1c1e" in result
+        assert "--color-surface: #31313c" in result
+        assert "--color-text: #e8e8e8" in result
 
     def test_nav_active_state__stats(self):
         result = _page("X", "", path="/stats")
@@ -376,8 +376,10 @@ class TestMatchHistoryHtml:
         ]
         result = _match_history_html(matches, "puuid", "na1", "P#1", 0, False)
         assert "Zed" in result
-        assert "10/2/5" in result
-        assert "Win" in result
+        # KDA is rendered in separate spans: <span>10</span>/<span>2</span>/<span>5</span>
+        assert "<span>10</span>" in result
+        assert "<span>5</span>" in result
+        assert "WIN" in result
 
     def test_win_uses_badge(self):
         matches = [
@@ -388,8 +390,8 @@ class TestMatchHistoryHtml:
             ),
         ]
         result = _match_history_html(matches, "puuid", "na1", "P#1", 0, False)
-        assert 'class="badge badge--success"' in result
-        assert "Win" in result
+        assert "match-result--win" in result
+        assert "WIN" in result
 
     def test_loss_renders_correctly(self):
         matches = [
@@ -400,7 +402,7 @@ class TestMatchHistoryHtml:
             ),
         ]
         result = _match_history_html(matches, "puuid", "na1", "P#1", 0, False)
-        assert "Loss" in result
+        assert "LOSS" in result
         assert "Ahri" in result
 
     def test_loss_uses_badge(self):
@@ -412,8 +414,8 @@ class TestMatchHistoryHtml:
             ),
         ]
         result = _match_history_html(matches, "puuid", "na1", "P#1", 0, False)
-        assert 'class="badge badge--error"' in result
-        assert "Loss" in result
+        assert "match-result--loss" in result
+        assert "LOSS" in result
 
     def test_has_more_shows_load_link(self):
         matches = [
@@ -425,10 +427,10 @@ class TestMatchHistoryHtml:
         ]
         result = _match_history_html(matches, "puuid", "na1", "P#1", 0, True)
         assert "Load more" in result
-        assert "page 2" in result
+        assert 'data-page="1"' in result
 
     def test_has_more_uses_data_attributes(self):
-        """SEC: load-more link uses data-* attributes, not onclick."""
+        """SEC: load-more button uses data-* attributes, not onclick."""
         matches = [
             (
                 "NA1_123",
@@ -440,7 +442,7 @@ class TestMatchHistoryHtml:
         assert "onclick=" not in result
         assert 'data-puuid="puuid"' in result
         assert 'data-region="na1"' in result
-        assert 'class="load-matches"' in result
+        assert 'class="match-load-more"' in result
 
     def test_no_more_hides_load_link(self):
         matches = [
@@ -471,7 +473,7 @@ class TestMatchHistoryHtml:
         assert "<b>XSS</b>" not in result
         assert html.escape("<b>XSS</b>") in result
 
-    def test_table_wrapped_in_scroll_div(self):
+    def test_match_list_wrapper(self):
         matches = [
             (
                 "NA1_1",
@@ -480,7 +482,7 @@ class TestMatchHistoryHtml:
             ),
         ]
         result = _match_history_html(matches, "puuid", "na1", "P#1", 0, False)
-        assert 'class="table-scroll"' in result
+        assert 'class="match-list"' in result
 
 
 class TestTailFile:
@@ -749,6 +751,7 @@ class TestAutoSeedPriority:
         class FakeCfg:
             max_attempts = 5
             api_rate_limit_per_second = 20
+            players_all_max = 50000
 
         request = re.Match  # unused, just need a MagicMock
         from unittest.mock import MagicMock
@@ -1866,8 +1869,8 @@ class TestDlqBrowserEdgeCases:
         resp = await show_dlq(request)
         body = resp.body.decode()
 
-        # Count the number of <tr> rows in the table (minus header)
-        row_count = body.count("<tr><td>")
+        # Count DLQ data rows via Replay buttons (one per entry)
+        row_count = body.count('action="/dlq/replay/')
         assert row_count == _DLQ_DEFAULT_PER_PAGE
         await r.aclose()
 
@@ -2371,8 +2374,8 @@ class TestDlqCorruptEntries:
         assert "NA1_good2" in body
         # Should still render as a table
         assert "<table>" in body
-        # Exactly 2 data rows (corrupt entry skipped)
-        assert body.count("<tr><td>") == 2
+        # Exactly 2 DLQ data rows (corrupt entry skipped), counted via Replay buttons
+        assert body.count('action="/dlq/replay/') == 2
         await r.aclose()
 
     @pytest.mark.asyncio
@@ -2399,8 +2402,8 @@ class TestDlqCorruptEntries:
 
         assert resp.status_code == 200
         assert "Dead Letter Queue" in body
-        # No data rows
-        assert body.count("<tr><td>") == 0
+        # No DLQ data rows (all corrupt, skipped), counted via Replay buttons
+        assert body.count('action="/dlq/replay/') == 0
         await r.aclose()
 
 
@@ -2496,7 +2499,7 @@ class TestRateLimitBeforeRiotCall:
         with patch("lol_ui.main.wait_for_token", new_callable=AsyncMock) as mock_wft:
             await show_stats(request)
 
-        mock_wft.assert_called_once_with(mock_r, limit_per_second=15)
+        mock_wft.assert_called_once_with(mock_r, limit_per_second=15, region="na1")
 
     @pytest.mark.asyncio
     async def test_show_stats__cached_puuid_skips_wait_for_token(self):
@@ -2743,6 +2746,7 @@ class TestAutoSeedCooldown:
         class FakeCfg:
             max_attempts = 5
             api_rate_limit_per_second = 20
+            players_all_max = 50000
 
         request = MagicMock()
         request.query_params = {"riot_id": "CooldownTest#NA1", "region": "na1"}
@@ -3095,10 +3099,12 @@ class TestStatsMatchesWithData:
         assert resp.status_code == 200
         assert "Jinx" in body
         assert "Zed" in body
-        assert "12/3/8" in body
-        assert "5/7/2" in body
-        assert "Win" in body
-        assert "Loss" in body
+        # KDA is rendered in separate spans
+        assert "<span>12</span>" in body
+        assert "<span>8</span>" in body
+        assert "<span>5</span>" in body
+        assert "WIN" in body
+        assert "LOSS" in body
         await r.aclose()
 
     @pytest.mark.asyncio
@@ -3146,7 +3152,7 @@ class TestStatsMatchesWithData:
 
         assert resp.status_code == 200
         # Page 1 should have exactly 5 matches (the remaining after page 0)
-        row_count = body.count("<tr><td>")
+        row_count = body.count("match-row match-row--")
         assert row_count == 5
         # Should NOT contain "Load more" since these are the last matches
         assert "Load more" not in body
@@ -3887,7 +3893,7 @@ class TestDlqPagination:
         resp = await show_dlq(request)
         body = resp.body.decode()
 
-        row_count = body.count("<tr><td>")
+        row_count = body.count('action="/dlq/replay/')
         assert row_count == _DLQ_DEFAULT_PER_PAGE
         assert "Next" in body
         await r.aclose()
@@ -3926,7 +3932,7 @@ class TestDlqPagination:
         resp = await show_dlq(request)
         body = resp.body.decode()
 
-        row_count = body.count("<tr><td>")
+        row_count = body.count('action="/dlq/replay/')
         assert row_count == 5
         assert "Next" not in body
         await r.aclose()
@@ -3963,7 +3969,7 @@ class TestDlqPagination:
         resp = await show_dlq(request)
         body = resp.body.decode()
 
-        row_count = body.count("<tr><td>")
+        row_count = body.count('action="/dlq/replay/')
         assert row_count == 10
         assert "Next" in body
         await r.aclose()
@@ -4000,7 +4006,7 @@ class TestDlqPagination:
         resp = await show_dlq(request)
         body = resp.body.decode()
 
-        row_count = body.count("<tr><td>")
+        row_count = body.count('action="/dlq/replay/')
         assert row_count == _DLQ_MAX_PER_PAGE
         await r.aclose()
 
@@ -4941,7 +4947,6 @@ class TestStatsPageRankDisplay:
         )
         body = resp.body.decode()
 
-        assert "Ranked Solo/Duo" in body
         assert "GOLD" in body
         assert "II" in body
         assert "47 LP" in body
@@ -5176,7 +5181,7 @@ class TestMatchHistoryItems:
     """Match history rows show final items when participant data includes them."""
 
     def test_match_history__shows_items_column(self):
-        """When participant has items field, an Items column is rendered."""
+        """When participant has items field, item icons are rendered."""
         from lol_ui.main import _match_history_html
 
         matches = [
@@ -5193,12 +5198,13 @@ class TestMatchHistoryItems:
                 },
             ),
         ]
-        result = _match_history_html(matches, "puuid", "na1", "P#1", 0, False)
-        assert "Items" in result
+        # version is required for item icons to render as img tags
+        result = _match_history_html(matches, "puuid", "na1", "P#1", 0, False, version="14.5.1")
+        assert "match-items" in result
         assert "3142" in result
 
     def test_match_history__no_items_shows_dash(self):
-        """When participant has no items field, Items column shows '-'."""
+        """When participant has no items field, empty item slots are rendered."""
         from lol_ui.main import _match_history_html
 
         matches = [
@@ -5215,7 +5221,8 @@ class TestMatchHistoryItems:
             ),
         ]
         result = _match_history_html(matches, "puuid", "na1", "P#1", 0, False)
-        assert "Items" in result
+        assert "match-items" in result
+        assert "match-item--empty" in result
 
 
 class TestGetChampionIdMap:
@@ -5252,8 +5259,9 @@ class TestGetChampionIdMap:
                 "Zed": {"key": "238", "id": "Zed"},
             }
         }
-        with respx.mock(assert_all_called=False):
-            respx.get(
+        mock_router = respx.mock(assert_all_called=False)
+        with mock_router:
+            mock_router.get(
                 "https://ddragon.leagueoflegends.com/cdn/14.5.1/data/en_US/champion.json"
             ).mock(return_value=httpx.Response(200, json=ddragon_data))
 

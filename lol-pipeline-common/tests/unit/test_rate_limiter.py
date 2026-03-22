@@ -271,7 +271,7 @@ class TestWaitForToken:
             with patch(
                 "lol_pipeline.rate_limiter.asyncio.sleep", new_callable=AsyncMock
             ) as mock_sleep:
-                with patch("lol_pipeline.rate_limiter.random.uniform", return_value=0.25):
+                with patch("random.uniform", return_value=0.25):
                     await wait_for_token(r)
                 # Should sleep based on wait hint (100ms) + jitter (25%), capped by deadline
                 assert mock_sleep.call_count == 1
@@ -329,8 +329,8 @@ class TestWaitForTokenWithRegion:
         assert got_default == 1
 
     @pytest.mark.asyncio
-    async def test_wait_for_token_passes_region_prefix(self, r):
-        """wait_for_token(region='na1') uses key_prefix='ratelimit:na1'."""
+    async def test_wait_for_token_ignores_region(self, r):
+        """wait_for_token(region='na1') ignores region — uses default key_prefix='ratelimit'."""
         call_args_list = []
         original_acquire = acquire_token
 
@@ -341,7 +341,8 @@ class TestWaitForTokenWithRegion:
         with patch("lol_pipeline.rate_limiter.acquire_token", side_effect=capturing_acquire):
             await wait_for_token(r, region="na1", limit_per_second=20)
 
-        assert call_args_list[0] == "ratelimit:na1"
+        # region is kept for API compat but ignored; all callers share one window
+        assert call_args_list[0] == "ratelimit"
 
 
 class TestThrottleHintSlowsDown:

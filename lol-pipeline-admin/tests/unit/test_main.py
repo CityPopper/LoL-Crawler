@@ -1772,14 +1772,16 @@ class TestDlqArchiveList:
         assert "2 archive entries" in output
 
     @pytest.mark.asyncio
-    async def test_archive_list__corrupt_entry__shows_corrupt_label(self, r, capsys):
-        """Corrupt entry in archive → displays (corrupt entry) label."""
+    async def test_archive_list__corrupt_entry__shows_fallback_fields(self, r, capsys):
+        """Corrupt entry in archive → displays fallback fields from raw dict."""
         await r.xadd(_DLQ_ARCHIVE_STREAM, {"garbage": "data"})
         args = argparse.Namespace()
         result = await cmd_dlq_archive_list(r, args)
         assert result == 0
         output = capsys.readouterr().out
-        assert "corrupt entry" in output
+        # Fallback renders unknown fields as "?" placeholders
+        assert "?" in output
+        assert "1 archive entries" in output
 
 
 class TestDlqArchiveClear:

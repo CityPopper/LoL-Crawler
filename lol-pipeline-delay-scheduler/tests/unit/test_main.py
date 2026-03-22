@@ -603,10 +603,10 @@ class TestXaddOSErrorContinuesProcessing:
 class TestMaxlenForStream:
     """I2-H3/H4: _maxlen_for_stream returns the correct per-stream policy."""
 
-    def test_match_id_returns_none(self):
+    def test_match_id_returns_500k(self):
         from lol_delay_scheduler.main import _maxlen_for_stream
 
-        assert _maxlen_for_stream("stream:match_id") is None
+        assert _maxlen_for_stream("stream:match_id") == 500_000
 
     def test_analyze_returns_50k(self):
         from lol_delay_scheduler.main import _maxlen_for_stream
