@@ -29,6 +29,7 @@ from lol_pipeline.riot_api import (
 )
 from lol_pipeline.streams import publish
 
+from lol_ui.build_display import _build_tab_html
 from lol_ui.constants import (
     _AUTOSEED_COOLDOWN_S,
     _BREAKDOWN_MATCH_COUNT,
@@ -44,11 +45,13 @@ from lol_ui.constants import (
     _TILT_RECENT_COUNT,
 )
 from lol_ui.ddragon import _get_ddragon_version
-from lol_ui.match_detail import _render_build_section, _render_detail_player
+from lol_ui.match_detail import _render_detail_player
 from lol_ui.match_history import _match_history_html, _match_history_section
 from lol_ui.playstyle import _playstyle_pills_html, _playstyle_tags
 from lol_ui.rank import _profile_header_html, _rank_card_html, _rank_history_html
 from lol_ui.rendering import _badge, _stats_form
+from lol_ui.rune_display import _get_runes_data
+from lol_ui.spell_display import _get_summoner_spell_map
 from lol_ui.stats_helpers import (
     _compute_champion_breakdown,
     _compute_role_breakdown,
@@ -439,8 +442,50 @@ async def stats_matches(request: Request) -> HTMLResponse:
     )
 
 
+_TeamEntry = tuple[str, dict[str, str], dict[str, str], list[str]]
+
+
+def _group_participants(
+    sorted_puuids: list[str],
+    pipe_results: list[Any],
+) -> tuple[list[_TeamEntry], list[_TeamEntry], dict[str, list[str]], int]:
+    """Group pipeline results into blue/red teams, skill orders, and max damage."""
+    blue_team: list[_TeamEntry] = []
+    red_team: list[_TeamEntry] = []
+    skill_orders: dict[str, list[str]] = {}
+    max_damage = 1
+    for i, p in enumerate(sorted_puuids):
+        participant_data: dict[str, str] = pipe_results[i * 4]
+        player_data: dict[str, str] = pipe_results[i * 4 + 1]
+        build_raw: str | None = pipe_results[i * 4 + 2]
+        skills_raw: str | None = pipe_results[i * 4 + 3]
+        if not participant_data:
+            continue
+        try:
+            dmg = int(participant_data.get("total_damage_dealt_to_champions", "0"))
+        except ValueError:
+            dmg = 0
+        max_damage = max(max_damage, dmg)
+        build_order: list[str] = []
+        if build_raw:
+            with contextlib.suppress(json.JSONDecodeError, TypeError):
+                build_order = [str(x) for x in json.loads(build_raw)]
+        if skills_raw:
+            with contextlib.suppress(json.JSONDecodeError, TypeError):
+                parsed = json.loads(skills_raw)
+                if isinstance(parsed, list):
+                    skill_orders[p] = [str(x) for x in parsed]
+        team_id = participant_data.get("team_id", "")
+        entry: _TeamEntry = (p, participant_data, player_data, build_order)
+        if team_id == "200":
+            red_team.append(entry)
+        else:
+            blue_team.append(entry)
+    return blue_team, red_team, skill_orders, max_damage
+
+
 @router.get("/stats/match-detail", response_class=HTMLResponse)
-async def match_detail(request: Request) -> HTMLResponse:  # noqa: C901
+async def match_detail(request: Request) -> HTMLResponse:
     """Return expanded match detail HTML showing all participants."""
     match_id = request.query_params.get("match_id", "")
     puuid = request.query_params.get("puuid", "")
@@ -452,48 +497,24 @@ async def match_detail(request: Request) -> HTMLResponse:  # noqa: C901
         return HTMLResponse("<p class='error'>Invalid PUUID format</p>", status_code=400)
 
     r = request.app.state.r
-    # Get all participants in this match
     participant_puuids: set[str] = await r.smembers(f"match:participants:{match_id}")
     if not participant_puuids:
         return HTMLResponse("<p class='warning'>Match details not available</p>")
 
-    # Batch fetch: participant data + player names + build orders
     sorted_puuids = sorted(participant_puuids)
     async with r.pipeline(transaction=False) as pipe:
         for p in sorted_puuids:
             pipe.hgetall(f"participant:{match_id}:{p}")
             pipe.hgetall(f"player:{p}")
             pipe.get(f"build:{match_id}:{p}")
+            pipe.get(f"skills:{match_id}:{p}")
         pipe_results = await pipe.execute()
 
     version = await _get_ddragon_version(r)
+    spell_map = await _get_summoner_spell_map(r)
+    runes_data = await _get_runes_data(r)
 
-    # Group by team
-    blue_team: list[tuple[str, dict[str, str], dict[str, str], list[str]]] = []
-    red_team: list[tuple[str, dict[str, str], dict[str, str], list[str]]] = []
-    max_damage = 1
-    for i, p in enumerate(sorted_puuids):
-        participant_data: dict[str, str] = pipe_results[i * 3]
-        player_data: dict[str, str] = pipe_results[i * 3 + 1]
-        build_raw: str | None = pipe_results[i * 3 + 2]
-        if not participant_data:
-            continue
-        try:
-            dmg = int(participant_data.get("total_damage_dealt_to_champions", "0"))
-        except ValueError:
-            dmg = 0
-        max_damage = max(max_damage, dmg)
-        # Parse build order
-        build_order: list[str] = []
-        if build_raw:
-            with contextlib.suppress(json.JSONDecodeError, TypeError):
-                build_order = [str(x) for x in json.loads(build_raw)]
-        team_id = participant_data.get("team_id", "")
-        entry = (p, participant_data, player_data, build_order)
-        if team_id == "200":
-            red_team.append(entry)
-        else:
-            blue_team.append(entry)
+    blue_team, red_team, skill_orders, max_damage = _group_participants(sorted_puuids, pipe_results)
 
     blue_html = "".join(
         _render_detail_player(p, part, player, puuid, max_damage, version)
@@ -503,13 +524,21 @@ async def match_detail(request: Request) -> HTMLResponse:  # noqa: C901
         _render_detail_player(p, part, player, puuid, max_damage, version)
         for p, part, player, _build in red_team
     )
-    builds_html = _render_build_section(
+
+    cfg: Config = request.app.state.cfg
+    has_timeline = cfg.fetch_timeline
+
+    build_content = _build_tab_html(
         blue_team,
         red_team,
         version,
+        has_timeline,
+        puuid,
+        spell_map,
+        runes_data,
+        skill_orders,
     )
 
-    # -- Assemble tab content --
     overview_html = (
         f'<div class="match-detail__team">'
         f'<div class="match-detail__team-label match-detail__team-label--blue">'
@@ -520,23 +549,15 @@ async def match_detail(request: Request) -> HTMLResponse:  # noqa: C901
         f"Red Team</div>"
         f"{red_html}</div>"
     )
-    build_tab_html = (
-        builds_html
-        if builds_html
-        else ('<p class="warning">Build data unavailable for this match.</p>')
-    )
     team_tab_html = '<p class="warning">Team analysis coming soon.</p>'
     ai_tab_html = '<p class="warning">AI Score coming soon.</p>'
-
-    cfg: Config = request.app.state.cfg
-    has_timeline = cfg.fetch_timeline
     timeline_tab_html = (
         '<p class="warning">Timeline data unavailable for this match.</p>' if has_timeline else ""
     )
 
     tabbed = _tabbed_match_detail(
         overview_html=overview_html,
-        build_html=build_tab_html,
+        build_html=build_content,
         team_html=team_tab_html,
         ai_html=ai_tab_html,
         timeline_html=timeline_tab_html,

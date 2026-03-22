@@ -54,6 +54,11 @@ _STRINGS: dict[str, dict[str, str]] = {
         "cs_per_min": "CS/min",
         "kill_participation": "Kill Participation",
         "objective_contribution": "Objective Contribution",
+        # -- Build tab --
+        "final_items": "Final Items",
+        "skill_order": "Skill Order",
+        "runes": "Runes",
+        "summoner_spells": "Summoner Spells",
     },
     "zh-CN": {
         # -- Tab labels --
@@ -99,6 +104,11 @@ _STRINGS: dict[str, dict[str, str]] = {
         "cs_per_min": "[CN] CS/min",
         "kill_participation": "[CN] Kill Participation",
         "objective_contribution": "[CN] Objective Contribution",
+        # -- Build tab --
+        "final_items": "[CN] Final Items",
+        "skill_order": "[CN] Skill Order",
+        "runes": "[CN] Runes",
+        "summoner_spells": "[CN] Summoner Spells",
     },
 }
 
