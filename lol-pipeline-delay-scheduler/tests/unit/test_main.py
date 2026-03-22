@@ -193,6 +193,71 @@ class TestDelaySchedulerDispatch:
         assert await r.xlen("stream:match_id") == 0
 
 
+class TestDuplicateDispatchGuard:
+    """ZSCORE guard in _DISPATCH_LUA prevents duplicate XADD on crash-restart."""
+
+    @pytest.mark.asyncio
+    async def test_member_removed_before_eval__no_xadd(self, r, log):
+        """If member was already removed from ZSET (prior successful dispatch),
+        the Lua script returns 0 and does NOT XADD again."""
+        env = _delayed_envelope()
+        past_ms = int(time.time() * 1000) - 1
+        await _add_delayed(r, env, past_ms)
+
+        # Simulate crash-restart: manually remove the member from ZSET
+        # (as if a prior run's ZREM succeeded) while keeping the member
+        # string available for eval.
+        members = await r.zrange(_DELAYED_KEY, 0, -1)
+        member = members[0]
+        await r.zrem(_DELAYED_KEY, member)
+
+        # Re-add with score so _tick picks it up via zrangebyscore,
+        # then remove before eval runs — simulate race by directly calling eval.
+        from lol_delay_scheduler.main import _DISPATCH_LUA, _maxlen_for_stream
+
+        redis_fields = env.to_redis_fields()
+        ml = _maxlen_for_stream(env.source_stream)
+        flat_args: list[str] = [member, str(ml if ml is not None else 0)]
+        for k, v in redis_fields.items():
+            flat_args.append(str(k))
+            flat_args.append(str(v))
+
+        result = await r.eval(  # type: ignore[misc]
+            _DISPATCH_LUA,
+            2,
+            env.source_stream,
+            "delayed:messages",
+            *flat_args,
+        )
+
+        assert result == 0, "Lua script should return 0 when member is absent from ZSET"
+        assert await r.xlen("stream:match_id") == 0, "No XADD should occur"
+
+    @pytest.mark.asyncio
+    async def test_member_present__normal_dispatch(self, r, log):
+        """When member exists in ZSET, Lua script dispatches normally and returns 1."""
+        env = _delayed_envelope()
+        past_ms = int(time.time() * 1000) - 1
+        await _add_delayed(r, env, past_ms)
+
+        await _tick(r, log)
+
+        assert await r.zcard(_DELAYED_KEY) == 0
+        assert await r.xlen("stream:match_id") == 1
+
+    @pytest.mark.asyncio
+    async def test_double_tick__no_duplicate_xadd(self, r, log):
+        """Running _tick twice on the same member produces exactly one XADD."""
+        env = _delayed_envelope()
+        past_ms = int(time.time() * 1000) - 1
+        await _add_delayed(r, env, past_ms)
+
+        await _tick(r, log)
+        await _tick(r, log)
+
+        assert await r.xlen("stream:match_id") == 1
+
+
 class TestDelaySchedulerPagination:
     @pytest.mark.asyncio
     async def test_zrangebyscore_uses_limit(self, r, log):

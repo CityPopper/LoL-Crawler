@@ -159,14 +159,10 @@ class TestDlqReplayValidation:
         assert await r.xlen(_DLQ_STREAM) == 2
 
     @pytest.mark.asyncio
-    async def test_replay__invalid_original_stream__skipped_entry_remains(
-        self, r, cfg, capsys
-    ):
+    async def test_replay__invalid_original_stream__skipped_entry_remains(self, r, cfg, capsys):
         """Entries with invalid original_stream are skipped; DLQ entry not removed."""
         bad_dlq = _make_dlq()
-        bad_dlq = DLQEnvelope(
-            **{**bad_dlq.__dict__, "original_stream": "stream:unknown-sink"}
-        )
+        bad_dlq = DLQEnvelope(**{**bad_dlq.__dict__, "original_stream": "stream:unknown-sink"})
         await r.xadd(_DLQ_STREAM, bad_dlq.to_redis_fields())
         args = argparse.Namespace(all=True, id=None)
         result = await cmd_dlq_replay(r, cfg, args)
@@ -179,14 +175,10 @@ class TestDlqReplayValidation:
         assert await r.xlen("stream:unknown-sink") == 0
 
     @pytest.mark.asyncio
-    async def test_replay__valid_and_invalid_mixed__only_valid_replayed(
-        self, r, cfg, capsys
-    ):
+    async def test_replay__valid_and_invalid_mixed__only_valid_replayed(self, r, cfg, capsys):
         """Mixed batch: valid entry replayed, invalid entry kept in DLQ."""
-        good_ids = await _add_dlq_entries(r, 1)
-        bad_dlq = DLQEnvelope(
-            **{**_make_dlq().__dict__, "original_stream": "stream:unknown-sink"}
-        )
+        await _add_dlq_entries(r, 1)
+        bad_dlq = DLQEnvelope(**{**_make_dlq().__dict__, "original_stream": "stream:unknown-sink"})
         await r.xadd(_DLQ_STREAM, bad_dlq.to_redis_fields())
 
         args = argparse.Namespace(all=True, id=None)
@@ -1566,7 +1558,7 @@ class TestConfirmHelper:
         args = argparse.Namespace(yes=False)
         assert _confirm("Are you sure?", args) is True
 
-    def test_confirm__user_types_YES__returns_true(self, monkeypatch):
+    def test_confirm__user_types_yes_upper__returns_true(self, monkeypatch):
         """User typing 'YES' (uppercase) returns True."""
         monkeypatch.setattr("builtins.input", lambda _: "YES")
         args = argparse.Namespace(yes=False)
@@ -1686,8 +1678,7 @@ class TestResetStats:
 
         with respx.mock:
             respx.get(
-                "https://americas.api.riotgames.com/riot/account/v1"
-                "/accounts/by-riot-id/Reset/NA1"
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Reset/NA1"
             ).mock(
                 return_value=httpx.Response(
                     200,
@@ -1728,8 +1719,7 @@ class TestResetStats:
 
         with respx.mock:
             respx.get(
-                "https://americas.api.riotgames.com/riot/account/v1"
-                "/accounts/by-riot-id/Env/NA1"
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Env/NA1"
             ).mock(
                 return_value=httpx.Response(
                     200,
@@ -1845,10 +1835,11 @@ class TestClearPriority:
 
     @pytest.mark.asyncio
     async def test_clear_priority__all__deletes_all_keys(self, r, capsys):
-        """clear-priority --all deletes all player:priority:* keys."""
+        """clear-priority --all deletes all player:priority:* keys and priority:active SET."""
         await r.set("player:priority:p1", "1")
         await r.set("player:priority:p2", "1")
         await r.set("player:priority:p3", "1")
+        await r.sadd("priority:active", "p1", "p2", "p3")
         riot = RiotClient("RGAPI-test")
         args = argparse.Namespace(all=True, riot_id=None, region="na1")
         result = await cmd_clear_priority(r, riot, args)
@@ -1857,6 +1848,7 @@ class TestClearPriority:
         assert await r.exists("player:priority:p1") == 0
         assert await r.exists("player:priority:p2") == 0
         assert await r.exists("player:priority:p3") == 0
+        assert await r.exists("priority:active") == 0
         output = capsys.readouterr().out
         assert "deleted 3" in output
 
@@ -1872,15 +1864,15 @@ class TestClearPriority:
 
     @pytest.mark.asyncio
     async def test_clear_priority__single_player__deletes_key(self, r, capsys):
-        """clear-priority <riot_id> deletes only that player's priority key."""
+        """clear-priority <riot_id> deletes only that player's key and removes from SET."""
         puuid = "test-puuid-prio-clear"
         await r.set(f"player:priority:{puuid}", "1")
         await r.set("player:priority:other", "1")
+        await r.sadd("priority:active", puuid, "other")
 
         with respx.mock:
             respx.get(
-                "https://americas.api.riotgames.com/riot/account/v1"
-                "/accounts/by-riot-id/Prio/NA1"
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Prio/NA1"
             ).mock(
                 return_value=httpx.Response(
                     200,
@@ -1895,6 +1887,8 @@ class TestClearPriority:
         assert result == 0
         assert await r.exists(f"player:priority:{puuid}") == 0
         assert await r.exists("player:priority:other") == 1
+        assert not await r.sismember("priority:active", puuid)
+        assert await r.sismember("priority:active", "other")
         assert "[OK]" in capsys.readouterr().out
 
     @pytest.mark.asyncio
@@ -1904,8 +1898,7 @@ class TestClearPriority:
 
         with respx.mock:
             respx.get(
-                "https://americas.api.riotgames.com/riot/account/v1"
-                "/accounts/by-riot-id/NoKey/NA1"
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/NoKey/NA1"
             ).mock(
                 return_value=httpx.Response(
                     200,

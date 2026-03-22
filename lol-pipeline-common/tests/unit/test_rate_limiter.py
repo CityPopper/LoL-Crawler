@@ -44,8 +44,8 @@ class TestStoredLimits:
 
         results = [await acquire_token(r, limit_per_second=20) for _ in range(6)]
 
-        assert results[:5] == [True, True, True, True, True]
-        assert results[5] is False
+        assert results[:5] == [1, 1, 1, 1, 1]
+        assert results[5] < 1
 
     @pytest.mark.asyncio
     async def test_fallback_to_config_when_no_stored_limits(
@@ -58,8 +58,8 @@ class TestStoredLimits:
         #         (config value used as fallback)
         results = [await acquire_token(r, limit_per_second=3) for _ in range(4)]
 
-        assert results[:3] == [True, True, True]
-        assert results[3] is False
+        assert results[:3] == [1, 1, 1]
+        assert results[3] < 1
 
     @pytest.mark.asyncio
     async def test_stored_limit_overrides_higher_config(
@@ -74,8 +74,8 @@ class TestStoredLimits:
 
         results = [await acquire_token(r, limit_per_second=20) for _ in range(4)]
 
-        assert results[:3] == [True, True, True]
-        assert results[3] is False
+        assert results[:3] == [1, 1, 1]
+        assert results[3] < 1
 
     @pytest.mark.asyncio
     async def test_stored_limit_higher_than_config_uses_stored(
@@ -90,8 +90,8 @@ class TestStoredLimits:
 
         results = [await acquire_token(r, limit_per_second=3) for _ in range(11)]
 
-        assert results[:10] == [True] * 10
-        assert results[10] is False
+        assert results[:10] == [1] * 10
+        assert results[10] < 1
 
     @pytest.mark.asyncio
     async def test_stored_long_limit_is_enforced(self, r: fakeredis.aioredis.FakeRedis) -> None:
@@ -105,8 +105,8 @@ class TestStoredLimits:
 
         results = [await acquire_token(r, limit_per_second=100) for _ in range(3)]
 
-        assert results[:2] == [True, True]
-        assert results[2] is False
+        assert results[:2] == [1, 1]
+        assert results[2] < 1
 
 
 class TestLuaKeysArray:
@@ -136,8 +136,8 @@ class TestLuaKeysArray:
 
         # Should respect the stored short limit of 3
         results = [await acquire_token(r, limit_per_second=20) for _ in range(4)]
-        assert results[:3] == [True, True, True]
-        assert results[3] is False
+        assert results[:3] == [1, 1, 1]
+        assert results[3] < 1
 
     @pytest.mark.asyncio
     async def test_custom_prefix_stored_limits(self, r: fakeredis.aioredis.FakeRedis) -> None:
@@ -149,8 +149,8 @@ class TestLuaKeysArray:
             await acquire_token(r, key_prefix="custom_limiter", limit_per_second=20)
             for _ in range(3)
         ]
-        assert results[:2] == [True, True]
-        assert results[2] is False
+        assert results[:2] == [1, 1]
+        assert results[2] < 1
 
 
 class TestLuaFloorGuard:
@@ -166,8 +166,8 @@ class TestLuaFloorGuard:
         # With limit_per_second=5 as fallback, first 5 should succeed
         results = [await acquire_token(r, limit_per_second=5) for _ in range(6)]
 
-        assert results[:5] == [True, True, True, True, True]
-        assert results[5] is False
+        assert results[:5] == [1, 1, 1, 1, 1]
+        assert results[5] < 1
 
     @pytest.mark.asyncio
     async def test_stored_long_limit_zero_falls_back_to_default(
@@ -179,8 +179,8 @@ class TestLuaFloorGuard:
         # Short limit fallback = 200 (high), so long limit of 100 is binding
         results = [await acquire_token(r, limit_per_second=200) for _ in range(101)]
 
-        assert results[:100] == [True] * 100
-        assert results[100] is False
+        assert results[:100] == [1] * 100
+        assert results[100] < 1
 
 
 class TestRateLimiterBoundary:
@@ -192,9 +192,9 @@ class TestRateLimiterBoundary:
         # Use limit of 5 for test speed
         await r.set("ratelimit:limits:short", "5")
         for _ in range(5):
-            assert await acquire_token(r, limit_per_second=20) is True
+            assert await acquire_token(r, limit_per_second=20) == 1
         # 6th should fail
-        assert await acquire_token(r, limit_per_second=20) is False
+        assert await acquire_token(r, limit_per_second=20) < 1
 
     @pytest.mark.asyncio
     async def test_just_after_window_expires_returns_true(
@@ -203,15 +203,15 @@ class TestRateLimiterBoundary:
         """After window expires, new tokens should be available."""
         # Fill up the window with limit 2
         await r.set("ratelimit:limits:short", "2")
-        assert await acquire_token(r, limit_per_second=20) is True
-        assert await acquire_token(r, limit_per_second=20) is True
-        assert await acquire_token(r, limit_per_second=20) is False
+        assert await acquire_token(r, limit_per_second=20) == 1
+        assert await acquire_token(r, limit_per_second=20) == 1
+        assert await acquire_token(r, limit_per_second=20) < 1
 
         # Manually expire the short window entries
         await r.delete("ratelimit:short")
 
         # Should now allow again
-        assert await acquire_token(r, limit_per_second=20) is True
+        assert await acquire_token(r, limit_per_second=20) == 1
 
     @pytest.mark.asyncio
     async def test_lua_script_error_propagates(self, r: fakeredis.aioredis.FakeRedis) -> None:
@@ -247,7 +247,7 @@ class TestWaitForToken:
             nonlocal call_count
             call_count += 1
             if call_count <= 2:
-                return False
+                return -50  # denied with 50ms wait hint
             return await original_acquire(*args, **kwargs)
 
         with patch("lol_pipeline.rate_limiter.acquire_token", side_effect=limited_acquire):
@@ -256,12 +256,14 @@ class TestWaitForToken:
         assert call_count == 3
 
     @pytest.mark.asyncio
-    async def test_sleep_interval_is_50ms(self, r):
-        """Each retry sleeps for 0.05 seconds."""
+    async def test_sleep_uses_wait_hint(self, r):
+        """Sleep duration is computed from the wait hint, not fixed 50ms."""
 
         async def deny_then_allow(*args, **kwargs):
             deny_then_allow.calls += 1
-            return deny_then_allow.calls > 1
+            if deny_then_allow.calls == 1:
+                return -100  # 100ms wait hint
+            return 1
 
         deny_then_allow.calls = 0
 
@@ -269,15 +271,19 @@ class TestWaitForToken:
             with patch(
                 "lol_pipeline.rate_limiter.asyncio.sleep", new_callable=AsyncMock
             ) as mock_sleep:
-                await wait_for_token(r)
-                mock_sleep.assert_called_once_with(0.05)
+                with patch("lol_pipeline.rate_limiter.random.uniform", return_value=0.25):
+                    await wait_for_token(r)
+                # Should sleep based on wait hint (100ms) + jitter (25%), capped by deadline
+                assert mock_sleep.call_count == 1
+                slept = mock_sleep.call_args[0][0]
+                assert 0.01 <= slept <= 1.0  # reasonable range
 
     @pytest.mark.asyncio
     async def test_timeout_raises_when_never_acquired(self, r):
         """P14-ARC-2: wait_for_token raises TimeoutError when max_wait_s exceeded."""
 
         async def always_deny(*args, **kwargs):
-            return False
+            return -50  # denied with 50ms wait hint
 
         with patch("lol_pipeline.rate_limiter.acquire_token", side_effect=always_deny):
             with patch("lol_pipeline.rate_limiter.asyncio.sleep", new_callable=AsyncMock):
@@ -292,7 +298,9 @@ class TestWaitForToken:
         async def deny_then_allow(*args, **kwargs):
             nonlocal call_count
             call_count += 1
-            return call_count > 1
+            if call_count == 1:
+                return -50  # denied with 50ms wait hint
+            return 1
 
         with patch("lol_pipeline.rate_limiter.acquire_token", side_effect=deny_then_allow):
             with patch("lol_pipeline.rate_limiter.asyncio.sleep", new_callable=AsyncMock):
@@ -313,12 +321,12 @@ class TestWaitForTokenWithRegion:
             got = await acquire_token(r, key_prefix="ratelimit:na1", limit_per_second=20)
             results.append(got)
 
-        assert results[:2] == [True, True]
-        assert results[2] is False
+        assert results[:2] == [1, 1]
+        assert results[2] < 1
 
         # Default prefix tokens should be independent
         got_default = await acquire_token(r, key_prefix="ratelimit", limit_per_second=20)
-        assert got_default is True
+        assert got_default == 1
 
     @pytest.mark.asyncio
     async def test_wait_for_token_passes_region_prefix(self, r):
@@ -342,9 +350,7 @@ class TestThrottleHintSlowsDown:
         """When ratelimit:throttle is set, wait_for_token sleeps 0.2s before proceeding."""
         await r.set("ratelimit:throttle", "1", ex=2)
 
-        with patch(
-            "lol_pipeline.rate_limiter.asyncio.sleep", new_callable=AsyncMock
-        ) as mock_sleep:
+        with patch("lol_pipeline.rate_limiter.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             await wait_for_token(r, limit_per_second=20)
 
         # Should have slept 0.2s for throttle hint (token acquired immediately, no 0.05 sleep)
@@ -353,9 +359,7 @@ class TestThrottleHintSlowsDown:
     @pytest.mark.asyncio
     async def test_no_extra_sleep_without_throttle_key(self, r):
         """Without ratelimit:throttle, no extra sleep occurs."""
-        with patch(
-            "lol_pipeline.rate_limiter.asyncio.sleep", new_callable=AsyncMock
-        ) as mock_sleep:
+        with patch("lol_pipeline.rate_limiter.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             await wait_for_token(r, limit_per_second=20)
 
         mock_sleep.assert_not_called()

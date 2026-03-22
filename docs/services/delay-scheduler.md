@@ -80,7 +80,7 @@ re-opens — approximately 5 seconds at 500 ms/tick.
 
 | Stream | MAXLEN |
 |--------|--------|
-| `stream:match_id` | `MATCH_ID_STREAM_MAXLEN` (unbounded — `None` by default) |
+| `stream:match_id` | `MATCH_ID_STREAM_MAXLEN` (500,000) |
 | `stream:analyze` | `ANALYZE_STREAM_MAXLEN` (50,000) |
 | All others | `_DEFAULT_MAXLEN` (10,000) |
 

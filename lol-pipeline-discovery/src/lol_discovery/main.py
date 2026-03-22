@@ -7,6 +7,7 @@ import contextlib
 import logging
 import signal
 import time
+import uuid
 from datetime import UTC, datetime
 from typing import Any
 
@@ -108,112 +109,170 @@ async def _resolve_names(
     return str(game_name), str(tag_line)
 
 
-async def _promote_batch(
+def _should_skip_seeded(
+    recrawl_after: str | None,
+    now: float,
+) -> bool | None:
+    """Decide whether to skip a seeded player.
+
+    Returns True to skip (remove from queue), False to skip (not yet due),
+    and None to allow re-promotion (recrawl_after has passed).
+    """
+    if not recrawl_after:
+        return True  # no recrawl scheduled -- skip
+    try:
+        if float(recrawl_after) > now:
+            return True  # not yet due
+    except (ValueError, TypeError):
+        pass
+    return None  # recrawl_after has passed -- allow
+
+
+async def _publish_and_commit(
     r: aioredis.Redis,
     cfg: Config,
-    log: logging.Logger,
-    riot: RiotClient,
-) -> int:
-    """Promote up to discovery_batch_size players from discover:players to stream:puuid."""
-    if await r.get("system:halted"):
-        return 0
-    # P16-DB-2: Trim stale entries from players:all whose player hash has expired.
-    # Entries older than PLAYER_DATA_TTL_SECONDS are unlikely to still have a live
-    # player:{puuid} hash.  This runs once per batch — O(log N) amortised.
-    cutoff = time.time() - PLAYER_DATA_TTL_SECONDS
-    removed = await r.zremrangebyscore("players:all", "-inf", cutoff)
-    if removed:
-        log.info("trimmed stale players:all entries", extra={"removed": removed})
-    # ZREVRANGE: highest score first (newest game_start = most recent activity)
-    members: list[Any] = await r.zrevrange(_DISCOVER_KEY, 0, cfg.discovery_batch_size - 1)
-    if not members:
-        return 0
+    puuid: str,
+    region: str,
+    game_name: str,
+    tag_line: str,
+    member: Any,
+) -> None:
+    """Publish envelope and atomically update player state."""
+    envelope = MessageEnvelope(
+        source_stream=_STREAM_PUUID,
+        type="puuid",
+        payload={
+            "puuid": puuid,
+            "game_name": game_name,
+            "tag_line": tag_line,
+            "region": region,
+        },
+        max_attempts=cfg.max_attempts,
+        priority=PRIORITY_AUTO_20,
+        correlation_id=str(uuid.uuid4()),
+    )
+    await publish(r, _STREAM_PUUID, envelope)
+    now_iso = datetime.now(tz=UTC).isoformat()
+    async with r.pipeline(transaction=True) as pipe:
+        await pipe.hset(  # type: ignore[misc]
+            f"player:{puuid}",
+            mapping={
+                "game_name": game_name,
+                "tag_line": tag_line,
+                "region": region,
+                "seeded_at": now_iso,
+            },
+        )
+        await pipe.expire(f"player:{puuid}", PLAYER_DATA_TTL_SECONDS)
+        await pipe.zadd("players:all", {puuid: time.time()})
+        await pipe.zremrangebyrank(
+            "players:all",
+            0,
+            -(cfg.players_all_max + 1),
+        )
+        await pipe.zrem(_DISCOVER_KEY, member)
+        await pipe.execute()
 
-    # Batch HEXISTS + HGET recrawl_after for all members to avoid N sequential round-trips
+
+async def _fetch_member_state(
+    r: aioredis.Redis,
+    members: list[Any],
+) -> tuple[list[bool], list[str | None]]:
+    """Batch-fetch seeded/recrawl state for all members."""
     async with r.pipeline(transaction=False) as hex_pipe:
         for member in members:
             puuid_check, _ = _parse_member(str(member))
             hex_pipe.hexists(f"player:{puuid_check}", "seeded_at")
             hex_pipe.hget(f"player:{puuid_check}", "recrawl_after")
         pipe_results: list[Any] = await hex_pipe.execute()
+    seeded = [pipe_results[i * 2] for i in range(len(members))]
+    recrawl = [pipe_results[i * 2 + 1] for i in range(len(members))]
+    return seeded, recrawl
 
-    # Results alternate: [seeded_0, recrawl_0, seeded_1, recrawl_1, ...]
-    seeded_results: list[bool] = [pipe_results[i * 2] for i in range(len(members))]
-    recrawl_values: list[str | None] = [pipe_results[i * 2 + 1] for i in range(len(members))]
 
+async def _try_promote_member(  # noqa: PLR0913
+    r: aioredis.Redis,
+    cfg: Config,
+    log: logging.Logger,
+    riot: RiotClient,
+    member: Any,
+    already_seeded: bool,
+    recrawl_after: str | None,
+    now: float,
+) -> int | None:
+    """Try to promote one member. Return 1 on success, 0 on skip, None on halt."""
+    puuid, region = _parse_member(str(member))
+    if already_seeded:
+        skip = _should_skip_seeded(recrawl_after, now)
+        if skip:
+            await r.zrem(_DISCOVER_KEY, member)
+            return 0
+        if skip is not None:
+            return 0
+    try:
+        names = await _resolve_names(r, riot, puuid, region, log)
+    except AuthError:
+        log.critical("auth error — halt", extra={"puuid": puuid})
+        await r.set("system:halted", "1")
+        return None
+    except RiotAPIError:
+        log.error("transient api error", extra={"puuid": puuid})
+        return 0
+    if names is None:
+        await r.zrem(_DISCOVER_KEY, member)
+        return 0
+    await _publish_and_commit(
+        r,
+        cfg,
+        puuid,
+        region,
+        names[0],
+        names[1],
+        member,
+    )
+    return 1
+
+
+async def _promote_batch(
+    r: aioredis.Redis,
+    cfg: Config,
+    log: logging.Logger,
+    riot: RiotClient,
+) -> int:
+    """Promote discovered players from discover:players to stream:puuid."""
+    if await r.get("system:halted"):
+        return 0
+    cutoff = time.time() - PLAYER_DATA_TTL_SECONDS
+    removed = await r.zremrangebyscore("players:all", "-inf", cutoff)
+    if removed:
+        log.info("trimmed stale entries", extra={"removed": removed})
+    members: list[Any] = await r.zrevrange(
+        _DISCOVER_KEY,
+        0,
+        cfg.discovery_batch_size - 1,
+    )
+    if not members:
+        return 0
+
+    seeded_results, recrawl_values = await _fetch_member_state(r, members)
     promoted = 0
     now = time.time()
     for member, already_seeded, recrawl_after in zip(
         members, seeded_results, recrawl_values, strict=True
     ):
-        puuid, region = _parse_member(str(member))
-
-        if already_seeded:
-            # Check if this player is due for re-crawl
-            if recrawl_after:
-                try:
-                    if float(recrawl_after) > now:
-                        # Not yet due — remove from discover queue, will be re-added later
-                        await r.zrem(_DISCOVER_KEY, member)
-                        continue
-                except (ValueError, TypeError):
-                    pass
-                # recrawl_after has passed — allow re-promotion by falling through
-            else:
-                await r.zrem(_DISCOVER_KEY, member)
-                continue
-
-        try:
-            names = await _resolve_names(r, riot, puuid, region, log)
-        except AuthError:
-            log.critical("auth error (403) — halting system", extra={"puuid": puuid})
-            await r.set("system:halted", "1")
-            break
-        except RiotAPIError:
-            log.error("transient api error — will retry", extra={"puuid": puuid})
-            continue  # leave in queue for next batch
-        if names is None:
-            await r.zrem(_DISCOVER_KEY, member)
-            continue
-        game_name, tag_line = names
-
-        envelope = MessageEnvelope(
-            source_stream=_STREAM_PUUID,
-            type="puuid",
-            payload={
-                "puuid": puuid,
-                "game_name": game_name,
-                "tag_line": tag_line,
-                "region": region,
-            },
-            max_attempts=cfg.max_attempts,
-            priority=PRIORITY_AUTO_20,
+        result = await _try_promote_member(
+            r,
+            cfg,
+            log,
+            riot,
+            member,
+            already_seeded,
+            recrawl_after,
+            now,
         )
-        # I2-H12: Atomic promotion ordering — at-least-once safe.
-        # 1. XADD to stream:puuid FIRST.  If we crash here the player stays
-        #    in discover:players and will be re-promoted on next batch (safe:
-        #    downstream consumers handle duplicate PUUIDs idempotently).
-        # 2. HSET seeded_at + ZREM from discover:players in a single MULTI/EXEC
-        #    pipeline.  If we crash after XADD but before the pipeline, the
-        #    player is re-promoted next cycle — at-least-once, never lost.
-        await publish(r, _STREAM_PUUID, envelope)
-        now_iso = datetime.now(tz=UTC).isoformat()
-        async with r.pipeline(transaction=True) as pipe:
-            await pipe.hset(  # type: ignore[misc]
-                f"player:{puuid}",
-                mapping={
-                    "game_name": game_name,
-                    "tag_line": tag_line,
-                    "region": region,
-                    "seeded_at": now_iso,
-                },
-            )
-            await pipe.expire(f"player:{puuid}", PLAYER_DATA_TTL_SECONDS)  # 30 days
-            await pipe.zadd("players:all", {puuid: time.time()})
-            await pipe.zremrangebyrank("players:all", 0, -(cfg.players_all_max + 1))
-            await pipe.zrem(_DISCOVER_KEY, member)
-            await pipe.execute()
-        promoted += 1
+        if result is None:
+            break  # auth error -- halt
+        promoted += result
 
     if promoted:
         log.info("promoted discovered players", extra={"count": promoted})

@@ -52,6 +52,11 @@
       "enum": ["manual_20", "manual_20plus", "auto_20", "auto_new", "high", "normal"],
       "default": "normal",
       "description": "Processing priority tier — manual_20 (highest) > manual_20plus > auto_20 > auto_new (lowest). 'high' and 'normal' are backwards-compat aliases."
+    },
+    "correlation_id": {
+      "type": "string",
+      "default": "",
+      "description": "UUID tracing a message through the entire pipeline. Set at pipeline entry (Seed/UI), propagated by all services."
     }
   }
 }

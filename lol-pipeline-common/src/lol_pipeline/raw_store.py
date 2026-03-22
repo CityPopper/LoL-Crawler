@@ -111,6 +111,19 @@ class RawStore:
             text = io.TextIOWrapper(reader, encoding="utf-8")
             return RawStore._find_in_lines(text, match_id)
 
+    def _exists_in_current_bundle(self, match_id: str) -> bool:
+        """Check if match_id exists in the current month's JSONL bundle only.
+
+        Used by set() for dedup on write.  Scanning only the active bundle is
+        O(current-month lines) instead of O(all-time lines).  Historical
+        duplicates are already blocked by the fetcher's ``match:status:fetched``
+        Redis set, so a full-scan is unnecessary on the write path.
+        """
+        bp = self._bundle_path(match_id)
+        if bp is None or not bp.exists():
+            return False
+        return self._search_bundle_file(bp, match_id) is not None
+
     def _exists_in_bundles(self, match_id: str) -> bool:
         """Check if match_id exists in any JSONL bundle."""
         return self._search_bundles(match_id) is not None
@@ -140,8 +153,10 @@ class RawStore:
         if bp is None:
             return
         # Redis SET NX is the atomic coordinator: only the winner writes to disk.
-        # Also check bundles for the Redis-restart case (key gone, disk has it).
-        if not was_set or await asyncio.to_thread(self._exists_in_bundles, match_id):
+        # Also check the current bundle for the Redis-restart case (key gone,
+        # disk has it).  Only the active month's file is scanned — historical
+        # duplicates are already blocked by match:status:fetched in Redis.
+        if not was_set or await asyncio.to_thread(self._exists_in_current_bundle, match_id):
             return
         try:
             bp.parent.mkdir(parents=True, exist_ok=True)

@@ -20,6 +20,7 @@ _SHORT_WINDOW_S = int(os.environ.get("RATE_LIMIT_SHORT_WINDOW_S", "1"))
 _LONG_WINDOW_S = int(os.environ.get("RATE_LIMIT_LONG_WINDOW_S", "120"))
 
 _RATE_LIMIT_KEY_TTL = 3600  # 1 hour — stale limits expire after API key rotation
+_RATE_LIMIT_WRITE_INTERVAL_S = 1800  # Re-write cached values every 30 min to refresh TTL
 
 PLATFORM_TO_REGION: dict[str, str] = {
     "na1": "americas",
@@ -230,6 +231,11 @@ class RiotClient:
         # R4: Circuit breaker state
         self._consecutive_5xx: int = 0
         self._circuit_open_until: float = 0.0
+        # Cache last-written rate limit values to avoid redundant Redis writes.
+        # Initialized to None so the first successful call always writes.
+        self._cached_short_limit: int | None = None
+        self._cached_long_limit: int | None = None
+        self._limits_last_written_at: float = 0.0
 
     async def _get(self, url: str) -> Any:
         # R4: Circuit breaker — reject requests while circuit is open
@@ -273,8 +279,20 @@ class RiotClient:
             limits = _parse_app_rate_limit(resp.headers.get("X-App-Rate-Limit", ""))
             if limits:
                 short, long_ = limits
-                await self._r.set("ratelimit:limits:short", str(short), ex=_RATE_LIMIT_KEY_TTL)
-                await self._r.set("ratelimit:limits:long", str(long_), ex=_RATE_LIMIT_KEY_TTL)
+                # Only write to Redis when the values change or the TTL needs
+                # refreshing (every _RATE_LIMIT_WRITE_INTERVAL_S).  At 20 req/s
+                # this avoids ~40 redundant SET commands per second.
+                now = _time.monotonic()
+                values_changed = (
+                    short != self._cached_short_limit or long_ != self._cached_long_limit
+                )
+                ttl_stale = now - self._limits_last_written_at >= _RATE_LIMIT_WRITE_INTERVAL_S
+                if values_changed or ttl_stale:
+                    await self._r.set("ratelimit:limits:short", str(short), ex=_RATE_LIMIT_KEY_TTL)
+                    await self._r.set("ratelimit:limits:long", str(long_), ex=_RATE_LIMIT_KEY_TTL)
+                    self._cached_short_limit = short
+                    self._cached_long_limit = long_
+                    self._limits_last_written_at = now
             # R5: Parse X-App-Rate-Limit-Count for near-limit warnings + throttle hint
             should_throttle = _check_rate_limit_count(
                 resp.headers.get("X-App-Rate-Limit-Count", ""),

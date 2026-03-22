@@ -334,7 +334,12 @@ class TestEnvelopeSchemaIncludesPriority:
         assert "priority" in props, "priority missing from envelope.json properties"
         assert props["priority"]["type"] == "string"
         assert props["priority"]["enum"] == [
-            "manual_20", "manual_20plus", "auto_20", "auto_new", "high", "normal",
+            "manual_20",
+            "manual_20plus",
+            "auto_20",
+            "auto_new",
+            "high",
+            "normal",
         ]
         assert props["priority"]["default"] == "normal"
 
@@ -347,7 +352,12 @@ class TestEnvelopeSchemaIncludesPriority:
         assert "priority" in props, "priority missing from dlq_envelope.json properties"
         assert props["priority"]["type"] == "string"
         assert props["priority"]["enum"] == [
-            "manual_20", "manual_20plus", "auto_20", "auto_new", "high", "normal",
+            "manual_20",
+            "manual_20plus",
+            "auto_20",
+            "auto_new",
+            "high",
+            "normal",
         ]
         assert props["priority"]["default"] == "normal"
 

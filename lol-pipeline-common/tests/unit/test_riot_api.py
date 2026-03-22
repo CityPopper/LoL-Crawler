@@ -318,7 +318,9 @@ class TestRateLimitKeyTTL:
     async def test_ttl_refreshed_on_subsequent_calls(
         self, fake_redis: fakeredis.aioredis.FakeRedis
     ) -> None:
-        """B15: Each successful API call refreshes the TTL on limit keys."""
+        """B15: Each successful API call refreshes the TTL on limit keys
+        once the write-interval has elapsed (rate limit values are cached
+        in-process to avoid redundant Redis writes)."""
         with respx.mock:
             route = respx.get(
                 "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Test/NA1"
@@ -339,12 +341,143 @@ class TestRateLimitKeyTTL:
             await client.get_account_by_riot_id("Test", "NA1", "na1")
             # Manually reduce TTL to simulate time passing
             await fake_redis.expire("ratelimit:limits:short", 100)
+            # Simulate that the write interval has elapsed so the client
+            # will re-write on the next call and refresh the TTL
+            client._limits_last_written_at = 0.0
             await client.get_account_by_riot_id("Test", "NA1", "na1")
             await client.close()
 
         # After second call, TTL should be refreshed back to ~3600
         short_ttl = await fake_redis.ttl("ratelimit:limits:short")
         assert short_ttl > 100  # Was refreshed, not still at 100
+        await fake_redis.aclose()
+
+
+class TestRateLimitWriteCaching:
+    """Rate limit values are cached in-process to avoid redundant Redis writes."""
+
+    @pytest.fixture
+    def fake_redis(self) -> fakeredis.aioredis.FakeRedis:
+        return fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+    @pytest.mark.asyncio
+    async def test_skips_redis_write_when_values_unchanged(
+        self, fake_redis: fakeredis.aioredis.FakeRedis
+    ) -> None:
+        """Second call with identical limits does NOT write to Redis again."""
+        with respx.mock:
+            route = respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Test/NA1"
+            )
+            route.side_effect = [
+                httpx.Response(
+                    200,
+                    json={"puuid": "puuid1", "gameName": "Test", "tagLine": "NA1"},
+                    headers={"X-App-Rate-Limit": "20:1,100:120"},
+                ),
+                httpx.Response(
+                    200,
+                    json={"puuid": "puuid1", "gameName": "Test", "tagLine": "NA1"},
+                    headers={"X-App-Rate-Limit": "20:1,100:120"},
+                ),
+            ]
+            client = RiotClient("RGAPI-test", r=fake_redis)
+            await client.get_account_by_riot_id("Test", "NA1", "na1")
+            # Overwrite the key with a marker value after first write
+            await fake_redis.set("ratelimit:limits:short", "MARKER")
+            await client.get_account_by_riot_id("Test", "NA1", "na1")
+            await client.close()
+
+        # MARKER should remain — proving the second call did NOT overwrite
+        assert await fake_redis.get("ratelimit:limits:short") == "MARKER"
+        await fake_redis.aclose()
+
+    @pytest.mark.asyncio
+    async def test_writes_redis_when_values_change(
+        self, fake_redis: fakeredis.aioredis.FakeRedis
+    ) -> None:
+        """When API returns different limits (key tier upgrade), Redis is updated."""
+        with respx.mock:
+            route = respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Test/NA1"
+            )
+            route.side_effect = [
+                httpx.Response(
+                    200,
+                    json={"puuid": "puuid1", "gameName": "Test", "tagLine": "NA1"},
+                    headers={"X-App-Rate-Limit": "20:1,100:120"},
+                ),
+                httpx.Response(
+                    200,
+                    json={"puuid": "puuid1", "gameName": "Test", "tagLine": "NA1"},
+                    headers={"X-App-Rate-Limit": "100:1,1000:120"},
+                ),
+            ]
+            client = RiotClient("RGAPI-test", r=fake_redis)
+            await client.get_account_by_riot_id("Test", "NA1", "na1")
+            assert await fake_redis.get("ratelimit:limits:short") == "20"
+            await client.get_account_by_riot_id("Test", "NA1", "na1")
+            await client.close()
+
+        # Values changed, so Redis should have the new values
+        assert await fake_redis.get("ratelimit:limits:short") == "100"
+        assert await fake_redis.get("ratelimit:limits:long") == "1000"
+        await fake_redis.aclose()
+
+    @pytest.mark.asyncio
+    async def test_first_call_always_writes(self, fake_redis: fakeredis.aioredis.FakeRedis) -> None:
+        """First call writes to Redis even though cache starts as None."""
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Test/NA1"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": "puuid1", "gameName": "Test", "tagLine": "NA1"},
+                    headers={"X-App-Rate-Limit": "20:1,100:120"},
+                )
+            )
+            client = RiotClient("RGAPI-test", r=fake_redis)
+            assert client._cached_short_limit is None
+            assert client._cached_long_limit is None
+            await client.get_account_by_riot_id("Test", "NA1", "na1")
+            await client.close()
+
+        assert await fake_redis.get("ratelimit:limits:short") == "20"
+        assert await fake_redis.get("ratelimit:limits:long") == "100"
+        await fake_redis.aclose()
+
+    @pytest.mark.asyncio
+    async def test_rewrites_after_write_interval_elapsed(
+        self, fake_redis: fakeredis.aioredis.FakeRedis
+    ) -> None:
+        """After the write interval elapses, same values are re-written to refresh TTL."""
+        with respx.mock:
+            route = respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Test/NA1"
+            )
+            route.side_effect = [
+                httpx.Response(
+                    200,
+                    json={"puuid": "puuid1", "gameName": "Test", "tagLine": "NA1"},
+                    headers={"X-App-Rate-Limit": "20:1,100:120"},
+                ),
+                httpx.Response(
+                    200,
+                    json={"puuid": "puuid1", "gameName": "Test", "tagLine": "NA1"},
+                    headers={"X-App-Rate-Limit": "20:1,100:120"},
+                ),
+            ]
+            client = RiotClient("RGAPI-test", r=fake_redis)
+            await client.get_account_by_riot_id("Test", "NA1", "na1")
+            # Overwrite with marker, then simulate write interval elapsed
+            await fake_redis.set("ratelimit:limits:short", "MARKER")
+            client._limits_last_written_at = 0.0
+            await client.get_account_by_riot_id("Test", "NA1", "na1")
+            await client.close()
+
+        # MARKER should be overwritten because the write interval elapsed
+        assert await fake_redis.get("ratelimit:limits:short") == "20"
         await fake_redis.aclose()
 
 
@@ -587,9 +720,7 @@ class TestCircuitBreaker:
     async def test_circuit_breaker_opens_after_consecutive_5xx(self) -> None:
         """After 5 consecutive 5xx responses, circuit breaker opens and rejects requests."""
         with respx.mock:
-            url = (
-                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/X/Y"
-            )
+            url = "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/X/Y"
             respx.get(url).mock(return_value=httpx.Response(500, text="Server Error"))
             client = RiotClient("RGAPI-test")
 
@@ -607,9 +738,7 @@ class TestCircuitBreaker:
     async def test_circuit_breaker_resets_on_success(self) -> None:
         """A successful response resets the consecutive 5xx counter."""
         with respx.mock:
-            url = (
-                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/X/Y"
-            )
+            url = "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/X/Y"
             route = respx.get(url)
             # 4 failures, then 1 success, then 4 more failures
             route.side_effect = [
@@ -649,12 +778,9 @@ class TestCircuitBreaker:
     async def test_circuit_breaker_auto_closes_after_timeout(self) -> None:
         """After the circuit open duration expires, requests go through again."""
         import time as _time
-        from unittest.mock import patch as _patch
 
         with respx.mock:
-            url = (
-                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/X/Y"
-            )
+            url = "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/X/Y"
             route = respx.get(url)
             route.side_effect = [
                 httpx.Response(500, text="Error"),
@@ -692,9 +818,7 @@ class TestCircuitBreaker:
     async def test_circuit_breaker_counts_network_errors(self) -> None:
         """Network errors (RequestError) also increment the 5xx counter."""
         with respx.mock:
-            url = (
-                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/X/Y"
-            )
+            url = "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/X/Y"
             respx.get(url).mock(side_effect=httpx.ConnectError("connection refused"))
             client = RiotClient("RGAPI-test")
 
@@ -717,7 +841,9 @@ class TestRateLimitCountParsing:
 
     @pytest.mark.asyncio
     async def test_rate_limit_count_header_parsed(
-        self, fake_redis: fakeredis.aioredis.FakeRedis, caplog: pytest.LogCaptureFixture,
+        self,
+        fake_redis: fakeredis.aioredis.FakeRedis,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Near-limit usage triggers a warning log."""
         with respx.mock:
@@ -729,7 +855,8 @@ class TestRateLimitCountParsing:
                     json={"puuid": "test-puuid", "gameName": "Faker", "tagLine": "KR1"},
                     headers={
                         "X-App-Rate-Limit": "20:1,100:120",
-                        "X-App-Rate-Limit-Count": "19:1,95:120",  # 19/20 and 95/100 — both near limit
+                        # 19/20 and 95/100 -- both near limit
+                        "X-App-Rate-Limit-Count": "19:1,95:120",
                     },
                 )
             )
@@ -747,7 +874,9 @@ class TestRateLimitCountParsing:
 
     @pytest.mark.asyncio
     async def test_rate_limit_count_no_warning_when_under_threshold(
-        self, fake_redis: fakeredis.aioredis.FakeRedis, caplog: pytest.LogCaptureFixture,
+        self,
+        fake_redis: fakeredis.aioredis.FakeRedis,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Low usage does not trigger a warning."""
         with respx.mock:
@@ -776,7 +905,8 @@ class TestRateLimitCountParsing:
 
     @pytest.mark.asyncio
     async def test_rate_limit_count_missing_header_no_crash(
-        self, fake_redis: fakeredis.aioredis.FakeRedis,
+        self,
+        fake_redis: fakeredis.aioredis.FakeRedis,
     ) -> None:
         """Missing X-App-Rate-Limit-Count does not crash."""
         with respx.mock:
@@ -1031,7 +1161,7 @@ class TestGetMatchTimeline:
                 )
             )
             client = RiotClient("RGAPI-test")
-            result = await client.get_match_timeline("EUW1_555", "euw1")
+            await client.get_match_timeline("EUW1_555", "euw1")
             await client.close()
 
         assert route.called
@@ -1057,7 +1187,8 @@ class TestThrottleHint:
 
     @pytest.mark.asyncio
     async def test_throttle_hint_set_when_near_capacity(
-        self, fake_redis: fakeredis.aioredis.FakeRedis,
+        self,
+        fake_redis: fakeredis.aioredis.FakeRedis,
     ) -> None:
         """When < 5% capacity remains, ratelimit:throttle is set in Redis."""
         with respx.mock:
@@ -1083,7 +1214,8 @@ class TestThrottleHint:
 
     @pytest.mark.asyncio
     async def test_throttle_hint_not_set_when_under_threshold(
-        self, fake_redis: fakeredis.aioredis.FakeRedis,
+        self,
+        fake_redis: fakeredis.aioredis.FakeRedis,
     ) -> None:
         """When plenty of capacity remains, no throttle hint is set."""
         with respx.mock:
@@ -1109,7 +1241,8 @@ class TestThrottleHint:
 
     @pytest.mark.asyncio
     async def test_throttle_hint_has_ttl(
-        self, fake_redis: fakeredis.aioredis.FakeRedis,
+        self,
+        fake_redis: fakeredis.aioredis.FakeRedis,
     ) -> None:
         """Throttle hint key expires after a short TTL."""
         with respx.mock:

@@ -6,6 +6,7 @@ import asyncio
 import logging
 import sys
 import time
+import uuid
 from datetime import UTC, datetime
 
 import redis.asyncio as aioredis
@@ -105,6 +106,7 @@ async def seed(
         payload={"puuid": puuid, "game_name": game_name, "tag_line": tag_line, "region": region},
         max_attempts=cfg.max_attempts,
         priority=PRIORITY_MANUAL_20,
+        correlation_id=str(uuid.uuid4()),
     )
     # Set priority before publishing so clear_priority() by downstream
     # services cannot race against a not-yet-set priority key.

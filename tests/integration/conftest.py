@@ -21,7 +21,7 @@ from helpers import FIXTURES  # noqa: E402, F401
 @pytest.fixture(scope="session")
 def redis_container():
     """Start a Redis 7 container for the entire test session."""
-    with RedisContainer("redis:7-alpine") as container:
+    with RedisContainer("redis:7.2.11-alpine") as container:
         yield container
 
 

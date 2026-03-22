@@ -1,0 +1,38 @@
+# Unified Dockerfile for all pipeline services.
+# Build with:  docker build --build-arg SERVICE_NAME=crawler --build-arg MODULE_NAME=lol_crawler -f Dockerfile.service .
+#
+# SERVICE_NAME  — directory suffix, e.g. "crawler" → lol-pipeline-crawler/
+# MODULE_NAME   — python module, e.g. "lol_crawler" for `python -m lol_crawler`
+
+ARG SERVICE_NAME
+ARG MODULE_NAME
+
+# ── builder ──────────────────────────────────────────────────────────────────
+FROM python:3.14-slim AS builder
+WORKDIR /build
+
+COPY lol-pipeline-common/ ./common/
+RUN pip install --no-cache-dir ./common/
+
+ARG SERVICE_NAME
+COPY lol-pipeline-${SERVICE_NAME}/pyproject.toml .
+COPY lol-pipeline-${SERVICE_NAME}/src/ ./src/
+RUN pip install --no-cache-dir .
+
+# ── runtime ──────────────────────────────────────────────────────────────────
+FROM python:3.14-slim AS runtime
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+WORKDIR /app
+
+COPY --from=builder /usr/local/lib/python3.14/site-packages \
+                    /usr/local/lib/python3.14/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+RUN adduser --disabled-password --no-create-home appuser
+USER appuser
+
+STOPSIGNAL SIGTERM
+
+ARG MODULE_NAME
+ENV MODULE_NAME=${MODULE_NAME}
+CMD python -m ${MODULE_NAME}

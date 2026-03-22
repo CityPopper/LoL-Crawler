@@ -1,5 +1,7 @@
 """MessageEnvelope and DLQEnvelope — pipeline message contracts."""
 
+from __future__ import annotations
+
 import json
 import uuid
 from dataclasses import dataclass, field
@@ -28,6 +30,7 @@ class MessageEnvelope:
     enqueued_at: str = field(default_factory=_now_iso)
     dlq_attempts: int = 0
     priority: str = "normal"
+    correlation_id: str = ""
 
     def to_redis_fields(self) -> dict[str, str]:
         return {
@@ -40,6 +43,7 @@ class MessageEnvelope:
             "enqueued_at": self.enqueued_at,
             "dlq_attempts": str(self.dlq_attempts),
             "priority": self.priority,
+            "correlation_id": self.correlation_id,
         }
 
     @classmethod
@@ -54,6 +58,7 @@ class MessageEnvelope:
             enqueued_at=fields["enqueued_at"],
             dlq_attempts=int(fields.get("dlq_attempts", "0")),
             priority=fields.get("priority", "normal"),
+            correlation_id=fields.get("correlation_id", ""),
         )
 
 
@@ -77,6 +82,7 @@ class DLQEnvelope:
     retry_after_ms: int | None = None
     dlq_attempts: int = 0
     priority: str = "normal"
+    correlation_id: str = ""
 
     def to_redis_fields(self) -> dict[str, str]:
         return {
@@ -96,6 +102,7 @@ class DLQEnvelope:
             "dlq_attempts": str(self.dlq_attempts),
             "retry_after_ms": "null" if self.retry_after_ms is None else str(self.retry_after_ms),
             "priority": self.priority,
+            "correlation_id": self.correlation_id,
         }
 
     @classmethod
@@ -118,4 +125,5 @@ class DLQEnvelope:
             retry_after_ms=None if ram == "null" else int(ram),
             dlq_attempts=int(fields.get("dlq_attempts", "0")),
             priority=fields.get("priority", "normal"),
+            correlation_id=fields.get("correlation_id", ""),
         )

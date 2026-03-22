@@ -190,4 +190,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build Docker image
-        run: docker build -f ${{ matrix.service }}/Dockerfile -t ${{ matrix.service }}:ci .
+        run: |
+          SVC_NAME="${{ matrix.service }}"
+          SHORT="${SVC_NAME#lol-pipeline-}"
+          MODULE="lol_${SHORT//-/_}"
+          docker build -f Dockerfile.service \
+            --build-arg SERVICE_NAME="$SHORT" \
+            --build-arg MODULE_NAME="$MODULE" \
+            -t "$SVC_NAME:ci" .

@@ -927,19 +927,33 @@ class TestProcessMatchesSkipsEmptyParticipant:
         ]
         participant_data = [
             {
-                "win": "1", "kills": "5", "deaths": "1", "assists": "3",
-                "champion_name": "Annie", "role": "SOLO",
+                "win": "1",
+                "kills": "5",
+                "deaths": "1",
+                "assists": "3",
+                "champion_name": "Annie",
+                "role": "SOLO",
             },
             {},  # empty — should be skipped
             {
-                "win": "0", "kills": "2", "deaths": "4", "assists": "1",
-                "champion_name": "Jinx", "role": "DUO",
+                "win": "0",
+                "kills": "2",
+                "deaths": "4",
+                "assists": "1",
+                "champion_name": "Jinx",
+                "role": "DUO",
             },
         ]
 
         result = await _process_matches(
-            r, puuid, new_matches, participant_data,
-            lock_key, worker_id, lock_ttl_ms, log,
+            r,
+            puuid,
+            new_matches,
+            participant_data,
+            lock_key,
+            worker_id,
+            lock_ttl_ms,
+            log,
         )
 
         assert result is True
@@ -969,8 +983,14 @@ class TestProcessMatchesSkipsEmptyParticipant:
         participant_data = [{}, {}]  # both empty
 
         result = await _process_matches(
-            r, puuid, new_matches, participant_data,
-            lock_key, worker_id, lock_ttl_ms, log,
+            r,
+            puuid,
+            new_matches,
+            participant_data,
+            lock_key,
+            worker_id,
+            lock_ttl_ms,
+            log,
         )
 
         assert result is True
@@ -991,14 +1011,24 @@ class TestProcessMatchesSkipsEmptyParticipant:
         participant_data = [
             {},  # empty — skipped
             {
-                "win": "1", "kills": "10", "deaths": "0", "assists": "5",
-                "champion_name": "Lux", "role": "SUPPORT",
+                "win": "1",
+                "kills": "10",
+                "deaths": "0",
+                "assists": "5",
+                "champion_name": "Lux",
+                "role": "SUPPORT",
             },
         ]
 
         result = await _process_matches(
-            r, puuid, new_matches, participant_data,
-            lock_key, worker_id, lock_ttl_ms, log,
+            r,
+            puuid,
+            new_matches,
+            participant_data,
+            lock_key,
+            worker_id,
+            lock_ttl_ms,
+            log,
         )
 
         assert result is True
@@ -1161,12 +1191,25 @@ class TestChampionStatsAggregation:
         """Ranked match (queue_id=420) with valid patch/position increments champion stats."""
         puuid = "test-puuid-champ"
         await _add_ranked_participant(
-            r, "NA1_R1", puuid, 1000,
-            champion="Annie", team_position="MID", patch="14.5",
-            kills=8, deaths=3, assists=5, win=True,
-            gold_earned=14000, total_minions_killed=200,
-            total_damage_dealt_to_champions=30000, vision_score=25,
-            double_kills=2, triple_kills=1, quadra_kills=0, penta_kills=0,
+            r,
+            "NA1_R1",
+            puuid,
+            1000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
+            kills=8,
+            deaths=3,
+            assists=5,
+            win=True,
+            gold_earned=14000,
+            total_minions_killed=200,
+            total_damage_dealt_to_champions=30000,
+            vision_score=25,
+            double_kills=2,
+            triple_kills=1,
+            quadra_kills=0,
+            penta_kills=0,
         )
         env = _analyze_envelope(puuid)
         msg_id = await _setup_message(r, env)
@@ -1193,8 +1236,13 @@ class TestChampionStatsAggregation:
         """queue_id != 420 does not update champion stats."""
         puuid = "test-puuid-aram"
         await _add_ranked_participant(
-            r, "NA1_ARAM", puuid, 1000,
-            champion="Annie", team_position="MID", patch="14.5",
+            r,
+            "NA1_ARAM",
+            puuid,
+            1000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
             queue_id="450",  # ARAM
         )
         env = _analyze_envelope(puuid)
@@ -1209,8 +1257,13 @@ class TestChampionStatsAggregation:
         """Empty patch string skips champion stats update."""
         puuid = "test-puuid-nopatch"
         await _add_ranked_participant(
-            r, "NA1_NP", puuid, 1000,
-            champion="Annie", team_position="MID", patch="",
+            r,
+            "NA1_NP",
+            puuid,
+            1000,
+            champion="Annie",
+            team_position="MID",
+            patch="",
         )
         env = _analyze_envelope(puuid)
         msg_id = await _setup_message(r, env)
@@ -1225,8 +1278,13 @@ class TestChampionStatsAggregation:
         """Empty team_position skips champion stats update."""
         puuid = "test-puuid-nopos"
         await _add_ranked_participant(
-            r, "NA1_NP2", puuid, 1000,
-            champion="Annie", team_position="", patch="14.5",
+            r,
+            "NA1_NP2",
+            puuid,
+            1000,
+            champion="Annie",
+            team_position="",
+            patch="14.5",
         )
         env = _analyze_envelope(puuid)
         msg_id = await _setup_message(r, env)
@@ -1258,16 +1316,31 @@ class TestChampionStatsAggregation:
         """champion:index:{patch} ZINCRBY tracks champion:position combinations."""
         puuid = "test-puuid-idx"
         await _add_ranked_participant(
-            r, "NA1_I1", puuid, 1000,
-            champion="Annie", team_position="MID", patch="14.5",
+            r,
+            "NA1_I1",
+            puuid,
+            1000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
         )
         await _add_ranked_participant(
-            r, "NA1_I2", puuid, 2000,
-            champion="Annie", team_position="MID", patch="14.5",
+            r,
+            "NA1_I2",
+            puuid,
+            2000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
         )
         await _add_ranked_participant(
-            r, "NA1_I3", puuid, 3000,
-            champion="Jinx", team_position="BOTTOM", patch="14.5",
+            r,
+            "NA1_I3",
+            puuid,
+            3000,
+            champion="Jinx",
+            team_position="BOTTOM",
+            patch="14.5",
         )
         env = _analyze_envelope(puuid)
         msg_id = await _setup_message(r, env)
@@ -1282,8 +1355,13 @@ class TestChampionStatsAggregation:
         """patch:list ZADD NX records patch with game_start as score."""
         puuid = "test-puuid-patch"
         await _add_ranked_participant(
-            r, "NA1_P1", puuid, 5000,
-            champion="Annie", team_position="MID", patch="14.5",
+            r,
+            "NA1_P1",
+            puuid,
+            5000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
         )
         env = _analyze_envelope(puuid)
         msg_id = await _setup_message(r, env)
@@ -1302,8 +1380,13 @@ class TestChampionStatsAggregation:
         await r.zadd("patch:list", {"14.5": 1000.0})
 
         await _add_ranked_participant(
-            r, "NA1_PNX", puuid, 9000,
-            champion="Annie", team_position="MID", patch="14.5",
+            r,
+            "NA1_PNX",
+            puuid,
+            9000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
         )
         env = _analyze_envelope(puuid)
         msg_id = await _setup_message(r, env)
@@ -1319,8 +1402,13 @@ class TestChampionStatsAggregation:
         """Champion stats and index keys get 90-day TTL."""
         puuid = "test-puuid-ttl"
         await _add_ranked_participant(
-            r, "NA1_T1", puuid, 1000,
-            champion="Annie", team_position="MID", patch="14.5",
+            r,
+            "NA1_T1",
+            puuid,
+            1000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
         )
         env = _analyze_envelope(puuid)
         msg_id = await _setup_message(r, env)
@@ -1338,20 +1426,46 @@ class TestChampionStatsAggregation:
         """Multiple ranked matches on same champion/patch/role accumulate stats."""
         puuid = "test-puuid-accum"
         await _add_ranked_participant(
-            r, "NA1_AC1", puuid, 1000,
-            champion="Annie", team_position="MID", patch="14.5",
-            kills=5, deaths=2, assists=3, win=True,
-            gold_earned=10000, total_minions_killed=150,
-            total_damage_dealt_to_champions=20000, vision_score=20,
-            double_kills=1, triple_kills=0, quadra_kills=0, penta_kills=0,
+            r,
+            "NA1_AC1",
+            puuid,
+            1000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
+            kills=5,
+            deaths=2,
+            assists=3,
+            win=True,
+            gold_earned=10000,
+            total_minions_killed=150,
+            total_damage_dealt_to_champions=20000,
+            vision_score=20,
+            double_kills=1,
+            triple_kills=0,
+            quadra_kills=0,
+            penta_kills=0,
         )
         await _add_ranked_participant(
-            r, "NA1_AC2", puuid, 2000,
-            champion="Annie", team_position="MID", patch="14.5",
-            kills=3, deaths=4, assists=7, win=False,
-            gold_earned=8000, total_minions_killed=120,
-            total_damage_dealt_to_champions=15000, vision_score=18,
-            double_kills=0, triple_kills=1, quadra_kills=0, penta_kills=0,
+            r,
+            "NA1_AC2",
+            puuid,
+            2000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
+            kills=3,
+            deaths=4,
+            assists=7,
+            win=False,
+            gold_earned=8000,
+            total_minions_killed=120,
+            total_damage_dealt_to_champions=15000,
+            vision_score=18,
+            double_kills=0,
+            triple_kills=1,
+            quadra_kills=0,
+            penta_kills=0,
         )
         env = _analyze_envelope(puuid)
         msg_id = await _setup_message(r, env)
@@ -1395,4 +1509,125 @@ class TestUpdateChampionStatsDirect:
 
         await _update_champion_stats(r, new_matches, participant_data, match_metadata)
 
+        assert await r.zcard("champion:index:14.5") == 0
+
+    @pytest.mark.asyncio
+    async def test_update_champion_stats_pipelines_multiple_matches(self, r):
+        """Multiple ranked matches are batched in a single pipeline round-trip."""
+        new_matches = [
+            ("NA1_A", 1000.0),
+            ("NA1_B", 2000.0),
+            ("NA1_C", 3000.0),  # non-ranked — should be skipped
+            ("NA1_D", 4000.0),
+        ]
+        participant_data = [
+            {
+                "champion_name": "Annie",
+                "team_position": "MID",
+                "win": "1",
+                "kills": "5",
+                "deaths": "2",
+                "assists": "8",
+                "gold_earned": "12000",
+                "total_minions_killed": "180",
+                "total_damage_dealt_to_champions": "20000",
+                "vision_score": "30",
+                "double_kills": "1",
+                "triple_kills": "0",
+                "quadra_kills": "0",
+                "penta_kills": "0",
+            },
+            {
+                "champion_name": "Jinx",
+                "team_position": "BOTTOM",
+                "win": "0",
+                "kills": "3",
+                "deaths": "5",
+                "assists": "4",
+                "gold_earned": "10000",
+                "total_minions_killed": "150",
+                "total_damage_dealt_to_champions": "15000",
+                "vision_score": "20",
+                "double_kills": "0",
+                "triple_kills": "0",
+                "quadra_kills": "0",
+                "penta_kills": "0",
+            },
+            {
+                "champion_name": "Zed",
+                "team_position": "MID",
+                "win": "1",
+                "kills": "10",
+                "deaths": "1",
+                "assists": "3",
+                "gold_earned": "16000",
+                "total_minions_killed": "220",
+                "total_damage_dealt_to_champions": "35000",
+                "vision_score": "15",
+                "double_kills": "2",
+                "triple_kills": "1",
+                "quadra_kills": "0",
+                "penta_kills": "0",
+            },
+            {
+                "champion_name": "Annie",
+                "team_position": "MID",
+                "win": "1",
+                "kills": "7",
+                "deaths": "3",
+                "assists": "6",
+                "gold_earned": "13000",
+                "total_minions_killed": "190",
+                "total_damage_dealt_to_champions": "22000",
+                "vision_score": "28",
+                "double_kills": "0",
+                "triple_kills": "0",
+                "quadra_kills": "1",
+                "penta_kills": "0",
+            },
+        ]
+        match_metadata = [
+            {"queue_id": "420", "patch": "14.5"},
+            {"queue_id": "420", "patch": "14.5"},
+            {"queue_id": "450", "patch": "14.5"},  # ARAM — skipped
+            {"queue_id": "420", "patch": "14.5"},
+        ]
+
+        await _update_champion_stats(r, new_matches, participant_data, match_metadata)
+
+        # Annie:MID should have 2 games (match A + match D; match C skipped)
+        annie_stats = await r.hgetall("champion:stats:Annie:14.5:MID")
+        assert annie_stats["games"] == "2"
+        assert annie_stats["wins"] == "2"
+        assert annie_stats["kills"] == "12"  # 5 + 7
+        assert annie_stats["deaths"] == "5"  # 2 + 3
+        assert annie_stats["assists"] == "14"  # 8 + 6
+        assert annie_stats["gold"] == "25000"  # 12000 + 13000
+        assert annie_stats["quadra_kills"] == "1"
+
+        # Jinx:BOTTOM should have 1 game
+        jinx_stats = await r.hgetall("champion:stats:Jinx:14.5:BOTTOM")
+        assert jinx_stats["games"] == "1"
+        assert jinx_stats["wins"] == "0"
+        assert jinx_stats["kills"] == "3"
+
+        # Zed:MID should NOT exist (queue_id=450 was skipped)
+        assert not await r.exists("champion:stats:Zed:14.5:MID")
+
+        # champion:index should have 2 entries
+        assert await r.zscore("champion:index:14.5", "Annie:MID") == 2.0
+        assert await r.zscore("champion:index:14.5", "Jinx:BOTTOM") == 1.0
+        # Zed:MID should not be in the index
+        assert await r.zscore("champion:index:14.5", "Zed:MID") is None
+
+    @pytest.mark.asyncio
+    async def test_update_champion_stats_all_filtered__no_pipeline_call(self, r):
+        """When all matches are filtered out, no pipeline is created."""
+        new_matches = [("NA1_X", 1000.0)]
+        participant_data = [{"champion_name": "Annie", "team_position": "MID", "win": "1"}]
+        match_metadata = [{"queue_id": "450", "patch": "14.5"}]  # ARAM — skipped
+
+        await _update_champion_stats(r, new_matches, participant_data, match_metadata)
+
+        assert not await r.exists("champion:stats:Annie:14.5:MID")
         assert await r.zcard("champion:index:14.5") == 0

@@ -211,7 +211,14 @@ async def _update_champion_stats(
     participant_data: list[dict[str, str]],
     match_metadata: list[dict[str, str]],
 ) -> None:
-    """Update per-champion aggregate stats for ranked matches."""
+    """Update per-champion aggregate stats for ranked matches.
+
+    Uses a Redis pipeline to batch all independent EVAL calls into a single
+    round-trip. Each Lua script operates on different champion stats keys using
+    commutative operations (HINCRBY, ZINCRBY, ZADD NX), so order is irrelevant.
+    """
+    # Build the list of EVAL args to pipeline, filtering out skipped matches.
+    calls: list[tuple[str, str, str, dict[str, str], int]] = []
     for (_match_id, score), p, meta in zip(
         new_matches, participant_data, match_metadata, strict=True
     ):
@@ -223,34 +230,41 @@ async def _update_champion_stats(
         champion_name = p.get("champion_name", "")
         if queue_id != "420" or not patch or not team_position or not champion_name:
             continue
+        calls.append((champion_name, patch, team_position, p, int(score)))
 
-        stats_key = f"champion:stats:{champion_name}:{patch}:{team_position}"
-        index_key = f"champion:index:{patch}"
-        index_member = f"{champion_name}:{team_position}"
+    if not calls:
+        return
 
-        await r.eval(  # type: ignore[misc]
-            _UPDATE_CHAMPION_LUA,
-            3,
-            stats_key,
-            index_key,
-            "patch:list",
-            int(p.get("win", "0")),
-            int(p.get("kills", "0")),
-            int(p.get("deaths", "0")),
-            int(p.get("assists", "0")),
-            int(p.get("gold_earned", "0")),
-            int(p.get("total_minions_killed", "0")),
-            int(p.get("total_damage_dealt_to_champions", "0")),
-            int(p.get("vision_score", "0")),
-            index_member,
-            str(int(score)),
-            patch,
-            CHAMPION_STATS_TTL_SECONDS,
-            int(p.get("double_kills", "0")),
-            int(p.get("triple_kills", "0")),
-            int(p.get("quadra_kills", "0")),
-            int(p.get("penta_kills", "0")),
-        )
+    async with r.pipeline(transaction=False) as pipe:
+        for champion_name, patch, team_position, p, score_int in calls:
+            stats_key = f"champion:stats:{champion_name}:{patch}:{team_position}"
+            index_key = f"champion:index:{patch}"
+            index_member = f"{champion_name}:{team_position}"
+
+            pipe.eval(
+                _UPDATE_CHAMPION_LUA,
+                3,
+                stats_key,
+                index_key,
+                "patch:list",
+                int(p.get("win", "0")),
+                int(p.get("kills", "0")),
+                int(p.get("deaths", "0")),
+                int(p.get("assists", "0")),
+                int(p.get("gold_earned", "0")),
+                int(p.get("total_minions_killed", "0")),
+                int(p.get("total_damage_dealt_to_champions", "0")),
+                int(p.get("vision_score", "0")),
+                index_member,
+                str(score_int),
+                patch,
+                CHAMPION_STATS_TTL_SECONDS,
+                int(p.get("double_kills", "0")),
+                int(p.get("triple_kills", "0")),
+                int(p.get("quadra_kills", "0")),
+                int(p.get("penta_kills", "0")),
+            )
+        await pipe.execute()
 
 
 async def _analyze_player(

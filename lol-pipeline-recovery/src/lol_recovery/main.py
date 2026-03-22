@@ -87,6 +87,7 @@ async def _requeue_delayed(
         enqueued_at=dlq.enqueued_at,
         dlq_attempts=dlq.dlq_attempts + 1,
         priority=dlq.priority,
+        correlation_id=dlq.correlation_id,
     )
     ready_ms = int(time.time() * 1000) + delay_ms
     member = json.dumps(env.to_redis_fields())

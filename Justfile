@@ -57,8 +57,8 @@ venv:
 # 2. Build all Docker images (including one-shot tools)
 build:
     {{DC}} build
-    {{RUNTIME}} build -f lol-pipeline-seed/Dockerfile  -t {{PROJECT}}-seed:latest  .
-    {{RUNTIME}} build -f lol-pipeline-admin/Dockerfile -t {{PROJECT}}-admin:latest .
+    {{RUNTIME}} build -f Dockerfile.service --build-arg SERVICE_NAME=seed  --build-arg MODULE_NAME=lol_seed  -t {{PROJECT}}-seed:latest  .
+    {{RUNTIME}} build -f Dockerfile.service --build-arg SERVICE_NAME=admin --build-arg MODULE_NAME=lol_admin -t {{PROJECT}}-admin:latest .
 
 # 3. Start all services (Redis + workers); idempotent
 run:
@@ -273,6 +273,21 @@ typecheck-svc name:
 
 # Quick post-change validation without API key (lint + typecheck + unit tests)
 smoke: lint typecheck test
+
+# Full CI mirror — runs exactly what GitHub Actions runs (minus docker build + integration tests)
+ci: lint typecheck test contract
+
+# Build the dev container (Python 3.14 + all deps + dev tools)
+dev-build:
+    {{RUNTIME}} build -f Dockerfile.dev -t lol-crawler-dev .
+
+# Run a command inside the dev container (e.g. just dev "just lint")
+dev *args:
+    {{RUNTIME}} run --rm -v "{{justfile_directory()}}:/workspace" -w /workspace lol-crawler-dev {{args}}
+
+# Run full CI inside the dev container (consistent Python 3.14 environment)
+dev-ci: dev-build
+    {{RUNTIME}} run --rm -v "{{justfile_directory()}}:/workspace" -w /workspace lol-crawler-dev just ci
 
 # Update API mock fixtures from live Riot API (uses Pwnerer#1337)
 update-mocks:
