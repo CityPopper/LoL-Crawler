@@ -22,6 +22,7 @@ Platform: macOS. Container runtime: Podman (default). Switch with `RUNTIME=docke
 - **Before compound tasks**: Update CLAUDE.md with a TODO list; remove when done.
 - **One function per file**: Every new function goes in its own module file. This lets AI agents load only the relevant module instead of an entire monolith. Shared helpers used by 2+ modules live in a `_helpers.py` co-located with their consumers (DRY). Constants and types shared across a package go in `_types.py` or `_constants.py`. Route handlers are grouped by feature in a `routes/` subpackage.
 - **Test structure — colocated**: Unit tests live next to the source file they test: `foo.py` → `test_foo.py` in the same directory. AI agents find both instantly. Bug-fix regression tests go in `tests/regression/` (the red/green test that proved the bug, kept forever). Contract tests are **consumer-driven via pact broker** — consumers publish pacts to a database; providers verify against published pacts. If no consumer uses a contract, it doesn't exist. One file per consumer-provider boundary in `tests/contract/`.
+- **Docs link, don't copy**: Documentation must reference source files (e.g., "see `docker-compose.yml`") instead of duplicating content. If a config, schema, or code block is the source of truth, link to it — never paste a copy that will go stale.
 - **Replies**: Direct, fewest words.
 
 ## Gotchas
@@ -53,13 +54,21 @@ Platform: macOS. Container runtime: Podman (default). Switch with `RUNTIME=docke
 
 See `docs/SPRINT-PLAN.md` for full details.
 
-- [ ] S0: Restore `match:participants` SADD in parser (blocker)
-- [ ] S0: Split UI main.py into one-function-per-file package (colocated tests)
+- [x] S0: Restore `match:participants` SADD in parser (blocker)
+- [x] S0: Split UI main.py into one-function-per-file package (colocated tests)
 - [ ] S0: Evolve existing pact contracts for new parser fields
 - [ ] S0: Add `t()` localization + theme CSS changes
-- [ ] S0: Update 04-storage.md + CLAUDE.md
+- [ ] S0: Update 04-storage.md
+- [ ] S0: Split admin service (945 lines → modules)
+- [ ] S0: Docs cleanup: remove duplicated content, link to source files instead
 - [ ] S1: Extract gold timeline, team objectives, rune selections, kill events from parser
 - [ ] S2: Tabbed match detail + damage bars + team analysis + win rate donut + sticky layout
 - [ ] S3: Build tab (items, skills, runes, spells) + DDragon cache helper
 - [ ] S4: Gold chart + AI Score + kill timeline + AI insight
 - [ ] S5: Minimap + 7-day sparkline + recently played with + caching + responsive polish
+- [ ] Future: Full localization (zh-CN translations, language switcher, extract to JSON)
+- [ ] Future: Summoner icon + level badge on profile
+- [ ] Future: Profile tabs (Tournament/Mastery/ARAM)
+- [ ] Future: Add `/health` JSON endpoint with service status (from `02-monitoring.md`)
+- [ ] Future: Add `just monitor` command for one-shot health summary
+- [ ] Future: Export `just streams` as JSON for scripting
