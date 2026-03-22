@@ -25,7 +25,9 @@
         "attempts": 0,
         "max_attempts": 5,
         "enqueued_at": "2024-01-01T00:00:00+00:00",
-        "priority": "normal"
+        "dlq_attempts": 0,
+        "priority": "normal",
+        "correlation_id": ""
       },
       "matchingRules": {
         "body": {
@@ -62,10 +64,16 @@
               { "match": "regex", "regex": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*$" }
             ]
           },
+          "$.dlq_attempts": {
+            "matchers": [ { "match": "integer" } ]
+          },
           "$.priority": {
             "matchers": [
               { "match": "regex", "regex": "^(manual_20|manual_20plus|auto_20|auto_new|high|normal)$" }
             ]
+          },
+          "$.correlation_id": {
+            "matchers": [ { "match": "type" } ]
           }
         }
       },

@@ -425,6 +425,66 @@ class TestRedisBackedRetryCounter:
         assert await r.exists(key) == 0
 
 
+class TestNackToDlqFailure:
+    """When nack_to_dlq itself fails, the message must still be ACKed to prevent PEL loops."""
+
+    @pytest.mark.asyncio
+    async def test_nack_failure_still_acks_message(self, r, log):
+        """If nack_to_dlq raises, _handle_with_retry ACKs the message anyway."""
+        msg_id, envelope = await _setup(r)
+
+        async def bad_handler(mid: str, env: MessageEnvelope) -> None:
+            raise RuntimeError("poison")
+
+        # Drive retries to max_retries so we hit the nack_to_dlq path
+        for _ in range(2):
+            await _handle_with_retry(r, _STREAM, _GROUP, msg_id, envelope, bad_handler, log, 3)
+
+        # On the 3rd failure, nack_to_dlq will be called -- make it fail
+        with patch(
+            "lol_pipeline.service.nack_to_dlq",
+            new_callable=AsyncMock,
+            side_effect=ConnectionError("Redis gone during DLQ write"),
+        ) as mock_nack:
+            # Should NOT raise — the except on line 91 catches the ConnectionError
+            await _handle_with_retry(r, _STREAM, _GROUP, msg_id, envelope, bad_handler, log, 3)
+            mock_nack.assert_called_once()
+
+        # Message should be ACKed (not stuck in PEL)
+        pending = await r.xpending(_STREAM, _GROUP)
+        assert pending["pending"] == 0
+
+        # DLQ should be empty (nack_to_dlq failed)
+        assert await r.xlen("stream:dlq") == 0
+
+    @pytest.mark.asyncio
+    async def test_nack_and_ack_both_fail_does_not_crash(self, r, log):
+        """If both nack_to_dlq and the emergency ACK fail, _handle_with_retry still
+        does not propagate the exception (logs it instead)."""
+        msg_id, envelope = await _setup(r)
+
+        async def bad_handler(mid: str, env: MessageEnvelope) -> None:
+            raise RuntimeError("poison")
+
+        # Drive retries to max_retries
+        for _ in range(2):
+            await _handle_with_retry(r, _STREAM, _GROUP, msg_id, envelope, bad_handler, log, 3)
+
+        # Both nack_to_dlq and ack will fail
+        with (
+            patch(
+                "lol_pipeline.service.nack_to_dlq",
+                side_effect=ConnectionError("Redis gone"),
+            ),
+            patch(
+                "lol_pipeline.service.ack",
+                side_effect=ConnectionError("Redis still gone"),
+            ),
+        ):
+            # Should NOT raise even though everything fails
+            await _handle_with_retry(r, _STREAM, _GROUP, msg_id, envelope, bad_handler, log, 3)
+
+
 class TestPriorityReordering:
     """R6: Consumer sorts messages within a batch by priority before dispatching."""
 
