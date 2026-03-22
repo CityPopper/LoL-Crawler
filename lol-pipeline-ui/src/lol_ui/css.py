@@ -15,22 +15,35 @@ _NAV_ITEMS = [
 
 _CSS = """
 :root {
-  --color-bg: #1c1c1e;
-  --color-surface: #31313c;
+  --color-bg: #141418;
+  --color-surface: #262636;
   --color-text: #e8e8e8;
   --color-muted: #7b7b8d;
-  --color-border: #3f3f4a;
-  --color-success: #2ecc40;
+  --color-border: #3a3a50;
+  --color-success: #2daf6f;
   --color-error: #ff4136;
   --color-warning: #ffdc00;
   --color-info: #5a9eff;
   --color-critical: #c00;
   --color-error-bg: #cc3333;
-  --color-surface2: #3d3d48;
+  --color-surface2: #2e2e42;
   --color-win: #5383e8;
   --color-win-bg: rgba(83, 131, 232, 0.08);
   --color-loss: #e84057;
   --color-loss-bg: rgba(232, 64, 87, 0.06);
+  --color-gold: #f4c874;
+  --color-tier-s: #e89240;
+  --color-rank-purple: #9e6cd9;
+  --color-rank-teal: #3cbec0;
+  --color-dmg-physical: #e89240;
+  --color-dmg-magic: #5383e8;
+  --color-dmg-true: #e8e8e8;
+  --chart-stroke-width: 2;
+  --icon-champ-xs: 20px;
+  --chart-b0: #5383e8; --chart-b1: #3cbec0; --chart-b2: #2daf6f;
+  --chart-b3: #9e6cd9; --chart-b4: #f4c874;
+  --chart-r0: #e84057; --chart-r1: #e89240; --chart-r2: #ffdc00;
+  --chart-r3: #ff6b6b; --chart-r4: #c0a060;
   --font-sans: system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: 'Fira Code', 'JetBrains Mono', 'Cascadia Code', monospace;
   --font-size-sm: 12px;
@@ -353,7 +366,7 @@ summary::before { content: '\\25b6'; display: inline-block; margin-right: var(--
   font-size: var(--font-size-sm); transition: transform 0.15s; }
 details[open] > summary::before { transform: rotate(90deg); }
 .match-row { cursor: pointer; transition: background 0.15s; }
-.match-row:hover { filter: brightness(1.1); }
+.match-row:hover { filter: brightness(1.08); }
 .match-detail { display: none; padding: var(--space-sm) var(--space-md);
   background: var(--color-surface); border-radius: 0 0 var(--radius) var(--radius);
   margin-top: -3px; margin-bottom: 3px; border-left: 4px solid var(--color-border); }
@@ -402,6 +415,16 @@ details[open] > summary::before { transform: rotate(90deg); }
 @media (max-width: 600px) {
   .match-meta-col, .match-items { display: none; }
 }
+
+/* Tabular numbers for stat columns */
+.stat-num { font-variant-numeric: tabular-nums; }
+
+/* Unified grade badges (AI Score + PBI tiers) */
+.grade--S { background: linear-gradient(135deg, #e89240, #f4c874); color: #1c1c1e; }
+.grade--A { background: #5383e8; color: #1c1c1e; }
+.grade--B { background: #2daf6f; color: #1c1c1e; }
+.grade--C { background: #7b7b8d; color: #fff; }
+.grade--D { background: #3f3f4a; color: #e8e8e8; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important;

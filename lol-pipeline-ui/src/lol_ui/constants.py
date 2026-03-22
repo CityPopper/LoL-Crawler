@@ -155,7 +155,7 @@ _MATCH_PAGE_SIZE = 20
 _MATCH_BADGE_COLORS: dict[str, tuple[str, str]] = {
     "gold": ("#ffd700", "#111"),
     "red": ("#ff4136", "#fff"),
-    "green": ("#2ecc40", "#111"),
+    "green": ("#2daf6f", "#111"),
     "blue": ("#4fc3f7", "#111"),
 }
 

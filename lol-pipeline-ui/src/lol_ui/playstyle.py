@@ -33,7 +33,7 @@ def _playstyle_tags(stats: dict[str, str]) -> list[tuple[str, str]]:
     if avg_assists >= 10:
         tags.append(("Team Fighter", "#5383e8"))
     if avg_deaths <= 3:
-        tags.append(("Deathless", "#2ecc40"))
+        tags.append(("Deathless", "#2daf6f"))
     if kda >= 4.0:
         tags.append(("KDA King", "#ffdc00"))
     if avg_kills >= 10:
