@@ -5,8 +5,18 @@ from __future__ import annotations
 import html
 import time
 
-from lol_ui.constants import _BADGE_VARIANTS, _REGIONS, _VALID_MSG_CLASSES
+from lol_ui.constants import (
+    _BADGE_VARIANTS,
+    _DEPTH_BADGE_BACKLOG_THRESHOLD,
+    _DEPTH_BADGE_BUSY_THRESHOLD,
+    _KDA_RATIO_GOOD_THRESHOLD,
+    _REGIONS,
+    _TIME_AGO_DAY_S,
+    _TIME_AGO_HOUR_S,
+    _VALID_MSG_CLASSES,
+)
 from lol_ui.css import _CSS, _FAVICON, _NAV_ITEMS
+from lol_ui.language import language_switcher_html
 
 # Re-export constants so callers that previously imported from main.py can use rendering
 # as a single entry point if needed.
@@ -31,9 +41,9 @@ def _depth_badge(stream_name: str, depth: int) -> str:
         if depth > 0:
             return _badge("error", f"{depth} errors")
         return _badge("success", "OK")
-    if depth < 100:
+    if depth < _DEPTH_BADGE_BUSY_THRESHOLD:
         return _badge("success", "OK")
-    if depth < 1000:
+    if depth < _DEPTH_BADGE_BACKLOG_THRESHOLD:
         return _badge("warning", "Busy")
     return _badge("error", "Backlog")
 
@@ -102,7 +112,7 @@ def _kda_ratio_html(kills: str, deaths: str, assists: str) -> str:
     try:
         k, d, a = float(kills), float(deaths), float(assists)
         ratio = (k + a) / max(d, 1.0)
-        cls = "match-kda__ratio--good" if ratio >= 3.0 else "match-kda__ratio"
+        cls = "match-kda__ratio--good" if ratio >= _KDA_RATIO_GOOD_THRESHOLD else "match-kda__ratio"
         return f'<span class="{cls}">{ratio:.2f} KDA</span>'
     except ValueError:
         return ""
@@ -115,9 +125,9 @@ def _time_ago(game_start_ms: int) -> str:
     diff_s = int(time.time()) - game_start_ms // 1000
     if diff_s < 0:
         return "just now"
-    if diff_s < 3600:
+    if diff_s < _TIME_AGO_HOUR_S:
         return f"{diff_s // 60}m ago"
-    if diff_s < 86400:
+    if diff_s < _TIME_AGO_DAY_S:
         return f"{diff_s // 3600}h ago"
     return f"{diff_s // 86400}d ago"
 
@@ -129,15 +139,21 @@ def _duration_fmt(seconds: int) -> str:
     return f"{seconds // 60}:{seconds % 60:02d}"
 
 
-def _page(title: str, body: str, path: str = "") -> str:
+def _page(title: str, body: str, path: str = "", lang: str = "en") -> str:
+    """Render a full HTML page with nav, body, and footer.
+
+    *lang* sets the ``<html lang>`` attribute and drives the language switcher.
+    """
     nav_links = []
     for href, label in _NAV_ITEMS:
         active = (href != "/" and path.startswith(href)) or href == path
         cls = ' class="active" aria-current="page"' if active else ""
         nav_links.append(f'<a href="{href}"{cls}>{label}</a>')
     nav_html = "\n  ".join(nav_links)
+    switcher = language_switcher_html(lang)
+    html_lang = "zh-Hans" if lang == "zh-CN" else lang
     return f"""<!doctype html>
-<html lang="en">
+<html lang="{html_lang}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -148,6 +164,7 @@ def _page(title: str, body: str, path: str = "") -> str:
 </head>
 <body>
 <a class="skip-link" href="#main-content">Skip to content</a>
+{switcher}
 <h1>LoL Pipeline</h1>
 <nav aria-label="Main navigation">
   {nav_html}

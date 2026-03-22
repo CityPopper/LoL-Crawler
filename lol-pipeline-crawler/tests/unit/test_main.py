@@ -1283,6 +1283,25 @@ class TestFetchRank:
         assert await r.hget(f"player:{puuid}", "summoner_level") == "250"
 
     @pytest.mark.asyncio
+    async def test_fetch_rank__stores_profile_icon_id(self, r, cfg, log):
+        """profileIconId from summoner-v4 is stored on player:{puuid} hash."""
+        puuid = "test-puuid-0001"
+        with respx.mock:
+            respx.get(self._summoner_url(puuid)).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"id": "summ-id-1", "summonerLevel": 100, "profileIconId": 4567},
+                )
+            )
+            respx.get(self._league_url("summ-id-1")).mock(return_value=httpx.Response(200, json=[]))
+            riot = RiotClient("RGAPI-test")
+            await _fetch_rank(r, riot, cfg, puuid, "na1", log)
+            await riot.close()
+
+        assert await r.hget(f"player:{puuid}", "profile_icon_id") == "4567"
+        assert await r.hget(f"player:{puuid}", "summoner_level") == "100"
+
+    @pytest.mark.asyncio
     async def test_fetch_rank__skips_when_disabled(self, r, cfg, log):
         """When fetch_rank_on_crawl is False, no API calls are made."""
         cfg.fetch_rank_on_crawl = False

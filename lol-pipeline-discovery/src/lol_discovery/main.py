@@ -23,15 +23,13 @@ from lol_pipeline.riot_api import AuthError, NotFoundError, RiotAPIError, RiotCl
 from lol_pipeline.streams import publish
 from redis.exceptions import RedisError, ResponseError
 
-_STREAM_PUUID = "stream:puuid"
-_DISCOVER_KEY = "discover:players"
-_DELAYED_KEY = "delayed:messages"
-_PIPELINE_STREAMS = (
-    "stream:puuid",
-    "stream:match_id",
-    "stream:parse",
-    "stream:analyze",
-    "stream:dlq",
+from lol_discovery._data import (
+    _DELAYED_KEY,
+    _DISCOVER_KEY,
+    _STREAM_PUUID,
+)
+from lol_discovery._data import (
+    _PIPELINE_STREAMS as _PIPELINE_STREAMS,
 )
 
 

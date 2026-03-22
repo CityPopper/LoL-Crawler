@@ -6,6 +6,7 @@ import html
 
 from lol_ui.constants import (
     _TILT_KDA_THRESHOLD,
+    _TILT_MIN_STREAK_DISPLAY,
     _TILT_RECENT_COUNT,
     _TILT_RECENT_KDA_COUNT,
 )
@@ -89,8 +90,8 @@ def _tilt_banner_html(indicator: dict[str, object]) -> str:
     streak_count = int(str(indicator.get("streak_count", 0)))
     kda_trend = str(indicator.get("kda_trend", "neutral"))
 
-    # Streak badge (3+ only)
-    if streak_count >= 3:
+    # Streak badge (only shown at or above minimum streak threshold)
+    if streak_count >= _TILT_MIN_STREAK_DISPLAY:
         if streak_type == "win":
             label = f"W{streak_count}"
             parts.append(_badge("success", label))

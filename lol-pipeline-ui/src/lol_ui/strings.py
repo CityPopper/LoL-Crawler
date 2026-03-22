@@ -2,12 +2,17 @@
 
 All user-facing strings for new Sprint 0-5 features go through ``t()`` (auto-escaped)
 or ``t_raw()`` (unescaped, for intentional HTML).  Both languages must have identical
-key sets; zh-CN values start as ``[CN] …`` placeholders until real translations land.
+key sets.
+
+``t()`` and ``t_raw()`` accept an optional ``lang`` parameter (default ``"en"``).
+Callers pass the language resolved from the request cookie / Accept-Language header.
 """
 
 from __future__ import annotations
 
 import html as _html
+
+SUPPORTED_LANGUAGES: list[str] = ["en", "zh-CN"]
 
 _STRINGS: dict[str, dict[str, str]] = {
     "en": {
@@ -75,81 +80,79 @@ _STRINGS: dict[str, dict[str, str]] = {
     },
     "zh-CN": {
         # -- Tab labels --
-        "win": "[CN] Win",
-        "loss": "[CN] Loss",
-        "ai_score": "[CN] AI Score",
-        "team_analysis": "[CN] Team Analysis",
-        "build": "[CN] Build",
-        "overview": "[CN] Overview",
-        "timeline": "[CN] Timeline",
+        "win": "\u80dc\u5229",
+        "loss": "\u5931\u8d25",
+        "ai_score": "AI\u8bc4\u5206",
+        "team_analysis": "\u56e2\u961f\u5206\u6790",
+        "build": "\u51fa\u88c5",
+        "overview": "\u6982\u89c8",
+        "timeline": "\u65f6\u95f4\u7ebf",
         # -- Empty states --
-        "no_timeline_data": "[CN] Timeline data unavailable for this match.",
-        "no_build_data": "[CN] Build data unavailable for this match.",
-        "not_enough_games": "[CN] Not enough games for an insight yet.",
-        "no_skill_data": "[CN] Skill data requires timeline.",
-        "no_kill_data": "[CN] No kill events recorded for this match.",
-        "no_match_history": "[CN] No matches found.",
+        "no_timeline_data": "\u672c\u573a\u6bd4\u8d5b\u65e0\u65f6\u95f4\u7ebf\u6570\u636e\u3002",
+        "no_build_data": "\u672c\u573a\u6bd4\u8d5b\u65e0\u51fa\u88c5\u6570\u636e\u3002",
+        "not_enough_games": "游戏局数不足，无法生成分析。",
+        "no_skill_data": "\u6280\u80fd\u6570\u636e\u9700\u8981\u65f6\u95f4\u7ebf\u3002",
+        "no_kill_data": "\u672c\u573a\u6bd4\u8d5b\u65e0\u51fb\u6740\u4e8b\u4ef6\u8bb0\u5f55\u3002",
+        "no_match_history": "\u672a\u627e\u5230\u6bd4\u8d5b\u8bb0\u5f55\u3002",
         # -- Grade labels --
-        "grade_s": "[CN] Exceptional",
-        "grade_a": "[CN] Great",
-        "grade_b": "[CN] Good",
-        "grade_c": "[CN] Below Average",
-        "grade_d": "[CN] Poor",
+        "grade_s": "\u5353\u8d8a",
+        "grade_a": "\u4f18\u79c0",
+        "grade_b": "\u826f\u597d",
+        "grade_c": "\u4e00\u822c",
+        "grade_d": "\u8f83\u5dee",
         # -- Team labels --
-        "blue_team": "[CN] Blue Team",
-        "red_team": "[CN] Red Team",
+        "blue_team": "\u84dd\u8272\u65b9",
+        "red_team": "\u7ea2\u8272\u65b9",
         # -- Common --
-        "loading": "[CN] Loading\u2026",
-        "load_more": "[CN] Load More",
-        "player_stats": "[CN] Player Stats",
-        "build_order": "[CN] Build Order",
-        "match_details_unavailable": "[CN] Match details not available.",
+        "loading": "\u52a0\u8f7d\u4e2d\u2026",
+        "load_more": "\u52a0\u8f7d\u66f4\u591a",
+        "player_stats": "\u73a9\u5bb6\u6570\u636e",
+        "build_order": "\u51fa\u88c5\u987a\u5e8f",
+        "match_details_unavailable": "\u6bd4\u8d5b\u8be6\u60c5\u4e0d\u53ef\u7528\u3002",
         # -- Stat labels --
-        "gold": "[CN] Gold",
-        "damage": "[CN] Damage",
-        "kills": "[CN] Kills",
-        "cs": "[CN] CS",
-        "vision": "[CN] Vision",
-        "objectives": "[CN] Objectives",
-        "kda": "[CN] KDA",
-        "damage_share": "[CN] Damage Share",
-        "gold_share": "[CN] Gold Share",
-        "cs_per_min": "[CN] CS/min",
-        "kill_participation": "[CN] Kill Participation",
-        "objective_contribution": "[CN] Objective Contribution",
+        "gold": "\u91d1\u5e01",
+        "damage": "\u4f24\u5bb3",
+        "kills": "\u51fb\u6740",
+        "cs": "\u8865\u5200",
+        "vision": "\u89c6\u91ce",
+        "objectives": "\u76ee\u6807",
+        "kda": "KDA",
+        "damage_share": "\u4f24\u5bb3\u5360\u6bd4",
+        "gold_share": "\u91d1\u5e01\u5360\u6bd4",
+        "cs_per_min": "\u6bcf\u5206\u8865\u5200",
+        "kill_participation": "\u53c2\u56e2\u7387",
+        "objective_contribution": "\u76ee\u6807\u8d21\u732e",
         # -- Build tab --
-        "final_items": "[CN] Final Items",
-        "skill_order": "[CN] Skill Order",
-        "runes": "[CN] Runes",
-        "summoner_spells": "[CN] Summoner Spells",
+        "final_items": "\u6700\u7ec8\u88c5\u5907",
+        "skill_order": "\u6280\u80fd\u52a0\u70b9",
+        "runes": "\u7b26\u6587",
+        "summoner_spells": "\u53ec\u5524\u5e08\u6280\u80fd",
         # -- AI Insight --
-        "ai_insight_title": "[CN] AI Insight",
-        "insight_high_kda": "[CN] Maintains a high KDA ratio.",
-        "insight_low_vision": "[CN] Vision score below average.",
-        "insight_high_cs": "[CN] Consistently high CS per minute.",
-        "insight_dominant_role_prefix": "[CN] Primarily plays",
+        "ai_insight_title": "AI\u5206\u6790",
+        "insight_high_kda": "\u4fdd\u6301\u8f83\u9ad8\u7684KDA\u6bd4\u7387\u3002",
+        "insight_low_vision": "\u89c6\u91ce\u5f97\u5206\u4f4e\u4e8e\u5e73\u5747\u6c34\u5e73\u3002",
+        "insight_high_cs": "持续保持较高的每分补刀。",
+        "insight_dominant_role_prefix": "\u4e3b\u8981\u626e\u6f14",
         # -- Gold chart --
-        "gold_over_time": "[CN] Gold Over Time",
+        "gold_over_time": "\u91d1\u5e01\u8d70\u52bf",
         # -- Sprint 5 --
-        "recently_played_with": "[CN] Recently Played With",
-        "games_shared": "[CN] games",
-        "minimap": "[CN] Kill Map",
-        "sparkline_7d": "[CN] 7-Day Win Rate",
+        "recently_played_with": "\u6700\u8fd1\u4e00\u8d77\u73a9\u7684",
+        "games_shared": "\u573a",
+        "minimap": "\u51fb\u6740\u5730\u56fe",
+        "sparkline_7d": "7\u5929\u80dc\u7387",
     },
 }
 
-_LANG: str = "en"
 
-
-def t(key: str) -> str:
+def t(key: str, lang: str = "en") -> str:
     """Return localized string, HTML-escaped by default.
 
     Falls back to the key itself when the key is not found.
     """
-    raw = _STRINGS.get(_LANG, _STRINGS["en"]).get(key, key)
+    raw = _STRINGS.get(lang, _STRINGS["en"]).get(key, key)
     return _html.escape(raw)
 
 
-def t_raw(key: str) -> str:
+def t_raw(key: str, lang: str = "en") -> str:
     """Return localized string without escaping (for intentional HTML)."""
-    return _STRINGS.get(_LANG, _STRINGS["en"]).get(key, key)
+    return _STRINGS.get(lang, _STRINGS["en"]).get(key, key)

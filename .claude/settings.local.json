@@ -9,7 +9,8 @@
       "WebSearch",
       "Bash(mkdir:*)",
       "Bash(ruff check:*)",
-      "Bash(ruff format:*)"
+      "Bash(ruff format:*)",
+      "Bash(just --list)"
     ]
   }
 }

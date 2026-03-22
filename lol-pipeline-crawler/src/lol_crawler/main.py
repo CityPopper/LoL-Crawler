@@ -27,11 +27,22 @@ from lol_pipeline.riot_api import (
 from lol_pipeline.service import run_consumer
 from lol_pipeline.streams import MATCH_ID_STREAM_MAXLEN, ack, nack_to_dlq
 
-_IN_STREAM = "stream:puuid"
-_OUT_STREAM = "stream:match_id"
-_GROUP = "crawlers"
-_PAGE_SIZE = 100
-_RANK_HISTORY_MAX = 500
+from lol_crawler._data import (
+    _COOLDOWN_HIGH_HOURS,
+    _COOLDOWN_HIGH_RATE,
+    _COOLDOWN_LOW_HOURS,
+    _COOLDOWN_MID_HOURS,
+    _COOLDOWN_MID_RATE,
+    _CURSOR_TTL,
+    _GROUP,
+    _IN_STREAM,
+    _OUT_STREAM,
+    _PAGE_SIZE,
+    _RANK_TTL,
+)
+from lol_crawler._data import (
+    _RANK_HISTORY_MAX as _RANK_HISTORY_MAX,
+)
 
 
 async def _check_backpressure(
@@ -181,7 +192,7 @@ async def _fetch_match_ids_paginated(  # noqa: PLR0913
             count=_PAGE_SIZE,
         )
         pages_fetched += 1
-        await r.set(cursor_key, str(start + _PAGE_SIZE), ex=600)
+        await r.set(cursor_key, str(start + _PAGE_SIZE), ex=_CURSOR_TTL)
         if not page:
             break
 
@@ -273,10 +284,16 @@ async def _fetch_rank(
         summoner_id: str = summoner.get("id", "")
         if not summoner_id:
             return
-        # Store summoner level on the player hash if available
+        # Store summoner level and profile icon on the player hash if available
         level = summoner.get("summonerLevel")
+        icon_id = summoner.get("profileIconId")
+        player_updates: dict[str, str] = {}
         if level is not None:
-            await r.hset(f"player:{puuid}", "summoner_level", str(level))  # type: ignore[misc]
+            player_updates["summoner_level"] = str(level)
+        if icon_id is not None:
+            player_updates["profile_icon_id"] = str(icon_id)
+        if player_updates:
+            await r.hset(f"player:{puuid}", mapping=player_updates)  # type: ignore[misc]
         await wait_for_token(
             r,
             limit_per_second=cfg.api_rate_limit_per_second,
@@ -299,7 +316,7 @@ async def _fetch_rank(
                         "losses": str(entry.get("losses", 0)),
                     },
                 )
-                await r.expire(rank_key, 86400)  # 24h TTL
+                await r.expire(rank_key, _RANK_TTL)
                 # Append to rank history timeline
                 epoch_ms = int(time.time() * 1000)
                 hist_key = f"player:rank:history:{puuid}"
@@ -333,12 +350,12 @@ async def _compute_activity_rate(
         rate = total_matches / days
         await r.hset(f"player:{puuid}", "activity_rate", f"{rate:.2f}")  # type: ignore[misc]
         # Dynamic cooldown based on activity
-        if rate > 5:  # >5 games/day
-            cooldown_hours = 2
-        elif rate > 1:  # >1 game/day
-            cooldown_hours = 6
+        if rate > _COOLDOWN_HIGH_RATE:
+            cooldown_hours = _COOLDOWN_HIGH_HOURS
+        elif rate > _COOLDOWN_MID_RATE:
+            cooldown_hours = _COOLDOWN_MID_HOURS
         else:
-            cooldown_hours = 24
+            cooldown_hours = _COOLDOWN_LOW_HOURS
         recrawl_after = str(time.time() + cooldown_hours * 3600)
         await r.hset(f"player:{puuid}", "recrawl_after", recrawl_after)  # type: ignore[misc]
     except Exception:

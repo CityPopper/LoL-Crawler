@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import html
 
-from lol_ui.constants import _MATCH_BADGE_COLORS
+from lol_ui.constants import (
+    _BADGE_CS_MIN_TIME_PLAYED,
+    _BADGE_CS_PER_MIN_THRESHOLD,
+    _BADGE_KDA_THRESHOLD,
+    _BADGE_PENTA_MIN,
+    _MATCH_BADGE_COLORS,
+)
 
 
 def _match_badges(participant: dict[str, str]) -> list[tuple[str, str]]:
     """Return a list of (badge_name, color_key) for notable match achievements.
 
     All participant values are strings from Redis hashes.
+    Badge thresholds are defined in ``constants.py`` as ``_BADGE_*`` constants.
     """
     badges: list[tuple[str, str]] = []
     try:
@@ -31,24 +38,24 @@ def _match_badges(participant: dict[str, str]) -> list[tuple[str, str]]:
         penta = int(participant.get("penta_kills", "0"))
     except ValueError:
         penta = 0
-    if penta >= 1:
+    if penta >= _BADGE_PENTA_MIN:
         badges.append(("PENTA", "red"))
 
-    # High KDA: (kills + assists) / max(deaths, 1) >= 5.0
+    # High KDA: (kills + assists) / max(deaths, 1) >= threshold
     kda = (kills + assists) / max(deaths, 1)
-    if kda >= 5.0:
+    if kda >= _BADGE_KDA_THRESHOLD:
         badges.append(("KDA 5+", "green"))
 
-    # CS Machine: (total_minions_killed + neutral_minions) / (time_played / 60) >= 8.0
+    # CS Machine: cs_per_min >= threshold (only for games >= min time)
     try:
         total_cs = int(participant.get("total_minions_killed", "0"))
         neutral = int(participant.get("neutral_minions", "0"))
         time_played = int(participant.get("time_played", "0"))
     except ValueError:
         total_cs = neutral = time_played = 0
-    if time_played >= 60:
+    if time_played >= _BADGE_CS_MIN_TIME_PLAYED:
         cs_per_min = (total_cs + neutral) / (time_played / 60)
-        if cs_per_min >= 8.0:
+        if cs_per_min >= _BADGE_CS_PER_MIN_THRESHOLD:
             badges.append(("CS 8+/m", "blue"))
 
     return badges

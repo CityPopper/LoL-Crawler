@@ -5,13 +5,19 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import os
 import signal
 from collections.abc import Awaitable, Callable
 
 import redis.asyncio as aioredis
 from redis.exceptions import RedisError
 
+from lol_pipeline._service_data import (
+    _MAX_HANDLER_RETRIES,
+    _RETRY_KEY_PREFIX,
+)
+from lol_pipeline._service_data import (
+    _RETRY_KEY_TTL as _RETRY_KEY_TTL,
+)
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.priority import PRIORITY_ORDER
 from lol_pipeline.streams import ack, consume, nack_to_dlq
@@ -19,15 +25,10 @@ from lol_pipeline.streams import ack, consume, nack_to_dlq
 # Handler receives (msg_id, envelope); r is captured in the closure.
 MessageHandler = Callable[[str, MessageEnvelope], Awaitable[None]]
 
-_MAX_HANDLER_RETRIES = int(os.getenv("MAX_HANDLER_RETRIES", "3"))
-
-# TTL for Redis-backed retry counters: 7 days.
-_RETRY_KEY_TTL = 604800
-
 
 def _retry_key(stream: str, msg_id: str) -> str:
     """Build the Redis key for a message's retry counter."""
-    return f"consumer:retry:{stream}:{msg_id}"
+    return f"{_RETRY_KEY_PREFIX}:{stream}:{msg_id}"
 
 
 async def _incr_retry(r: aioredis.Redis, stream: str, msg_id: str) -> int:

@@ -1007,6 +1007,7 @@ class TestStatsHeading:
             priority_key,
             rank or {},
             [],
+            {},  # player:{puuid} hash (profile_icon_id, summoner_level)
         ]
 
         mock_pipeline_ctx = MagicMock()
@@ -1361,7 +1362,7 @@ class TestNameCacheTTLInUI:
         from lol_ui.routes.stats import show_stats
 
         mock_pipe = AsyncMock()
-        mock_pipe.execute.return_value = [None, {}, []]
+        mock_pipe.execute.return_value = [None, {}, [], {}]
 
         mock_pipeline_ctx = MagicMock()
         mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
@@ -1455,7 +1456,7 @@ class TestPriorityBadge:
         from lol_ui.routes.stats import show_stats
 
         mock_pipe = AsyncMock()
-        mock_pipe.execute.return_value = ["high", {}, []]
+        mock_pipe.execute.return_value = ["high", {}, [], {}]
 
         mock_pipeline_ctx = MagicMock()
         mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
@@ -1490,7 +1491,7 @@ class TestPriorityBadge:
         from lol_ui.routes.stats import show_stats
 
         mock_pipe = AsyncMock()
-        mock_pipe.execute.return_value = [None, {}, []]
+        mock_pipe.execute.return_value = [None, {}, [], {}]
 
         mock_pipeline_ctx = MagicMock()
         mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
@@ -2232,7 +2233,7 @@ class TestRateLimitBeforeRiotCall:
         call_order: list[str] = []
 
         mock_pipe = AsyncMock()
-        mock_pipe.execute.return_value = [None, {}, []]
+        mock_pipe.execute.return_value = [None, {}, [], {}]
 
         mock_pipeline_ctx = MagicMock()
         mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
@@ -2286,7 +2287,7 @@ class TestRateLimitBeforeRiotCall:
         from lol_ui.routes.stats import show_stats
 
         mock_pipe = AsyncMock()
-        mock_pipe.execute.return_value = [None, {}, []]
+        mock_pipe.execute.return_value = [None, {}, [], {}]
 
         mock_pipeline_ctx = MagicMock()
         mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
@@ -2323,7 +2324,7 @@ class TestRateLimitBeforeRiotCall:
         from lol_ui.routes.stats import show_stats
 
         mock_pipe = AsyncMock()
-        mock_pipe.execute.return_value = [None, {}, []]
+        mock_pipe.execute.return_value = [None, {}, [], {}]
 
         mock_pipeline_ctx = MagicMock()
         mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)

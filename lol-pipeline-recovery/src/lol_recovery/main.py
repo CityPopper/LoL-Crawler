@@ -20,14 +20,17 @@ from lol_pipeline.redis_client import get_redis
 from lol_pipeline.streams import consume_typed
 from redis.exceptions import RedisError
 
-_IN_STREAM = "stream:dlq"
-_ARCHIVE_STREAM = "stream:dlq:archive"
-_DELAYED_KEY = "delayed:messages"
-_GROUP = "recovery"
-_CLAIM_IDLE_MS = 60_000
-
-# Exponential backoff delays (ms) indexed by dlq_attempts
-_BACKOFF_MS = [5_000, 15_000, 60_000, 300_000]
+from lol_recovery._data import (
+    _ARCHIVE_STREAM,
+    _BACKOFF_MS,
+    _DELAYED_KEY,
+    _GROUP,
+    _IN_STREAM,
+    _STATUS_TTL,
+)
+from lol_recovery._data import (
+    _CLAIM_IDLE_MS as _CLAIM_IDLE_MS,
+)
 
 
 async def _consume_dlq(
@@ -61,7 +64,7 @@ async def _archive(
         await r.hset(f"match:{match_id}", mapping={"status": "failed"})  # type: ignore[misc]
         await r.expire(f"match:{match_id}", cfg.match_data_ttl_seconds)
         await r.sadd("match:status:failed", match_id)  # type: ignore[misc]
-        await r.expire("match:status:failed", 7776000)  # 90 days
+        await r.expire("match:status:failed", _STATUS_TTL)
     log.warning(
         "archived exhausted DLQ entry",
         extra={"id": dlq.id, "failure_code": dlq.failure_code, "dlq_attempts": dlq.dlq_attempts},

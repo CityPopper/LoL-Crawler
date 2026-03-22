@@ -411,12 +411,22 @@ async def _build_stats_response(
         pipe.get(f"player:priority:{puuid}")
         pipe.hgetall(f"player:rank:{puuid}")
         pipe.zrange(f"player:rank:history:{puuid}", 0, -1, withscores=True)
-        priority_key, rank, rank_hist = await pipe.execute()
+        pipe.hgetall(f"player:{puuid}")
+        priority_key, rank, rank_hist, player_data = await pipe.execute()
 
     rank = rank or {}
     rank_hist = rank_hist or []
+    player_data = player_data or {}
     priority_html = f" {_badge('info', 'Priority')}" if priority_key else ""
-    profile_html = _profile_header_html(game_name, tag_line, rank)
+    version = await _get_ddragon_version(r)
+    profile_html = _profile_header_html(
+        game_name,
+        tag_line,
+        rank,
+        icon_id=player_data.get("profile_icon_id"),
+        level=player_data.get("summoner_level"),
+        version=version,
+    )
     rank_html = _rank_card_html(rank)
     rank_hist_html = _rank_history_html(rank_hist)
     playstyle_html = _playstyle_pills_html(_playstyle_tags(stats))
