@@ -15,17 +15,20 @@ from lol_pipeline.riot_api import (
     ServerError,
 )
 
-from lol_ui.main import (
+from lol_ui.champions_helpers import (
+    _assign_tiers,
+    _champion_tier_table,
+    _patch_delta,
+    _pbi_tier,
+)
+from lol_ui.constants import (
     _AUTOSEED_COOLDOWN_S,
     _BADGE_VARIANTS,
-    _CSS,
-    _DDRAGON_CHAMPION_IDS_KEY,
     _DELTA_MIN_GAMES,
     _HALT_BANNER,
     _MATCH_BADGE_COLORS,
     _NAME_CACHE_INDEX,
     _NAME_CACHE_MAX,
-    _NAV_ITEMS,
     _PBI_MIN_GAMES,
     _PLAYSTYLE_MIN_GAMES,
     _PUUID_RE,
@@ -34,41 +37,35 @@ from lol_ui.main import (
     _TIER_COLORS,
     _TILT_RECENT_COUNT,
     _TILT_RECENT_KDA_COUNT,
-    _assign_tiers,
+)
+from lol_ui.css import _CSS, _NAV_ITEMS
+from lol_ui.ddragon import _DDRAGON_CHAMPION_IDS_KEY, _get_champion_id_map
+from lol_ui.log_helpers import _merged_log_lines, _parse_log_line, _render_log_lines, _tail_file
+from lol_ui.match_badges import _match_badges, _match_badges_html
+from lol_ui.match_history import _match_history_html, _match_history_section
+from lol_ui.player_helpers import _render_player_rows
+from lol_ui.playstyle import _playstyle_pills_html, _playstyle_tags
+from lol_ui.rank import _rank_history_html
+from lol_ui.rendering import (
     _badge,
     _badge_html,
-    _BreakdownEntry,
-    _champion_diversity,
     _champion_icon_html,
-    _champion_tier_table,
-    _compute_champion_breakdown,
-    _compute_role_breakdown,
     _depth_badge,
     _empty_state,
-    _format_stat_value,
-    _get_champion_id_map,
-    _match_badges,
-    _match_badges_html,
-    _match_history_html,
-    _match_history_section,
-    _merged_log_lines,
     _page,
-    _parse_log_line,
-    _patch_delta,
-    _pbi_tier,
-    _playstyle_pills_html,
-    _playstyle_tags,
-    _rank_history_html,
-    _render_champion_rows,
-    _render_log_lines,
-    _render_player_rows,
-    _render_role_rows,
     _stats_form,
-    _stats_table,
-    _streak_indicator,
-    _tail_file,
-    _tilt_banner_html,
 )
+from lol_ui.stats_helpers import (
+    _BreakdownEntry,
+    _champion_diversity,
+    _compute_champion_breakdown,
+    _compute_role_breakdown,
+    _format_stat_value,
+    _render_champion_rows,
+    _render_role_rows,
+    _stats_table,
+)
+from lol_ui.tilt import _streak_indicator, _tilt_banner_html
 
 
 class TestHaltBanner:
@@ -252,10 +249,11 @@ class TestStatsTable:
         assert "<script>" not in result
         assert html.escape("<script>xss</script>") in result
 
-    def test_uses_badge_for_verified(self):
+    def test_heading_is_player_stats(self):
         result = _stats_table({"wins": "10"}, [], [])
-        assert "badge badge--success" in result
-        assert "Verified" in result
+        assert "<h3" in result
+        assert "Player Stats" in result
+        assert "<details>" in result
 
     def test_tables_wrapped_in_scroll_div(self):
         result = _stats_table({"wins": "10"}, [("Zed", 5.0)], [("MID", 3.0)])
@@ -531,7 +529,7 @@ class TestStatsMatchesPipeline:
         """2 HGETALL per match should go through pipeline, not individual calls."""
         import fakeredis.aioredis
 
-        from lol_ui.main import stats_matches
+        from lol_ui.routes.stats import stats_matches
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         # Set up match data
@@ -606,7 +604,7 @@ class TestAutoSeedPriority:
         """Auto-seed envelope has priority='high' and sets player:priority key."""
         import fakeredis.aioredis
 
-        from lol_ui.main import show_stats
+        from lol_ui.routes.stats import show_stats
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -646,7 +644,7 @@ class TestAutoSeedPriority:
         import fakeredis.aioredis
         from lol_pipeline.priority import set_priority
 
-        from lol_ui.main import show_streams
+        from lol_ui.routes.streams import show_streams
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         await set_priority(r, "puuid-1")
@@ -672,7 +670,7 @@ class TestAutoSeedOrdering:
         """Auto-seed writes to stream:puuid BEFORE marking seeded_at in player hash."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from lol_ui.main import show_stats
+        from lol_ui.routes.stats import show_stats
 
         call_order: list[str] = []
 
@@ -704,7 +702,7 @@ class TestAutoSeedOrdering:
         mock_cfg = MagicMock()
         mock_cfg.max_attempts = 5
 
-        with patch("lol_ui.main.publish", new_callable=AsyncMock) as mock_publish:
+        with patch("lol_ui.routes.stats.publish", new_callable=AsyncMock) as mock_publish:
 
             async def tracking_publish(*args, **kwargs):
                 call_order.append("publish")
@@ -902,7 +900,7 @@ class TestPlayersPageCount:
 
         import fakeredis.aioredis
 
-        from lol_ui.main import show_players
+        from lol_ui.routes.players import show_players
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         await r.hset(
@@ -932,7 +930,7 @@ class TestPlayersPageCount:
 
         import fakeredis.aioredis
 
-        from lol_ui.main import show_players
+        from lol_ui.routes.players import show_players
 
         iso_ts = "2026-03-19T12:34:56+00:00"
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
@@ -964,7 +962,8 @@ class TestPlayersPageCount:
 
         import fakeredis.aioredis
 
-        from lol_ui.main import _PLAYERS_PAGE_SIZE, show_players
+        from lol_ui.constants import _PLAYERS_PAGE_SIZE
+        from lol_ui.routes.players import show_players
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         for i in range(_PLAYERS_PAGE_SIZE + 1):
@@ -998,8 +997,6 @@ class TestStatsHeading:
         puuid,
         stats,
         priority_key=None,
-        champs=None,
-        roles=None,
         rank=None,
     ):
         """Build an AsyncMock Redis client that supports the pipeline context manager."""
@@ -1008,8 +1005,6 @@ class TestStatsHeading:
         mock_pipe = AsyncMock()
         mock_pipe.execute.return_value = [
             priority_key,
-            champs or [],
-            roles or [],
             rank or {},
             [],
         ]
@@ -1021,6 +1016,7 @@ class TestStatsHeading:
         mock_r = AsyncMock()
         mock_r.get.return_value = None  # no cache hit, no halt
         mock_r.hgetall.return_value = stats
+        mock_r.zrevrangebyscore.return_value = []  # no split matches
         # pipeline() must be a sync callable so `async with r.pipeline(...)` works.
         mock_r.pipeline = MagicMock(return_value=mock_pipeline_ctx)
         return mock_r
@@ -1030,7 +1026,7 @@ class TestStatsHeading:
         """Heading reads 'Stats for GameName#TagLine' when stats exist."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from lol_ui.main import show_stats
+        from lol_ui.routes.stats import show_stats
 
         mock_r = self._make_mock_r(
             puuid="test-puuid-heading",
@@ -1055,7 +1051,7 @@ class TestStatsHeading:
         """The PUUID is not rendered in the heading paragraph."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from lol_ui.main import show_stats
+        from lol_ui.routes.stats import show_stats
 
         test_puuid = "secret-puuid-abc-xyz-999"
         mock_r = self._make_mock_r(
@@ -1089,7 +1085,7 @@ class TestStreamsFragment:
         """Fragment endpoint returns table HTML without <!doctype html> wrapper."""
         import fakeredis.aioredis
 
-        from lol_ui.main import streams_fragment
+        from lol_ui.routes.streams import streams_fragment
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -1114,7 +1110,7 @@ class TestStreamsFragment:
         """Fragment shows HALTED banner when system:halted is set."""
         import fakeredis.aioredis
 
-        from lol_ui.main import streams_fragment
+        from lol_ui.routes.streams import streams_fragment
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         await r.set("system:halted", "1")
@@ -1136,7 +1132,7 @@ class TestStreamsFragment:
         """Fragment shows running banner when system is not halted."""
         import fakeredis.aioredis
 
-        from lol_ui.main import streams_fragment
+        from lol_ui.routes.streams import streams_fragment
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -1158,7 +1154,7 @@ class TestStreamsFragment:
         import fakeredis.aioredis
         from lol_pipeline.priority import set_priority
 
-        from lol_ui.main import streams_fragment
+        from lol_ui.routes.streams import streams_fragment
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         await set_priority(r, "puuid-1")
@@ -1184,7 +1180,7 @@ class TestStreamsAutoRefresh:
         """The /streams page includes JS polling script."""
         import fakeredis.aioredis
 
-        from lol_ui.main import show_streams
+        from lol_ui.routes.streams import show_streams
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -1207,7 +1203,7 @@ class TestStreamsAutoRefresh:
         """The /streams page includes a Pause button."""
         import fakeredis.aioredis
 
-        from lol_ui.main import show_streams
+        from lol_ui.routes.streams import show_streams
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -1233,7 +1229,7 @@ class TestErrorMessages:
         """NotFoundError shows player-not-found guidance."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from lol_ui.main import show_stats
+        from lol_ui.routes.stats import show_stats
 
         mock_r = AsyncMock()
         mock_r.get.return_value = None  # no cached puuid
@@ -1258,7 +1254,7 @@ class TestErrorMessages:
         """RateLimitError shows rate-limit guidance."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from lol_ui.main import show_stats
+        from lol_ui.routes.stats import show_stats
 
         mock_r = AsyncMock()
         mock_r.get.return_value = None
@@ -1283,7 +1279,7 @@ class TestErrorMessages:
         """AuthError shows API key guidance."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from lol_ui.main import show_stats
+        from lol_ui.routes.stats import show_stats
 
         mock_r = AsyncMock()
         mock_r.get.return_value = None
@@ -1308,7 +1304,7 @@ class TestErrorMessages:
         """ServerError shows server-unavailable guidance."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from lol_ui.main import show_stats
+        from lol_ui.routes.stats import show_stats
 
         mock_r = AsyncMock()
         mock_r.get.return_value = None
@@ -1337,7 +1333,7 @@ class TestRegionValidation:
         """show_stats with unknown region defaults to na1."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from lol_ui.main import show_stats
+        from lol_ui.routes.stats import show_stats
 
         mock_r = AsyncMock()
 
@@ -1362,10 +1358,10 @@ class TestNameCacheTTLInUI:
         """show_stats sets player:name cache with ex=86400."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from lol_ui.main import show_stats
+        from lol_ui.routes.stats import show_stats
 
         mock_pipe = AsyncMock()
-        mock_pipe.execute.return_value = [None, [], [], {}, []]
+        mock_pipe.execute.return_value = [None, {}, []]
 
         mock_pipeline_ctx = MagicMock()
         mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
@@ -1378,6 +1374,7 @@ class TestNameCacheTTLInUI:
         }.get(key)
         mock_r.hgetall.return_value = {"total_games": "10"}
         mock_r.hget.return_value = None
+        mock_r.zrevrangebyscore.return_value = []  # no split matches
         mock_r.pipeline = MagicMock(return_value=mock_pipeline_ctx)
 
         mock_riot = AsyncMock()
@@ -1405,7 +1402,7 @@ class TestRegionPreservation:
         """When no riot_id given, region from query string is preserved."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from lol_ui.main import show_stats
+        from lol_ui.routes.stats import show_stats
 
         mock_r = AsyncMock()
 
@@ -1425,7 +1422,7 @@ class TestRegionPreservation:
         """On NotFoundError, region selection is preserved in the form."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from lol_ui.main import show_stats
+        from lol_ui.routes.stats import show_stats
 
         mock_r = AsyncMock()
         mock_r.get.return_value = None
@@ -1455,10 +1452,10 @@ class TestPriorityBadge:
         """Priority badge appears next to player name when priority key is set."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from lol_ui.main import show_stats
+        from lol_ui.routes.stats import show_stats
 
         mock_pipe = AsyncMock()
-        mock_pipe.execute.return_value = ["high", [], [], {}, []]
+        mock_pipe.execute.return_value = ["high", {}, []]
 
         mock_pipeline_ctx = MagicMock()
         mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
@@ -1470,7 +1467,7 @@ class TestPriorityBadge:
             "system:halted": None,
         }.get(key)
         mock_r.hgetall.return_value = {"total_games": "10", "wins": "5"}
-        mock_r.zrevrange.return_value = []  # no recent matches for tilt indicator
+        mock_r.zrevrangebyscore.return_value = []  # no split matches
         mock_r.pipeline = MagicMock(return_value=mock_pipeline_ctx)
 
         request = MagicMock()
@@ -1490,10 +1487,10 @@ class TestPriorityBadge:
         """No priority badge when priority key does not exist."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from lol_ui.main import show_stats
+        from lol_ui.routes.stats import show_stats
 
         mock_pipe = AsyncMock()
-        mock_pipe.execute.return_value = [None, [], [], {}, []]
+        mock_pipe.execute.return_value = [None, {}, []]
 
         mock_pipeline_ctx = MagicMock()
         mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
@@ -1505,7 +1502,7 @@ class TestPriorityBadge:
             "system:halted": None,
         }.get(key)
         mock_r.hgetall.return_value = {"total_games": "10", "wins": "5"}
-        mock_r.zrevrange.return_value = []  # no recent matches for tilt indicator
+        mock_r.zrevrangebyscore.return_value = []  # no split matches
         mock_r.pipeline = MagicMock(return_value=mock_pipeline_ctx)
 
         request = MagicMock()
@@ -1528,7 +1525,7 @@ class TestPlayersEmptyState:
         """When no players seeded, shows styled empty state with guidance."""
         import fakeredis.aioredis
 
-        from lol_ui.main import show_players
+        from lol_ui.routes.players import show_players
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -1555,7 +1552,7 @@ class TestDlqBrowser:
         """When DLQ stream is empty, show 'pipeline is healthy' empty state."""
         import fakeredis.aioredis
 
-        from lol_ui.main import show_dlq
+        from lol_ui.routes.dlq import show_dlq
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -1580,7 +1577,7 @@ class TestDlqBrowser:
         import fakeredis.aioredis
         from lol_pipeline.models import DLQEnvelope
 
-        from lol_ui.main import show_dlq
+        from lol_ui.routes.dlq import show_dlq
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -1624,7 +1621,7 @@ class TestDlqBrowserEdgeCases:
         import fakeredis.aioredis
         from lol_pipeline.models import DLQEnvelope
 
-        from lol_ui.main import show_dlq
+        from lol_ui.routes.dlq import show_dlq
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -1661,7 +1658,7 @@ class TestDlqBrowserEdgeCases:
         import fakeredis.aioredis
         from lol_pipeline.models import DLQEnvelope
 
-        from lol_ui.main import show_dlq
+        from lol_ui.routes.dlq import show_dlq
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -1698,7 +1695,8 @@ class TestDlqBrowserEdgeCases:
         import fakeredis.aioredis
         from lol_pipeline.models import DLQEnvelope
 
-        from lol_ui.main import _DLQ_DEFAULT_PER_PAGE, show_dlq
+        from lol_ui.constants import _DLQ_DEFAULT_PER_PAGE
+        from lol_ui.routes.dlq import show_dlq
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -1740,7 +1738,7 @@ class TestStreamsFragmentHtmlEdgeCases:
         """Fragment shows actual stream depths when streams have entries."""
         import fakeredis.aioredis
 
-        from lol_ui.main import _streams_fragment_html
+        from lol_ui.streams_helpers import _streams_fragment_html
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         # Add some entries to a stream
@@ -1756,7 +1754,7 @@ class TestStreamsFragmentHtmlEdgeCases:
         """Fragment shows delayed:messages ZSET count."""
         import fakeredis.aioredis
 
-        from lol_ui.main import _streams_fragment_html
+        from lol_ui.streams_helpers import _streams_fragment_html
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         await r.zadd("delayed:messages", {"msg1": 1000.0, "msg2": 2000.0})
@@ -1775,7 +1773,7 @@ class TestStreamsFragmentPipeline:
         """All XLEN/ZCARD/GET calls should go through a pipeline, not individually."""
         import fakeredis.aioredis
 
-        from lol_ui.main import _streams_fragment_html
+        from lol_ui.streams_helpers import _streams_fragment_html
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         # Track direct calls on r (not on pipeline)
@@ -1820,7 +1818,7 @@ class TestStatsMatchesEdgeCases:
         """Missing puuid returns error message."""
         from unittest.mock import MagicMock
 
-        from lol_ui.main import stats_matches
+        from lol_ui.routes.stats import stats_matches
 
         request = MagicMock()
         request.query_params = {"puuid": "", "region": "na1", "riot_id": "T#1", "page": "0"}
@@ -1835,7 +1833,7 @@ class TestStatsMatchesEdgeCases:
         """Invalid puuid format returns 400."""
         from unittest.mock import MagicMock
 
-        from lol_ui.main import stats_matches
+        from lol_ui.routes.stats import stats_matches
 
         request = MagicMock()
         request.query_params = {
@@ -1855,7 +1853,7 @@ class TestStatsMatchesEdgeCases:
         """Non-numeric page defaults to 0."""
         import fakeredis.aioredis
 
-        from lol_ui.main import stats_matches
+        from lol_ui.routes.stats import stats_matches
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -1880,7 +1878,7 @@ class TestStatsMatchesEdgeCases:
         """PUUID with no matches returns 'No match history'."""
         import fakeredis.aioredis
 
-        from lol_ui.main import stats_matches
+        from lol_ui.routes.stats import stats_matches
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -1909,7 +1907,7 @@ class TestPlayerSearch:
         """The /players page includes a search input when players exist."""
         import fakeredis.aioredis
 
-        from lol_ui.main import show_players
+        from lol_ui.routes.players import show_players
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         await r.hset(
@@ -1945,7 +1943,7 @@ class TestPlayersAllZset:
         """show_players reads from players:all ZSET, not scan_iter."""
         import fakeredis.aioredis
 
-        from lol_ui.main import show_players
+        from lol_ui.routes.players import show_players
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         # Add player to players:all ZSET and set up hash
@@ -1978,7 +1976,7 @@ class TestPlayersAllZset:
         """Player hashes without a players:all entry are NOT shown."""
         import fakeredis.aioredis
 
-        from lol_ui.main import show_players
+        from lol_ui.routes.players import show_players
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         # Only set up hash, NOT players:all
@@ -2010,7 +2008,7 @@ class TestPlayersAllZset:
         """Players are shown most recently seeded first (highest score in ZSET)."""
         import fakeredis.aioredis
 
-        from lol_ui.main import show_players
+        from lol_ui.routes.players import show_players
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         await r.zadd("players:all", {"puuid-old": 1000.0, "puuid-new": 2000.0})
@@ -2135,7 +2133,7 @@ class TestDlqCorruptEntries:
         import fakeredis.aioredis
         from lol_pipeline.models import DLQEnvelope
 
-        from lol_ui.main import show_dlq
+        from lol_ui.routes.dlq import show_dlq
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -2197,7 +2195,7 @@ class TestDlqCorruptEntries:
         """When all entries are corrupt, page returns 200 with table but no data rows."""
         import fakeredis.aioredis
 
-        from lol_ui.main import show_dlq
+        from lol_ui.routes.dlq import show_dlq
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -2229,12 +2227,12 @@ class TestRateLimitBeforeRiotCall:
         """wait_for_token is called before riot.get_account_by_riot_id."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from lol_ui.main import show_stats
+        from lol_ui.routes.stats import show_stats
 
         call_order: list[str] = []
 
         mock_pipe = AsyncMock()
-        mock_pipe.execute.return_value = [None, [], [], {}, []]
+        mock_pipe.execute.return_value = [None, {}, []]
 
         mock_pipeline_ctx = MagicMock()
         mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
@@ -2243,6 +2241,7 @@ class TestRateLimitBeforeRiotCall:
         mock_r = AsyncMock()
         mock_r.get.return_value = None  # no cached puuid
         mock_r.hgetall.return_value = {"total_games": "10"}
+        mock_r.zrevrangebyscore.return_value = []  # no split matches
         mock_r.pipeline = MagicMock(return_value=mock_pipeline_ctx)
 
         mock_riot = AsyncMock()
@@ -2262,7 +2261,7 @@ class TestRateLimitBeforeRiotCall:
         request.app.state.riot = mock_riot
         request.app.state.cfg = mock_cfg
 
-        with patch("lol_ui.main.wait_for_token", new_callable=AsyncMock) as mock_wft:
+        with patch("lol_ui.routes.stats.wait_for_token", new_callable=AsyncMock) as mock_wft:
 
             async def tracking_wait(*args, **kwargs):
                 call_order.append("wait_for_token")
@@ -2284,10 +2283,10 @@ class TestRateLimitBeforeRiotCall:
         """wait_for_token is called with the configured api_rate_limit_per_second."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from lol_ui.main import show_stats
+        from lol_ui.routes.stats import show_stats
 
         mock_pipe = AsyncMock()
-        mock_pipe.execute.return_value = [None, [], [], {}, []]
+        mock_pipe.execute.return_value = [None, {}, []]
 
         mock_pipeline_ctx = MagicMock()
         mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
@@ -2296,6 +2295,7 @@ class TestRateLimitBeforeRiotCall:
         mock_r = AsyncMock()
         mock_r.get.return_value = None
         mock_r.hgetall.return_value = {"total_games": "10"}
+        mock_r.zrevrangebyscore.return_value = []  # no split matches
         mock_r.pipeline = MagicMock(return_value=mock_pipeline_ctx)
 
         mock_riot = AsyncMock()
@@ -2310,7 +2310,7 @@ class TestRateLimitBeforeRiotCall:
         request.app.state.riot = mock_riot
         request.app.state.cfg = mock_cfg
 
-        with patch("lol_ui.main.wait_for_token", new_callable=AsyncMock) as mock_wft:
+        with patch("lol_ui.routes.stats.wait_for_token", new_callable=AsyncMock) as mock_wft:
             await show_stats(request)
 
         mock_wft.assert_called_once_with(mock_r, limit_per_second=15, region="na1")
@@ -2320,10 +2320,10 @@ class TestRateLimitBeforeRiotCall:
         """When puuid is in cache, no Riot API call is made, so no rate limiting needed."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from lol_ui.main import show_stats
+        from lol_ui.routes.stats import show_stats
 
         mock_pipe = AsyncMock()
-        mock_pipe.execute.return_value = [None, [], [], {}, []]
+        mock_pipe.execute.return_value = [None, {}, []]
 
         mock_pipeline_ctx = MagicMock()
         mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
@@ -2335,6 +2335,7 @@ class TestRateLimitBeforeRiotCall:
             "system:halted": None,
         }.get(key)
         mock_r.hgetall.return_value = {"total_games": "10"}
+        mock_r.zrevrangebyscore.return_value = []  # no split matches
         mock_r.pipeline = MagicMock(return_value=mock_pipeline_ctx)
 
         request = MagicMock()
@@ -2343,7 +2344,7 @@ class TestRateLimitBeforeRiotCall:
         request.app.state.riot = MagicMock()
         request.app.state.cfg = MagicMock()
 
-        with patch("lol_ui.main.wait_for_token", new_callable=AsyncMock) as mock_wft:
+        with patch("lol_ui.routes.stats.wait_for_token", new_callable=AsyncMock) as mock_wft:
             await show_stats(request)
 
         mock_wft.assert_not_called()
@@ -2364,7 +2365,7 @@ class TestNameCacheIndex:
 
         import fakeredis.aioredis
 
-        from lol_ui.main import show_stats
+        from lol_ui.routes.stats import show_stats
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -2385,7 +2386,7 @@ class TestNameCacheIndex:
         # Pre-set stats so auto-seed path is not entered
         await r.hset("player:stats:idx-puuid-1", mapping={"total_games": "1"})
 
-        with patch("lol_ui.main.wait_for_token", new_callable=AsyncMock):
+        with patch("lol_ui.routes.stats.wait_for_token", new_callable=AsyncMock):
             await show_stats(request)
 
         # The name_cache:index should have one entry
@@ -2405,7 +2406,7 @@ class TestNameCacheIndex:
 
         import fakeredis.aioredis
 
-        from lol_ui.main import _resolve_and_cache_puuid
+        from lol_ui.routes.stats import _resolve_and_cache_puuid
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -2422,7 +2423,7 @@ class TestNameCacheIndex:
         class FakeCfg:
             api_rate_limit_per_second = 20
 
-        with patch("lol_ui.main.wait_for_token", new_callable=AsyncMock):
+        with patch("lol_ui.routes.stats.wait_for_token", new_callable=AsyncMock):
             result = await _resolve_and_cache_puuid(
                 r, FakeRiot(), "NewRiotId#NA1", "NewRiotId", "NA1", "na1", FakeCfg()
             )
@@ -2451,7 +2452,7 @@ class TestRegionValidation400:
         """show_stats with unknown region returns 400 status code."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from lol_ui.main import show_stats
+        from lol_ui.routes.stats import show_stats
 
         mock_r = AsyncMock()
 
@@ -2467,7 +2468,7 @@ class TestRegionValidation400:
         """400 response contains the invalid region name in the error."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from lol_ui.main import show_stats
+        from lol_ui.routes.stats import show_stats
 
         mock_r = AsyncMock()
 
@@ -2487,7 +2488,7 @@ class TestRegionValidation400:
         """XSS in region parameter is HTML-escaped in the 400 response."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from lol_ui.main import show_stats
+        from lol_ui.routes.stats import show_stats
 
         mock_r = AsyncMock()
 
@@ -2519,7 +2520,7 @@ class TestAutoSeedCooldown:
 
         import fakeredis.aioredis
 
-        from lol_ui.main import show_stats
+        from lol_ui.routes.stats import show_stats
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -2538,7 +2539,7 @@ class TestAutoSeedCooldown:
         request.app.state.cfg = FakeCfg()
         request.app.state.riot = FakeRiot()
 
-        with patch("lol_ui.main.wait_for_token", new_callable=AsyncMock):
+        with patch("lol_ui.routes.stats.wait_for_token", new_callable=AsyncMock):
             await show_stats(request)
 
         # Cooldown key should be set
@@ -2556,7 +2557,7 @@ class TestAutoSeedCooldown:
         """When cooldown key exists, auto-seed is skipped."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from lol_ui.main import show_stats
+        from lol_ui.routes.stats import show_stats
 
         mock_seed_pipe = AsyncMock()
         mock_seed_pipe.execute.return_value = [None, "1", None]
@@ -2592,7 +2593,7 @@ class TestAutoSeedCooldown:
         """When no cooldown key exists, auto-seed proceeds normally."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from lol_ui.main import show_stats
+        from lol_ui.routes.stats import show_stats
 
         mock_seed_pipe = AsyncMock()
         mock_seed_pipe.execute.return_value = [None, None, None]
@@ -2617,8 +2618,8 @@ class TestAutoSeedCooldown:
         request.app.state.riot = MagicMock()
         request.app.state.cfg = MagicMock()
 
-        with patch("lol_ui.main.publish", new_callable=AsyncMock):
-            with patch("lol_ui.main.set_priority", new_callable=AsyncMock):
+        with patch("lol_ui.routes.stats.publish", new_callable=AsyncMock):
+            with patch("lol_ui.routes.stats.set_priority", new_callable=AsyncMock):
                 resp = await show_stats(request)
 
         body = resp.body.decode()
@@ -2638,7 +2639,7 @@ class TestStreamsFragmentHtmlHaltBanner:
         """When system:halted is set, HTML contains HALTED banner with error class."""
         import fakeredis.aioredis
 
-        from lol_ui.main import _streams_fragment_html
+        from lol_ui.streams_helpers import _streams_fragment_html
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         await r.set("system:halted", "auth_403")
@@ -2656,7 +2657,7 @@ class TestStreamsFragmentHtmlHaltBanner:
         import fakeredis.aioredis
         from lol_pipeline.priority import set_priority
 
-        from lol_ui.main import _streams_fragment_html
+        from lol_ui.streams_helpers import _streams_fragment_html
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         await set_priority(r, "puuid-1")
@@ -2672,7 +2673,7 @@ class TestStreamsFragmentHtmlHaltBanner:
         """When neither halted nor priority set, shows running banner and priority No."""
         import fakeredis.aioredis
 
-        from lol_ui.main import _streams_fragment_html
+        from lol_ui.streams_helpers import _streams_fragment_html
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -2704,7 +2705,7 @@ class TestStatsMatchesWithData:
         """Valid PUUID with match data returns match history HTML."""
         import fakeredis.aioredis
 
-        from lol_ui.main import stats_matches
+        from lol_ui.routes.stats import stats_matches
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         await r.zadd(
@@ -2770,7 +2771,8 @@ class TestStatsMatchesWithData:
         """Page 1 skips the first _MATCH_PAGE_SIZE entries."""
         import fakeredis.aioredis
 
-        from lol_ui.main import _MATCH_PAGE_SIZE, stats_matches
+        from lol_ui.constants import _MATCH_PAGE_SIZE
+        from lol_ui.routes.stats import stats_matches
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         # Create _MATCH_PAGE_SIZE + 5 matches to span 2 pages
@@ -2821,7 +2823,8 @@ class TestStatsMatchesWithData:
         """Page 0 with more than _MATCH_PAGE_SIZE matches shows Load more link."""
         import fakeredis.aioredis
 
-        from lol_ui.main import _MATCH_PAGE_SIZE, stats_matches
+        from lol_ui.constants import _MATCH_PAGE_SIZE
+        from lol_ui.routes.stats import stats_matches
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         total = _MATCH_PAGE_SIZE + 1
@@ -2921,7 +2924,7 @@ class TestDlqReplayEndpoint:
         import fakeredis.aioredis
         from lol_pipeline.models import DLQEnvelope
 
-        from lol_ui.main import dlq_replay
+        from lol_ui.routes.dlq import dlq_replay
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         dlq = DLQEnvelope(
@@ -2972,7 +2975,7 @@ class TestDlqReplayEndpoint:
     async def test_dlq_replay__nonexistent_entry_returns_404(self):
         import fakeredis.aioredis
 
-        from lol_ui.main import dlq_replay
+        from lol_ui.routes.dlq import dlq_replay
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -2994,7 +2997,7 @@ class TestDlqReplayEndpoint:
     async def test_dlq_replay__corrupt_entry_returns_422(self):
         import fakeredis.aioredis
 
-        from lol_ui.main import dlq_replay
+        from lol_ui.routes.dlq import dlq_replay
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         entry_id = await r.xadd("stream:dlq", {"garbage": "data"})
@@ -3019,7 +3022,7 @@ class TestDlqReplayEndpoint:
         import fakeredis.aioredis
         from lol_pipeline.models import DLQEnvelope
 
-        from lol_ui.main import dlq_replay
+        from lol_ui.routes.dlq import dlq_replay
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         dlq = DLQEnvelope(
@@ -3064,7 +3067,7 @@ class TestDlqReplayEndpoint:
         import fakeredis.aioredis
         from lol_pipeline.models import DLQEnvelope
 
-        from lol_ui.main import dlq_replay
+        from lol_ui.routes.dlq import dlq_replay
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         dlq = DLQEnvelope(
@@ -3104,7 +3107,7 @@ class TestDlqReplayEndpoint:
         import fakeredis.aioredis
         from lol_pipeline.models import DLQEnvelope
 
-        from lol_ui.main import dlq_replay
+        from lol_ui.routes.dlq import dlq_replay
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         dlq = DLQEnvelope(
@@ -3150,7 +3153,7 @@ class TestDlqPagination:
         import fakeredis.aioredis
         from lol_pipeline.models import DLQEnvelope
 
-        from lol_ui.main import show_dlq
+        from lol_ui.routes.dlq import show_dlq
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         entry_ids = []
@@ -3189,7 +3192,7 @@ class TestDlqPagination:
         import fakeredis.aioredis
         from lol_pipeline.models import DLQEnvelope
 
-        from lol_ui.main import show_dlq
+        from lol_ui.routes.dlq import show_dlq
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         for i in range(15):
@@ -3226,7 +3229,7 @@ class TestDlqPagination:
         import fakeredis.aioredis
         from lol_pipeline.models import DLQEnvelope
 
-        from lol_ui.main import show_dlq
+        from lol_ui.routes.dlq import show_dlq
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         for i in range(15):
@@ -3270,7 +3273,7 @@ class TestMakeReplayEnvelope:
     def test_reconstructs_envelope_from_dlq(self):
         from lol_pipeline.models import DLQEnvelope
 
-        from lol_ui.main import _make_replay_envelope
+        from lol_ui.dlq_helpers import _make_replay_envelope
 
         dlq = DLQEnvelope(
             source_stream="stream:dlq",
@@ -3301,7 +3304,7 @@ class TestMakeReplayEnvelope:
     def test_type_derived_from_original_stream(self):
         from lol_pipeline.models import DLQEnvelope
 
-        from lol_ui.main import _make_replay_envelope
+        from lol_ui.dlq_helpers import _make_replay_envelope
 
         dlq = DLQEnvelope(
             source_stream="stream:dlq",
@@ -3333,7 +3336,7 @@ class TestAutoSeedPriorityBeforePublish:
         """set_priority() must be called BEFORE publish() to avoid race with Crawler."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from lol_ui.main import _auto_seed_player
+        from lol_ui.routes.stats import _auto_seed_player
 
         call_order: list[str] = []
 
@@ -3358,8 +3361,8 @@ class TestAutoSeedPriorityBeforePublish:
             call_order.append("set_priority")
 
         with (
-            patch("lol_ui.main.publish", new_callable=AsyncMock) as mock_pub,
-            patch("lol_ui.main.set_priority", new_callable=AsyncMock) as mock_sp,
+            patch("lol_ui.routes.stats.publish", new_callable=AsyncMock) as mock_pub,
+            patch("lol_ui.routes.stats.set_priority", new_callable=AsyncMock) as mock_sp,
         ):
             mock_pub.side_effect = tracking_publish
             mock_sp.side_effect = tracking_set_priority
@@ -3380,7 +3383,7 @@ class TestAutoSeedWritesPlayersAll:
         """Auto-seed must call zadd('players:all', {puuid: timestamp})."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from lol_ui.main import _auto_seed_player
+        from lol_ui.routes.stats import _auto_seed_player
 
         mock_pipe = AsyncMock()
         mock_pipe.execute.return_value = [None, None, None]
@@ -3397,8 +3400,8 @@ class TestAutoSeedWritesPlayersAll:
         mock_cfg.max_attempts = 5
 
         with (
-            patch("lol_ui.main.publish", new_callable=AsyncMock),
-            patch("lol_ui.main.set_priority", new_callable=AsyncMock),
+            patch("lol_ui.routes.stats.publish", new_callable=AsyncMock),
+            patch("lol_ui.routes.stats.set_priority", new_callable=AsyncMock),
         ):
             await _auto_seed_player(mock_r, "seed-puuid-1", "Player", "NA1", "na1", mock_cfg)
 
@@ -3423,7 +3426,7 @@ class TestDashboardRegionSelector:
         """Dashboard region <select> must include all _REGIONS, not just 4."""
         import fakeredis.aioredis
 
-        from lol_ui.main import index
+        from lol_ui.routes.dashboard import index
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -3616,7 +3619,7 @@ class TestDlqReplayEntryIdValidation:
 
         from fastapi import HTTPException
 
-        from lol_ui.main import dlq_replay
+        from lol_ui.routes.dlq import dlq_replay
 
         request = MagicMock()
         request.app.state.r = MagicMock()
@@ -3633,7 +3636,7 @@ class TestDlqReplayEntryIdValidation:
 
         from fastapi import HTTPException
 
-        from lol_ui.main import dlq_replay
+        from lol_ui.routes.dlq import dlq_replay
 
         request = MagicMock()
         request.app.state.r = MagicMock()
@@ -3650,7 +3653,7 @@ class TestDlqReplayEntryIdValidation:
 
         import fakeredis.aioredis
 
-        from lol_ui.main import dlq_replay
+        from lol_ui.routes.dlq import dlq_replay
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         request = MagicMock()
@@ -3669,7 +3672,7 @@ class TestDlqReplayEntryIdValidation:
 
         from fastapi import HTTPException
 
-        from lol_ui.main import dlq_replay
+        from lol_ui.routes.dlq import dlq_replay
 
         request = MagicMock()
         request.app.state.r = MagicMock()
@@ -3688,7 +3691,7 @@ class TestLogsAsyncIo:
         """logs_fragment wraps _merged_log_lines in asyncio.to_thread."""
         from unittest.mock import MagicMock
 
-        from lol_ui.main import logs_fragment
+        from lol_ui.routes.logs import logs_fragment
 
         log_file = tmp_path / "svc.log"
         log_file.write_text(
@@ -3708,7 +3711,7 @@ class TestLogsAsyncIo:
             call_tracker["func"] = func.__name__ if hasattr(func, "__name__") else str(func)
             return await original_to_thread(func, *args, **kwargs)
 
-        with patch("lol_ui.main.asyncio") as mock_asyncio:
+        with patch("lol_ui.routes.logs.asyncio") as mock_asyncio:
             mock_asyncio.to_thread = tracking_to_thread
             await logs_fragment(request)
 
@@ -3720,7 +3723,7 @@ class TestLogsAsyncIo:
         """show_logs wraps _merged_log_lines in asyncio.to_thread."""
         import fakeredis.aioredis
 
-        from lol_ui.main import show_logs
+        from lol_ui.routes.logs import show_logs
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -3745,7 +3748,7 @@ class TestLogsAsyncIo:
             call_tracker["func"] = func.__name__ if hasattr(func, "__name__") else str(func)
             return await original_to_thread(func, *args, **kwargs)
 
-        with patch("lol_ui.main.asyncio") as mock_asyncio:
+        with patch("lol_ui.routes.logs.asyncio") as mock_asyncio:
             mock_asyncio.to_thread = tracking_to_thread
             await show_logs(request)
 
@@ -3769,7 +3772,7 @@ class TestChampionsPageEmpty:
 
         import fakeredis.aioredis
 
-        from lol_ui.main import show_champions
+        from lol_ui.routes.champions import show_champions
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         request = MagicMock()
@@ -3794,7 +3797,7 @@ class TestChampionsPageWithData:
 
         import fakeredis.aioredis
 
-        from lol_ui.main import show_champions
+        from lol_ui.routes.champions import show_champions
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         # Seed patch:list
@@ -3858,7 +3861,7 @@ class TestChampionsPageRoleFilter:
 
         import fakeredis.aioredis
 
-        from lol_ui.main import show_champions
+        from lol_ui.routes.champions import show_champions
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         await r.zadd("patch:list", {"14.5": 1710000000})
@@ -3908,7 +3911,7 @@ class TestChampionsPagePatchSelector:
 
         import fakeredis.aioredis
 
-        from lol_ui.main import show_champions
+        from lol_ui.routes.champions import show_champions
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         await r.zadd("patch:list", {"14.4": 1709000000, "14.5": 1710000000})
@@ -3947,7 +3950,7 @@ class TestChampionDetailPage:
 
         import fakeredis.aioredis
 
-        from lol_ui.main import show_champion_detail
+        from lol_ui.routes.champions import show_champion_detail
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         await r.zadd("patch:list", {"14.5": 1710000000, "14.4": 1709000000})
@@ -4014,7 +4017,7 @@ class TestChampionDetailNotFound:
 
         import fakeredis.aioredis
 
-        from lol_ui.main import show_champion_detail
+        from lol_ui.routes.champions import show_champion_detail
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         await r.zadd("patch:list", {"14.5": 1710000000})
@@ -4045,7 +4048,7 @@ class TestStatsPageRankDisplay:
 
         import fakeredis.aioredis
 
-        from lol_ui.main import _build_stats_response
+        from lol_ui.routes.stats import _build_stats_response
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         puuid = "rank-test-puuid"
@@ -4082,7 +4085,7 @@ class TestStatsPageRankDisplay:
 
         import fakeredis.aioredis
 
-        from lol_ui.main import _build_stats_response
+        from lol_ui.routes.stats import _build_stats_response
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         puuid = "no-rank-puuid"
@@ -4112,7 +4115,7 @@ class TestMatchupsPage:
 
         import fakeredis.aioredis
 
-        from lol_ui.main import show_matchups
+        from lol_ui.routes.matchups import show_matchups
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         request = MagicMock()
@@ -4136,7 +4139,7 @@ class TestMatchupsPage:
 
         import fakeredis.aioredis
 
-        from lol_ui.main import show_matchups
+        from lol_ui.routes.matchups import show_matchups
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         await r.zadd("patch:list", {"14.5": 1710000000})
@@ -4170,7 +4173,7 @@ class TestMatchupsPage:
 
         import fakeredis.aioredis
 
-        from lol_ui.main import show_matchups
+        from lol_ui.routes.matchups import show_matchups
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         await r.zadd("patch:list", {"14.5": 1710000000})
@@ -4206,7 +4209,7 @@ class TestChampionDetailMatchups:
 
         import fakeredis.aioredis
 
-        from lol_ui.main import show_champion_detail
+        from lol_ui.routes.champions import show_champion_detail
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         await r.zadd("patch:list", {"14.5": 1710000000})
@@ -4257,7 +4260,7 @@ class TestChampionDetailMatchups:
 
         import fakeredis.aioredis
 
-        from lol_ui.main import show_champion_detail
+        from lol_ui.routes.champions import show_champion_detail
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         await r.zadd("patch:list", {"14.5": 1710000000})
@@ -4299,7 +4302,7 @@ class TestMatchHistoryItems:
 
     def test_match_history__shows_items_column(self):
         """When participant has items field, item icons are rendered."""
-        from lol_ui.main import _match_history_html
+        from lol_ui.match_history import _match_history_html
 
         matches = [
             (
@@ -4322,7 +4325,7 @@ class TestMatchHistoryItems:
 
     def test_match_history__no_items_shows_dash(self):
         """When participant has no items field, empty item slots are rendered."""
-        from lol_ui.main import _match_history_html
+        from lol_ui.match_history import _match_history_html
 
         matches = [
             (
@@ -4491,7 +4494,7 @@ class TestChampionsPageBanRate:
 
         import fakeredis.aioredis
 
-        from lol_ui.main import show_champions
+        from lol_ui.routes.champions import show_champions
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         await r.zadd("patch:list", {"14.5": 1710000000})
@@ -4534,7 +4537,7 @@ class TestChampionsPageBanRate:
 
         import fakeredis.aioredis
 
-        from lol_ui.main import show_champions
+        from lol_ui.routes.champions import show_champions
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         await r.zadd("patch:list", {"14.5": 1710000000})
@@ -4575,7 +4578,7 @@ class TestDlqSummary:
         import fakeredis.aioredis
         from lol_pipeline.models import DLQEnvelope
 
-        from lol_ui.main import _dlq_summary_html
+        from lol_ui.dlq_helpers import _dlq_summary_html
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -4611,7 +4614,7 @@ class TestDlqSummary:
         import fakeredis.aioredis
         from lol_pipeline.models import DLQEnvelope
 
-        from lol_ui.main import _dlq_summary_html
+        from lol_ui.dlq_helpers import _dlq_summary_html
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -4644,7 +4647,7 @@ class TestDlqSummary:
         import fakeredis.aioredis
         from lol_pipeline.models import DLQEnvelope
 
-        from lol_ui.main import _dlq_summary_html
+        from lol_ui.dlq_helpers import _dlq_summary_html
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -4676,7 +4679,7 @@ class TestDlqSummary:
         import fakeredis.aioredis
         from lol_pipeline.models import DLQEnvelope
 
-        from lol_ui.main import _dlq_summary_html
+        from lol_ui.dlq_helpers import _dlq_summary_html
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -4707,7 +4710,7 @@ class TestDlqSummary:
         import fakeredis.aioredis
         from lol_pipeline.models import DLQEnvelope
 
-        from lol_ui.main import _dlq_summary_html
+        from lol_ui.dlq_helpers import _dlq_summary_html
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -4740,7 +4743,7 @@ class TestStreamsConsumerLag:
         """The streams table header includes Group, Pending, and Lag columns."""
         import fakeredis.aioredis
 
-        from lol_ui.main import _streams_fragment_html
+        from lol_ui.streams_helpers import _streams_fragment_html
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         result = await _streams_fragment_html(r)
@@ -4756,7 +4759,7 @@ class TestStreamsConsumerLag:
         """When a stream has a consumer group, its name, pending, and lag appear."""
         import fakeredis.aioredis
 
-        from lol_ui.main import _streams_fragment_html
+        from lol_ui.streams_helpers import _streams_fragment_html
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         # Create a stream with entries and a consumer group
@@ -4775,7 +4778,7 @@ class TestStreamsConsumerLag:
         """When a stream has no consumer groups, display dashes for group/pending/lag."""
         import fakeredis.aioredis
 
-        from lol_ui.main import _streams_fragment_html
+        from lol_ui.streams_helpers import _streams_fragment_html
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         result = await _streams_fragment_html(r)
@@ -4789,7 +4792,7 @@ class TestStreamsConsumerLag:
         """Consumer lag value is rendered in the table."""
         import fakeredis.aioredis
 
-        from lol_ui.main import _streams_fragment_html
+        from lol_ui.streams_helpers import _streams_fragment_html
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         # Create stream, add entries, create group at 0 (unread entries = lag)
@@ -4808,7 +4811,7 @@ class TestStreamsConsumerLag:
         """If XINFO GROUPS raises an error, treat as no groups (show dashes)."""
         import fakeredis.aioredis
 
-        from lol_ui.main import _streams_fragment_html
+        from lol_ui.streams_helpers import _streams_fragment_html
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -4868,7 +4871,7 @@ class TestFormatGroupCells:
     """Unit tests for _format_group_cells helper."""
 
     def test_single_group__renders_name_pending_lag(self):
-        from lol_ui.main import _format_group_cells
+        from lol_ui.streams_helpers import _format_group_cells
 
         groups = [{"name": "crawlers", "pending": 5, "lag": 10}]
         result = _format_group_cells(groups)
@@ -4877,14 +4880,14 @@ class TestFormatGroupCells:
         assert ">10<" in result
 
     def test_lag_none__shows_question_mark(self):
-        from lol_ui.main import _format_group_cells
+        from lol_ui.streams_helpers import _format_group_cells
 
         groups = [{"name": "parsers", "pending": 0, "lag": None}]
         result = _format_group_cells(groups)
         assert "?" in result
 
     def test_group_name_html_escaped(self):
-        from lol_ui.main import _format_group_cells
+        from lol_ui.streams_helpers import _format_group_cells
 
         groups = [{"name": "<script>alert(1)</script>", "pending": 0, "lag": 0}]
         result = _format_group_cells(groups)
@@ -5550,7 +5553,7 @@ class TestChampionsPageDeltaIntegration:
 
         import fakeredis.aioredis
 
-        from lol_ui.main import show_champions
+        from lol_ui.routes.champions import show_champions
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         await r.zadd("patch:list", {"14.5": 1710000000, "14.4": 1709000000})
@@ -5604,7 +5607,7 @@ class TestChampionsPageDeltaIntegration:
 
         import fakeredis.aioredis
 
-        from lol_ui.main import show_champions
+        from lol_ui.routes.champions import show_champions
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         await r.zadd("patch:list", {"14.5": 1710000000})
@@ -5640,7 +5643,7 @@ class TestChampionsPageDeltaIntegration:
 
         import fakeredis.aioredis
 
-        from lol_ui.main import show_champions
+        from lol_ui.routes.champions import show_champions
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         await r.zadd("patch:list", {"14.5": 1710000000})
@@ -6563,3 +6566,71 @@ class TestStatsTableWithBreakdown:
             champ_breakdown={},
         )
         assert "Pool Diversity" in result
+
+
+class TestMatchDetailValidation:
+    """Input validation for /stats/match-detail endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_match_detail__missing_match_id_returns_400(self):
+        """Empty match_id returns 400."""
+        from unittest.mock import MagicMock
+
+        from lol_ui.routes.stats import match_detail
+
+        request = MagicMock()
+        request.query_params = {"match_id": "", "puuid": "abc"}
+        request.app.state.r = MagicMock()
+
+        resp = await match_detail(request)
+        assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_match_detail__invalid_match_id_returns_400(self):
+        """Malformed match_id (path traversal) returns 400."""
+        from unittest.mock import MagicMock
+
+        from lol_ui.routes.stats import match_detail
+
+        request = MagicMock()
+        request.query_params = {"match_id": "../../etc/passwd", "puuid": "abc"}
+        request.app.state.r = MagicMock()
+
+        resp = await match_detail(request)
+        assert resp.status_code == 400
+        assert "Invalid match ID" in resp.body.decode()
+
+    @pytest.mark.asyncio
+    async def test_match_detail__valid_match_id_accepted(self):
+        """Valid match IDs like NA1_12345 are accepted."""
+        import fakeredis.aioredis
+
+        from lol_ui.routes.stats import match_detail
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.query_params = {"match_id": "NA1_5425977998", "puuid": "abc"}
+        request.app.state.r = r
+
+        resp = await match_detail(request)
+        # No 400 — accepted (returns "not available" since no data)
+        assert resp.status_code == 200
+        assert "not available" in resp.body.decode()
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_match_detail__invalid_puuid_returns_400(self):
+        """Invalid puuid format returns 400."""
+        from unittest.mock import MagicMock
+
+        from lol_ui.routes.stats import match_detail
+
+        request = MagicMock()
+        request.query_params = {"match_id": "NA1_123", "puuid": "../../bad"}
+        request.app.state.r = MagicMock()
+
+        resp = await match_detail(request)
+        assert resp.status_code == 400
+        assert "Invalid PUUID" in resp.body.decode()

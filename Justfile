@@ -302,7 +302,12 @@ test:
         name="${dir%/}"
         if [ -d "$dir/tests/unit" ]; then
             NAMES+=("$name")
-            (cd "$dir" && RC=0 && $PYTEST tests/unit -q --tb=short > "$OUTTMP/$name.out" 2>&1 || RC=$?; echo $RC > "$OUTTMP/$name.rc") &
+            # Collect test paths: always tests/unit, plus any colocated test_*.py in src/
+            TEST_PATHS="tests/unit"
+            for f in $(find "$dir/src" -name "test_*.py" 2>/dev/null); do
+                TEST_PATHS="$TEST_PATHS ${f#$dir/}"
+            done
+            (cd "$dir" && RC=0 && $PYTEST $TEST_PATHS -q --tb=short > "$OUTTMP/$name.out" 2>&1 || RC=$?; echo $RC > "$OUTTMP/$name.rc") &
             PIDS+=($!)
         fi
     done
@@ -323,7 +328,14 @@ test-svc name:
     set -euo pipefail
     PYTEST="python3 -m pytest"
     if [ -f ".venv/bin/python" ]; then PYTEST=".venv/bin/python -m pytest"; fi
-    $PYTEST lol-pipeline-{{name}}/tests/unit -v --tb=short
+    PATHS="lol-pipeline-{{name}}/tests/unit"
+    # Also discover colocated tests in src/ (e.g. UI module)
+    if grep -q 'src/lol_' "lol-pipeline-{{name}}/pyproject.toml" 2>/dev/null; then
+        for f in $(find "lol-pipeline-{{name}}/src" -name "test_*.py" 2>/dev/null); do
+            PATHS="$PATHS $f"
+        done
+    fi
+    $PYTEST $PATHS -v --tb=short
 
 # Run UI in dev mode with hot reload (host, no Docker)
 dev-ui:
@@ -354,8 +366,13 @@ coverage:
         short="${name#lol-pipeline-}"
         if [ -d "$dir/tests/unit" ] && [ -d "$dir/src" ]; then
             pkg=$(ls "$dir/src/")
+            # Collect test paths: always tests/unit, plus any colocated test_*.py in src/
+            TEST_PATHS="tests/unit"
+            for f in $(find "$dir/src" -name "test_*.py" 2>/dev/null); do
+                TEST_PATHS="$TEST_PATHS ${f#$dir/}"
+            done
             echo "=== $name ==="
-            (cd "$dir" && $PYTEST tests/unit --cov="src/$pkg" --cov-report=term-missing -q --tb=short)
+            (cd "$dir" && $PYTEST $TEST_PATHS --cov="src/$pkg" --cov-report=term-missing -q --tb=short)
         fi
     done
 

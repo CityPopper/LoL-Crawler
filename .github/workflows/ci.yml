@@ -88,7 +88,13 @@ jobs:
             pip install -e "${{ matrix.service }}[dev]"
           fi
       - name: Run unit tests
-        run: cd ${{ matrix.service }} && python -m pytest tests/unit -v --tb=short
+        run: |
+          cd ${{ matrix.service }}
+          TEST_PATHS="tests/unit"
+          for f in $(find src -name "test_*.py" 2>/dev/null); do
+            TEST_PATHS="$TEST_PATHS $f"
+          done
+          python -m pytest $TEST_PATHS -v --tb=short
 
   contract:
     name: "Contract Tests (${{ matrix.service }})"

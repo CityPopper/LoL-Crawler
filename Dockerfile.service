@@ -17,6 +17,7 @@ RUN pip install --no-cache-dir ./common/
 ARG SERVICE_NAME
 COPY lol-pipeline-${SERVICE_NAME}/pyproject.toml .
 COPY lol-pipeline-${SERVICE_NAME}/src/ ./src/
+RUN find ./src -name "test_*.py" -delete && find ./src -name "conftest.py" -delete
 RUN pip install --no-cache-dir .
 
 # ── runtime ──────────────────────────────────────────────────────────────────
