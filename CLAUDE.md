@@ -12,7 +12,7 @@ Platform: macOS. Container runtime: Podman (default). Switch with `RUNTIME=docke
 - **12-factor app** methodology
 - **DRY** — Don't Repeat Yourself
 - **Service isolation**: Services know only their own input/output contracts. No cross-service imports.
-- **PACT contracts**: Schemas in `lol-pipeline-common/contracts/schemas/` are the DRY source. IMPORTANT: Never modify schema files without updating all downstream consumer pacts and provider tests.
+- **PACT contracts**: Consumer-driven, file-based. Schemas in `lol-pipeline-common/contracts/schemas/` are the DRY source. Per-service pacts in `lol-pipeline-*/pacts/`. If no consumer uses a contract, it doesn't exist. Evolve incrementally when adding new fields.
 - **Research before implementation**: Before implementing any non-trivial change, agents MUST research the web for current best practices, existing solutions, known pitfalls, and alternatives. Do not rely solely on training data.
 - **Doc-agent bookend pattern**: When running parallel agents, run the doc-keeper agent SEQUENTIALLY — once BEFORE (verify docs are current) and once AFTER (update docs with changes). Doc agent must not run in parallel with implementation agents.
 - **Confidence threshold**: Agents should only provide feedback when >=80% confident the change will improve things. It is OK to return no feedback if nothing substantial is found.
@@ -20,6 +20,8 @@ Platform: macOS. Container runtime: Podman (default). Switch with `RUNTIME=docke
 - **No hardcoded counts in docs**: Documents should not contain precise counts of tests, files, or lines. Use order-of-magnitude estimates (~10, ~100, ~1000) instead. Precise counts become stale immediately.
 - **Container dev environment**: Always run lint, typecheck, and tests inside the dev container (`just dev-ci` or `just dev "just test"`). The host environment may have different Python/dep versions. Build the dev container first with `just dev-build`.
 - **Before compound tasks**: Update CLAUDE.md with a TODO list; remove when done.
+- **One function per file**: Every new function goes in its own module file. This lets AI agents load only the relevant module instead of an entire monolith. Shared helpers used by 2+ modules live in a `_helpers.py` co-located with their consumers (DRY). Constants and types shared across a package go in `_types.py` or `_constants.py`. Route handlers are grouped by feature in a `routes/` subpackage.
+- **Test structure — colocated**: Unit tests live next to the source file they test: `foo.py` → `test_foo.py` in the same directory. AI agents find both instantly. Bug-fix regression tests go in `tests/regression/` (the red/green test that proved the bug, kept forever). Contract tests are **consumer-driven via pact broker** — consumers publish pacts to a database; providers verify against published pacts. If no consumer uses a contract, it doesn't exist. One file per consumer-provider boundary in `tests/contract/`.
 - **Replies**: Direct, fewest words.
 
 ## Gotchas
@@ -47,39 +49,17 @@ Platform: macOS. Container runtime: Podman (default). Switch with `RUNTIME=docke
 | Integration tests | `tests/integration/` (IT-01 through IT-12, testcontainers) |
 | Rejected ideas (do not re-propose) | `.claude/archive/REJECTED.md` |
 
-## TODO — Phase 21 CLARITY
+## TODO — Phase 24 MATCH INTELLIGENCE UI
 
-- [x] Bound `stream:match_id` MAXLEN to 500,000 (prevent OOM)
-- [x] Add rejected ideas OT1-R1 through OT1-R11 to REJECTED.md
-- [x] Simplify services: unified Dockerfile + shared requirements
-- [x] Doc fixes batch (broken links, naming inconsistencies, missing Discovery README)
-- [x] Correlation ID propagation through pipeline
-- [x] Extract contract conftest helpers to shared module
-- [x] Consumer lag monitoring in UI (`XINFO GROUPS`)
-- [x] Fix SyntaxError: unparenthesized multi-except clauses (service.py, redis_client.py, delay_scheduler)
-- [x] Fix fetcher priority drop on outbound parse envelopes
-- [x] Adaptive rate limiter polling (return wait hint from Lua)
-- [x] DLQ analytics summary in UI
-- [x] Graceful shutdown draining
-- [x] Champion pool diversity (entropy/HHI)
-- [x] Tilt/streak indicator
-- [x] Match badges (objective: Perfect Game, Penta, Deathless, High KDA)
-- [x] Patch-over-patch delta on champions page
-- [x] Tier list formula (PBI)
+See `docs/SPRINT-PLAN.md` for full details.
 
-## TODO — Phase 22 TRAJECTORY
-
-- [x] S0: Pin redis:7.2.11-alpine (CVE-2025-49844 Lua RCE fix)
-- [x] S0: Increase Redis mem_limit to 2g (AOF rewrite headroom)
-- [x] S1: Fix crawler XADD missing maxlen (bypassed Phase 21 OOM fix)
-- [x] S1: Fix parser ban/matchup TOCTOU race (SISMEMBER → atomic SADD)
-- [x] S1: Fix delay scheduler ZSCORE guard (prevent duplicate dispatch)
-- [x] S1: Replace priority SCAN with SET (O(N) → O(1))
-- [x] S2: Pipeline analyzer sequential EVALs
-- [x] S2: Scope RawStore bundle scan to current month
-- [x] S2: Pipeline fetcher sequential Redis calls
-- [x] S2: Cache RiotClient rate limit writes
-- [x] S3: Per-champion player stats on stats page
-- [x] S3: Role performance breakdown
-- [x] S3: Playstyle tags
-- [x] S3: Rank history time series
+- [ ] S0: Restore `match:participants` SADD in parser (blocker)
+- [ ] S0: Split UI main.py into one-function-per-file package (colocated tests)
+- [ ] S0: Evolve existing pact contracts for new parser fields
+- [ ] S0: Add `t()` localization + theme CSS changes
+- [ ] S0: Update 04-storage.md + CLAUDE.md
+- [ ] S1: Extract gold timeline, team objectives, rune selections, kill events from parser
+- [ ] S2: Tabbed match detail + damage bars + team analysis + win rate donut + sticky layout
+- [ ] S3: Build tab (items, skills, runes, spells) + DDragon cache helper
+- [ ] S4: Gold chart + AI Score + kill timeline + AI insight
+- [ ] S5: Minimap + 7-day sparkline + recently played with + caching + responsive polish

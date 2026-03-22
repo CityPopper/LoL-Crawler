@@ -16,13 +16,6 @@ default:
 setup:
     #!/usr/bin/env bash
     set -euo pipefail
-    PY_VERSION=$(python3 --version 2>&1 | awk '{print $2}')
-    PY_MAJOR=$(echo "$PY_VERSION" | cut -d. -f1)
-    PY_MINOR=$(echo "$PY_VERSION" | cut -d. -f2)
-    if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 14 ]; }; then
-        echo "ERROR: Python 3.14+ required (found $PY_VERSION)" >&2
-        exit 1
-    fi
     if ! command -v {{RUNTIME}} &>/dev/null; then
         echo "ERROR: '{{RUNTIME}}' not found. Install it or set RUNTIME=docker." >&2
         exit 1
@@ -40,19 +33,6 @@ setup:
         echo "pre-commit not found — run 'pip install pre-commit && pre-commit install' to enable hooks."
     fi
 
-# Create and populate a root-level virtual environment
-venv:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    python3 -m venv .venv
-    .venv/bin/pip install --upgrade pip
-    .venv/bin/pip install -e "lol-pipeline-common/[dev]"
-    for dir in lol-pipeline-*/; do
-        if [ "$dir" != "lol-pipeline-common/" ] && [ -f "$dir/pyproject.toml" ]; then
-            .venv/bin/pip install -e "$dir[dev]" 2>/dev/null || .venv/bin/pip install -e "$dir" || true
-        fi
-    done
-    echo "Venv ready — activate with: source .venv/bin/activate"
 
 # 2. Build all Docker images (including one-shot tools)
 build:
