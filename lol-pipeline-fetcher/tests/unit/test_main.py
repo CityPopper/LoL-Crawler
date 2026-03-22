@@ -534,3 +534,55 @@ class TestSeenMatches:
             await riot.close()
 
         assert not await r.sismember("seen:matches", "NA1_123")
+
+
+class TestCorrelationIdPropagation:
+    """Outbound envelopes must propagate correlation_id from inbound."""
+
+    @pytest.mark.asyncio
+    async def test_fetch__propagates_correlation_id__success_path(self, r, cfg, log):
+        """Successful fetch publishes to stream:parse with same correlation_id."""
+        raw_store = RawStore(r)
+        env = MessageEnvelope(
+            source_stream=_STREAM_IN,
+            type="match_id",
+            payload={"match_id": "NA1_COR", "region": "na1", "puuid": "p1"},
+            max_attempts=5,
+            correlation_id="trace-abc-123",
+        )
+        msg_id = await _setup_message(r, env)
+
+        with respx.mock:
+            respx.get(_match_url("NA1_COR")).mock(
+                return_value=httpx.Response(200, json={"info": {"gameDuration": 1800}})
+            )
+            riot = RiotClient("RGAPI-test")
+            await _fetch_match(r, riot, raw_store, cfg, msg_id, env, log)
+            await riot.close()
+
+        out_msgs = await consume(r, _STREAM_OUT, "test-group", "tc", block=0)
+        assert len(out_msgs) == 1
+        assert out_msgs[0][1].correlation_id == "trace-abc-123"
+
+    @pytest.mark.asyncio
+    async def test_fetch__propagates_correlation_id__idempotent_path(self, r, cfg, log):
+        """Idempotent re-delivery (blob exists) still propagates correlation_id."""
+        raw_store = RawStore(r)
+        await raw_store.set("NA1_COR2", '{"info":{}}')
+        env = MessageEnvelope(
+            source_stream=_STREAM_IN,
+            type="match_id",
+            payload={"match_id": "NA1_COR2", "region": "na1", "puuid": "p1"},
+            max_attempts=5,
+            correlation_id="trace-xyz-789",
+        )
+        msg_id = await _setup_message(r, env)
+
+        with respx.mock:
+            riot = RiotClient("RGAPI-test")
+            await _fetch_match(r, riot, raw_store, cfg, msg_id, env, log)
+            await riot.close()
+
+        out_msgs = await consume(r, _STREAM_OUT, "test-group2", "tc", block=0)
+        assert len(out_msgs) == 1
+        assert out_msgs[0][1].correlation_id == "trace-xyz-789"

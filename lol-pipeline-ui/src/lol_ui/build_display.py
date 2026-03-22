@@ -10,10 +10,10 @@ Provides:
 from __future__ import annotations
 
 import html
-import json
 from dataclasses import dataclass
 from typing import Any
 
+from lol_ui._helpers import _parse_item_ids
 from lol_ui.rendering import _champion_icon_html, _item_icon_html
 from lol_ui.rune_display import _build_rune_lookup, _rune_page_html
 from lol_ui.spell_display import _summoner_spell_icons_html
@@ -66,15 +66,7 @@ def _final_items_html(
     version: str | None,
 ) -> str:
     """Render the 7-slot final items grid from participant hash."""
-    raw_items = participant.get("items", "")
-    try:
-        if raw_items.startswith("["):
-            item_list = json.loads(raw_items)
-        else:
-            item_list = raw_items.split(",") if raw_items else []
-    except (json.JSONDecodeError, AttributeError):
-        item_list = []
-    item_ids = (list(map(str, item_list)) + ["0"] * 7)[:7]
+    item_ids = _parse_item_ids(participant)
     icons = "".join(_item_icon_html(iid, version) for iid in item_ids)
     return '<div class="build-final-items">' + icons + "</div>"
 

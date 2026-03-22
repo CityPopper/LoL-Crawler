@@ -1002,3 +1002,46 @@ class TestReplayFromDlq:
 
         assert await r.xlen(STREAM_DLQ) == 1
         assert await r.xlen("stream:puuid") == 1
+
+
+class TestNackToDlqCorrelationId:
+    """nack_to_dlq must propagate correlation_id from the source envelope."""
+
+    @pytest.mark.asyncio
+    async def test_nack_to_dlq__preserves_correlation_id(self, r):
+        """DLQ envelope carries the same correlation_id as the source envelope."""
+        from lol_pipeline.models import DLQEnvelope
+
+        env = _env(stream="stream:match_id", correlation_id="trace-nack-001")
+        await nack_to_dlq(
+            r,
+            env,
+            failure_code="http_5xx",
+            failed_by="fetcher",
+            original_message_id="msg-1",
+        )
+
+        entries = await r.xrange("stream:dlq")
+        assert len(entries) == 1
+        dlq = DLQEnvelope.from_redis_fields(entries[0][1])
+        assert dlq.correlation_id == "trace-nack-001"
+
+    @pytest.mark.asyncio
+    async def test_nack_to_dlq__preserves_priority(self, r):
+        """DLQ envelope carries the same priority as the source envelope."""
+        from lol_pipeline.models import DLQEnvelope
+
+        env = _env(stream="stream:match_id", priority="high", correlation_id="c-1")
+        await nack_to_dlq(
+            r,
+            env,
+            failure_code="http_429",
+            failed_by="fetcher",
+            original_message_id="msg-2",
+        )
+
+        entries = await r.xrange("stream:dlq")
+        assert len(entries) == 1
+        dlq = DLQEnvelope.from_redis_fields(entries[0][1])
+        assert dlq.priority == "high"
+        assert dlq.correlation_id == "c-1"
