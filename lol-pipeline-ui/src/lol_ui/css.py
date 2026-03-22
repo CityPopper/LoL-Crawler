@@ -414,6 +414,13 @@ details[open] > summary::before { transform: rotate(90deg); }
 .match-detail__build-arrow { color: var(--color-muted); font-size: 10px; }
 @media (max-width: 600px) {
   .match-meta-col, .match-items { display: none; }
+  .match-detail__stat, .match-detail__dmg-bar { display: none; }
+  .match-detail__items .match-item { width: 22px; height: 22px; }
+  .match-detail__name { min-width: 60px; max-width: 90px; }
+  .match-detail__player { gap: var(--space-xs); font-size: 11px; }
+  .ai-score__component { grid-template-columns: 70px 1fr 28px; }
+  .team-analysis__row { grid-template-columns: 50px 1fr 50px; }
+  .gold-legend { font-size: 11px; }
 }
 
 /* Tabular numbers for stat columns */
@@ -602,6 +609,36 @@ details[open] > summary::before { transform: rotate(90deg); }
 .ai-insight__item { font-family: var(--font-sans); font-size: var(--font-size-sm);
   color: var(--color-text); padding: 2px 0; }
 .ai-insight ul { margin: 0; padding-left: var(--space-md); }
+
+/* Minimap overlay (T5-1) */
+.minimap { position: relative; margin: var(--space-sm) 0; }
+.minimap__bg { border-radius: var(--radius); }
+.minimap__range { accent-color: var(--color-info); }
+
+/* 7-day sparkline (T5-2) */
+.sparkline { display: flex; gap: 2px; align-items: flex-end; height: 40px;
+  padding: var(--space-xs) 0; }
+.sparkline__day { flex: 1; display: flex; flex-direction: column;
+  justify-content: flex-end; height: 100%; }
+.sparkline__bar { display: flex; flex-direction: column;
+  justify-content: flex-end; border-radius: 2px; overflow: hidden;
+  min-width: 8px; }
+.sparkline__win { background: var(--color-win); min-height: 2px; }
+.sparkline__loss { background: var(--color-loss); min-height: 2px; }
+
+/* Recently Played With (T5-3) */
+.recently-played { padding: var(--space-sm); margin: var(--space-sm) 0;
+  background: var(--color-surface); border-radius: var(--radius); }
+.recently-played__header { font-family: var(--font-sans); font-size: var(--font-size-sm);
+  font-weight: 700; color: var(--color-muted); margin-bottom: var(--space-xs);
+  text-transform: uppercase; letter-spacing: 0.06em; }
+.recently-played__row { display: flex; justify-content: space-between;
+  align-items: center; padding: 3px 0; font-family: var(--font-sans);
+  font-size: var(--font-size-sm); }
+.recently-played__name { color: var(--color-text); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; max-width: 180px; }
+.recently-played__count { color: var(--color-muted); font-variant-numeric: tabular-nums;
+  flex-shrink: 0; margin-left: var(--space-sm); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important;

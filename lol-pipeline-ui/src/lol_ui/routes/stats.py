@@ -31,6 +31,7 @@ from lol_pipeline.streams import publish
 
 from lol_ui.build_display import _build_tab_html
 from lol_ui.charts.gold_chart import _gold_chart_svg
+from lol_ui.charts.minimap import _minimap_html
 from lol_ui.constants import (
     _AUTOSEED_COOLDOWN_S,
     _BREAKDOWN_MATCH_COUNT,
@@ -51,10 +52,12 @@ from lol_ui.match_detail import _render_detail_player
 from lol_ui.match_history import _match_history_html, _match_history_section
 from lol_ui.playstyle import _playstyle_pills_html, _playstyle_tags
 from lol_ui.rank import _profile_header_html, _rank_card_html, _rank_history_html
+from lol_ui.recently_played import _recently_played_html
 from lol_ui.rendering import _badge, _stats_form
 from lol_ui.rune_display import _get_runes_data
 from lol_ui.scoring.ai_insight import _ai_insight_html
 from lol_ui.scoring.ai_score import _ai_score_tab_html, _compute_ai_score
+from lol_ui.sparkline import _sparkline_html
 from lol_ui.spell_display import _get_summoner_spell_map
 from lol_ui.stats_helpers import (
     _compute_champion_breakdown,
@@ -71,6 +74,10 @@ _log = get_logger("ui")
 router = APIRouter()
 
 _TeamEntry = tuple[str, dict[str, str], dict[str, str], list[str]]
+
+# Fragment cache — version bumped on deploys for cache busting
+_CACHE_VERSION = "v1"
+_CACHE_TTL_S = 6 * 3600  # 6 hours
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +102,34 @@ def _build_participant_list(
     return result
 
 
+def _build_minimap_events(
+    kill_events: list[dict[str, object]],
+    gold_data: dict[str, dict[str, object]],
+) -> list[dict[str, object]]:
+    """Map kill events to minimap-ready dicts with killer_team resolved."""
+    champ_team: dict[str, str] = {}
+    for info in gold_data.values():
+        cname = str(info.get("champion_name", ""))
+        tid = str(info.get("team_id", "100"))
+        if cname:
+            champ_team[cname] = tid
+
+    result: list[dict[str, object]] = []
+    for event in kill_events:
+        killer_name = str(event.get("killer", ""))
+        result.append(
+            {
+                "x": event.get("x", 0),
+                "y": event.get("y", 0),
+                "t": event.get("t", 0),
+                "killer": killer_name,
+                "victim": str(event.get("victim", "")),
+                "killer_team": champ_team.get(killer_name, "100"),
+            }
+        )
+    return result
+
+
 async def _build_timeline_tab(
     r: Any,
     match_id: str,
@@ -102,7 +137,7 @@ async def _build_timeline_tab(
     focused_puuid: str,
     version: str | None,
 ) -> str:
-    """Build the Timeline tab content: gold chart + kill timeline."""
+    """Build the Timeline tab content: gold chart + minimap + kill timeline."""
     # Batch gold timeline + kill events reads
     async with r.pipeline(transaction=False) as pipe:
         for p in sorted_puuids:
@@ -124,10 +159,6 @@ async def _build_timeline_tab(
         with contextlib.suppress(json.JSONDecodeError, TypeError):
             values = json.loads(raw)
             if isinstance(values, list):
-                # Need participant data to determine team — re-read is cheap since
-                # we already have it in the pipeline results above, but we don't
-                # have it here. Use a heuristic: first 5 are blue, rest red.
-                # Better: read team_id from participant hash.
                 part_data: dict[str, str] = await r.hgetall(f"participant:{match_id}:{p}")
                 team_id = part_data.get("team_id", "100")
                 champ = part_data.get("champion_name", "?")
@@ -155,11 +186,13 @@ async def _build_timeline_tab(
                 kill_events = parsed
 
     kill_html = _kill_timeline_html(kill_events, version)
+    minimap_events = _build_minimap_events(kill_events, gold_data)
+    minimap_html = _minimap_html(minimap_events, version)
 
     if not gold_html and not kill_events:
         return '<p class="warning">Timeline data unavailable for this match.</p>'
 
-    return gold_html + kill_html
+    return gold_html + minimap_html + kill_html
 
 
 # ---------------------------------------------------------------------------
@@ -419,14 +452,26 @@ async def _build_stats_response(
     safe_name = html.escape(f"{game_name}#{tag_line}")
     heading = f"Stats for {safe_name}{priority_html}"
 
+    # 7-day sparkline from recent match data
+    sparkline_html = _sparkline_html(split_matches[:_BREAKDOWN_MATCH_COUNT])
+
+    # Recently Played With — get match IDs from sorted set (last 20)
+    match_id_pairs: list[tuple[str, float]] = await r.zrevrange(
+        f"player:matches:{puuid}", 0, 19, withscores=True
+    )
+    recent_match_ids = [mid for mid, _ in match_id_pairs]
+    recently_played_html = await _recently_played_html(r, puuid, recent_match_ids)
+
     # Two-column layout: sidebar (profile+rank+champions) | main (tilt+history)
     sidebar_html = (
         '<div class="stats-sidebar">'
         + profile_html
         + playstyle_html
+        + sparkline_html
         + rank_html
         + rank_hist_html
         + api_html
+        + recently_played_html
         + "</div>"
     )
     insight_html = _ai_insight_html(stats, champs, roles)
@@ -578,22 +623,16 @@ def _group_participants(
     return blue_team, red_team, skill_orders, max_damage
 
 
-@router.get("/stats/match-detail", response_class=HTMLResponse)
-async def match_detail(request: Request) -> HTMLResponse:
-    """Return expanded match detail HTML showing all participants."""
-    match_id = request.query_params.get("match_id", "")
-    puuid = request.query_params.get("puuid", "")
-    if not match_id:
-        return HTMLResponse("<p class='error'>Missing match_id</p>", status_code=400)
-    if not _MATCH_ID_RE.match(match_id):
-        return HTMLResponse("<p class='error'>Invalid match ID format</p>", status_code=400)
-    if puuid and not _PUUID_RE.match(puuid):
-        return HTMLResponse("<p class='error'>Invalid PUUID format</p>", status_code=400)
-
-    r = request.app.state.r
+async def _render_match_detail(
+    r: Any,
+    match_id: str,
+    puuid: str,
+    cfg: Config,
+) -> str:
+    """Render match detail HTML (extracted for cache-or-render pattern)."""
     participant_puuids: set[str] = await r.smembers(f"match:participants:{match_id}")
     if not participant_puuids:
-        return HTMLResponse("<p class='warning'>Match details not available</p>")
+        return "<p class='warning'>Match details not available</p>"
 
     sorted_puuids = sorted(participant_puuids)
     async with r.pipeline(transaction=False) as pipe:
@@ -619,7 +658,6 @@ async def match_detail(request: Request) -> HTMLResponse:
         for p, part, player, _build in red_team
     )
 
-    cfg: Config = request.app.state.cfg
     has_timeline = cfg.fetch_timeline
 
     build_content = _build_tab_html(
@@ -655,7 +693,7 @@ async def match_detail(request: Request) -> HTMLResponse:
     ai_scores = _compute_ai_score(all_participants, match_data)
     ai_tab_html = _ai_score_tab_html(ai_scores, puuid, version)
 
-    # --- Timeline tab: gold chart + kill timeline ---
+    # --- Timeline tab: gold chart + kill timeline + minimap ---
     timeline_tab_html = ""
     if has_timeline:
         timeline_tab_html = await _build_timeline_tab(r, match_id, sorted_puuids, puuid, version)
@@ -668,4 +706,47 @@ async def match_detail(request: Request) -> HTMLResponse:
         timeline_html=timeline_tab_html,
         has_timeline=has_timeline,
     )
-    return HTMLResponse(tabbed + _tab_js())
+    return tabbed + _tab_js()
+
+
+def _has_timeline_data(html_content: str) -> bool:
+    """Check if the rendered HTML contains actual timeline data (not placeholder)."""
+    return "Timeline data unavailable" not in html_content
+
+
+@router.get("/stats/match-detail", response_class=HTMLResponse)
+async def match_detail(request: Request) -> HTMLResponse:
+    """Return expanded match detail HTML showing all participants.
+
+    Fragment caching: results are cached in Redis with a 6h TTL.
+    ``?nocache=1`` skips both cache read AND write.
+    Only caches when timeline data is present (avoids caching placeholder state).
+    """
+    match_id = request.query_params.get("match_id", "")
+    puuid = request.query_params.get("puuid", "")
+    nocache = request.query_params.get("nocache", "") == "1"
+    if not match_id:
+        return HTMLResponse("<p class='error'>Missing match_id</p>", status_code=400)
+    if not _MATCH_ID_RE.match(match_id):
+        return HTMLResponse("<p class='error'>Invalid match ID format</p>", status_code=400)
+    if puuid and not _PUUID_RE.match(puuid):
+        return HTMLResponse("<p class='error'>Invalid PUUID format</p>", status_code=400)
+
+    r = request.app.state.r
+    cfg: Config = request.app.state.cfg
+
+    cache_key = f"ui:match-detail:{_CACHE_VERSION}:{match_id}:{puuid}"
+
+    # Check cache first (unless nocache)
+    if not nocache:
+        cached: str | None = await r.get(cache_key)
+        if cached:
+            return HTMLResponse(cached)
+
+    result_html = await _render_match_detail(r, match_id, puuid, cfg)
+
+    # Cache the result if timeline data is present and nocache not set
+    if not nocache and _has_timeline_data(result_html):
+        await r.set(cache_key, result_html, ex=_CACHE_TTL_S)
+
+    return HTMLResponse(result_html)
