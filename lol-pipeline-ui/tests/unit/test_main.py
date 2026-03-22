@@ -6216,7 +6216,7 @@ class TestPlaystylePillsHtml:
         assert "#e84057" in result
 
     def test_multiple_tags__renders_all(self):
-        tags = [("Aggressive", "#e84057"), ("Deathless", "#2ecc40")]
+        tags = [("Aggressive", "#e84057"), ("Deathless", "#2daf6f")]
         result = _playstyle_pills_html(tags)
         assert "Aggressive" in result
         assert "Deathless" in result
