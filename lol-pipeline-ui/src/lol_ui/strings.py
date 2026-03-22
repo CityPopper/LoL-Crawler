@@ -59,6 +59,14 @@ _STRINGS: dict[str, dict[str, str]] = {
         "skill_order": "Skill Order",
         "runes": "Runes",
         "summoner_spells": "Summoner Spells",
+        # -- AI Insight --
+        "ai_insight_title": "AI Insight",
+        "insight_high_kda": "Maintains a high KDA ratio.",
+        "insight_low_vision": "Vision score below average.",
+        "insight_high_cs": "Consistently high CS per minute.",
+        "insight_dominant_role_prefix": "Primarily plays",
+        # -- Gold chart --
+        "gold_over_time": "Gold Over Time",
     },
     "zh-CN": {
         # -- Tab labels --
@@ -109,6 +117,14 @@ _STRINGS: dict[str, dict[str, str]] = {
         "skill_order": "[CN] Skill Order",
         "runes": "[CN] Runes",
         "summoner_spells": "[CN] Summoner Spells",
+        # -- AI Insight --
+        "ai_insight_title": "[CN] AI Insight",
+        "insight_high_kda": "[CN] Maintains a high KDA ratio.",
+        "insight_low_vision": "[CN] Vision score below average.",
+        "insight_high_cs": "[CN] Consistently high CS per minute.",
+        "insight_dominant_role_prefix": "[CN] Primarily plays",
+        # -- Gold chart --
+        "gold_over_time": "[CN] Gold Over Time",
     },
 }
 
