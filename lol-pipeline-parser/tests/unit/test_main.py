@@ -91,6 +91,27 @@ class TestParserNormal:
         assert await r.xlen(_OUT_STREAM) == 10
 
     @pytest.mark.asyncio
+    async def test_match_participants_set_written(self, r, cfg, log):
+        """Regression: match:participants:{match_id} set must contain all 10 PUUIDs.
+
+        B14 (v1.1.0) accidentally removed the SADD, breaking the UI match
+        detail endpoint which reads this set via SMEMBERS.
+        """
+        raw_store = RawStore(r)
+        match_id = "NA1_1234567890"
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, _load_fixture("match_normal.json"))
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        members = await r.smembers(f"match:participants:{match_id}")
+        assert len(members) == 10
+        assert "test-puuid-0001" in members
+        ttl = await r.ttl(f"match:participants:{match_id}")
+        assert ttl > 0  # TTL must be set
+
+    @pytest.mark.asyncio
     async def test_player_matches_sorted_set(self, r, cfg, log):
         """AC-04-01b: player:matches:{puuid} has correct score = gameStartTimestamp."""
         raw_store = RawStore(r)

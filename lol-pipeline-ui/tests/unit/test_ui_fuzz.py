@@ -7,11 +7,9 @@ import html as html_mod
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from lol_ui.main import (
-    _BADGE_VARIANTS,
-    _badge,
-    _format_stat_value,
-)
+from lol_ui.constants import _BADGE_VARIANTS
+from lol_ui.rendering import _badge
+from lol_ui.stats_helpers import _format_stat_value
 
 # ---------------------------------------------------------------------------
 # _format_stat_value fuzz tests

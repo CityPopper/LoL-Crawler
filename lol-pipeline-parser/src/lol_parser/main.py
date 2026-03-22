@@ -113,6 +113,8 @@ def _queue_participant(
         },
     )
     pipe.expire(participant_key, match_data_ttl)
+    pipe.sadd(f"match:participants:{match_id}", puuid)
+    pipe.expire(f"match:participants:{match_id}", match_data_ttl)
     pipe.zadd(f"player:matches:{puuid}", {match_id: float(game_start)})
     riot_name = p.get("riotIdGameName", "")
     riot_tag = p.get("riotIdTagline", "")
