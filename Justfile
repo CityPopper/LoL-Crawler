@@ -384,6 +384,26 @@ consolidate:
     if [ -f ".venv/bin/python" ]; then PYTHON=".venv/bin/python"; fi
     $PYTHON scripts/consolidate_match_data.py --delete-originals
 
+# Run pip-audit across all services to check for known CVEs
+security-audit:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v pip-audit &>/dev/null; then
+        echo "Installing pip-audit..."
+        pip install -q pip-audit
+    fi
+    FAILED=0
+    for dir in lol-pipeline-*/; do
+        if [ -f "$dir/pyproject.toml" ]; then
+            echo "=== $dir ==="
+            pip install -q -e "$dir" 2>/dev/null || true
+        fi
+    done
+    echo ""
+    echo "=== Running pip-audit ==="
+    pip-audit --skip-editable || FAILED=1
+    exit $FAILED
+
 # Run contract tests for all services
 contract:
     #!/usr/bin/env bash

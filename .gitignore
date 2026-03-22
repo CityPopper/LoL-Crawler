@@ -58,6 +58,7 @@ logs/
 
 # Screenshots (for UI review — not committed)
 screenshots/
+screenshot/
 
 # Match data — large output files don't belong in git
 lol-pipeline-fetcher/match-data/**/*.json

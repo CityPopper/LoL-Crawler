@@ -79,6 +79,17 @@ _REGIONS_SET = frozenset(_REGIONS)
 
 _BADGE_VARIANTS = frozenset({"success", "error", "warning", "info", "muted"})
 
+# Stream depth badge thresholds
+_DEPTH_BADGE_BUSY_THRESHOLD = 100
+_DEPTH_BADGE_BACKLOG_THRESHOLD = 1000
+
+# KDA ratio display threshold (ratio >= this value gets "good" styling)
+_KDA_RATIO_GOOD_THRESHOLD = 3.0
+
+# Time-ago display thresholds (seconds)
+_TIME_AGO_HOUR_S = 3600
+_TIME_AGO_DAY_S = 86400
+
 _STATS_ORDER = [
     "total_games",
     "total_wins",
@@ -137,6 +148,19 @@ _BREAKDOWN_MATCH_COUNT = 50
 
 _PLAYSTYLE_MIN_GAMES = 5
 
+# Each rule: (tag_name, css_color, field, operator, threshold)
+# "or" rules are expressed as two entries with the same tag name; the caller
+# de-duplicates.  Operator semantics: "ge" = >=, "le" = <=.
+_PLAYSTYLE_RULES: list[tuple[str, str, str, str, float]] = [
+    ("Aggressive", "#e84057", "avg_kills", "ge", 8.0),
+    ("Aggressive", "#e84057", "ka_sum", "ge", 15.0),
+    ("Team Fighter", "#5383e8", "avg_assists", "ge", 10.0),
+    ("Deathless", "#2daf6f", "avg_deaths", "le", 3.0),
+    ("KDA King", "#ffdc00", "kda", "ge", 4.0),
+    ("Slayer", "#ff6b35", "avg_kills", "ge", 10.0),
+    ("Winning Machine", "#9b59b6", "win_rate", "ge", 0.6),
+]
+
 # ---------------------------------------------------------------------------
 # Tilt / streak
 # ---------------------------------------------------------------------------
@@ -144,6 +168,7 @@ _PLAYSTYLE_MIN_GAMES = 5
 _TILT_RECENT_COUNT = 20
 _TILT_RECENT_KDA_COUNT = 5
 _TILT_KDA_THRESHOLD = 0.20
+_TILT_MIN_STREAK_DISPLAY = 3
 
 # ---------------------------------------------------------------------------
 # Match history
@@ -158,6 +183,12 @@ _MATCH_BADGE_COLORS: dict[str, tuple[str, str]] = {
     "green": ("#2daf6f", "#111"),
     "blue": ("#4fc3f7", "#111"),
 }
+
+# Match badge achievement thresholds
+_BADGE_PENTA_MIN = 1
+_BADGE_KDA_THRESHOLD = 5.0
+_BADGE_CS_PER_MIN_THRESHOLD = 8.0
+_BADGE_CS_MIN_TIME_PLAYED = 60
 
 # ---------------------------------------------------------------------------
 # Players page
@@ -213,6 +244,23 @@ _CHAMPION_ROLE_LABELS: dict[str, str] = {
 
 _PBI_MIN_GAMES = 20
 _DELTA_MIN_GAMES = 10
+_DELTA_DISPLAY_THRESHOLD = 0.005
+
+# Tier percentile cutoffs: (max_percentile, tier_letter)
+# Percentile 0.0 = best. Rows beyond the last cutoff get tier "D".
+_TIER_PERCENTILE_CUTOFFS: list[tuple[float, str]] = [
+    (0.05, "S"),
+    (0.20, "A"),
+    (0.50, "B"),
+    (0.80, "C"),
+]
+
+# Win-rate color thresholds for champion tier table
+_WR_COLOR_HIGH_THRESHOLD = 52
+_WR_COLOR_MID_THRESHOLD = 48
+
+# Win-rate threshold for rank card (>= means positive, < means negative)
+_RANK_WR_THRESHOLD = 50
 
 _TIER_COLORS: dict[str, str] = {
     "S": "#d4a017",

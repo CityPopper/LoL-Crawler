@@ -11,19 +11,23 @@ from typing import Any
 import redis.asyncio as aioredis
 from redis.exceptions import ResponseError
 
+from lol_pipeline._streams_data import (
+    _DEFAULT_MAXLEN as _DEFAULT_MAXLEN,
+)
+from lol_pipeline._streams_data import (
+    _REPLAY_LUA,
+    _REPLAY_MAXLEN_MAP,
+)
+from lol_pipeline._streams_data import (
+    ANALYZE_STREAM_MAXLEN as ANALYZE_STREAM_MAXLEN,
+)
+from lol_pipeline._streams_data import (
+    MATCH_ID_STREAM_MAXLEN as MATCH_ID_STREAM_MAXLEN,
+)
 from lol_pipeline.constants import STREAM_DLQ, STREAM_DLQ_ARCHIVE
 from lol_pipeline.models import DLQEnvelope, MessageEnvelope
 
 _log = logging.getLogger("streams")
-
-
-_DEFAULT_MAXLEN = 10_000
-
-# Per-stream maxlen overrides.  Import these from consuming services to keep
-# the policy in one place.
-# ~20 MB buffer; trimmed IDs are re-discoverable via crawler re-crawl
-MATCH_ID_STREAM_MAXLEN: int = 500_000
-ANALYZE_STREAM_MAXLEN: int = 50_000  # 10x amplification from parser
 
 # Cache of (stream, group) pairs for which _ensure_group has already succeeded.
 # Uses a WeakKeyDictionary keyed on the Redis client so that different connections
@@ -251,44 +255,9 @@ async def nack_to_dlq(
     await r.xadd(STREAM_DLQ, fields, maxlen=50_000, approximate=True)  # type: ignore[arg-type]
 
 
-# Atomic DLQ replay: XADD to target stream + XDEL from stream:dlq in one
-# server round-trip.  Prevents duplicate replay if the process crashes between
-# the two operations.
-#
-# KEYS[1] = target stream, KEYS[2] = stream:dlq
-# ARGV[1] = DLQ entry ID to delete
-# ARGV[2] = maxlen for the target stream ("0" means no trimming)
-# Remaining ARGV pairs (3..N) = field, value, field, value, ... for XADD
-_REPLAY_LUA = """
-local stream  = KEYS[1]
-local dlq     = KEYS[2]
-local entry_id = ARGV[1]
-local maxlen  = tonumber(ARGV[2])
-
-local n = #ARGV
-local fields = {}
-for i = 3, n, 2 do
-    fields[#fields + 1] = ARGV[i]
-    fields[#fields + 1] = ARGV[i + 1]
-end
-
-if maxlen and maxlen > 0 then
-    redis.call("XADD", stream, "MAXLEN", "~", maxlen, "*", unpack(fields))
-else
-    redis.call("XADD", stream, "*", unpack(fields))
-end
-redis.call("XDEL", dlq, entry_id)
-return 1
-"""
-
-
 def _maxlen_for_replay(stream: str) -> int:
     """Return the MAXLEN to use when replaying to *stream*."""
-    if stream == "stream:match_id":
-        return MATCH_ID_STREAM_MAXLEN
-    if stream == "stream:analyze":
-        return ANALYZE_STREAM_MAXLEN
-    return _DEFAULT_MAXLEN
+    return _REPLAY_MAXLEN_MAP.get(stream, _DEFAULT_MAXLEN)
 
 
 async def replay_from_dlq(

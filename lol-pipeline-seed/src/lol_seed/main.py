@@ -20,8 +20,7 @@ from lol_pipeline.resolve import resolve_puuid
 from lol_pipeline.riot_api import RiotClient
 from lol_pipeline.streams import publish
 
-_STREAM = "stream:puuid"
-_MSG_TYPE = "puuid"
+from lol_seed._data import _MSG_TYPE, _STREAM
 
 
 def _parse_epoch(value: str | None) -> float:

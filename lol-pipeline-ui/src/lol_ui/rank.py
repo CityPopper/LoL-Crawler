@@ -5,6 +5,9 @@ from __future__ import annotations
 import html
 from datetime import UTC, datetime
 
+from lol_ui.constants import _RANK_WR_THRESHOLD
+from lol_ui.summoner_icon import _summoner_icon_html
+
 
 def _rank_card_html(rank: dict[str, str]) -> str:
     """Render a rank card from player:rank:{puuid} hash data."""
@@ -17,7 +20,7 @@ def _rank_card_html(rank: dict[str, str]) -> str:
     losses = int(rank.get("losses", "0"))
     total = wins + losses
     wr = round(wins / total * 100) if total else 0
-    wr_color = "var(--color-win)" if wr >= 50 else "var(--color-loss)"
+    wr_color = "var(--color-win)" if wr >= _RANK_WR_THRESHOLD else "var(--color-loss)"
     return (
         f'<div class="card" style="display:flex;align-items:center;gap:var(--space-md)">'
         f"<div>"
@@ -65,25 +68,42 @@ def _rank_history_html(entries: list[tuple[str, float]]) -> str:
     )
 
 
-def _profile_header_html(game_name: str, tag_line: str, rank: dict[str, str]) -> str:
-    """Render a profile header with avatar initial, name, and rank summary."""
+def _profile_header_html(
+    game_name: str,
+    tag_line: str,
+    rank: dict[str, str],
+    icon_id: str | None = None,
+    level: str | None = None,
+    version: str | None = None,
+) -> str:
+    """Render a profile header with summoner icon (or letter fallback), name, and rank."""
     safe_name = html.escape(game_name)
     safe_tag = html.escape(tag_line)
     tier = rank.get("tier", "UNRANKED") if rank else "UNRANKED"
     division = rank.get("division", "") if rank else ""
     lp = rank.get("lp", "0") if rank else "0"
     rank_text = f"{tier} {division}".strip() if tier != "UNRANKED" else "Unranked"
+
+    if icon_id and version:
+        avatar_html = _summoner_icon_html(icon_id, level, version)
+    else:
+        # Fallback: letter-circle with optional level badge
+        avatar_html = (
+            '<div style="position:relative;display:inline-block">'
+            '<div style="width:64px;height:64px;border-radius:50%;'
+            "background:var(--color-surface2);"
+            "display:flex;align-items:center;justify-content:center;"
+            "border:3px solid var(--color-win);flex-shrink:0;"
+            "font-family:var(--font-sans);font-size:28px;"
+            f'font-weight:700;color:var(--color-win)">'
+            f"{html.escape(game_name[:1].upper())}</div></div>"
+        )
+
     return (
         f'<div class="card" style="display:flex;'
         f"align-items:center;gap:var(--space-lg);"
         f'padding:var(--space-lg)">'
-        f'<div style="width:64px;height:64px;border-radius:50%;'
-        f"background:var(--color-surface2);"
-        f"display:flex;align-items:center;justify-content:center;"
-        f"border:3px solid var(--color-win);flex-shrink:0;"
-        f"font-family:var(--font-sans);font-size:28px;"
-        f'font-weight:700;color:var(--color-win)">'
-        f"{html.escape(game_name[:1].upper())}</div>"
+        f"{avatar_html}"
         f"<div>"
         f'<div style="font-family:var(--font-sans);'
         f'font-size:var(--font-size-xl);font-weight:700">'

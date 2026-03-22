@@ -9,9 +9,13 @@ import redis.asyncio as aioredis
 
 from lol_ui.constants import (
     _CHAMPION_ROLE_LABELS,
+    _DELTA_DISPLAY_THRESHOLD,
     _DELTA_MIN_GAMES,
     _PBI_MIN_GAMES,
     _TIER_COLORS,
+    _TIER_PERCENTILE_CUTOFFS,
+    _WR_COLOR_HIGH_THRESHOLD,
+    _WR_COLOR_MID_THRESHOLD,
 )
 from lol_ui.rendering import _champion_icon_html, _empty_state
 
@@ -31,7 +35,7 @@ def _patch_delta(
     cur_wr = float(current_stats.get("win_rate", 0.0))  # type: ignore[arg-type]
     prev_wr = float(prev_stats.get("win_rate", 0.0))  # type: ignore[arg-type]
     delta = cur_wr - prev_wr
-    if abs(delta) < 0.005:
+    if abs(delta) < _DELTA_DISPLAY_THRESHOLD:
         return 0.0
     return delta
 
@@ -78,16 +82,11 @@ def _assign_tiers(rows: list[dict[str, object]]) -> None:
     n = len(scored)
     for rank, (idx, _pbi) in enumerate(scored):
         pct = rank / n  # 0.0 = best
-        if pct < 0.05:
-            tier, color = "S", _TIER_COLORS["S"]
-        elif pct < 0.20:
-            tier, color = "A", _TIER_COLORS["A"]
-        elif pct < 0.50:
-            tier, color = "B", _TIER_COLORS["B"]
-        elif pct < 0.80:
-            tier, color = "C", _TIER_COLORS["C"]
-        else:
-            tier, color = "D", _TIER_COLORS["D"]
+        tier, color = "D", _TIER_COLORS["D"]
+        for cutoff, tier_letter in _TIER_PERCENTILE_CUTOFFS:
+            if pct < cutoff:
+                tier, color = tier_letter, _TIER_COLORS[tier_letter]
+                break
         rows[idx]["tier"] = tier
         rows[idx]["tier_color"] = color
 
@@ -127,8 +126,12 @@ def _champion_tier_table(
         icon = _champion_icon_html(name, version)
         wr_color = (
             "var(--color-win)"
-            if win_rate >= 52
-            else ("var(--color-warning)" if win_rate >= 48 else "var(--color-loss)")
+            if win_rate >= _WR_COLOR_HIGH_THRESHOLD
+            else (
+                "var(--color-warning)"
+                if win_rate >= _WR_COLOR_MID_THRESHOLD
+                else "var(--color-loss)"
+            )
         )
         wr_cell = (
             f'<td style="min-width:120px"><div style="display:flex;align-items:center;'
@@ -388,7 +391,11 @@ def _matchup_table_html(
         return ""
     trs = ""
     for opponent, games, wr in matchups:
-        wr_cls = "success" if wr >= 52 else ("error" if wr < 48 else "")
+        wr_cls = (
+            "success"
+            if wr >= _WR_COLOR_HIGH_THRESHOLD
+            else ("error" if wr < _WR_COLOR_MID_THRESHOLD else "")
+        )
         safe_opp = html.escape(opponent)
         trs += f'<tr><td>{safe_opp}</td><td>{games}</td><td class="{wr_cls}">{wr:.1f}%</td></tr>'
     return (

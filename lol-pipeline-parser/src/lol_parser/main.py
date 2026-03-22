@@ -19,11 +19,17 @@ from lol_pipeline.redis_client import get_redis
 from lol_pipeline.service import run_consumer
 from lol_pipeline.streams import ANALYZE_STREAM_MAXLEN, ack, nack_to_dlq
 
-_IN_STREAM = "stream:parse"
-_OUT_STREAM = "stream:analyze"
-_GROUP = "parsers"
-_DISCOVER_KEY = "discover:players"
-_ITEM_KEYS = [f"item{i}" for i in range(7)]
+from lol_parser._data import (
+    _DISCOVER_KEY,
+    _GOLD_TIMELINE_MAX_FRAMES,
+    _GROUP,
+    _IN_STREAM,
+    _ITEM_KEYS,
+    _KILL_EVENTS_MAX,
+    _OUT_STREAM,
+    _RANKED_QUEUE_ID,
+    _STATUS_TTL,
+)
 
 
 def _normalize_patch(game_version: str) -> str:
@@ -232,7 +238,7 @@ async def _write_bans(
     if not cfg.track_bans:
         return
     queue_id = str(info.get("queueId", ""))
-    if queue_id != "420":  # ranked solo only
+    if queue_id != _RANKED_QUEUE_ID:
         return
     teams = info.get("teams", [])
     ban_key = f"champion:bans:{patch}"
@@ -260,7 +266,7 @@ async def _write_matchups(
     if not cfg.track_matchups:
         return
     queue_id = str(info.get("queueId", ""))
-    if queue_id != "420":
+    if queue_id != _RANKED_QUEUE_ID:
         return
 
     participants = info.get("participants", [])
@@ -318,10 +324,6 @@ async def _write_matchups(
 
         await pipe.execute()
     log.debug("wrote matchups", extra={"match_id": match_id, "patch": patch})
-
-
-_GOLD_TIMELINE_MAX_FRAMES = 120
-_KILL_EVENTS_MAX = 200
 
 
 def _extract_timeline_events(
@@ -572,7 +574,7 @@ async def _parse_match(
     # Only set TTL when none exists (ttl < 0) to avoid resetting expiry on every write.
     parsed_ttl: int = await r.ttl("match:status:parsed")
     if parsed_ttl < 0:
-        await r.expire("match:status:parsed", 7776000)  # 90 days
+        await r.expire("match:status:parsed", _STATUS_TTL)
 
     match_key = f"match:{match_id}"
     match_fields: dict[str, str] = {

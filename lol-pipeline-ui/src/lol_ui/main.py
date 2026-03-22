@@ -19,6 +19,7 @@ from lol_ui.rendering import _page
 from lol_ui.routes.champions import router as champions_router
 from lol_ui.routes.dashboard import router as dashboard_router
 from lol_ui.routes.dlq import router as dlq_router
+from lol_ui.routes.language import router as language_router
 from lol_ui.routes.logs import router as logs_router
 from lol_ui.routes.matchups import router as matchups_router
 from lol_ui.routes.players import router as players_router
@@ -106,3 +107,4 @@ app.include_router(dlq_router)
 app.include_router(champions_router)
 app.include_router(matchups_router)
 app.include_router(logs_router)
+app.include_router(language_router)
