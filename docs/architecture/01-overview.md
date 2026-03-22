@@ -64,7 +64,7 @@ Full service contracts: [02-services.md](02-services.md)
 | Stateless processes  | No local state; all state in Redis                                   |
 | Port binding         | Services are workers (no inbound ports); Seed is CLI-driven          |
 | Concurrency          | Scale each service by running more worker containers                 |
-| Disposability        | Fast startup; safe crash — messages re-appear after ACK timeout      |
+| Disposability        | Fast startup; safe crash — PEL drain + XAUTOCLAIM reclaims messages  |
 | Dev/prod parity      | Local Redis container in dev; managed Redis URL in prod; same code   |
 | Logs                 | Each service emits structured JSON to stdout; no log files           |
 | Admin processes      | One-off tasks run as `admin` commands against same Redis instance    |

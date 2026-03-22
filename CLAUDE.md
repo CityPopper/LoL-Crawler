@@ -53,20 +53,10 @@ Platform: macOS. Container runtime: Podman (default). Switch with `RUNTIME=docke
 
 ## TODO — Phase 24 MATCH INTELLIGENCE UI
 
-See `docs/SPRINT-PLAN.md` for full details.
-
-- [x] S0: Restore `match:participants` SADD in parser (blocker)
-- [x] S0: Split UI main.py into one-function-per-file package (colocated tests)
-- [ ] S0: Evolve existing pact contracts for new parser fields
-- [ ] S0: Add `t()` localization + theme CSS changes
-- [ ] S0: Update 04-storage.md
-- [ ] S0: Split admin service (945 lines → modules)
-- [ ] S0: Docs cleanup: remove duplicated content, link to source files instead; fix factual errors (polyrepo→monorepo in `01-overview.md`, XAUTOCLAIM contradiction in `03-streams.md`, `discovered:players`→`discover:players` in monitoring/troubleshooting docs, dead `docker-compose.prod.yml` references, admin README command list vs actual code)
-- [ ] S1: Extract gold timeline, team objectives, rune selections, kill events from parser
-- [ ] S2: Tabbed match detail + damage bars + team analysis + win rate donut + sticky layout
-- [ ] S3: Build tab (items, skills, runes, spells) + DDragon cache helper
-- [ ] S4: Gold chart + AI Score + kill timeline + AI insight
-- [ ] S5: Minimap + 7-day sparkline + recently played with + caching + responsive polish
+- [x] S0-S5: All sprint tasks complete
+- [x] Split admin service into modules (`cmd_*.py`, `_helpers.py`, `_formatting.py`)
+- [x] Docs cleanup: XAUTOCLAIM fix in `03-streams.md`, admin README updated
+- [x] Delete `docs/SPRINT-PLAN.md` (implemented)
 - [ ] Future: Full localization (zh-CN translations, language switcher, extract to JSON)
 - [ ] Future: Summoner icon + level badge on profile
 - [ ] Future: Profile tabs (Tournament/Mastery/ARAM)

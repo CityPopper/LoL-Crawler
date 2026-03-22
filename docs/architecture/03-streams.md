@@ -91,15 +91,13 @@ DLQ messages include all standard envelope fields plus:
 
 - **At-least-once delivery.** All service writes are idempotent; duplicate processing is safe.
 - Messages are not ACK'd until processing fully succeeds.
-- Unacknowledged messages re-appear for redelivery after `STREAM_ACK_TIMEOUT` seconds (default: `60`).
 - After `MAX_ATTEMPTS` failed deliveries, the message is routed to `stream:dlq`.
-- **PEL drain on startup:** `consume()` reads from `id="0"` (own pending entry list) before
-  blocking for new messages, so a worker that restarts and reconnects with the same consumer
-  name will re-process any messages it had not ACKed. If a worker crashes and restarts
-  with a different consumer name (e.g. new PID), its pending entries are reclaimed by
-  `XAUTOCLAIM` — the `consume()` function in `streams.py` uses the `autoclaim_min_idle_ms`
-  parameter to automatically claim entries that have been idle longer than
-  `STREAM_ACK_TIMEOUT`.
+- **PEL drain + XAUTOCLAIM:** `consume()` reads from `id="0"` (own pending entry list)
+  before blocking for new messages, so a restarted worker with the same consumer name
+  re-processes any messages it had not ACKed. If a worker crashes and restarts with a
+  *different* consumer name (e.g. new PID), its pending entries are reclaimed via
+  `XAUTOCLAIM` -- `consume()` claims entries idle longer than `STREAM_ACK_TIMEOUT`
+  (default: 60s) from any consumer in the group.
 
 ---
 
