@@ -155,3 +155,28 @@ class TestAiInsightHtml:
         roles = [("JUNGLE", 15.0)]
         result = _ai_insight_html(stats, [], roles)
         assert "JUNGLE" in result
+
+    def test_dominant_role__xss_in_role_name__escaped(self):
+        """SEC: role name from Redis must be HTML-escaped to prevent XSS."""
+        stats = _make_stats(total_games="10")
+        malicious = '<script>alert("xss")</script>'
+        roles = [(malicious, 8.0)]
+        result = _ai_insight_html(stats, [], roles)
+        # Raw script tag must NOT appear in output
+        assert "<script>" not in result
+        # The escaped form must appear
+        assert "&lt;script&gt;" in result
+
+
+class TestEvaluateInsightRulesXss:
+    """XSS regression: role names must be escaped in returned insight strings."""
+
+    def test_script_in_role_name__escaped(self):
+        stats = _make_stats(total_games="10")
+        malicious = "<script>alert(1)</script>"
+        roles = [(malicious, 8.0)]
+        result = _evaluate_insight_rules(stats, [], roles)
+        combined = " ".join(result)
+        # Raw tags must not appear — only escaped entities
+        assert "<script>" not in combined
+        assert "&lt;script&gt;" in combined

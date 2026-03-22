@@ -1612,7 +1612,7 @@ class TestParseTimeline:
 
 
 class TestParsedSetTTL:
-    """Bug 2 fix: match:status:parsed TTL is only set once, not reset on every write."""
+    """R2: match:status:parsed TTL is always refreshed (EXPIRE is idempotent)."""
 
     @pytest.mark.asyncio
     async def test_parsed_set__ttl_set_on_first_parse(self, r, cfg, log):
@@ -1629,8 +1629,8 @@ class TestParsedSetTTL:
         assert ttl > 0  # TTL was set
 
     @pytest.mark.asyncio
-    async def test_parsed_set__ttl_not_reset_on_subsequent_parse(self, r, cfg, log):
-        """Subsequent parses do not reset the TTL on match:status:parsed."""
+    async def test_parsed_set__ttl_refreshed_on_subsequent_parse(self, r, cfg, log):
+        """Subsequent parses refresh the TTL (EXPIRE is idempotent, saves 1 RTT)."""
         raw_store = RawStore(r)
 
         # First parse — sets TTL
@@ -1648,7 +1648,7 @@ class TestParsedSetTTL:
         lowered_ttl = await r.ttl("match:status:parsed")
         assert lowered_ttl <= 1000
 
-        # Second parse — should NOT reset TTL back to 90 days
+        # Second parse — EXPIRE is idempotent, refreshes TTL back to full value
         match_id_2 = "NA1_TTL_B"
         env2 = _parse_envelope(match_id_2)
         msg_id_2 = await _setup_message(r, env2)
@@ -1656,8 +1656,8 @@ class TestParsedSetTTL:
         await _parse_match(r, raw_store, cfg, msg_id_2, env2, log)
 
         after_ttl = await r.ttl("match:status:parsed")
-        # TTL should still be around 1000 (not reset to 7776000)
-        assert after_ttl <= 1000
+        # TTL is refreshed to the full _STATUS_TTL value (7 days = 604800s)
+        assert after_ttl > 1000
 
 
 def _make_timeline_with_gold(participants_map, frames_data):
@@ -2368,3 +2368,31 @@ class TestFullPerksStoredAsJson:
         shards = json.loads(h["perk_stat_shards"])
         assert shards == [5005, 5003, 5002]
         assert len(shards) == 3
+
+
+class TestCorrelationIdPropagation:
+    """Outbound analyze envelopes must propagate correlation_id from inbound."""
+
+    @pytest.mark.asyncio
+    async def test_parse__propagates_correlation_id_to_analyze_stream(self, r, cfg, log):
+        """All stream:analyze envelopes carry the inbound correlation_id."""
+        raw_store = RawStore(r)
+        match_id = "NA1_CORR"
+        env = MessageEnvelope(
+            source_stream=_IN_STREAM,
+            type="parse",
+            payload={"match_id": match_id, "region": "na1"},
+            max_attempts=5,
+            correlation_id="trace-parser-001",
+        )
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, _load_fixture("match_normal.json"))
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        # Read all outbound messages from stream:analyze
+        out_entries = await r.xrange(_OUT_STREAM)
+        assert len(out_entries) >= 1
+        for _entry_id, fields in out_entries:
+            restored = MessageEnvelope.from_redis_fields(fields)
+            assert restored.correlation_id == "trace-parser-001"

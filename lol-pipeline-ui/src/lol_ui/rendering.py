@@ -139,11 +139,17 @@ def _duration_fmt(seconds: int) -> str:
     return f"{seconds // 60}:{seconds % 60:02d}"
 
 
-def _page(title: str, body: str, path: str = "", lang: str = "en") -> str:
+def _page(title: str, body: str, path: str = "", lang: str | None = None) -> str:
     """Render a full HTML page with nav, body, and footer.
 
-    *lang* sets the ``<html lang>`` attribute and drives the language switcher.
+    When *lang* is ``None`` (the default), reads the active language from the
+    ``_current_lang`` context variable set by middleware.  This avoids threading
+    ``lang`` through every call site.
     """
+    if lang is None:
+        from lol_ui.language import _current_lang
+
+        lang = _current_lang.get()
     nav_links = []
     for href, label in _NAV_ITEMS:
         active = (href != "/" and path.startswith(href)) or href == path

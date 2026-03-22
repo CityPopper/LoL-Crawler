@@ -59,15 +59,19 @@ async def set_priority(
     ttl: int = PRIORITY_KEY_TTL_SECONDS,
 ) -> None:
     """SET player:priority:{puuid} with NX + TTL. No-op if key already exists."""
-    await r.set(f"{_PRIORITY_KEY_PREFIX}{puuid}", "1", nx=True, ex=ttl)
-    await r.sadd(PRIORITY_ACTIVE_SET, puuid)  # type: ignore[misc]
-    await r.expire(PRIORITY_ACTIVE_SET, PRIORITY_ACTIVE_SET_TTL_SECONDS)
+    async with r.pipeline(transaction=False) as pipe:
+        pipe.set(f"{_PRIORITY_KEY_PREFIX}{puuid}", "1", nx=True, ex=ttl)
+        pipe.sadd(PRIORITY_ACTIVE_SET, puuid)
+        pipe.expire(PRIORITY_ACTIVE_SET, PRIORITY_ACTIVE_SET_TTL_SECONDS)
+        await pipe.execute()
 
 
 async def clear_priority(r: aioredis.Redis, puuid: str) -> None:
     """DEL player:priority:{puuid} and remove from priority:active SET."""
-    await r.delete(f"{_PRIORITY_KEY_PREFIX}{puuid}")
-    await r.srem(PRIORITY_ACTIVE_SET, puuid)  # type: ignore[misc]
+    async with r.pipeline(transaction=False) as pipe:
+        pipe.delete(f"{_PRIORITY_KEY_PREFIX}{puuid}")
+        pipe.srem(PRIORITY_ACTIVE_SET, puuid)
+        await pipe.execute()
 
 
 async def has_priority_players(r: aioredis.Redis) -> bool:

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import html
 
+from lol_ui._helpers import _safe_int
 from lol_ui.rendering import _champion_icon_html
 from lol_ui.strings import t
 
@@ -264,11 +265,3 @@ def _ai_score_tab_html(
 
     body = "".join(rows)
     return '<div class="ai-score-tab">' + body + "</div>"
-
-
-def _safe_int(value: str) -> int:
-    """Parse an integer from a string, returning 0 on failure."""
-    try:
-        return int(value)
-    except (ValueError, TypeError):
-        return 0

@@ -1,11 +1,11 @@
 """Localization string table and lookup functions.
 
-All user-facing strings for new Sprint 0-5 features go through ``t()`` (auto-escaped)
-or ``t_raw()`` (unescaped, for intentional HTML).  Both languages must have identical
-key sets.
+All user-facing strings go through ``t()`` (auto-escaped) or ``t_raw()``
+(unescaped, for intentional HTML).  Both languages must have identical key sets.
 
-``t()`` and ``t_raw()`` accept an optional ``lang`` parameter (default ``"en"``).
-Callers pass the language resolved from the request cookie / Accept-Language header.
+``t()`` and ``t_raw()`` read the active language from the ``_current_lang``
+context variable (set by middleware in ``main.py``).  An explicit ``lang``
+parameter can override this for tests or special cases.
 """
 
 from __future__ import annotations
@@ -144,15 +144,29 @@ _STRINGS: dict[str, dict[str, str]] = {
 }
 
 
-def t(key: str, lang: str = "en") -> str:
+def t(key: str, lang: str | None = None) -> str:
     """Return localized string, HTML-escaped by default.
 
+    When *lang* is not provided, reads the active language from the
+    ``_current_lang`` context variable (set by middleware).
     Falls back to the key itself when the key is not found.
     """
+    if lang is None:
+        from lol_ui.language import _current_lang
+
+        lang = _current_lang.get()
     raw = _STRINGS.get(lang, _STRINGS["en"]).get(key, key)
     return _html.escape(raw)
 
 
-def t_raw(key: str, lang: str = "en") -> str:
-    """Return localized string without escaping (for intentional HTML)."""
+def t_raw(key: str, lang: str | None = None) -> str:
+    """Return localized string without escaping (for intentional HTML).
+
+    When *lang* is not provided, reads the active language from the
+    ``_current_lang`` context variable (set by middleware).
+    """
+    if lang is None:
+        from lol_ui.language import _current_lang
+
+        lang = _current_lang.get()
     return _STRINGS.get(lang, _STRINGS["en"]).get(key, key)

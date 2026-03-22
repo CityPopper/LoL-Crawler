@@ -461,8 +461,8 @@ class TestCrawlFromisoformatValueError:
 
 class TestCrawlSingleZrange:
     @pytest.mark.asyncio
-    async def test_zrange_called_twice_with_activity(self, r, cfg, log):
-        """ZRANGE called once for known-set + once in _compute_activity_rate."""
+    async def test_zrange_called_once_for_known_set(self, r, cfg, log):
+        """ZRANGE called once for known-set; _compute_activity_rate uses pipeline."""
         env = _puuid_envelope()
         msg_id = await _setup_message(r, env)
 
@@ -484,8 +484,8 @@ class TestCrawlSingleZrange:
             await _crawl_player(r, riot, cfg, msg_id, env, log)
             await riot.close()
 
-        # 1 for known-matches set + 1 for _compute_activity_rate (when published > 0)
-        assert call_count == 2
+        # 1 for known-matches set only; _compute_activity_rate ZRANGE is pipelined
+        assert call_count == 1
 
 
 class TestCrawlFailureMidPage:
@@ -1428,6 +1428,45 @@ class TestActivityRate:
         assert abs(recrawl - expected) < 120
 
     @pytest.mark.asyncio
+    async def test_activity_rate__mid_rate_6h_cooldown(self, r, cfg, log):
+        """Players with 1-5 games/day get a 6-hour cooldown."""
+        import time
+
+        puuid = "test-puuid-mid"
+        # 3 matches over 1 day = mid rate (~3 games/day)
+        now_ms = time.time() * 1000
+        one_day_ago_ms = now_ms - 86400 * 1000
+        for i in range(3):
+            score = one_day_ago_ms + (i * 28800 * 1000)
+            await r.zadd(f"player:matches:{puuid}", {f"NA1_MID_{i}": score})
+
+        await _compute_activity_rate(r, puuid, log)
+
+        recrawl = float(await r.hget(f"player:{puuid}", "recrawl_after"))
+        # 6h cooldown = time.time() + 21600 (±120s tolerance)
+        expected = time.time() + 21600
+        assert abs(recrawl - expected) < 120
+
+    @pytest.mark.asyncio
+    async def test_activity_rate__low_rate_24h_cooldown(self, r, cfg, log):
+        """Players with <1 game/day get a 24-hour cooldown."""
+        import time
+
+        puuid = "test-puuid-low"
+        # 2 matches over 10 days = low rate (~0.2 games/day)
+        now_ms = time.time() * 1000
+        for i in range(2):
+            score = now_ms - ((i + 1) * 5 * 86400 * 1000)
+            await r.zadd(f"player:matches:{puuid}", {f"NA1_LOW_{i}": score})
+
+        await _compute_activity_rate(r, puuid, log)
+
+        recrawl = float(await r.hget(f"player:{puuid}", "recrawl_after"))
+        # 24h cooldown = time.time() + 86400 (±120s tolerance)
+        expected = time.time() + 86400
+        assert abs(recrawl - expected) < 120
+
+    @pytest.mark.asyncio
     async def test_activity_rate__no_matches__skips(self, r, cfg, log):
         """When player has no match history, activity rate is not computed."""
         puuid = "test-puuid-empty"
@@ -1524,3 +1563,38 @@ class TestRankHistoryCap:
     def test_rank_history_max_constant(self):
         """_RANK_HISTORY_MAX is 500."""
         assert _RANK_HISTORY_MAX == 500
+
+
+class TestCrawlCorrelationIdPropagation:
+    """Outbound match_id envelopes propagate correlation_id from inbound puuid envelope."""
+
+    @pytest.mark.asyncio
+    async def test_crawl__propagates_correlation_id(self, r, cfg, log):
+        """Match IDs published to stream:match_id carry the same correlation_id."""
+        env = MessageEnvelope(
+            source_stream=_STREAM_IN,
+            type="puuid",
+            payload={
+                "puuid": "test-puuid-0001",
+                "region": "na1",
+                "game_name": "Test",
+                "tag_line": "NA1",
+            },
+            max_attempts=5,
+            correlation_id="trace-crawl-abc",
+        )
+        msg_id = await _setup_message(r, env)
+
+        with respx.mock:
+            respx.get(_match_ids_url(start=0)).mock(
+                return_value=httpx.Response(200, json=["NA1_COR_1", "NA1_COR_2"])
+            )
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        entries = await r.xrange(_STREAM_OUT)
+        assert len(entries) == 2
+        for _, fields in entries:
+            out_env = MessageEnvelope.from_redis_fields(fields)
+            assert out_env.correlation_id == "trace-crawl-abc"

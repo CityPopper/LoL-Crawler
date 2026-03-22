@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import html
-import json
 from urllib.parse import quote as _url_quote
 
+from lol_ui._helpers import _parse_item_ids
 from lol_ui.rendering import _champion_icon_html, _item_icon_html
 
 
@@ -57,12 +57,7 @@ def _render_detail_player(
     dmg_str = f"{dmg:,}"
 
     # Items
-    raw_items = part.get("items", "")
-    try:
-        item_list = json.loads(raw_items) if raw_items.startswith("[") else raw_items.split(",")
-    except (json.JSONDecodeError, AttributeError):
-        item_list = []
-    item_ids = (list(map(str, item_list)) + ["0"] * 7)[:7]
+    item_ids = _parse_item_ids(part)
     items_html = "".join(_item_icon_html(iid, version) for iid in item_ids)
 
     return (

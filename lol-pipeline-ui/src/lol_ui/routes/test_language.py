@@ -1,7 +1,8 @@
-"""Tests for the /set-lang route."""
+"""Tests for the /set-lang route and language rendering integration."""
 
 from __future__ import annotations
 
+import fakeredis.aioredis
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -10,9 +11,12 @@ from lol_ui.main import app
 
 @pytest.fixture
 async def client():
+    fake_r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    app.state.r = fake_r
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
+    await fake_r.aclose()
 
 
 class TestSetLangRoute:
@@ -48,3 +52,38 @@ class TestSetLangRoute:
         )
         assert resp.status_code == 303
         assert resp.headers.get("location") == "/"
+
+
+class TestLanguageRendering:
+    """Regression: setting lang=zh-CN cookie must render Chinese HTML."""
+
+    @pytest.mark.asyncio
+    async def test_zh_cn_cookie__renders_chinese_html_lang(self, client):
+        """Page must have <html lang="zh-Hans"> when lang=zh-CN cookie is set."""
+        resp = await client.get("/", cookies={"lang": "zh-CN"})
+        assert resp.status_code == 200
+        body = resp.text
+        assert 'lang="zh-Hans"' in body
+
+    @pytest.mark.asyncio
+    async def test_zh_cn_cookie__language_switcher_shows_zh_active(self, client):
+        """Language switcher must show zh-CN as the active (bold) language."""
+        resp = await client.get("/", cookies={"lang": "zh-CN"})
+        body = resp.text
+        # zh-CN label should be bold (active), EN should be a link
+        assert 'href="/set-lang?lang=en"' in body
+
+    @pytest.mark.asyncio
+    async def test_en_default__renders_english_html_lang(self, client):
+        """Without a lang cookie, page defaults to English."""
+        resp = await client.get("/")
+        assert resp.status_code == 200
+        body = resp.text
+        assert 'lang="en"' in body
+
+    @pytest.mark.asyncio
+    async def test_accept_language_header__zh(self, client):
+        """Accept-Language: zh should render Chinese."""
+        resp = await client.get("/", headers={"accept-language": "zh;q=0.9"})
+        body = resp.text
+        assert 'lang="zh-Hans"' in body

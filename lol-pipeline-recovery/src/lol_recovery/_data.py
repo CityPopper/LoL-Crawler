@@ -11,5 +11,5 @@ _CLAIM_IDLE_MS = 60_000
 # Exponential backoff delays (ms) indexed by dlq_attempts.
 _BACKOFF_MS = [5_000, 15_000, 60_000, 300_000]
 
-# Status set TTL: 90 days.
-_STATUS_TTL = 7776000
+# Status set TTL: 7 days (aligned with match data TTL).
+_STATUS_TTL = 604800

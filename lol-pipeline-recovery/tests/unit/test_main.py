@@ -381,8 +381,21 @@ class TestRecoveryRetryAfterEdgeCases:
 
     @pytest.mark.asyncio
     async def test_archive_xadd_failure_does_not_crash(self, r, cfg, log):
-        """If XADD to archive stream fails, _process still completes."""
-        dlq = _make_dlq(failure_code="parse_error")
+        """If XADD to archive stream fails, _process propagates the error."""
+        # Use a DLQ entry without match_id to exercise the non-pipeline xadd branch
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"puuid": "p1", "region": "na1"},
+            attempts=3,
+            max_attempts=5,
+            failure_code="parse_error",
+            failure_reason="test reason",
+            failed_by="parser",
+            original_stream="stream:parse",
+            original_message_id="1234-0",
+            dlq_attempts=0,
+        )
         msg_id = await _setup_dlq_msg(r, dlq)
 
         original_xadd = r.xadd
@@ -1035,3 +1048,35 @@ class TestBackoffJitter:
         assert len(results) > 1
         for val in results:
             assert int(base * 0.5) <= val <= int(base * 1.5)
+
+
+class TestCorrelationIdPropagation:
+    """Requeued envelopes must preserve correlation_id from DLQ entry."""
+
+    @pytest.mark.asyncio
+    async def test_requeue__preserves_correlation_id(self, r, cfg, log):
+        """When recovery requeues a transient failure, correlation_id is preserved."""
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"match_id": "NA1_COR", "region": "na1"},
+            attempts=1,
+            max_attempts=5,
+            failure_code="http_429",
+            failure_reason="rate limited",
+            failed_by="fetcher",
+            original_stream="stream:match_id",
+            original_message_id="orig-1",
+            dlq_attempts=0,
+            retry_after_ms=1000,
+            correlation_id="trace-recovery-xyz",
+        )
+        msg_id = await _setup_dlq_msg(r, dlq)
+
+        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+
+        members = await r.zrange(_DELAYED_KEY, 0, -1)
+        assert len(members) == 1
+        fields = json.loads(members[0])
+        env = MessageEnvelope.from_redis_fields(fields)
+        assert env.correlation_id == "trace-recovery-xyz"
