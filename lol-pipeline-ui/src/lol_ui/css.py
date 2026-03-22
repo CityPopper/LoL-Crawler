@@ -535,6 +535,74 @@ details[open] > summary::before { transform: rotate(90deg); }
   border-radius: 4px; background: var(--color-surface2);
   border: 1px solid var(--color-border); opacity: 0.4; }
 
+/* Gold chart (T4-1) */
+.gold-chart { margin: var(--space-sm) 0; }
+.gold-chart svg { display: block; max-width: 100%; }
+.gold-legend { display: flex; flex-wrap: wrap; gap: var(--space-sm);
+  padding: var(--space-sm) 0; font-family: var(--font-sans); font-size: var(--font-size-sm); }
+.gold-legend__item { display: flex; align-items: center; gap: var(--space-xs); }
+.gold-legend__swatch { display: inline-block; width: 12px; height: 12px;
+  border-radius: 2px; flex-shrink: 0; }
+.gold-legend__name { color: var(--color-muted); }
+.gold-legend__val { color: var(--color-text); font-variant-numeric: tabular-nums;
+  font-weight: 600; }
+
+/* AI Score tab (T4-2) */
+.ai-score-tab { display: flex; flex-direction: column; gap: 2px; }
+.ai-score__row { display: flex; align-items: center; gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm); font-family: var(--font-sans);
+  font-size: var(--font-size-sm); border-radius: var(--radius); }
+.ai-score__row--me { background: rgba(255,255,255,0.04); }
+.ai-score__champ { min-width: 80px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; color: var(--color-text); }
+.ai-score__score { min-width: 32px; text-align: right; font-weight: 700;
+  color: var(--color-text); }
+.ai-score__breakdown { padding: var(--space-sm) var(--space-md);
+  margin-bottom: var(--space-sm); background: var(--color-bg);
+  border-radius: var(--radius); display: flex; flex-direction: column; gap: 4px; }
+.ai-score__component { display: grid;
+  grid-template-columns: 100px 1fr 32px; gap: var(--space-sm);
+  align-items: center; font-family: var(--font-sans); font-size: var(--font-size-sm); }
+.ai-score__component-label { color: var(--color-muted); text-align: right; }
+.ai-score__component-track { height: 6px; background: var(--color-surface2);
+  border-radius: 3px; overflow: hidden; }
+.ai-score__component-fill { height: 100%; background: var(--color-win);
+  border-radius: 3px; transition: width 0.3s; }
+.ai-score__component-val { color: var(--color-text); font-variant-numeric: tabular-nums;
+  font-weight: 600; text-align: right; }
+
+/* Kill timeline (T4-3) */
+.kill-timeline { display: flex; flex-direction: column; gap: 2px;
+  font-family: var(--font-sans); font-size: var(--font-size-sm); }
+.kill-timeline__minute-header { font-size: 10px; font-weight: 700;
+  color: var(--color-muted); text-transform: uppercase; letter-spacing: 0.06em;
+  padding: var(--space-xs) 0; border-bottom: 1px solid var(--color-border);
+  margin-top: var(--space-xs); }
+.kill-event { display: flex; align-items: center; gap: var(--space-xs);
+  padding: 2px 0; }
+.kill-event__time { color: var(--color-muted); font-variant-numeric: tabular-nums;
+  min-width: 40px; flex-shrink: 0; }
+.kill-event__arrow { color: var(--color-muted); font-size: 12px; padding: 0 2px; }
+.kill-event__assists { color: var(--color-muted); font-size: 11px;
+  display: flex; align-items: center; gap: 1px; margin-left: var(--space-xs); }
+.kill-event__champ-text { display: inline-block; padding: 1px 4px;
+  font-size: 10px; color: var(--color-muted); background: var(--color-surface2);
+  border-radius: var(--radius); }
+.champion-icon--xs { width: var(--icon-champ-xs); height: var(--icon-champ-xs);
+  border-radius: 50%; vertical-align: middle; object-fit: cover;
+  border: 1px solid var(--color-border); }
+
+/* AI Insight (T4-4) */
+.ai-insight { padding: var(--space-sm) var(--space-md); margin: var(--space-sm) 0;
+  background: var(--color-surface); border-radius: var(--radius);
+  border-left: 3px solid var(--color-info); }
+.ai-insight__header { font-family: var(--font-sans); font-size: var(--font-size-sm);
+  font-weight: 700; color: var(--color-muted); margin-bottom: var(--space-xs);
+  text-transform: uppercase; letter-spacing: 0.06em; }
+.ai-insight__item { font-family: var(--font-sans); font-size: var(--font-size-sm);
+  color: var(--color-text); padding: 2px 0; }
+.ai-insight ul { margin: 0; padding-left: var(--space-md); }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important; }

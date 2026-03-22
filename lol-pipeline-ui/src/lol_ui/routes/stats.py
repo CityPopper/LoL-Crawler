@@ -30,6 +30,7 @@ from lol_pipeline.riot_api import (
 from lol_pipeline.streams import publish
 
 from lol_ui.build_display import _build_tab_html
+from lol_ui.charts.gold_chart import _gold_chart_svg
 from lol_ui.constants import (
     _AUTOSEED_COOLDOWN_S,
     _BREAKDOWN_MATCH_COUNT,
@@ -45,12 +46,15 @@ from lol_ui.constants import (
     _TILT_RECENT_COUNT,
 )
 from lol_ui.ddragon import _get_ddragon_version
+from lol_ui.kill_timeline import _kill_timeline_html
 from lol_ui.match_detail import _render_detail_player
 from lol_ui.match_history import _match_history_html, _match_history_section
 from lol_ui.playstyle import _playstyle_pills_html, _playstyle_tags
 from lol_ui.rank import _profile_header_html, _rank_card_html, _rank_history_html
 from lol_ui.rendering import _badge, _stats_form
 from lol_ui.rune_display import _get_runes_data
+from lol_ui.scoring.ai_insight import _ai_insight_html
+from lol_ui.scoring.ai_score import _ai_score_tab_html, _compute_ai_score
 from lol_ui.spell_display import _get_summoner_spell_map
 from lol_ui.stats_helpers import (
     _compute_champion_breakdown,
@@ -59,11 +63,103 @@ from lol_ui.stats_helpers import (
     _stats_table,
 )
 from lol_ui.tabs import _tab_js, _tabbed_match_detail
+from lol_ui.team_analysis import _team_analysis_html
 from lol_ui.tilt import _streak_indicator, _tilt_banner_html
 
 _log = get_logger("ui")
 
 router = APIRouter()
+
+_TeamEntry = tuple[str, dict[str, str], dict[str, str], list[str]]
+
+
+# ---------------------------------------------------------------------------
+# Match-detail helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_participant_list(
+    blue_team: list[_TeamEntry],
+    red_team: list[_TeamEntry],
+) -> list[dict[str, str]]:
+    """Flatten blue + red team entries into participant dicts with puuid added."""
+    result: list[dict[str, str]] = []
+    for p, part, _player, _build in blue_team:
+        entry = dict(part)
+        entry["puuid"] = p
+        result.append(entry)
+    for p, part, _player, _build in red_team:
+        entry = dict(part)
+        entry["puuid"] = p
+        result.append(entry)
+    return result
+
+
+async def _build_timeline_tab(
+    r: Any,
+    match_id: str,
+    sorted_puuids: list[str],
+    focused_puuid: str,
+    version: str | None,
+) -> str:
+    """Build the Timeline tab content: gold chart + kill timeline."""
+    # Batch gold timeline + kill events reads
+    async with r.pipeline(transaction=False) as pipe:
+        for p in sorted_puuids:
+            pipe.get(f"gold_timeline:{match_id}:{p}")
+        pipe.get(f"kill_events:{match_id}")
+        pipe_results = await pipe.execute()
+
+    gold_raws = pipe_results[: len(sorted_puuids)]
+    kill_events_raw = pipe_results[len(sorted_puuids)]
+
+    # Build gold chart data
+    gold_data: dict[str, dict[str, object]] = {}
+    blue_idx = 0
+    red_idx = 0
+    for i, p in enumerate(sorted_puuids):
+        raw = gold_raws[i]
+        if not raw:
+            continue
+        with contextlib.suppress(json.JSONDecodeError, TypeError):
+            values = json.loads(raw)
+            if isinstance(values, list):
+                # Need participant data to determine team — re-read is cheap since
+                # we already have it in the pipeline results above, but we don't
+                # have it here. Use a heuristic: first 5 are blue, rest red.
+                # Better: read team_id from participant hash.
+                part_data: dict[str, str] = await r.hgetall(f"participant:{match_id}:{p}")
+                team_id = part_data.get("team_id", "100")
+                champ = part_data.get("champion_name", "?")
+                if team_id == "200":
+                    t_idx = red_idx
+                    red_idx += 1
+                else:
+                    t_idx = blue_idx
+                    blue_idx += 1
+                gold_data[p] = {
+                    "gold_values": [v for v in values if isinstance(v, int)],
+                    "team_id": team_id,
+                    "champion_name": champ,
+                    "team_index": t_idx,
+                }
+
+    gold_html = _gold_chart_svg(gold_data, focused_puuid, version)
+
+    # Build kill timeline
+    kill_events: list[dict[str, object]] = []
+    if kill_events_raw:
+        with contextlib.suppress(json.JSONDecodeError, TypeError):
+            parsed = json.loads(kill_events_raw)
+            if isinstance(parsed, list):
+                kill_events = parsed
+
+    kill_html = _kill_timeline_html(kill_events, version)
+
+    if not gold_html and not kill_events:
+        return '<p class="warning">Timeline data unavailable for this match.</p>'
+
+    return gold_html + kill_html
 
 
 # ---------------------------------------------------------------------------
@@ -333,7 +429,8 @@ async def _build_stats_response(
         + api_html
         + "</div>"
     )
-    main_html = '<div class="stats-main">' + tilt_html + history_html + "</div>"
+    insight_html = _ai_insight_html(stats, champs, roles)
+    main_html = '<div class="stats-main">' + tilt_html + insight_html + history_html + "</div>"
     layout_html = '<div class="stats-layout">' + sidebar_html + main_html + "</div>"
 
     return HTMLResponse(
@@ -442,9 +539,6 @@ async def stats_matches(request: Request) -> HTMLResponse:
     )
 
 
-_TeamEntry = tuple[str, dict[str, str], dict[str, str], list[str]]
-
-
 def _group_participants(
     sorted_puuids: list[str],
     pipe_results: list[Any],
@@ -549,11 +643,22 @@ async def match_detail(request: Request) -> HTMLResponse:
         f"Red Team</div>"
         f"{red_html}</div>"
     )
-    team_tab_html = '<p class="warning">Team analysis coming soon.</p>'
-    ai_tab_html = '<p class="warning">AI Score coming soon.</p>'
-    timeline_tab_html = (
-        '<p class="warning">Timeline data unavailable for this match.</p>' if has_timeline else ""
-    )
+
+    # --- Team Analysis tab ---
+    match_data: dict[str, str] = await r.hgetall(f"match:{match_id}")
+    blue_parts = [part for _p, part, _pl, _b in blue_team]
+    red_parts = [part for _p, part, _pl, _b in red_team]
+    team_tab_html = _team_analysis_html(blue_parts, red_parts, match_data)
+
+    # --- AI Score tab ---
+    all_participants = _build_participant_list(blue_team, red_team)
+    ai_scores = _compute_ai_score(all_participants, match_data)
+    ai_tab_html = _ai_score_tab_html(ai_scores, puuid, version)
+
+    # --- Timeline tab: gold chart + kill timeline ---
+    timeline_tab_html = ""
+    if has_timeline:
+        timeline_tab_html = await _build_timeline_tab(r, match_id, sorted_puuids, puuid, version)
 
     tabbed = _tabbed_match_detail(
         overview_html=overview_html,
