@@ -28,7 +28,7 @@ Platform: macOS. Container runtime: Podman (default). Switch with `RUNTIME=docke
 - `Dockerfile.service` is the unified Dockerfile for all services — parameterized by `SERVICE_NAME` and `MODULE_NAME` build args. Individual service Dockerfiles no longer exist.
 - `except (X, Y):` — always parenthesize multi-exception clauses (Python 3 syntax). Never write `except X, Y:`.
 - Every outbound `MessageEnvelope` must propagate `priority` and `correlation_id` from the inbound envelope. Omitting these is a bug.
-- `REJECTED.md` lists ideas that were evaluated and rejected with reasoning. Agents MUST read it before proposing new ideas to avoid re-proposals.
+- `.claude/archive/REJECTED.md` lists ideas that were evaluated and rejected with reasoning. Agents MUST read it before proposing new ideas to avoid re-proposals.
 
 ## Key Locations — When to Read What
 
@@ -45,7 +45,7 @@ Platform: macOS. Container runtime: Podman (default). Switch with `RUNTIME=docke
 | Contract schemas (DRY source) | `lol-pipeline-common/contracts/schemas/` |
 | Per-service consumer contracts | `lol-pipeline-*/pacts/` |
 | Integration tests | `tests/integration/` (IT-01 through IT-12, testcontainers) |
-| Rejected ideas (do not re-propose) | `REJECTED.md` |
+| Rejected ideas (do not re-propose) | `.claude/archive/REJECTED.md` |
 
 ## TODO — Phase 21 CLARITY
 
