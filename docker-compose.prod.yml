@@ -8,10 +8,34 @@
 #   - Drops PIP_ROOT_USER_ACTION / PIP_DISABLE_PIP_VERSION_CHECK env vars
 #   - Adds --requirepass to Redis
 #   - Sets restart: always for all long-running services
+#   - Enables read_only filesystem + tmpfs /tmp
+#   - Drops all Linux capabilities (cap_drop: ALL)
+#   - Sets no-new-privileges security option
+#   - Sets CPU/memory resource limits per service
+#   - Configures log rotation (25m max-size, 5 files)
+#   - Removes Redis host port mapping (network-only access)
+#   - Disables dangerous Redis commands (FLUSHALL, FLUSHDB, DEBUG)
 
 x-prod-defaults: &prod-defaults
   user: ""          # inherit Dockerfile USER (appuser)
   restart: always
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  deploy:
+    resources:
+      limits:
+        cpus: "1.0"
+        memory: 512M
+  logging:
+    driver: json-file
+    options:
+      max-size: "25m"
+      max-file: "5"
   environment:
     PIP_ROOT_USER_ACTION: ""
     PIP_DISABLE_PIP_VERSION_CHECK: ""
@@ -20,9 +44,28 @@ services:
 
   redis:
     restart: always
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "25m"
+        max-file: "5"
+    # Remove host port mapping — Redis is only accessible within the compose network.
+    # The base compose exposes 127.0.0.1:6379 for dev convenience; prod disables it.
+    ports: []
     command: >
       redis-server
       --requirepass ${REDIS_PASSWORD}
+      --protected-mode yes
+      --rename-command FLUSHALL ""
+      --rename-command FLUSHDB ""
+      --rename-command DEBUG ""
       --appendonly yes
       --appendfsync everysec
       --save 900 1

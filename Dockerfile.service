@@ -8,6 +8,9 @@ ARG SERVICE_NAME
 ARG MODULE_NAME
 
 # ── builder ──────────────────────────────────────────────────────────────────
+# TODO(security): Pin base image digest for reproducible builds in production:
+#   FROM python:3.14-slim@sha256:<digest> AS builder
+# Get current digest: docker pull python:3.14-slim && docker inspect --format='{{index .RepoDigests 0}}' python:3.14-slim
 FROM python:3.14-slim AS builder
 WORKDIR /build
 
@@ -21,6 +24,7 @@ RUN find ./src -name "test_*.py" -delete && find ./src -name "conftest.py" -dele
 RUN pip install --no-cache-dir .
 
 # ── runtime ──────────────────────────────────────────────────────────────────
+# TODO(security): Pin base image digest (same as builder above)
 FROM python:3.14-slim AS runtime
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 WORKDIR /app
