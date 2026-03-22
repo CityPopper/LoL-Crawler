@@ -146,6 +146,67 @@ _stream_depths:
 # Show Redis stream depths
 streams: _stream_depths
 
+# Export stream depths as machine-readable JSON (for scripting)
+streams-json:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    REDIS_CTR="{{_redis_ctr}}"
+    exec_redis() { {{RUNTIME}} exec "$REDIS_CTR" redis-cli "$@"; }
+    PUUID=$(exec_redis XLEN stream:puuid)
+    MATCH_ID=$(exec_redis XLEN stream:match_id)
+    PARSE=$(exec_redis XLEN stream:parse)
+    ANALYZE=$(exec_redis XLEN stream:analyze)
+    DLQ=$(exec_redis XLEN stream:dlq)
+    DLQ_ARCHIVE=$(exec_redis XLEN stream:dlq:archive)
+    DELAYED=$(exec_redis ZCARD delayed:messages)
+    HALTED=$(exec_redis GET system:halted)
+    if [ "$HALTED" = "1" ]; then HALTED_BOOL="true"; else HALTED_BOOL="false"; fi
+    printf '{"stream:puuid":%s,"stream:match_id":%s,"stream:parse":%s,"stream:analyze":%s,"stream:dlq":%s,"stream:dlq:archive":%s,"delayed:messages":%s,"system_halted":%s}\n' \
+        "$PUUID" "$MATCH_ID" "$PARSE" "$ANALYZE" "$DLQ" "$DLQ_ARCHIVE" "$DELAYED" "$HALTED_BOOL"
+
+# One-shot health check: calls /health, formats output, exit 0 if healthy, 1 if issues
+monitor port="8080":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    URL="http://localhost:{{port}}/health"
+    RESP=$(curl -sf "$URL" 2>/dev/null) || {
+        echo "FAIL: Cannot reach $URL (is the UI running?)"
+        exit 1
+    }
+    # Parse JSON via python3 one-liner (no jq dependency required)
+    _py_get() { echo "$RESP" | python3 -c "import sys,json;print(json.load(sys.stdin)[$1])"; }
+    STATUS=$(_py_get "'status'")
+    REDIS=$(_py_get "'redis'")
+    HALTED=$(_py_get "'system_halted'")
+    DLQ=$(_py_get "'dlq_depth'")
+    MEM=$(_py_get "'redis_memory_mb'")
+    STREAMS=$(echo "$RESP" | python3 -c "import sys,json;[print(f'  {k:24s} {v}') for k,v in json.load(sys.stdin)['streams'].items()]")
+    echo "=== Pipeline Health Check ==="
+    echo ""
+    printf "%-24s %s\n" "Status:" "$STATUS"
+    printf "%-24s %s\n" "Redis:" "$REDIS"
+    printf "%-24s %s\n" "System Halted:" "$HALTED"
+    printf "%-24s %s\n" "DLQ Depth:" "$DLQ"
+    printf "%-24s %s MB\n" "Redis Memory:" "$MEM"
+    echo ""
+    echo "--- Stream Depths ---"
+    echo "$STREAMS"
+    echo ""
+    # Exit 1 if halted or DLQ has entries
+    ISSUES=0
+    if [ "$HALTED" = "True" ]; then
+        echo "WARNING: System is HALTED"
+        ISSUES=1
+    fi
+    if [ "$DLQ" != "0" ]; then
+        echo "WARNING: DLQ has $DLQ entries"
+        ISSUES=1
+    fi
+    if [ "$ISSUES" -eq 0 ]; then
+        echo "All checks passed."
+    fi
+    exit $ISSUES
+
 # Show a dashboard: container health, stream depths, DLQ depth, halt flag, last 3 log lines
 status:
     #!/usr/bin/env bash
