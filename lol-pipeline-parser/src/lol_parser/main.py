@@ -45,6 +45,54 @@ def _extract_perks(p: dict[str, Any]) -> tuple[int, int, int]:
     return keystone, primary_style.get("style", 0), sub_style.get("style", 0)
 
 
+def _extract_full_perks(
+    p: dict[str, Any],
+) -> tuple[list[int], list[int], list[int]]:
+    """Return (primary_selections, sub_selections, stat_shards) from participant perks.
+
+    Extracts available elements without asserting exact array lengths.
+    Returns empty lists for any missing data.
+    """
+    perks = p.get("perks", {})
+    styles = perks.get("styles", [])
+    primary_style = styles[0] if styles else {}
+    sub_style = styles[1] if len(styles) > 1 else {}
+    primary_sel = [s.get("perk", 0) for s in primary_style.get("selections", [])]
+    sub_sel = [s.get("perk", 0) for s in sub_style.get("selections", [])]
+    stat_perks = perks.get("statPerks", {})
+    stat_shards: list[int] = []
+    for key in ("offense", "flex", "defense"):
+        if key in stat_perks:
+            stat_shards.append(stat_perks[key])
+    return primary_sel, sub_sel, stat_shards
+
+
+def _extract_team_objectives(info: dict[str, Any]) -> dict[str, str]:
+    """Extract team objective fields from info.teams[], keyed by teamId (100/200).
+
+    Maps via explicit teamId comparison (100=blue, 200=red), NOT array index.
+    Returns a flat dict of string fields ready for HSET on match:{match_id}.
+    """
+    teams = info.get("teams", [])
+    team_map: dict[int, dict[str, Any]] = {}
+    for team in teams:
+        tid = team.get("teamId", 0)
+        if tid in (100, 200):
+            team_map[tid] = team.get("objectives", {})
+
+    result: dict[str, str] = {}
+    for tid, prefix in ((100, "team_blue"), (200, "team_red")):
+        obj = team_map.get(tid, {})
+        result[f"{prefix}_dragons"] = str(obj.get("dragon", {}).get("kills", 0))
+        result[f"{prefix}_barons"] = str(obj.get("baron", {}).get("kills", 0))
+        result[f"{prefix}_towers"] = str(obj.get("tower", {}).get("kills", 0))
+        result[f"{prefix}_inhibitors"] = str(obj.get("inhibitor", {}).get("kills", 0))
+        result[f"{prefix}_heralds"] = str(obj.get("riftHerald", {}).get("kills", 0))
+        champion_obj = obj.get("champion", {})
+        result[f"{prefix}_first_blood"] = "1" if champion_obj.get("first") else "0"
+    return result
+
+
 def _validate(data: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     """Extract and validate info + metadata; raise KeyError on missing required fields."""
     info: dict[str, Any] = data["info"]
@@ -68,6 +116,7 @@ def _queue_participant(
     """
     puuid: str = p["puuid"]
     keystone, primary_style_id, sub_style_id = _extract_perks(p)
+    primary_sel, sub_sel, stat_shards = _extract_full_perks(p)
     items = json.dumps([p.get(k, 0) for k in _ITEM_KEYS])
     participant_key = f"participant:{match_id}:{puuid}"
     pipe.hset(
@@ -110,6 +159,9 @@ def _queue_participant(
             "perk_keystone": str(keystone),
             "perk_primary_style": str(primary_style_id),
             "perk_sub_style": str(sub_style_id),
+            "perk_primary_selections": json.dumps(primary_sel),
+            "perk_sub_selections": json.dumps(sub_sel),
+            "perk_stat_shards": json.dumps(stat_shards),
         },
     )
     pipe.expire(participant_key, match_data_ttl)
@@ -268,6 +320,10 @@ async def _write_matchups(
     log.debug("wrote matchups", extra={"match_id": match_id, "patch": patch})
 
 
+_GOLD_TIMELINE_MAX_FRAMES = 120
+_KILL_EVENTS_MAX = 200
+
+
 def _extract_timeline_events(
     frames: list[dict[str, Any]],
 ) -> tuple[dict[int, list[int]], dict[int, list[int]]]:
@@ -291,37 +347,117 @@ def _extract_timeline_events(
     return build_orders, skill_orders
 
 
+def _extract_gold_timelines(
+    frames: list[dict[str, Any]],
+) -> dict[int, list[int]]:
+    """Extract per-participant gold totals from timeline participantFrames.
+
+    Returns a dict mapping participant ID (int) to a list of totalGold values,
+    one per frame, capped at 120 frames.
+    """
+    gold: dict[int, list[int]] = {}
+    for frame in frames[:_GOLD_TIMELINE_MAX_FRAMES]:
+        pframes = frame.get("participantFrames", {})
+        for pid_str, pdata in pframes.items():
+            try:
+                pid = int(pid_str)
+            except (ValueError, TypeError):
+                continue
+            gold.setdefault(pid, []).append(pdata.get("totalGold", 0))
+    return gold
+
+
+def _extract_kill_events(
+    frames: list[dict[str, Any]],
+    pid_to_champ: dict[int, str],
+) -> list[dict[str, Any]]:
+    """Extract CHAMPION_KILL events from timeline, denormalized with champion names.
+
+    Returns a list of kill event dicts sorted by timestamp, capped at 200.
+    Unknown participant IDs resolve to "Unknown" (logged at call site).
+    """
+    kills: list[dict[str, Any]] = []
+    for frame in frames:
+        for event in frame.get("events", []):
+            if event.get("type") != "CHAMPION_KILL":
+                continue
+            killer_id = event.get("killerId", 0)
+            victim_id = event.get("victimId", 0)
+            assist_ids: list[int] = event.get("assistingParticipantIds", [])
+            pos = event.get("position", {})
+            kills.append(
+                {
+                    "t": event.get("timestamp", 0),
+                    "killer": pid_to_champ.get(killer_id, "Unknown"),
+                    "victim": pid_to_champ.get(victim_id, "Unknown"),
+                    "assists": [pid_to_champ.get(a, "Unknown") for a in assist_ids],
+                    "x": pos.get("x", 0),
+                    "y": pos.get("y", 0),
+                }
+            )
+    kills.sort(key=lambda e: e["t"])
+    return kills[:_KILL_EVENTS_MAX]
+
+
+def _warn_non_monotonic_gold(
+    gold_timelines: dict[int, list[int]],
+    match_id: str,
+    log: logging.Logger,
+) -> None:
+    """Log warning for any participant with non-monotonic totalGold sequence."""
+    for pid, golds in gold_timelines.items():
+        for i in range(1, len(golds)):
+            if golds[i] < golds[i - 1]:
+                log.warning(
+                    "non-monotonic gold timeline",
+                    extra={"match_id": match_id, "participant_id": pid},
+                )
+                break
+
+
+def _queue_pid_json(
+    pipe: aioredis.client.Pipeline,
+    pid_data: dict[int, list[int]],
+    pid_to_puuid: dict[int, str],
+    key_prefix: str,
+    match_id: str,
+    ttl: int,
+) -> None:
+    """Queue SET commands for per-participant JSON arrays onto a pipeline."""
+    for pid, values in pid_data.items():
+        puuid = pid_to_puuid.get(pid, "")
+        if puuid:
+            pipe.set(f"{key_prefix}:{match_id}:{puuid}", json.dumps(values), ex=ttl)
+
+
 async def _store_timeline_data(
     r: aioredis.Redis,
     match_id: str,
     info: dict[str, Any],
     cfg: Config,
+    log: logging.Logger,
 ) -> None:
-    """Store build and skill order data extracted from timeline."""
-    build_orders, skill_orders = _extract_timeline_events(
-        info.get("frames", []),
-    )
-    pid_to_puuid: dict[int, str] = {}
-    for p in info.get("participants", []):
-        pid_to_puuid[p.get("participantId", 0)] = p.get("puuid", "")
+    """Store build orders, skill orders, gold timelines, and kill events."""
+    frames = info.get("frames", [])
+    build_orders, skill_orders = _extract_timeline_events(frames)
 
+    pid_to_puuid: dict[int, str] = {}
+    pid_to_champ: dict[int, str] = {}
+    for p in info.get("participants", []):
+        pid = p.get("participantId", 0)
+        pid_to_puuid[pid] = p.get("puuid", "")
+        pid_to_champ[pid] = p.get("championName", "Unknown")
+
+    gold_timelines = _extract_gold_timelines(frames)
+    kill_events = _extract_kill_events(frames, pid_to_champ)
+    _warn_non_monotonic_gold(gold_timelines, match_id, log)
+
+    ttl = cfg.match_data_ttl_seconds
     async with r.pipeline(transaction=False) as pipe:
-        for pid, items in build_orders.items():
-            puuid = pid_to_puuid.get(pid, "")
-            if puuid:
-                pipe.set(
-                    f"build:{match_id}:{puuid}",
-                    json.dumps(items),
-                    ex=cfg.match_data_ttl_seconds,
-                )
-        for pid, skills in skill_orders.items():
-            puuid = pid_to_puuid.get(pid, "")
-            if puuid:
-                pipe.set(
-                    f"skills:{match_id}:{puuid}",
-                    json.dumps(skills),
-                    ex=cfg.match_data_ttl_seconds,
-                )
+        _queue_pid_json(pipe, build_orders, pid_to_puuid, "build", match_id, ttl)
+        _queue_pid_json(pipe, skill_orders, pid_to_puuid, "skills", match_id, ttl)
+        _queue_pid_json(pipe, gold_timelines, pid_to_puuid, "gold_timeline", match_id, ttl)
+        pipe.set(f"kill_events:{match_id}", json.dumps(kill_events), ex=ttl)
         await pipe.execute()
 
 
@@ -331,7 +467,7 @@ async def _parse_timeline(
     cfg: Config,
     log: logging.Logger,
 ) -> None:
-    """Parse stored match timeline for build order and skill order."""
+    """Parse stored match timeline for build/skill orders, gold timelines, kill events."""
     if not cfg.fetch_timeline:
         return
     raw = await r.get(f"raw:timeline:{match_id}")
@@ -343,7 +479,7 @@ async def _parse_timeline(
         log.warning("invalid timeline JSON", extra={"match_id": match_id})
         return
 
-    await _store_timeline_data(r, match_id, data.get("info", {}), cfg)
+    await _store_timeline_data(r, match_id, data.get("info", {}), cfg, log)
     log.debug("parsed timeline", extra={"match_id": match_id})
 
 
@@ -439,22 +575,21 @@ async def _parse_match(
         await r.expire("match:status:parsed", 7776000)  # 90 days
 
     match_key = f"match:{match_id}"
+    match_fields: dict[str, str] = {
+        "queue_id": str(info.get("queueId", "")),
+        "game_mode": info.get("gameMode", ""),
+        "game_type": info.get("gameType", ""),
+        "game_version": info.get("gameVersion", ""),
+        "patch": _normalize_patch(info.get("gameVersion", "")),
+        "game_duration": str(info.get("gameDuration", "")),
+        "game_start": str(game_start),
+        "platform_id": info.get("platformId", ""),
+        "region": region,
+        "status": "parsed",
+    }
+    match_fields.update(_extract_team_objectives(info))
     async with r.pipeline(transaction=True) as pipe:
-        pipe.hset(
-            match_key,
-            mapping={
-                "queue_id": str(info.get("queueId", "")),
-                "game_mode": info.get("gameMode", ""),
-                "game_type": info.get("gameType", ""),
-                "game_version": info.get("gameVersion", ""),
-                "patch": _normalize_patch(info.get("gameVersion", "")),
-                "game_duration": str(info.get("gameDuration", "")),
-                "game_start": str(game_start),
-                "platform_id": info.get("platformId", ""),
-                "region": region,
-                "status": "parsed",
-            },
-        )
+        pipe.hset(match_key, mapping=match_fields)
         pipe.expire(match_key, cfg.match_data_ttl_seconds)
         await pipe.execute()
 

@@ -15,6 +15,9 @@ from lol_pipeline.raw_store import RawStore
 from lol_pipeline.streams import consume, publish
 
 from lol_parser.main import (
+    _extract_full_perks,
+    _extract_gold_timelines,
+    _extract_kill_events,
     _extract_perks,
     _normalize_patch,
     _parse_match,
@@ -1655,3 +1658,713 @@ class TestParsedSetTTL:
         after_ttl = await r.ttl("match:status:parsed")
         # TTL should still be around 1000 (not reset to 7776000)
         assert after_ttl <= 1000
+
+
+def _make_timeline_with_gold(participants_map, frames_data):
+    """Build timeline data with participantFrames for gold extraction.
+
+    frames_data: list of dicts mapping participant_id -> totalGold per frame.
+    """
+    frames = []
+    for frame_gold in frames_data:
+        pframes = {}
+        for pid_str, gold in frame_gold.items():
+            pframes[pid_str] = {"totalGold": gold}
+        frames.append({"participantFrames": pframes, "events": []})
+    return {
+        "info": {
+            "participants": participants_map,
+            "frames": frames,
+        },
+    }
+
+
+def _make_timeline_with_kills(participants_map, kill_events):
+    """Build timeline data with CHAMPION_KILL events.
+
+    kill_events: list of dicts with keys: killer, victim, assists (list of pid),
+                 timestamp, x, y.
+    """
+    events = []
+    for k in kill_events:
+        event = {
+            "type": "CHAMPION_KILL",
+            "killerId": k["killer"],
+            "victimId": k["victim"],
+            "assistingParticipantIds": k.get("assists", []),
+            "timestamp": k["timestamp"],
+            "position": {"x": k.get("x", 0), "y": k.get("y", 0)},
+        }
+        events.append(event)
+    frames = [{"events": events, "participantFrames": {}}]
+    return {
+        "info": {
+            "participants": participants_map,
+            "frames": frames,
+        },
+    }
+
+
+class TestGoldTimeline:
+    """T1-1: Gold timeline extraction from participantFrames."""
+
+    @pytest.fixture
+    def tl_cfg(self, monkeypatch):
+        """Config with fetch_timeline=True for gold timeline tests."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        monkeypatch.setenv("FETCH_TIMELINE", "true")
+        return Config(_env_file=None)  # type: ignore[call-arg]
+
+    @pytest.mark.asyncio
+    async def test_gold_timeline__extraction__correct_values(self, r):
+        """Gold timeline extracted as JSON integer array per participant."""
+        frames_data = [
+            {"1": 500, "2": 450},
+            {"1": 1200, "2": 1100},
+            {"1": 2500, "2": 2300},
+        ]
+        info = _make_timeline_with_gold(
+            [{"participantId": 1, "puuid": "g1"}, {"participantId": 2, "puuid": "g2"}],
+            frames_data,
+        )["info"]
+        result = _extract_gold_timelines(info.get("frames", []))
+        assert result == {1: [500, 1200, 2500], 2: [450, 1100, 2300]}
+
+    @pytest.mark.asyncio
+    async def test_gold_timeline__cap_120_frames(self, r):
+        """Gold timeline capped at 120 frames even if more exist."""
+        frames_data = [{"1": i * 100} for i in range(150)]
+        info = _make_timeline_with_gold(
+            [{"participantId": 1, "puuid": "cap"}],
+            frames_data,
+        )["info"]
+        result = _extract_gold_timelines(info.get("frames", []))
+        assert len(result[1]) == 120
+        assert result[1][0] == 0
+        assert result[1][119] == 11900
+
+    @pytest.mark.asyncio
+    async def test_gold_timeline__stored_in_redis(self, r, tl_cfg, log):
+        """Gold timeline stored as gold_timeline:{match_id}:{puuid} with TTL."""
+        match_id = "NA1_GOLD1"
+        timeline = _make_timeline_with_gold(
+            [{"participantId": 1, "puuid": "puuid-gold-store"}],
+            [{"1": 500}, {"1": 1200}],
+        )
+        await r.set(f"raw:timeline:{match_id}", json.dumps(timeline))
+
+        await _parse_timeline(r, match_id, tl_cfg, log)
+
+        raw = await r.get(f"gold_timeline:{match_id}:puuid-gold-store")
+        assert raw is not None
+        assert json.loads(raw) == [500, 1200]
+
+    @pytest.mark.asyncio
+    async def test_gold_timeline__empty_frames(self, r):
+        """Empty frames list produces empty gold timelines."""
+        result = _extract_gold_timelines([])
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_gold_timeline__skipped_when_disabled(self, r, log, monkeypatch):
+        """FETCH_TIMELINE=false means no gold_timeline keys are written."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        monkeypatch.setenv("FETCH_TIMELINE", "false")
+        disabled_cfg = Config(_env_file=None)  # type: ignore[call-arg]
+        match_id = "NA1_GOLD_OFF"
+        timeline = _make_timeline_with_gold(
+            [{"participantId": 1, "puuid": "puuid-gold-off"}],
+            [{"1": 500}],
+        )
+        await r.set(f"raw:timeline:{match_id}", json.dumps(timeline))
+
+        await _parse_timeline(r, match_id, disabled_cfg, log)
+
+        assert await r.exists(f"gold_timeline:{match_id}:puuid-gold-off") == 0
+
+
+class TestKillEvents:
+    """T1-4: Kill event extraction from timeline frames."""
+
+    @pytest.fixture
+    def tl_cfg(self, monkeypatch):
+        """Config with fetch_timeline=True for kill event tests."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        monkeypatch.setenv("FETCH_TIMELINE", "true")
+        return Config(_env_file=None)  # type: ignore[call-arg]
+
+    @pytest.mark.asyncio
+    async def test_kill_events__extraction__correct_format(self, r):
+        """Kill events extracted with champion names, not participant IDs."""
+        pid_to_champ = {1: "Ahri", 2: "Zed", 3: "Lux"}
+        frames = [
+            {
+                "events": [
+                    {
+                        "type": "CHAMPION_KILL",
+                        "killerId": 1,
+                        "victimId": 2,
+                        "assistingParticipantIds": [3],
+                        "timestamp": 120000,
+                        "position": {"x": 5000, "y": 6000},
+                    },
+                ],
+                "participantFrames": {},
+            },
+        ]
+        result = _extract_kill_events(frames, pid_to_champ)
+        assert len(result) == 1
+        assert result[0] == {
+            "t": 120000,
+            "killer": "Ahri",
+            "victim": "Zed",
+            "assists": ["Lux"],
+            "x": 5000,
+            "y": 6000,
+        }
+
+    @pytest.mark.asyncio
+    async def test_kill_events__with_multiple_assists(self, r):
+        """Kill events include all assist champion names."""
+        pid_to_champ = {1: "Ahri", 2: "Zed", 3: "Lux", 4: "Thresh", 5: "Graves"}
+        frames = [
+            {
+                "events": [
+                    {
+                        "type": "CHAMPION_KILL",
+                        "killerId": 1,
+                        "victimId": 2,
+                        "assistingParticipantIds": [3, 4, 5],
+                        "timestamp": 60000,
+                        "position": {"x": 100, "y": 200},
+                    },
+                ],
+                "participantFrames": {},
+            },
+        ]
+        result = _extract_kill_events(frames, pid_to_champ)
+        assert result[0]["assists"] == ["Lux", "Thresh", "Graves"]
+
+    @pytest.mark.asyncio
+    async def test_kill_events__cap_200(self, r):
+        """Kill events capped at 200 even if more exist."""
+        pid_to_champ = {1: "Ahri", 2: "Zed"}
+        events = []
+        for i in range(250):
+            events.append(
+                {
+                    "type": "CHAMPION_KILL",
+                    "killerId": 1,
+                    "victimId": 2,
+                    "assistingParticipantIds": [],
+                    "timestamp": i * 1000,
+                    "position": {"x": 0, "y": 0},
+                },
+            )
+        frames = [{"events": events, "participantFrames": {}}]
+        result = _extract_kill_events(frames, pid_to_champ)
+        assert len(result) == 200
+
+    @pytest.mark.asyncio
+    async def test_kill_events__sorted_by_timestamp(self, r):
+        """Kill events are sorted by timestamp ascending."""
+        pid_to_champ = {1: "Ahri", 2: "Zed"}
+        frames = [
+            {
+                "events": [
+                    {
+                        "type": "CHAMPION_KILL",
+                        "killerId": 1,
+                        "victimId": 2,
+                        "assistingParticipantIds": [],
+                        "timestamp": 300000,
+                        "position": {"x": 0, "y": 0},
+                    },
+                ],
+                "participantFrames": {},
+            },
+            {
+                "events": [
+                    {
+                        "type": "CHAMPION_KILL",
+                        "killerId": 2,
+                        "victimId": 1,
+                        "assistingParticipantIds": [],
+                        "timestamp": 60000,
+                        "position": {"x": 0, "y": 0},
+                    },
+                ],
+                "participantFrames": {},
+            },
+        ]
+        result = _extract_kill_events(frames, pid_to_champ)
+        assert result[0]["t"] == 60000
+        assert result[1]["t"] == 300000
+
+    @pytest.mark.asyncio
+    async def test_kill_events__empty_timeline(self, r):
+        """Empty frames produces empty kill events list."""
+        result = _extract_kill_events([], {})
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_kill_events__stored_in_redis(self, r, tl_cfg, log):
+        """Kill events stored as kill_events:{match_id} with TTL."""
+        match_id = "NA1_KILL1"
+        participants = [
+            {"participantId": 1, "puuid": "pk1", "championName": "Ahri"},
+            {"participantId": 2, "puuid": "pk2", "championName": "Zed"},
+        ]
+        kill_events = [
+            {"killer": 1, "victim": 2, "assists": [], "timestamp": 90000, "x": 100, "y": 200},
+        ]
+        timeline = _make_timeline_with_kills(participants, kill_events)
+        await r.set(f"raw:timeline:{match_id}", json.dumps(timeline))
+
+        await _parse_timeline(r, match_id, tl_cfg, log)
+
+        raw = await r.get(f"kill_events:{match_id}")
+        assert raw is not None
+        events = json.loads(raw)
+        assert len(events) == 1
+        assert events[0]["killer"] == "Ahri"
+        assert events[0]["victim"] == "Zed"
+
+    @pytest.mark.asyncio
+    async def test_kill_events__skipped_when_disabled(self, r, log, monkeypatch):
+        """FETCH_TIMELINE=false means no kill_events keys written."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        monkeypatch.setenv("FETCH_TIMELINE", "false")
+        disabled_cfg = Config(_env_file=None)  # type: ignore[call-arg]
+        match_id = "NA1_KILL_OFF"
+        timeline = _make_timeline_with_kills(
+            [
+                {"participantId": 1, "puuid": "pk-off-1", "championName": "Ahri"},
+                {"participantId": 2, "puuid": "pk-off-2", "championName": "Zed"},
+            ],
+            [{"killer": 1, "victim": 2, "assists": [], "timestamp": 90000, "x": 0, "y": 0}],
+        )
+        await r.set(f"raw:timeline:{match_id}", json.dumps(timeline))
+
+        await _parse_timeline(r, match_id, disabled_cfg, log)
+
+        assert await r.exists(f"kill_events:{match_id}") == 0
+
+    @pytest.mark.asyncio
+    async def test_kill_events__unknown_pid__fallback(self, r):
+        """Unknown participant ID in kill event uses 'Unknown' fallback, no crash."""
+        pid_to_champ = {1: "Ahri"}
+        frames = [
+            {
+                "events": [
+                    {
+                        "type": "CHAMPION_KILL",
+                        "killerId": 1,
+                        "victimId": 99,  # unknown PID
+                        "assistingParticipantIds": [88],  # unknown PID
+                        "timestamp": 60000,
+                        "position": {"x": 0, "y": 0},
+                    },
+                ],
+                "participantFrames": {},
+            },
+        ]
+        # Should not raise — uses "Unknown" fallback
+        result = _extract_kill_events(frames, pid_to_champ)
+        assert len(result) == 1
+        assert result[0]["killer"] == "Ahri"
+        assert result[0]["victim"] == "Unknown"
+        assert result[0]["assists"] == ["Unknown"]
+
+
+def _make_teams_with_objectives(
+    blue_objectives=None,
+    red_objectives=None,
+    blue_first_blood=False,
+    red_first_blood=False,
+):
+    """Build teams list with objectives for testing T1-2."""
+    if blue_objectives is None:
+        blue_objectives = {
+            "baron": {"kills": 2, "first": True},
+            "dragon": {"kills": 3, "first": True},
+            "tower": {"kills": 8, "first": True},
+            "inhibitor": {"kills": 2, "first": True},
+            "riftHerald": {"kills": 1, "first": True},
+        }
+    if red_objectives is None:
+        red_objectives = {
+            "baron": {"kills": 1, "first": False},
+            "dragon": {"kills": 1, "first": False},
+            "tower": {"kills": 3, "first": False},
+            "inhibitor": {"kills": 0, "first": False},
+            "riftHerald": {"kills": 1, "first": False},
+        }
+    return [
+        {
+            "teamId": 100,
+            "win": True,
+            "objectives": {
+                **blue_objectives,
+                "champion": {"kills": 30, "first": blue_first_blood},
+            },
+        },
+        {
+            "teamId": 200,
+            "win": False,
+            "objectives": {
+                **red_objectives,
+                "champion": {"kills": 20, "first": red_first_blood},
+            },
+        },
+    ]
+
+
+class TestTeamObjectives:
+    """T1-2: Team objectives extracted from info.teams[].objectives."""
+
+    @pytest.mark.asyncio
+    async def test_team_objectives__ranked_match(self, r, cfg, log):
+        """Team objectives are written as fields on match:{match_id} hash."""
+        raw_store = RawStore(r)
+        match_id = "NA1_OBJ1"
+        teams = _make_teams_with_objectives(blue_first_blood=True)
+        participants = [
+            _make_participant("puuid-obj-1", teamId=100, win=True),
+            _make_participant("puuid-obj-2", teamId=200, win=False),
+        ]
+        data = _make_match_data(match_id, participants, teams=teams, queueId=420)
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, json.dumps(data))
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        h = await r.hgetall(f"match:{match_id}")
+        assert h["team_blue_barons"] == "2"
+        assert h["team_blue_dragons"] == "3"
+        assert h["team_blue_towers"] == "8"
+        assert h["team_blue_inhibitors"] == "2"
+        assert h["team_blue_heralds"] == "1"
+        assert h["team_blue_first_blood"] == "1"
+        assert h["team_red_barons"] == "1"
+        assert h["team_red_dragons"] == "1"
+        assert h["team_red_towers"] == "3"
+        assert h["team_red_inhibitors"] == "0"
+        assert h["team_red_heralds"] == "1"
+        assert h["team_red_first_blood"] == "0"
+
+    @pytest.mark.asyncio
+    async def test_team_objectives__missing_objectives_block(self, r, cfg, log):
+        """Teams without objectives block produce zero-value fields."""
+        raw_store = RawStore(r)
+        match_id = "NA1_OBJ2"
+        teams = [
+            {"teamId": 100, "win": True},
+            {"teamId": 200, "win": False},
+        ]
+        participants = [
+            _make_participant("puuid-obj-3", teamId=100, win=True),
+        ]
+        data = _make_match_data(match_id, participants, teams=teams)
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, json.dumps(data))
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        h = await r.hgetall(f"match:{match_id}")
+        assert h["team_blue_barons"] == "0"
+        assert h["team_blue_dragons"] == "0"
+        assert h["team_blue_towers"] == "0"
+        assert h["team_blue_inhibitors"] == "0"
+        assert h["team_blue_heralds"] == "0"
+        assert h["team_blue_first_blood"] == "0"
+        assert h["team_red_barons"] == "0"
+        assert h["team_red_towers"] == "0"
+
+    @pytest.mark.asyncio
+    async def test_team_objectives__uses_team_id_not_array_index(self, r, cfg, log):
+        """Mapping uses explicit teamId comparison, not array index."""
+        raw_store = RawStore(r)
+        match_id = "NA1_OBJ3"
+        # Red team FIRST in array to prove index is not used
+        teams = [
+            {
+                "teamId": 200,
+                "win": False,
+                "objectives": {
+                    "baron": {"kills": 9, "first": False},
+                    "dragon": {"kills": 8, "first": False},
+                    "tower": {"kills": 7, "first": False},
+                    "inhibitor": {"kills": 6, "first": False},
+                    "riftHerald": {"kills": 5, "first": False},
+                    "champion": {"kills": 0, "first": False},
+                },
+            },
+            {
+                "teamId": 100,
+                "win": True,
+                "objectives": {
+                    "baron": {"kills": 1, "first": True},
+                    "dragon": {"kills": 2, "first": True},
+                    "tower": {"kills": 3, "first": True},
+                    "inhibitor": {"kills": 4, "first": True},
+                    "riftHerald": {"kills": 0, "first": True},
+                    "champion": {"kills": 0, "first": True},
+                },
+            },
+        ]
+        participants = [
+            _make_participant("puuid-obj-4", teamId=100, win=True),
+        ]
+        data = _make_match_data(match_id, participants, teams=teams)
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, json.dumps(data))
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        h = await r.hgetall(f"match:{match_id}")
+        # Blue (teamId=100) was second in array — must still map correctly
+        assert h["team_blue_barons"] == "1"
+        assert h["team_blue_dragons"] == "2"
+        assert h["team_blue_towers"] == "3"
+        assert h["team_blue_inhibitors"] == "4"
+        assert h["team_blue_heralds"] == "0"
+        assert h["team_blue_first_blood"] == "1"
+        # Red (teamId=200) was first in array — must still map correctly
+        assert h["team_red_barons"] == "9"
+        assert h["team_red_dragons"] == "8"
+        assert h["team_red_towers"] == "7"
+        assert h["team_red_inhibitors"] == "6"
+        assert h["team_red_heralds"] == "5"
+        assert h["team_red_first_blood"] == "0"
+
+    @pytest.mark.asyncio
+    async def test_team_objectives__no_teams_key(self, r, cfg, log):
+        """Match with no teams key still parses without error."""
+        raw_store = RawStore(r)
+        match_id = "NA1_OBJ4"
+        participants = [
+            _make_participant("puuid-obj-5", teamId=100, win=True),
+        ]
+        data = _make_match_data(match_id, participants)
+        # _make_match_data does not add teams by default
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, json.dumps(data))
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        h = await r.hgetall(f"match:{match_id}")
+        assert h["team_blue_barons"] == "0"
+        assert h["team_red_barons"] == "0"
+
+
+class TestExtractFullPerks:
+    """T1-3: _extract_full_perks returns perk selections + stat shards."""
+
+    def test_full_perks__normal(self):
+        """All rune selections and stat shards extracted correctly."""
+        p = {
+            "perks": {
+                "styles": [
+                    {
+                        "style": 8100,
+                        "selections": [
+                            {"perk": 8112},
+                            {"perk": 8126},
+                            {"perk": 8139},
+                            {"perk": 8135},
+                        ],
+                    },
+                    {
+                        "style": 8300,
+                        "selections": [
+                            {"perk": 8304},
+                            {"perk": 8345},
+                        ],
+                    },
+                ],
+                "statPerks": {
+                    "offense": 5008,
+                    "flex": 5002,
+                    "defense": 5001,
+                },
+            },
+        }
+        primary_sel, sub_sel, stat_shards = _extract_full_perks(p)
+        assert primary_sel == [8112, 8126, 8139, 8135]
+        assert sub_sel == [8304, 8345]
+        assert stat_shards == [5008, 5002, 5001]
+
+    def test_full_perks__empty_input(self):
+        """Empty participant data returns empty arrays."""
+        primary_sel, sub_sel, stat_shards = _extract_full_perks({})
+        assert primary_sel == []
+        assert sub_sel == []
+        assert stat_shards == []
+
+    def test_full_perks__no_perks_key(self):
+        """Participant without styles/statPerks returns empty arrays."""
+        primary_sel, sub_sel, stat_shards = _extract_full_perks({"perks": {}})
+        assert primary_sel == []
+        assert sub_sel == []
+        assert stat_shards == []
+
+    def test_full_perks__no_sub_style(self):
+        """Only primary style present, no secondary."""
+        p = {
+            "perks": {
+                "styles": [
+                    {
+                        "style": 8100,
+                        "selections": [{"perk": 8112}, {"perk": 8126}],
+                    },
+                ],
+            },
+        }
+        primary_sel, sub_sel, stat_shards = _extract_full_perks(p)
+        assert primary_sel == [8112, 8126]
+        assert sub_sel == []
+        assert stat_shards == []
+
+    def test_full_perks__partial_stat_perks(self):
+        """StatPerks with only some fields present."""
+        p = {
+            "perks": {
+                "styles": [],
+                "statPerks": {
+                    "offense": 5008,
+                },
+            },
+        }
+        primary_sel, sub_sel, stat_shards = _extract_full_perks(p)
+        assert primary_sel == []
+        assert sub_sel == []
+        assert stat_shards == [5008]
+
+    def test_full_perks__empty_selections(self):
+        """Styles with empty selections arrays."""
+        p = {
+            "perks": {
+                "styles": [
+                    {"style": 8100, "selections": []},
+                    {"style": 8300, "selections": []},
+                ],
+            },
+        }
+        primary_sel, sub_sel, stat_shards = _extract_full_perks(p)
+        assert primary_sel == []
+        assert sub_sel == []
+        assert stat_shards == []
+
+
+class TestFullPerksStoredAsJson:
+    """T1-3: Full rune selections stored as JSON arrays on participant hash."""
+
+    @pytest.mark.asyncio
+    async def test_rune_selections__stored_as_json_arrays(self, r, cfg, log):
+        """perk_primary/sub_selections, perk_stat_shards are JSON arrays."""
+        raw_store = RawStore(r)
+        match_id = "NA1_RUNES1"
+        p = _make_participant(
+            "puuid-runes",
+            perks={
+                "styles": [
+                    {
+                        "style": 8100,
+                        "selections": [
+                            {"perk": 8112},
+                            {"perk": 8126},
+                            {"perk": 8139},
+                            {"perk": 8135},
+                        ],
+                    },
+                    {
+                        "style": 8300,
+                        "selections": [
+                            {"perk": 8304},
+                            {"perk": 8345},
+                        ],
+                    },
+                ],
+                "statPerks": {
+                    "offense": 5008,
+                    "flex": 5002,
+                    "defense": 5001,
+                },
+            },
+        )
+        data = _make_match_data(match_id, [p])
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, json.dumps(data))
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        h = await r.hgetall(f"participant:{match_id}:puuid-runes")
+        assert json.loads(h["perk_primary_selections"]) == [8112, 8126, 8139, 8135]
+        assert json.loads(h["perk_sub_selections"]) == [8304, 8345]
+        assert json.loads(h["perk_stat_shards"]) == [5008, 5002, 5001]
+
+    @pytest.mark.asyncio
+    async def test_rune_selections__empty_perks__empty_json_arrays(
+        self,
+        r,
+        cfg,
+        log,
+    ):
+        """Missing perks data stores empty JSON arrays, never omitted."""
+        raw_store = RawStore(r)
+        match_id = "NA1_RUNES2"
+        p = _make_participant("puuid-norunes")
+        data = _make_match_data(match_id, [p])
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, json.dumps(data))
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        h = await r.hgetall(f"participant:{match_id}:puuid-norunes")
+        assert h["perk_primary_selections"] == "[]"
+        assert h["perk_sub_selections"] == "[]"
+        assert h["perk_stat_shards"] == "[]"
+
+    @pytest.mark.asyncio
+    async def test_stat_shards__extracted_correctly(self, r, cfg, log):
+        """Stat shards from statPerks stored as JSON array of 3 IDs."""
+        raw_store = RawStore(r)
+        match_id = "NA1_SHARDS"
+        p = _make_participant(
+            "puuid-shards",
+            perks={
+                "styles": [
+                    {
+                        "style": 8200,
+                        "selections": [{"perk": 8214}],
+                    },
+                ],
+                "statPerks": {
+                    "offense": 5005,
+                    "flex": 5003,
+                    "defense": 5002,
+                },
+            },
+        )
+        data = _make_match_data(match_id, [p])
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, json.dumps(data))
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        h = await r.hgetall(f"participant:{match_id}:puuid-shards")
+        shards = json.loads(h["perk_stat_shards"])
+        assert shards == [5005, 5003, 5002]
+        assert len(shards) == 3
