@@ -426,6 +426,48 @@ details[open] > summary::before { transform: rotate(90deg); }
 .grade--C { background: #7b7b8d; color: #fff; }
 .grade--D { background: #3f3f4a; color: #e8e8e8; }
 
+/* Tab strip — scrollable tab buttons */
+.tab-strip { display: flex; overflow-x: auto; -webkit-overflow-scrolling: touch;
+  white-space: nowrap; gap: 0; border-bottom: 2px solid var(--color-border);
+  margin-bottom: var(--space-sm); scrollbar-width: thin; }
+.tab-btn { background: none; border: none; border-bottom: 2px solid transparent;
+  margin-bottom: -2px; color: var(--color-muted); font-family: var(--font-sans);
+  font-size: var(--font-size-sm); font-weight: 600; padding: var(--space-sm) var(--space-md);
+  cursor: pointer; white-space: nowrap; min-height: 36px;
+  transition: color 0.15s, border-color 0.15s; }
+.tab-btn:hover { color: var(--color-text); border-bottom-color: var(--color-border); }
+.tab-btn--active { color: var(--color-win); border-bottom-color: var(--color-win); }
+.tab-panel { min-height: 40px; }
+.match-tabs { margin-top: var(--space-sm); }
+
+/* Two-column stats layout (T2-5) */
+.stats-layout { display: grid; grid-template-columns: 1fr; gap: var(--space-md); }
+.stats-sidebar { }
+.stats-main { min-width: 0; }
+@media (min-width: 768px) {
+  .stats-layout { grid-template-columns: 300px 1fr; }
+  .stats-sidebar { position: sticky; top: 0; max-height: 100vh;
+    overflow-y: auto; align-self: start; }
+}
+@media (max-width: 767px) {
+  .stats-layout { grid-template-columns: 1fr; }
+  .stats-sidebar { position: static; }
+}
+
+/* Team analysis stat comparison bars (T2-3) */
+.team-analysis { display: flex; flex-direction: column; gap: var(--space-sm);
+  padding: var(--space-sm) 0; }
+.team-analysis__row { display: grid;
+  grid-template-columns: 60px 1fr 60px; gap: var(--space-sm);
+  align-items: center; font-family: var(--font-sans); font-size: var(--font-size-sm); }
+.team-analysis__val { font-variant-numeric: tabular-nums; font-weight: 600; }
+.team-analysis__val--blue { color: var(--color-win); text-align: right; }
+.team-analysis__val--red { color: var(--color-loss); text-align: left; }
+.team-analysis__bar { height: 8px; border-radius: 4px; }
+.team-analysis__label { grid-column: 1 / -1; text-align: center;
+  color: var(--color-muted); font-size: 10px; text-transform: uppercase;
+  letter-spacing: 0.06em; margin-top: -4px; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important; }

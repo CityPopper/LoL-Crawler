@@ -55,6 +55,7 @@ from lol_ui.stats_helpers import (
     _current_split,
     _stats_table,
 )
+from lol_ui.tabs import _tab_js, _tabbed_match_detail
 from lol_ui.tilt import _streak_indicator, _tilt_banner_html
 
 _log = get_logger("ui")
@@ -318,19 +319,25 @@ async def _build_stats_response(
     history_html = _match_history_section(puuid, region, riot_id)
     safe_name = html.escape(f"{game_name}#{tag_line}")
     heading = f"Stats for {safe_name}{priority_html}"
+
+    # Two-column layout: sidebar (profile+rank+champions) | main (tilt+history)
+    sidebar_html = (
+        '<div class="stats-sidebar">'
+        + profile_html
+        + playstyle_html
+        + rank_html
+        + rank_hist_html
+        + api_html
+        + "</div>"
+    )
+    main_html = '<div class="stats-main">' + tilt_html + history_html + "</div>"
+    layout_html = '<div class="stats-layout">' + sidebar_html + main_html + "</div>"
+
     return HTMLResponse(
         _stats_form(
             heading,
             "success",
-            (
-                profile_html
-                + playstyle_html
-                + rank_html
-                + rank_hist_html
-                + tilt_html
-                + api_html
-                + history_html
-            ),
+            layout_html,
             selected_region=region,
             value=riot_id,
         )
@@ -502,7 +509,8 @@ async def match_detail(request: Request) -> HTMLResponse:  # noqa: C901
         version,
     )
 
-    return HTMLResponse(
+    # -- Assemble tab content --
+    overview_html = (
         f'<div class="match-detail__team">'
         f'<div class="match-detail__team-label match-detail__team-label--blue">'
         f"Blue Team</div>"
@@ -511,5 +519,27 @@ async def match_detail(request: Request) -> HTMLResponse:  # noqa: C901
         f'<div class="match-detail__team-label match-detail__team-label--red">'
         f"Red Team</div>"
         f"{red_html}</div>"
-        f"{builds_html}"
     )
+    build_tab_html = (
+        builds_html
+        if builds_html
+        else ('<p class="warning">Build data unavailable for this match.</p>')
+    )
+    team_tab_html = '<p class="warning">Team analysis coming soon.</p>'
+    ai_tab_html = '<p class="warning">AI Score coming soon.</p>'
+
+    cfg: Config = request.app.state.cfg
+    has_timeline = cfg.fetch_timeline
+    timeline_tab_html = (
+        '<p class="warning">Timeline data unavailable for this match.</p>' if has_timeline else ""
+    )
+
+    tabbed = _tabbed_match_detail(
+        overview_html=overview_html,
+        build_html=build_tab_html,
+        team_html=team_tab_html,
+        ai_html=ai_tab_html,
+        timeline_html=timeline_tab_html,
+        has_timeline=has_timeline,
+    )
+    return HTMLResponse(tabbed + _tab_js())

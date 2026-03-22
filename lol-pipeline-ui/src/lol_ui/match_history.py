@@ -123,7 +123,10 @@ function toggleMatchDetail(row) {{
     .then(function(r) {{
       if (!r.ok) throw new Error('HTTP ' + r.status); return r.text();
     }})
-    .then(function(h) {{ detail.innerHTML = h; }})
+    .then(function(h) {{
+      detail.innerHTML = h;
+      if (typeof initMatchTabs==='function') initMatchTabs(detail);
+    }})
     .catch(function() {{
       detail.innerHTML = '<p class="error">Failed to load details</p>';
     }});
