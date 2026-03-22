@@ -78,15 +78,28 @@ async def _handle_with_retry(  # noqa: PLR0913
                 count,
                 extra={"msg_id": msg_id},
             )
-            await nack_to_dlq(
-                r,
-                envelope,
-                failure_code="handler_crash",
-                failed_by="run_consumer",
-                original_message_id=msg_id,
-            )
-            await ack(r, stream, group, msg_id)
-            await _clear_retry(r, stream, msg_id)
+            try:
+                await nack_to_dlq(
+                    r,
+                    envelope,
+                    failure_code="handler_crash",
+                    failed_by="run_consumer",
+                    original_message_id=msg_id,
+                )
+                await ack(r, stream, group, msg_id)
+                await _clear_retry(r, stream, msg_id)
+            except Exception:
+                log.exception(
+                    "nack_to_dlq failed — ACKing to prevent infinite retry loop",
+                    extra={"msg_id": msg_id},
+                )
+                try:
+                    await ack(r, stream, group, msg_id)
+                except Exception:
+                    log.exception(
+                        "emergency ACK also failed — message stuck in PEL",
+                        extra={"msg_id": msg_id},
+                    )
         else:
             log.exception(
                 "handler error (%d/%d) [%s]",

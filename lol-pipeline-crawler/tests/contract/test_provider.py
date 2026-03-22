@@ -44,6 +44,9 @@ def test_crawler__produces_match_id__passes_envelope_schema():
         "attempts": restored.attempts,
         "max_attempts": restored.max_attempts,
         "enqueued_at": restored.enqueued_at,
+        "dlq_attempts": restored.dlq_attempts,
+        "priority": restored.priority,
+        "correlation_id": restored.correlation_id,
     }
     validate(instance=document, schema=schema)
 

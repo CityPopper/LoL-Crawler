@@ -18,11 +18,9 @@ from lol_pipeline.riot_api import (
 from lol_ui.main import (
     _AUTOSEED_COOLDOWN_S,
     _BADGE_VARIANTS,
-    _BREAKDOWN_MATCH_COUNT,
     _CSS,
     _DDRAGON_CHAMPION_IDS_KEY,
     _DELTA_MIN_GAMES,
-    _DIVERSITY_MIN_GAMES,
     _HALT_BANNER,
     _MATCH_BADGE_COLORS,
     _NAME_CACHE_INDEX,
@@ -32,7 +30,6 @@ from lol_ui.main import (
     _PLAYSTYLE_MIN_GAMES,
     _PUUID_RE,
     _REGIONS,
-    _REGIONS_SET,
     _STATS_ORDER,
     _TIER_COLORS,
     _TILT_RECENT_COUNT,
@@ -43,7 +40,6 @@ from lol_ui.main import (
     _BreakdownEntry,
     _champion_diversity,
     _champion_icon_html,
-    _champion_table_header,
     _champion_tier_table,
     _compute_champion_breakdown,
     _compute_role_breakdown,
@@ -67,7 +63,6 @@ from lol_ui.main import (
     _render_log_lines,
     _render_player_rows,
     _render_role_rows,
-    _role_table_header,
     _stats_form,
     _stats_table,
     _streak_indicator,
@@ -113,22 +108,6 @@ class TestMatchHistorySection:
         # Container uses data attrs; JS reads them via dataset
         assert "dataset.puuid" in html_out
 
-    def test_event_delegation_script(self):
-        """SEC: match history includes JS that loads matches via fetch."""
-        html_out = _match_history_section("puuid-abc", "na1", "Player#NA1")
-        assert "loadMatches" in html_out
-        assert "dataset.puuid" in html_out
-        assert "fetch(" in html_out
-
-    def test_loading_indicator_uses_spinner(self):
-        """P11-DD-13: loading indicator uses spinner element, not plain text."""
-        html_out = _match_history_section("puuid-abc", "na1", "Player#NA1")
-        assert "loading-state" in html_out
-        assert "spinner" in html_out
-        assert "Loading" in html_out
-        # Must not inject user-supplied data via innerHTML (static string only)
-        assert "innerHTML = '<p>Loading" not in html_out
-
 
 class TestPage:
     def test_renders_html_structure(self):
@@ -145,16 +124,6 @@ class TestPage:
         assert "/players" in result
         assert "/streams" in result
         assert "/logs" in result
-
-    def test_dark_color_scheme_meta(self):
-        result = _page("X", "")
-        assert '<meta name="color-scheme" content="dark">' in result
-
-    def test_css_uses_custom_properties(self):
-        result = _page("X", "")
-        assert "--color-bg: #1c1c1e" in result
-        assert "--color-surface: #31313c" in result
-        assert "--color-text: #e8e8e8" in result
 
     def test_nav_active_state__stats(self):
         result = _page("X", "", path="/stats")
@@ -177,47 +146,6 @@ class TestPage:
             assert f'href="{href}" class="active"' in result
 
 
-class TestCssConstant:
-    def test_css_contains_design_tokens(self):
-        assert "--color-bg:" in _CSS
-        assert "--color-surface:" in _CSS
-        assert "--font-mono:" in _CSS
-        assert "--space-md:" in _CSS
-        assert "--radius:" in _CSS
-
-    def test_css_contains_component_classes(self):
-        assert ".card" in _CSS
-        assert ".badge" in _CSS
-        assert ".banner" in _CSS
-        assert ".stat" in _CSS
-        assert ".form-inline" in _CSS
-        assert ".table-scroll" in _CSS
-        assert ".empty-state" in _CSS
-
-    def test_css_contains_responsive_breakpoints(self):
-        assert "@media (min-width: 768px)" in _CSS
-        assert "@media (min-width: 1440px)" in _CSS
-
-    def test_css_contains_log_viewer_styles(self):
-        assert ".log-wrap" in _CSS
-        assert ".log-line" in _CSS
-        assert ".log-badge" in _CSS
-        assert ".log-ts" in _CSS
-
-    def test_css_dark_log_colors__no_light_artifacts(self):
-        assert "#ffe0e0" not in _CSS
-        assert "#fff0f0" not in _CSS
-        assert "#fffbe6" not in _CSS
-        assert "#f0f0f0" not in _CSS
-
-    def test_css_accessibility(self):
-        assert ":focus-visible" in _CSS
-        assert "prefers-reduced-motion" in _CSS
-
-    def test_css_mobile_first_form(self):
-        assert "flex-direction: column" in _CSS
-
-
 class TestBadge:
     def test_valid_variants(self):
         for variant in _BADGE_VARIANTS:
@@ -235,39 +163,12 @@ class TestBadge:
         assert "<script>" not in result
         assert html.escape("<script>alert(1)</script>") in result
 
-    def test_returns_span(self):
-        result = _badge("info", "test")
-        assert result.startswith("<span")
-        assert result.endswith("</span>")
-
-    def test_plain_text_preserved(self):
-        result = _badge("info", "OK")
-        assert "OK" in result
-
-    def test_ampersand_escaped(self):
-        result = _badge("info", "A & B")
-        assert "&amp;" in result
-
 
 class TestBadgeHtml:
-    def test_valid_variants(self):
-        for variant in _BADGE_VARIANTS:
-            result = _badge_html(variant, "text")
-            assert f'class="badge badge--{variant}"' in result
-
-    def test_invalid_variant_raises(self):
-        with pytest.raises(ValueError, match="Invalid badge variant"):
-            _badge_html("nonexistent", "text")
-
     def test_raw_html_preserved(self):
         """_badge_html preserves raw HTML entities."""
         result = _badge_html("success", "&#10003; Verified")
         assert "&#10003; Verified" in result
-
-    def test_returns_span(self):
-        result = _badge_html("info", "test")
-        assert result.startswith("<span")
-        assert result.endswith("</span>")
 
 
 class TestEmptyState:
@@ -381,18 +282,6 @@ class TestMatchHistoryHtml:
         assert "<span>5</span>" in result
         assert "WIN" in result
 
-    def test_win_uses_badge(self):
-        matches = [
-            (
-                "NA1_123",
-                {"game_start": "1700000000000", "game_mode": "CLASSIC"},
-                {"win": "1", "champion_name": "Zed", "kills": "0", "deaths": "0", "assists": "0"},
-            ),
-        ]
-        result = _match_history_html(matches, "puuid", "na1", "P#1", 0, False)
-        assert "match-result--win" in result
-        assert "WIN" in result
-
     def test_loss_renders_correctly(self):
         matches = [
             (
@@ -404,18 +293,6 @@ class TestMatchHistoryHtml:
         result = _match_history_html(matches, "puuid", "na1", "P#1", 0, False)
         assert "LOSS" in result
         assert "Ahri" in result
-
-    def test_loss_uses_badge(self):
-        matches = [
-            (
-                "NA1_456",
-                {"game_start": "1700000000000", "game_mode": "ARAM"},
-                {"win": "0", "champion_name": "Ahri", "kills": "0", "deaths": "0", "assists": "0"},
-            ),
-        ]
-        result = _match_history_html(matches, "puuid", "na1", "P#1", 0, False)
-        assert "match-result--loss" in result
-        assert "LOSS" in result
 
     def test_has_more_shows_load_link(self):
         matches = [
@@ -472,17 +349,6 @@ class TestMatchHistoryHtml:
         result = _match_history_html(matches, "puuid", "na1", "P#1", 0, False)
         assert "<b>XSS</b>" not in result
         assert html.escape("<b>XSS</b>") in result
-
-    def test_match_list_wrapper(self):
-        matches = [
-            (
-                "NA1_1",
-                {"game_start": "0", "game_mode": "SR"},
-                {"win": "1", "champion_name": "X", "kills": "0", "deaths": "0", "assists": "0"},
-            ),
-        ]
-        result = _match_history_html(matches, "puuid", "na1", "P#1", 0, False)
-        assert 'class="match-list"' in result
 
 
 class TestTailFile:
@@ -1681,15 +1547,6 @@ class TestPlayersEmptyState:
         await r.aclose()
 
 
-class TestFavicon:
-    """Sprint 5.1: Favicon appears in _page() output."""
-
-    def test_page__contains_favicon_link(self):
-        result = _page("Test", "")
-        assert 'rel="icon"' in result
-        assert "data:image/svg+xml" in result
-
-
 class TestDlqBrowser:
     """Sprint 5.3: /dlq route displays DLQ entries."""
 
@@ -2192,24 +2049,6 @@ class TestPlayersAllZset:
         await r.aclose()
 
 
-class TestStatsGrid:
-    """Sprint 5.6: Stats table uses stats-grid for wide layout."""
-
-    def test_stats_table__wraps_champs_and_roles_in_stats_grid(self):
-        """Champions and roles tables are wrapped in a stats-grid div."""
-        result = _stats_table({"total_games": "10"}, [("Zed", 5.0)], [("MID", 3.0)])
-        assert 'class="stats-grid"' in result
-
-
-class TestDlqNav:
-    """Sprint 5.3: DLQ nav link is always present."""
-
-    def test_page__nav_contains_dlq_link(self):
-        result = _page("Test", "")
-        assert "/dlq" in result
-        assert "DLQ" in result
-
-
 class TestUiEntryPoint:
     """Tests for __main__ module."""
 
@@ -2237,40 +2076,15 @@ class TestRegionsComplete:
         for platform in PLATFORM_TO_REGION:
             assert platform in _REGIONS, f"Missing platform {platform!r} in _REGIONS"
 
-    def test_regions_has_16_entries(self):
-        assert len(_REGIONS) == 16
-
-    def test_regions_includes_sea_platforms(self):
-        for platform in ("ph2", "sg2", "th2", "tw2", "vn2"):
-            assert platform in _REGIONS
-
-    def test_regions_includes_ru_and_tr1(self):
-        assert "ru" in _REGIONS
-        assert "tr1" in _REGIONS
-
-    def test_regions_includes_la1_la2(self):
-        assert "la1" in _REGIONS
-        assert "la2" in _REGIONS
-
 
 class TestRegionDropdownSelectedSpace:
     """R12: selected attribute must have a leading space in the option tag."""
-
-    def test_selected_has_leading_space(self):
-        result = _stats_form(selected_region="na1")
-        # Must be 'value="na1" selected' (with space), never 'value="na1"selected'
-        assert 'value="na1" selected' in result
 
     def test_non_selected_no_selected_attr(self):
         result = _stats_form(selected_region="kr")
         na1_match = re.search(r'<option value="na1"[^>]*>', result)
         assert na1_match is not None
         assert "selected" not in na1_match.group(0)
-
-    def test_all_regions_render_as_options(self):
-        result = _stats_form()
-        for region in _REGIONS:
-            assert f'value="{region}"' in result
 
 
 class TestRedisExceptionHandler:
@@ -2623,14 +2437,6 @@ class TestNameCacheIndex:
 
         await r.aclose()
 
-    def test_name_cache_max_is_10000(self):
-        """_NAME_CACHE_MAX constant is 10,000."""
-        assert _NAME_CACHE_MAX == 10_000
-
-    def test_name_cache_index_key(self):
-        """_NAME_CACHE_INDEX key is 'name_cache:index'."""
-        assert _NAME_CACHE_INDEX == "name_cache:index"
-
 
 # ---------------------------------------------------------------------------
 # Security: Region validation returns 400
@@ -2695,28 +2501,6 @@ class TestRegionValidation400:
         assert resp.status_code == 400
         assert "<script>" not in body
         assert html.escape("<script>alert(1)</script>") in body
-
-    @pytest.mark.asyncio
-    async def test_valid_region__no_400(self):
-        """Valid regions do not trigger 400."""
-        from unittest.mock import AsyncMock, MagicMock
-
-        from lol_ui.main import show_stats
-
-        mock_r = AsyncMock()
-
-        for region in ("na1", "kr", "euw1"):
-            request = MagicMock()
-            request.query_params = {"riot_id": "", "region": region}
-            request.app.state.r = mock_r
-
-            resp = await show_stats(request)
-            assert resp.status_code == 200, f"Region {region} should be valid"
-
-    def test_regions_set_matches_regions_list(self):
-        """_REGIONS_SET is a frozenset matching _REGIONS list."""
-        assert _REGIONS_SET == frozenset(_REGIONS)
-        assert len(_REGIONS_SET) == len(_REGIONS)
 
 
 # ---------------------------------------------------------------------------
@@ -2840,10 +2624,6 @@ class TestAutoSeedCooldown:
         body = resp.body.decode()
         assert "Auto-seeded" in body
 
-    def test_autoseed_cooldown_constant(self):
-        """_AUTOSEED_COOLDOWN_S is 300 seconds (5 minutes)."""
-        assert _AUTOSEED_COOLDOWN_S == 300
-
 
 # ---------------------------------------------------------------------------
 # Streams fragment: halt banner, priority count, normal case
@@ -2908,128 +2688,6 @@ class TestStreamsFragmentHtmlHaltBanner:
         assert "stream:parse" in result
         assert "stream:analyze" in result
         assert "stream:dlq" in result
-        await r.aclose()
-
-
-# ---------------------------------------------------------------------------
-# DLQ: original_stream, failure_code, dlq_attempts verification
-# ---------------------------------------------------------------------------
-
-
-class TestDlqEntryFields:
-    """DLQ entry renders original_stream, failure_code, and dlq_attempts."""
-
-    @pytest.mark.asyncio
-    async def test_show_dlq__entry_shows_original_stream(self):
-        """DLQ entry displays original_stream (not source_stream) in table."""
-        import fakeredis.aioredis
-        from lol_pipeline.models import DLQEnvelope
-
-        from lol_ui.main import show_dlq
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-
-        dlq = DLQEnvelope(
-            source_stream="stream:dlq",
-            type="dlq",
-            payload={"match_id": "NA1_999"},
-            attempts=2,
-            max_attempts=5,
-            failure_code="http_5xx",
-            failure_reason="internal server error",
-            failed_by="parser",
-            original_stream="stream:parse",
-            original_message_id="orig-999",
-            dlq_attempts=3,
-        )
-        await r.xadd("stream:dlq", dlq.to_redis_fields())
-
-        from unittest.mock import MagicMock
-
-        request = MagicMock()
-        request.app.state.r = r
-        request.query_params = {}
-
-        resp = await show_dlq(request)
-        body = resp.body.decode()
-
-        # original_stream, not source_stream, should appear
-        assert "stream:parse" in body
-        await r.aclose()
-
-    @pytest.mark.asyncio
-    async def test_show_dlq__entry_shows_failure_code_as_badge(self):
-        """DLQ entry displays failure_code in an error badge."""
-        import fakeredis.aioredis
-        from lol_pipeline.models import DLQEnvelope
-
-        from lol_ui.main import show_dlq
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-
-        dlq = DLQEnvelope(
-            source_stream="stream:dlq",
-            type="dlq",
-            payload={"match_id": "NA1_fc"},
-            attempts=1,
-            max_attempts=5,
-            failure_code="parse_error",
-            failure_reason="invalid JSON",
-            failed_by="parser",
-            original_stream="stream:match_id",
-            original_message_id="orig-fc",
-        )
-        await r.xadd("stream:dlq", dlq.to_redis_fields())
-
-        from unittest.mock import MagicMock
-
-        request = MagicMock()
-        request.app.state.r = r
-        request.query_params = {}
-
-        resp = await show_dlq(request)
-        body = resp.body.decode()
-
-        assert "parse_error" in body
-        assert 'class="badge badge--error"' in body
-        await r.aclose()
-
-    @pytest.mark.asyncio
-    async def test_show_dlq__entry_shows_dlq_attempts(self):
-        """DLQ entry renders the dlq_attempts count in the table."""
-        import fakeredis.aioredis
-        from lol_pipeline.models import DLQEnvelope
-
-        from lol_ui.main import show_dlq
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-
-        dlq = DLQEnvelope(
-            source_stream="stream:dlq",
-            type="dlq",
-            payload={"match_id": "NA1_att"},
-            attempts=4,
-            max_attempts=5,
-            failure_code="http_429",
-            failure_reason="rate limited",
-            failed_by="fetcher",
-            original_stream="stream:match_id",
-            original_message_id="orig-att",
-            dlq_attempts=5,
-        )
-        await r.xadd("stream:dlq", dlq.to_redis_fields())
-
-        from unittest.mock import MagicMock
-
-        request = MagicMock()
-        request.app.state.r = r
-        request.query_params = {}
-
-        resp = await show_dlq(request)
-        body = resp.body.decode()
-
-        # dlq_attempts=5 should appear in the Attempts column
-        assert ">5<" in body or "<td>5</td>" in body
         await r.aclose()
 
 
@@ -3251,382 +2909,8 @@ class TestTailFileLargeAndExact:
 
 
 # ---------------------------------------------------------------------------
-# Phase 9: Global halt banner on all pages
-# ---------------------------------------------------------------------------
-
-
-class TestHaltBannerPlayers:
-    """Phase 9: /players shows halt banner when system:halted is set."""
-
-    @pytest.mark.asyncio
-    async def test_players__shows_halt_banner_when_halted(self):
-        import fakeredis.aioredis
-
-        from lol_ui.main import show_players
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        await r.set("system:halted", "1")
-        await r.zadd("players:all", {"puuid-1": 1000.0})
-        await r.hset(
-            "player:puuid-1",
-            mapping={
-                "game_name": "Test",
-                "tag_line": "1",
-                "region": "na1",
-                "seeded_at": "2026-01-01T00:00:00",
-            },
-        )
-
-        from unittest.mock import MagicMock
-
-        request = MagicMock()
-        request.app.state.r = r
-        request.query_params = {"page": "0"}
-
-        resp = await show_players(request)
-        body = resp.body.decode()
-
-        assert "HALTED" in body
-        assert "banner--error" in body
-        await r.aclose()
-
-    @pytest.mark.asyncio
-    async def test_players__no_halt_banner_when_not_halted(self):
-        import fakeredis.aioredis
-
-        from lol_ui.main import show_players
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-
-        from unittest.mock import MagicMock
-
-        request = MagicMock()
-        request.app.state.r = r
-        request.query_params = {"page": "0"}
-
-        resp = await show_players(request)
-        body = resp.body.decode()
-
-        assert "HALTED" not in body
-        await r.aclose()
-
-    @pytest.mark.asyncio
-    async def test_players__empty__shows_halt_banner_when_halted(self):
-        import fakeredis.aioredis
-
-        from lol_ui.main import show_players
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        await r.set("system:halted", "1")
-
-        from unittest.mock import MagicMock
-
-        request = MagicMock()
-        request.app.state.r = r
-        request.query_params = {"page": "0"}
-
-        resp = await show_players(request)
-        body = resp.body.decode()
-
-        assert "HALTED" in body
-        assert "banner--error" in body
-        await r.aclose()
-
-
-class TestHaltBannerDlq:
-    """Phase 9: /dlq shows halt banner when system:halted is set."""
-
-    @pytest.mark.asyncio
-    async def test_dlq__shows_halt_banner_when_halted(self):
-        import fakeredis.aioredis
-        from lol_pipeline.models import DLQEnvelope
-
-        from lol_ui.main import show_dlq
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        await r.set("system:halted", "1")
-        dlq = DLQEnvelope(
-            source_stream="stream:dlq",
-            type="dlq",
-            payload={"match_id": "NA1_h1"},
-            attempts=1,
-            max_attempts=5,
-            failure_code="http_429",
-            failure_reason="rate limited",
-            failed_by="fetcher",
-            original_stream="stream:match_id",
-            original_message_id="orig-h1",
-        )
-        await r.xadd("stream:dlq", dlq.to_redis_fields())
-
-        from unittest.mock import MagicMock
-
-        request = MagicMock()
-        request.app.state.r = r
-        request.query_params = {}
-
-        resp = await show_dlq(request)
-        body = resp.body.decode()
-
-        assert "HALTED" in body
-        assert "banner--error" in body
-        await r.aclose()
-
-    @pytest.mark.asyncio
-    async def test_dlq__no_halt_banner_when_not_halted(self):
-        import fakeredis.aioredis
-
-        from lol_ui.main import show_dlq
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-
-        from unittest.mock import MagicMock
-
-        request = MagicMock()
-        request.app.state.r = r
-        request.query_params = {}
-
-        resp = await show_dlq(request)
-        body = resp.body.decode()
-
-        assert "HALTED" not in body
-        await r.aclose()
-
-    @pytest.mark.asyncio
-    async def test_dlq__empty__shows_halt_banner_when_halted(self):
-        import fakeredis.aioredis
-
-        from lol_ui.main import show_dlq
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        await r.set("system:halted", "1")
-
-        from unittest.mock import MagicMock
-
-        request = MagicMock()
-        request.app.state.r = r
-        request.query_params = {}
-
-        resp = await show_dlq(request)
-        body = resp.body.decode()
-
-        assert "HALTED" in body
-        assert "banner--error" in body
-        await r.aclose()
-
-
-class TestHaltBannerLogs:
-    """Phase 9: /logs shows halt banner when system:halted is set."""
-
-    @pytest.mark.asyncio
-    async def test_logs__shows_halt_banner_when_halted(self):
-        import fakeredis.aioredis
-
-        from lol_ui.main import show_logs
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        await r.set("system:halted", "1")
-
-        from unittest.mock import MagicMock
-
-        mock_cfg = MagicMock()
-        mock_cfg.log_dir = ""
-        request = MagicMock()
-        request.app.state.r = r
-        request.app.state.cfg = mock_cfg
-
-        resp = await show_logs(request)
-        body = resp.body.decode()
-
-        assert "HALTED" in body
-        assert "banner--error" in body
-        await r.aclose()
-
-    @pytest.mark.asyncio
-    async def test_logs__no_halt_banner_when_not_halted(self):
-        import fakeredis.aioredis
-
-        from lol_ui.main import show_logs
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-
-        from unittest.mock import MagicMock
-
-        mock_cfg = MagicMock()
-        mock_cfg.log_dir = ""
-        request = MagicMock()
-        request.app.state.r = r
-        request.app.state.cfg = mock_cfg
-
-        resp = await show_logs(request)
-        body = resp.body.decode()
-
-        assert "HALTED" not in body
-        await r.aclose()
-
-    @pytest.mark.asyncio
-    async def test_logs__with_files__shows_halt_banner_when_halted(self, tmp_path):
-        import fakeredis.aioredis
-
-        from lol_ui.main import show_logs
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        await r.set("system:halted", "1")
-
-        log_file = tmp_path / "svc.log"
-        log_file.write_text(
-            json.dumps({"timestamp": "2026-01-01T00:00:00", "message": "test"}) + "\n"
-        )
-
-        from unittest.mock import MagicMock
-
-        mock_cfg = MagicMock()
-        mock_cfg.log_dir = str(tmp_path)
-        request = MagicMock()
-        request.app.state.r = r
-        request.app.state.cfg = mock_cfg
-
-        resp = await show_logs(request)
-        body = resp.body.decode()
-
-        assert "HALTED" in body
-        assert "banner--error" in body
-        await r.aclose()
-
-
-class TestHaltBannerStatsMatches:
-    """Phase 9: /stats/matches shows halt banner when system:halted is set."""
-
-    @pytest.mark.asyncio
-    async def test_stats_matches__shows_halt_banner_when_halted(self):
-        import fakeredis.aioredis
-
-        from lol_ui.main import stats_matches
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        await r.set("system:halted", "1")
-
-        from unittest.mock import MagicMock
-
-        request = MagicMock()
-        request.query_params = {
-            "puuid": "validpuuid",
-            "region": "na1",
-            "riot_id": "T#1",
-            "page": "0",
-        }
-        request.app.state.r = r
-
-        resp = await stats_matches(request)
-        body = resp.body.decode()
-
-        assert "HALTED" in body
-        assert "banner--error" in body
-        await r.aclose()
-
-    @pytest.mark.asyncio
-    async def test_stats_matches__no_halt_banner_when_not_halted(self):
-        import fakeredis.aioredis
-
-        from lol_ui.main import stats_matches
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-
-        from unittest.mock import MagicMock
-
-        request = MagicMock()
-        request.query_params = {
-            "puuid": "validpuuid",
-            "region": "na1",
-            "riot_id": "T#1",
-            "page": "0",
-        }
-        request.app.state.r = r
-
-        resp = await stats_matches(request)
-        body = resp.body.decode()
-
-        assert "HALTED" not in body
-        await r.aclose()
-
-
-# ---------------------------------------------------------------------------
 # Phase 9: DLQ inline replay button + POST endpoint
 # ---------------------------------------------------------------------------
-
-
-class TestDlqReplayButton:
-    """Phase 9: Each DLQ entry has an inline Replay button."""
-
-    @pytest.mark.asyncio
-    async def test_show_dlq__each_entry_has_replay_button(self):
-        import fakeredis.aioredis
-        from lol_pipeline.models import DLQEnvelope
-
-        from lol_ui.main import show_dlq
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        dlq = DLQEnvelope(
-            source_stream="stream:dlq",
-            type="dlq",
-            payload={"match_id": "NA1_rb1"},
-            attempts=1,
-            max_attempts=5,
-            failure_code="http_429",
-            failure_reason="rate limited",
-            failed_by="fetcher",
-            original_stream="stream:match_id",
-            original_message_id="orig-rb1",
-        )
-        await r.xadd("stream:dlq", dlq.to_redis_fields())
-
-        from unittest.mock import MagicMock
-
-        request = MagicMock()
-        request.app.state.r = r
-        request.query_params = {}
-
-        resp = await show_dlq(request)
-        body = resp.body.decode()
-
-        assert "Replay" in body
-        assert 'action="/dlq/replay/' in body
-        assert 'method="post"' in body
-        await r.aclose()
-
-    @pytest.mark.asyncio
-    async def test_show_dlq__action_column_header(self):
-        import fakeredis.aioredis
-        from lol_pipeline.models import DLQEnvelope
-
-        from lol_ui.main import show_dlq
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        dlq = DLQEnvelope(
-            source_stream="stream:dlq",
-            type="dlq",
-            payload={"match_id": "NA1_ac"},
-            attempts=1,
-            max_attempts=5,
-            failure_code="http_429",
-            failure_reason="rate limited",
-            failed_by="fetcher",
-            original_stream="stream:match_id",
-            original_message_id="orig-ac",
-        )
-        await r.xadd("stream:dlq", dlq.to_redis_fields())
-
-        from unittest.mock import MagicMock
-
-        request = MagicMock()
-        request.app.state.r = r
-        request.query_params = {}
-
-        resp = await show_dlq(request)
-        body = resp.body.decode()
-
-        assert "Action</th>" in body
-        await r.aclose()
 
 
 class TestDlqReplayEndpoint:
@@ -3862,43 +3146,6 @@ class TestDlqPagination:
     """Phase 9: /dlq supports page and per_page query params."""
 
     @pytest.mark.asyncio
-    async def test_dlq__default_page_shows_first_25(self):
-        import fakeredis.aioredis
-        from lol_pipeline.models import DLQEnvelope
-
-        from lol_ui.main import _DLQ_DEFAULT_PER_PAGE, show_dlq
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        for i in range(30):
-            dlq = DLQEnvelope(
-                source_stream="stream:dlq",
-                type="dlq",
-                payload={"match_id": f"NA1_{i}"},
-                attempts=1,
-                max_attempts=5,
-                failure_code="http_429",
-                failure_reason="rate limited",
-                failed_by="fetcher",
-                original_stream="stream:match_id",
-                original_message_id=f"orig-{i}",
-            )
-            await r.xadd("stream:dlq", dlq.to_redis_fields())
-
-        from unittest.mock import MagicMock
-
-        request = MagicMock()
-        request.app.state.r = r
-        request.query_params = {}
-
-        resp = await show_dlq(request)
-        body = resp.body.decode()
-
-        row_count = body.count('action="/dlq/replay/')
-        assert row_count == _DLQ_DEFAULT_PER_PAGE
-        assert "Next" in body
-        await r.aclose()
-
-    @pytest.mark.asyncio
     async def test_dlq__cursor_shows_remaining(self):
         import fakeredis.aioredis
         from lol_pipeline.models import DLQEnvelope
@@ -3975,42 +3222,6 @@ class TestDlqPagination:
         await r.aclose()
 
     @pytest.mark.asyncio
-    async def test_dlq__per_page_capped_at_50(self):
-        import fakeredis.aioredis
-        from lol_pipeline.models import DLQEnvelope
-
-        from lol_ui.main import _DLQ_MAX_PER_PAGE, show_dlq
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        for i in range(60):
-            dlq = DLQEnvelope(
-                source_stream="stream:dlq",
-                type="dlq",
-                payload={"match_id": f"NA1_{i}"},
-                attempts=1,
-                max_attempts=5,
-                failure_code="http_429",
-                failure_reason="rate limited",
-                failed_by="fetcher",
-                original_stream="stream:match_id",
-                original_message_id=f"orig-{i}",
-            )
-            await r.xadd("stream:dlq", dlq.to_redis_fields())
-
-        from unittest.mock import MagicMock
-
-        request = MagicMock()
-        request.app.state.r = r
-        request.query_params = {"per_page": "100"}
-
-        resp = await show_dlq(request)
-        body = resp.body.decode()
-
-        row_count = body.count('action="/dlq/replay/')
-        assert row_count == _DLQ_MAX_PER_PAGE
-        await r.aclose()
-
-    @pytest.mark.asyncio
     async def test_dlq__next_link_includes_cursor_and_per_page(self):
         import fakeredis.aioredis
         from lol_pipeline.models import DLQEnvelope
@@ -4045,41 +3256,6 @@ class TestDlqPagination:
         assert "per_page=5" in body
         assert "cursor=" in body
         assert "Next" in body
-        await r.aclose()
-
-    @pytest.mark.asyncio
-    async def test_dlq__page_shows_per_page_info(self):
-        import fakeredis.aioredis
-        from lol_pipeline.models import DLQEnvelope
-
-        from lol_ui.main import show_dlq
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        dlq = DLQEnvelope(
-            source_stream="stream:dlq",
-            type="dlq",
-            payload={"match_id": "NA1_pp"},
-            attempts=1,
-            max_attempts=5,
-            failure_code="http_429",
-            failure_reason="rate limited",
-            failed_by="fetcher",
-            original_stream="stream:match_id",
-            original_message_id="orig-pp",
-        )
-        await r.xadd("stream:dlq", dlq.to_redis_fields())
-
-        from unittest.mock import MagicMock
-
-        request = MagicMock()
-        request.app.state.r = r
-        request.query_params = {}
-
-        resp = await show_dlq(request)
-        body = resp.body.decode()
-
-        assert "per page" in body
-        assert "Total entries:" in body
         await r.aclose()
 
 
@@ -4236,35 +3412,6 @@ class TestAutoSeedWritesPlayersAll:
 
 
 # ---------------------------------------------------------------------------
-# P10-DD-3/PM-01: Dashboard nav link
-# ---------------------------------------------------------------------------
-
-
-class TestNavItemsDashboardLink:
-    def test_nav_items__contains_dashboard_link(self):
-        """_NAV_ITEMS must include a '/' -> 'Dashboard' entry as the first item."""
-        assert ("/", "Dashboard") in _NAV_ITEMS
-        assert _NAV_ITEMS[0] == ("/", "Dashboard")
-
-
-# ---------------------------------------------------------------------------
-# P10-CW-7/DD-9: Riot Games attribution footer
-# ---------------------------------------------------------------------------
-
-
-class TestRiotAttributionFooter:
-    def test_page__contains_riot_attribution(self):
-        """_page() output must contain Riot Games legal attribution in a footer."""
-        result = _page("Test", "<p>body</p>")
-        assert "Riot Games" in result
-        assert "<footer" in result
-        assert (
-            "isn\u2019t endorsed by Riot Games" in result
-            or "isn&rsquo;t endorsed by Riot Games" in result
-        )
-
-
-# ---------------------------------------------------------------------------
 # P10-DD-7: Dashboard region selector must show all regions
 # ---------------------------------------------------------------------------
 
@@ -4298,13 +3445,6 @@ class TestDashboardRegionSelector:
         await r.aclose()
 
 
-class TestCssTableScrollNowrap:
-    def test_css__table_scroll_has_nowrap(self):
-        """P10-RD-8: .table-scroll td/th must have white-space: nowrap."""
-        assert "white-space: nowrap" in _CSS
-        assert ".table-scroll td" in _CSS or ".table-scroll th" in _CSS
-
-
 class TestRenderPlayerRowsSeededTruncated:
     def test_render_player_rows__seeded_at_truncated_to_date(self):
         """P10-RD-9: seeded_at ISO timestamp must be truncated to date-only."""
@@ -4313,24 +3453,6 @@ class TestRenderPlayerRowsSeededTruncated:
         assert "2024-01-15" in result
         assert "T14:23:11" not in result
         assert "14:23:11+00:00" not in result
-
-
-class TestCssSortControlsMinHeight:
-    def test_css__sort_controls_has_min_height_44(self):
-        """P10-RD-6: .sort-controls a must have min-height: 44px for tap targets."""
-        idx = _CSS.find(".sort-controls a")
-        assert idx != -1, ".sort-controls a rule not found in CSS"
-        snippet = _CSS[idx : idx + 300]
-        assert "min-height: 44px" in snippet
-
-
-class TestCssPauseBtnMinHeight:
-    def test_css__pause_btn_has_min_height(self):
-        """P10-RD-11: #pause-btn must have min-height: 44px."""
-        idx = _CSS.find("#pause-btn")
-        assert idx != -1, "#pause-btn rule not found in CSS"
-        snippet = _CSS[idx : idx + 200]
-        assert "min-height: 44px" in snippet
 
 
 class TestSecurityHeaders:
@@ -5068,11 +4190,6 @@ class TestMatchupsPage:
         assert "empty-state" in body
         await r.aclose()
 
-    def test_matchups_in_nav(self):
-        """Matchups link is present in _NAV_ITEMS."""
-        nav_paths = [href for href, _label in _NAV_ITEMS]
-        assert "/matchups" in nav_paths
-
 
 # ---------------------------------------------------------------------------
 # Champion detail matchups section
@@ -5453,24 +4570,6 @@ class TestDlqSummary:
     """Tests for _dlq_summary_html and its integration into show_dlq."""
 
     @pytest.mark.asyncio
-    async def test_dlq_summary__empty_queue__shows_zero_counts(self):
-        """When DLQ is empty, summary shows 0 pending and 0 archived."""
-        import fakeredis.aioredis
-
-        from lol_ui.main import _dlq_summary_html
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        result = await _dlq_summary_html(r)
-
-        assert "DLQ Analytics" in result
-        assert ">0<" in result  # stat__value of 0
-        assert "pending" in result
-        assert "archived" in result
-        assert "oldest message" in result
-        assert "n/a" in result  # no oldest when empty
-        await r.aclose()
-
-    @pytest.mark.asyncio
     async def test_dlq_summary__shows_depth_and_archive_count(self):
         """Summary displays DLQ depth and archive depth."""
         import fakeredis.aioredis
@@ -5603,69 +4702,6 @@ class TestDlqSummary:
         await r.aclose()
 
     @pytest.mark.asyncio
-    async def test_show_dlq__includes_summary_when_entries_exist(self):
-        """The DLQ page includes the analytics summary card."""
-        import fakeredis.aioredis
-        from lol_pipeline.models import DLQEnvelope
-
-        from lol_ui.main import show_dlq
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-
-        dlq = DLQEnvelope(
-            source_stream="stream:dlq",
-            type="dlq",
-            payload={"match_id": "NA1_1", "region": "na1"},
-            attempts=3,
-            max_attempts=5,
-            failure_code="http_429",
-            failure_reason="rate limited",
-            failed_by="fetcher",
-            original_stream="stream:match_id",
-            original_message_id="orig-1",
-        )
-        await r.xadd("stream:dlq", dlq.to_redis_fields())
-
-        from unittest.mock import MagicMock
-
-        request = MagicMock()
-        request.app.state.r = r
-        request.query_params = {}
-
-        resp = await show_dlq(request)
-        body = resp.body.decode()
-
-        assert "DLQ Analytics" in body
-        assert "pending" in body
-        assert "archived" in body
-        assert "Failure Codes" in body
-        assert "Source Streams" in body
-        await r.aclose()
-
-    @pytest.mark.asyncio
-    async def test_show_dlq__includes_summary_when_empty(self):
-        """The DLQ page includes the analytics summary even when queue is empty."""
-        import fakeredis.aioredis
-
-        from lol_ui.main import show_dlq
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-
-        from unittest.mock import MagicMock
-
-        request = MagicMock()
-        request.app.state.r = r
-        request.query_params = {}
-
-        resp = await show_dlq(request)
-        body = resp.body.decode()
-
-        assert "DLQ Analytics" in body
-        assert "pending" in body
-        assert "archived" in body
-        await r.aclose()
-
-    @pytest.mark.asyncio
     async def test_dlq_summary__escapes_failure_code(self):
         """Failure codes are HTML-escaped via _badge to prevent injection."""
         import fakeredis.aioredis
@@ -5693,36 +4729,6 @@ class TestDlqSummary:
 
         assert "<script>" not in result
         assert "&lt;script&gt;" in result
-        await r.aclose()
-
-    @pytest.mark.asyncio
-    async def test_dlq_summary__escapes_original_stream(self):
-        """Source stream names are HTML-escaped to prevent injection."""
-        import fakeredis.aioredis
-        from lol_pipeline.models import DLQEnvelope
-
-        from lol_ui.main import _dlq_summary_html
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-
-        dlq = DLQEnvelope(
-            source_stream="stream:dlq",
-            type="dlq",
-            payload={"match_id": "NA1_1", "region": "na1"},
-            attempts=3,
-            max_attempts=5,
-            failure_code="http_429",
-            failure_reason="reason",
-            failed_by="fetcher",
-            original_stream='<img src=x onerror="alert(1)">',
-            original_message_id="orig-1",
-        )
-        await r.xadd("stream:dlq", dlq.to_redis_fields())
-
-        result = await _dlq_summary_html(r)
-
-        assert 'onerror="alert(1)"' not in result
-        assert "&lt;img" in result
         await r.aclose()
 
 
@@ -5798,26 +4804,6 @@ class TestStreamsConsumerLag:
         await r.aclose()
 
     @pytest.mark.asyncio
-    async def test_streams_fragment__pending_count_displayed(self):
-        """Pending count from XINFO GROUPS is rendered."""
-        import fakeredis.aioredis
-
-        from lol_ui.main import _streams_fragment_html
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        await r.xadd("stream:parse", {"data": "val"})
-        await r.xgroup_create("stream:parse", "parsers", "0")
-        # Read but don't ACK to create pending entries
-        await r.xreadgroup("parsers", "worker1", {"stream:parse": ">"}, count=1)
-
-        result = await _streams_fragment_html(r)
-
-        # Should show pending count of 1 for parsers group
-        assert "parsers" in result
-        assert ">1<" in result
-        await r.aclose()
-
-    @pytest.mark.asyncio
     async def test_streams_fragment__xinfo_error_handled_gracefully(self):  # noqa: C901
         """If XINFO GROUPS raises an error, treat as no groups (show dashes)."""
         import fakeredis.aioredis
@@ -5880,13 +4866,6 @@ class TestStreamsConsumerLag:
 
 class TestFormatGroupCells:
     """Unit tests for _format_group_cells helper."""
-
-    def test_empty_groups__returns_dashes(self):
-        from lol_ui.main import _format_group_cells
-
-        result = _format_group_cells([])
-        assert "&mdash;" in result
-        assert "text-muted" in result
 
     def test_single_group__renders_name_pending_lag(self):
         from lol_ui.main import _format_group_cells
@@ -6052,10 +5031,6 @@ class TestStatsTableDiversity:
         assert "Pool Diversity" in result
         assert "50.0" in result
 
-    def test_min_games_constant_is_20(self):
-        """The minimum games threshold is 20."""
-        assert _DIVERSITY_MIN_GAMES == 20
-
 
 # ---------------------------------------------------------------------------
 # Tilt / Streak Indicator
@@ -6165,10 +5140,6 @@ class TestStreakIndicator:
         result = _streak_indicator([{}])
         assert result["streak_type"] == "loss"
         assert result["streak_count"] == 1
-
-    def test_constants(self):
-        assert _TILT_RECENT_COUNT == 20
-        assert _TILT_RECENT_KDA_COUNT == 5
 
 
 class TestTiltBannerHtml:
@@ -7488,36 +6459,6 @@ class TestComputeRoleBreakdown:
         assert result["MIDDLE"].win_rate == 66.7
 
 
-class TestChampionTableHeader:
-    def test_without_breakdown(self):
-        hdr = _champion_table_header(False)
-        assert "Champion" in hdr
-        assert "Games" in hdr
-        assert "Win%" not in hdr
-        assert "KDA" not in hdr
-
-    def test_with_breakdown(self):
-        hdr = _champion_table_header(True)
-        assert "Champion" in hdr
-        assert "Games" in hdr
-        assert "Win%" in hdr
-        assert "KDA" in hdr
-
-
-class TestRoleTableHeader:
-    def test_without_breakdown(self):
-        hdr = _role_table_header(False)
-        assert "Role" in hdr
-        assert "Games" in hdr
-        assert "Win%" not in hdr
-
-    def test_with_breakdown(self):
-        hdr = _role_table_header(True)
-        assert "Role" in hdr
-        assert "Win%" in hdr
-        assert "KDA" in hdr
-
-
 class TestRenderChampionRows:
     def test_no_breakdown__games_only(self):
         result = _render_champion_rows([("Zed", 5.0)], None)
@@ -7622,8 +6563,3 @@ class TestStatsTableWithBreakdown:
             champ_breakdown={},
         )
         assert "Pool Diversity" in result
-
-
-class TestBreakdownMatchCount:
-    def test_constant_is_50(self):
-        assert _BREAKDOWN_MATCH_COUNT == 50

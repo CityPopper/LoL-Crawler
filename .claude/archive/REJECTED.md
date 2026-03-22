@@ -106,3 +106,24 @@ Items scrapped during the orchestrate-think debate phase. Review agents **must r
 **Proposed**: Detect smurf accounts by comparing player performance metrics against rank-bracket expected values, flagging statistical outliers.
 **Rejected because**: Zero value for a solo user — you know if you are smurfing. Proper detection requires rank population distributions (per-rank average KDA, CS/min, win rate) that the pipeline does not collect (it stores individual `player:rank:{puuid}` hashes, not aggregate rank statistics). Without a reference population, "anomaly" is undefined. False positive risk is high (naturally improving players look identical to smurfs). The "smurf" label is loaded — if ever revisited, frame as "performance outlier" flags instead.
 **Do not re-propose**: "smurf detection", "anomaly detection system", "identify boosted accounts", "rank vs performance mismatch detector".
+
+---
+
+## [OT2-T1] 100% test coverage target
+**Proposed**: Achieve 100% line/branch coverage across all services.
+**Rejected because**: Diminishing returns past ~80%. Chasing 100% leads to brittle tests that assert on implementation details (HTML strings, log messages, internal method call order). These tests break on every refactor and provide no bug-catching value. The maintenance cost exceeds the marginal safety benefit.
+**Do not re-propose**: "100% coverage", "cover all branches", "no untested lines".
+
+---
+
+## [OT2-T2] Snapshot testing for HTML output
+**Proposed**: Use snapshot/golden-file testing to assert exact HTML output from UI route handlers.
+**Rejected because**: HTML structure changes frequently (new features, CSS changes, layout tweaks). Snapshot tests break on every UI change and require manual "update snapshot" commands. They test rendering, not behavior. The current approach of asserting on key content (champion names, badge classes, data attributes) is more resilient.
+**Do not re-propose**: "snapshot tests for HTML", "golden file testing for UI", "exact HTML comparison tests".
+
+---
+
+## [OT2-T3] Mock Redis in integration tests
+**Proposed**: Replace testcontainers Redis with fakeredis in integration tests for speed.
+**Rejected because**: Integration tests exist specifically to test against real Redis behavior (Lua scripting, consumer groups, XAUTOCLAIM, stream trimming). Fakeredis doesn't perfectly replicate all Redis semantics. The whole point of IT-01 through IT-12 is to catch issues that unit tests with fakeredis miss.
+**Do not re-propose**: "use fakeredis for integration tests", "mock Redis in integration tests", "remove testcontainers dependency".

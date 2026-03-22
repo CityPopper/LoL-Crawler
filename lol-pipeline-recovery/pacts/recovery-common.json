@@ -32,7 +32,8 @@
         "retry_after_ms": 61000,
         "original_stream": "stream:match_id",
         "original_message_id": "1704067200000-0",
-        "priority": "normal"
+        "priority": "normal",
+        "correlation_id": ""
       },
       "matchingRules": {
         "body": {
@@ -59,7 +60,8 @@
           "$.retry_after_ms": { "matchers": [ { "match": "integer" } ] },
           "$.original_stream": { "matchers": [ { "match": "type" } ] },
           "$.original_message_id": { "matchers": [ { "match": "type" } ] },
-          "$.priority": { "matchers": [ { "match": "regex", "regex": "^(manual_20|manual_20plus|auto_20|auto_new|high|normal)$" } ] }
+          "$.priority": { "matchers": [ { "match": "regex", "regex": "^(manual_20|manual_20plus|auto_20|auto_new|high|normal)$" } ] },
+          "$.correlation_id": { "matchers": [ { "match": "type" } ] }
         }
       },
       "metadata": { "contentType": "application/json" }
@@ -90,7 +92,8 @@
         "retry_after_ms": null,
         "original_stream": "stream:match_id",
         "original_message_id": "1704067200000-1",
-        "priority": "normal"
+        "priority": "normal",
+        "correlation_id": ""
       },
       "matchingRules": {
         "body": {
@@ -117,7 +120,8 @@
           "$.retry_after_ms": { "matchers": [ { "match": "null" } ] },
           "$.original_stream": { "matchers": [ { "match": "type" } ] },
           "$.original_message_id": { "matchers": [ { "match": "type" } ] },
-          "$.priority": { "matchers": [ { "match": "regex", "regex": "^(manual_20|manual_20plus|auto_20|auto_new|high|normal)$" } ] }
+          "$.priority": { "matchers": [ { "match": "regex", "regex": "^(manual_20|manual_20plus|auto_20|auto_new|high|normal)$" } ] },
+          "$.correlation_id": { "matchers": [ { "match": "type" } ] }
         }
       },
       "metadata": { "contentType": "application/json" }
@@ -148,7 +152,8 @@
         "retry_after_ms": null,
         "original_stream": "stream:match_id",
         "original_message_id": "1704067200000-2",
-        "priority": "normal"
+        "priority": "normal",
+        "correlation_id": ""
       },
       "matchingRules": {
         "body": {
@@ -166,7 +171,8 @@
           "$.retry_after_ms": { "matchers": [ { "match": "null" } ] },
           "$.original_stream": { "matchers": [ { "match": "type" } ] },
           "$.original_message_id": { "matchers": [ { "match": "type" } ] },
-          "$.priority": { "matchers": [ { "match": "regex", "regex": "^(manual_20|manual_20plus|auto_20|auto_new|high|normal)$" } ] }
+          "$.priority": { "matchers": [ { "match": "regex", "regex": "^(manual_20|manual_20plus|auto_20|auto_new|high|normal)$" } ] },
+          "$.correlation_id": { "matchers": [ { "match": "type" } ] }
         }
       },
       "metadata": { "contentType": "application/json" }
@@ -197,7 +203,8 @@
         "retry_after_ms": null,
         "original_stream": "stream:parse",
         "original_message_id": "1704067200000-3",
-        "priority": "normal"
+        "priority": "normal",
+        "correlation_id": ""
       },
       "matchingRules": {
         "body": {
@@ -215,7 +222,8 @@
           "$.retry_after_ms": { "matchers": [ { "match": "null" } ] },
           "$.original_stream": { "matchers": [ { "match": "type" } ] },
           "$.original_message_id": { "matchers": [ { "match": "type" } ] },
-          "$.priority": { "matchers": [ { "match": "regex", "regex": "^(manual_20|manual_20plus|auto_20|auto_new|high|normal)$" } ] }
+          "$.priority": { "matchers": [ { "match": "regex", "regex": "^(manual_20|manual_20plus|auto_20|auto_new|high|normal)$" } ] },
+          "$.correlation_id": { "matchers": [ { "match": "type" } ] }
         }
       },
       "metadata": { "contentType": "application/json" }
@@ -246,7 +254,8 @@
         "retry_after_ms": null,
         "original_stream": "stream:match_id",
         "original_message_id": "1704067200000-4",
-        "priority": "normal"
+        "priority": "normal",
+        "correlation_id": ""
       },
       "matchingRules": {
         "body": {
@@ -264,7 +273,8 @@
           "$.retry_after_ms": { "matchers": [ { "match": "null" } ] },
           "$.original_stream": { "matchers": [ { "match": "type" } ] },
           "$.original_message_id": { "matchers": [ { "match": "type" } ] },
-          "$.priority": { "matchers": [ { "match": "regex", "regex": "^(manual_20|manual_20plus|auto_20|auto_new|high|normal)$" } ] }
+          "$.priority": { "matchers": [ { "match": "regex", "regex": "^(manual_20|manual_20plus|auto_20|auto_new|high|normal)$" } ] },
+          "$.correlation_id": { "matchers": [ { "match": "type" } ] }
         }
       },
       "metadata": { "contentType": "application/json" }
