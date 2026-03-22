@@ -14,11 +14,13 @@ All application state lives in Redis. No other database.
 | `player:stats:lock:{puuid}`          | String     | 300s (`ANALYZER_LOCK_TTL_SECONDS`) | Worker ID; distributed lock for Analyzer              |
 | `player:champions:{puuid}`           | Sorted Set | 30d (`PLAYER_DATA_TTL_SECONDS`) | member=`champion_name`, score=games played on that champion |
 | `player:roles:{puuid}`               | Sorted Set | 30d (`PLAYER_DATA_TTL_SECONDS`) | member=`role`, score=games played in that role              |
-| `match:{match_id}`                   | Hash       | 7d (`MATCH_DATA_TTL_SECONDS`)   | `queue_id`, `game_mode`, `game_type`, `game_version`, `game_duration`, `game_start`, `platform_id`, `region`, `status` |
+| `match:{match_id}`                   | Hash       | 7d (`MATCH_DATA_TTL_SECONDS`)   | `queue_id`, `game_mode`, `game_type`, `game_version`, `patch`, `game_duration`, `game_start`, `platform_id`, `region`, `status` |
+| `match:participants:{match_id}`      | Set        | 7d (`MATCH_DATA_TTL_SECONDS`)   | PUUIDs of all participants in the match; written by Parser alongside participant hashes |
 | `match:status:parsed`                | Set        | 90d (hardcoded)           | Secondary index: match IDs with status=parsed (written by Parser) |
 | `match:status:failed`                | Set        | 90d (hardcoded)           | Secondary index: match IDs with status=failed (written by Recovery) |
-| `participant:{match_id}:{puuid}`     | Hash       | 7d (`MATCH_DATA_TTL_SECONDS`)   | `champion_id`, `champion_name`, `team_id`, `team_position`, `role`, `win`, `kills`, `deaths`, `assists`, `gold_earned`, `total_damage_dealt_to_champions`, `total_minions_killed`, `vision_score`, `items` |
+| `participant:{match_id}:{puuid}`     | Hash       | 7d (`MATCH_DATA_TTL_SECONDS`)   | Core: `champion_id`, `champion_name`, `team_id`, `team_position`, `role`, `win`, `kills`, `deaths`, `assists`, `gold_earned`, `gold_spent`, `total_damage_dealt_to_champions`, `total_minions_killed`, `vision_score`, `items`, `champion_level`, `time_played`; Damage breakdown: `physical_damage`, `magic_damage`, `true_damage`, `damage_taken`, `damage_mitigated`, `healing_done`; Vision: `wards_placed`, `wards_killed`, `detector_wards`; Jungle: `neutral_minions`, `turret_kills`; Multikills: `double_kills`, `triple_kills`, `quadra_kills`, `penta_kills`; Runes: `perk_keystone`, `perk_primary_style`, `perk_sub_style`; Summoners: `summoner1_id`, `summoner2_id`. Full field list: see `_queue_participant()` in `lol-pipeline-parser/src/lol_parser/main.py` |
 | `raw:match:{match_id}`               | String     | 24h (`RAW_STORE_TTL_SECONDS`)   | Raw match JSON blob; also persisted to disk when `MATCH_DATA_DIR` is set |
+| `raw:timeline:{match_id}`           | String     | 7d (`MATCH_DATA_TTL_SECONDS`)   | Raw timeline JSON blob; written by Fetcher when `FETCH_TIMELINE=true`, read by Parser |
 | `discover:players`                   | Sorted Set | none                      | member=`{puuid}:{region}`, score=most-recent `game_start` epoch ms; GT update semantics; capped at `MAX_DISCOVER_PLAYERS` |
 | `delayed:messages`                   | Sorted Set | none                      | member=serialized envelope, score=ready epoch ms            |
 | `player:name:{game_name}#{tag_line}` | String     | 86400s (24h)              | PUUID cache; maps lowercased Riot ID to PUUID               |
@@ -27,6 +29,7 @@ All application state lives in Redis. No other database.
 | `autoseed:cooldown:{puuid}`          | String     | 300s (hardcoded)          | Rate-limit key preventing repeated UI auto-seeds for same player |
 | `name_cache:index`                   | Sorted Set | none                      | LRU eviction index for `player:name:*` keys; capped at 10K entries |
 | `ddragon:version`                    | String     | 24h (hardcoded)           | Cached Data Dragon version string fetched by UI             |
+| `ddragon:champion_ids`              | String     | 24h (hardcoded)           | JSON mapping `{champion_numeric_id: champion_name}`; cached by UI from Data Dragon API (see `lol-pipeline-ui/src/lol_ui/ddragon.py`) |
 | `ratelimit:short`                    | Sorted Set | 1000ms                    | member=`req_id`, score=epoch ms; sliding 1s window          |
 | `ratelimit:long`                     | Sorted Set | 120000ms                  | member=`req_id`, score=epoch ms; sliding 2min window        |
 | `ratelimit:limits:short`             | String     | 1h (hardcoded)            | Dynamic 1s window limit from Riot API `X-App-Rate-Limit` header |

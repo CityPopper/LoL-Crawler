@@ -60,7 +60,7 @@ See `docs/SPRINT-PLAN.md` for full details.
 - [ ] S0: Add `t()` localization + theme CSS changes
 - [ ] S0: Update 04-storage.md
 - [ ] S0: Split admin service (945 lines → modules)
-- [ ] S0: Docs cleanup: remove duplicated content, link to source files instead
+- [ ] S0: Docs cleanup: remove duplicated content, link to source files instead; fix factual errors (polyrepo→monorepo in `01-overview.md`, XAUTOCLAIM contradiction in `03-streams.md`, `discovered:players`→`discover:players` in monitoring/troubleshooting docs, dead `docker-compose.prod.yml` references, admin README command list vs actual code)
 - [ ] S1: Extract gold timeline, team objectives, rune selections, kill events from parser
 - [ ] S2: Tabbed match detail + damage bars + team analysis + win rate donut + sticky layout
 - [ ] S3: Build tab (items, skills, runes, spells) + DDragon cache helper
