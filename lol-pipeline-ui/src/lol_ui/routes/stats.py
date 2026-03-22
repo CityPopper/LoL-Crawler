@@ -51,6 +51,7 @@ from lol_ui.kill_timeline import _kill_timeline_html
 from lol_ui.match_detail import _render_detail_player
 from lol_ui.match_history import _match_history_html, _match_history_section
 from lol_ui.playstyle import _playstyle_pills_html, _playstyle_tags
+from lol_ui.profile_tabs import _profile_tab_js, _profile_tabs_html
 from lol_ui.rank import _profile_header_html, _rank_card_html, _rank_history_html
 from lol_ui.recently_played import _recently_played_html
 from lol_ui.rendering import _badge, _stats_form
@@ -487,12 +488,13 @@ async def _build_stats_response(
     insight_html = _ai_insight_html(stats, champs, roles)
     main_html = '<div class="stats-main">' + tilt_html + insight_html + history_html + "</div>"
     layout_html = '<div class="stats-layout">' + sidebar_html + main_html + "</div>"
+    tabbed_html = _profile_tabs_html(layout_html) + _profile_tab_js()
 
     return HTMLResponse(
         _stats_form(
             heading,
             "success",
-            layout_html,
+            tabbed_html,
             selected_region=region,
             value=riot_id,
         )

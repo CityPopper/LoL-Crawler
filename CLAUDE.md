@@ -59,7 +59,7 @@ Platform: macOS. Container runtime: Podman (default). Switch with `RUNTIME=docke
 - [x] Delete `docs/SPRINT-PLAN.md` (implemented)
 - [ ] Future: Full localization (zh-CN translations, language switcher, extract to JSON)
 - [ ] Future: Summoner icon + level badge on profile
-- [ ] Future: Profile tabs (Tournament/Mastery/ARAM)
-- [ ] Future: Add `/health` JSON endpoint with service status (from `02-monitoring.md`)
-- [ ] Future: Add `just monitor` command for one-shot health summary
-- [ ] Future: Export `just streams` as JSON for scripting
+- [x] Profile tabs (Summary/Mastery/ARAM) on player stats page
+- [x] Enhanced `/health` JSON endpoint with Redis/stream status
+- [x] `just monitor` recipe for one-shot health summary
+- [x] `just streams-json` recipe for machine-readable stream depths

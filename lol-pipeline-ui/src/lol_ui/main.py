@@ -8,13 +8,14 @@ from typing import Any
 
 import redis.exceptions
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from lol_pipeline.config import Config
 from lol_pipeline.log import get_logger
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.riot_api import RiotClient
 from starlette.responses import Response
 
+from lol_ui.health import _health_status
 from lol_ui.rendering import _page
 from lol_ui.routes.champions import router as champions_router
 from lol_ui.routes.dashboard import router as dashboard_router
@@ -91,8 +92,17 @@ async def connection_error_handler(request: Request, exc: ConnectionError) -> HT
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health(request: Request) -> JSONResponse:
+    """Return detailed health status including Redis, streams, and DLQ."""
+    try:
+        r = request.app.state.r
+        status = await _health_status(r)
+        return JSONResponse(content=status)
+    except Exception:
+        return JSONResponse(
+            content={"status": "error", "redis": "disconnected"},
+            status_code=503,
+        )
 
 
 # ---------------------------------------------------------------------------
