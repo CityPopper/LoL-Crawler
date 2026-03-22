@@ -56,8 +56,7 @@ Thumbs.db
 *.log
 logs/
 
-# Screenshots (for UI review — not committed)
-screenshots/
+# Reference screenshots (shared with AI only — not committed)
 screenshot/
 
 # Match data — large output files don't belong in git
