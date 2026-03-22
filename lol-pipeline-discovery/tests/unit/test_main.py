@@ -362,7 +362,7 @@ class TestIsIdle:
 
 
 class TestIsIdleAllStreams:
-    """I2-C2: _is_idle checks ALL four pipeline streams, not just stream:puuid."""
+    """I2-C2: _is_idle checks ALL pipeline streams, not just stream:puuid."""
 
     @pytest.mark.asyncio
     async def test_is_idle__all_streams_empty__returns_true(self, r):
@@ -371,11 +371,11 @@ class TestIsIdleAllStreams:
 
     @pytest.mark.asyncio
     async def test_is_idle__all_streams_drained__returns_true(self, r):
-        """When all four streams exist with consumer groups but 0 pending/lag, idle."""
+        """When all streams exist with consumer groups but 0 pending/lag, idle."""
         from lol_pipeline.models import MessageEnvelope
         from lol_pipeline.streams import ack, consume, publish
 
-        groups = ["crawlers", "fetchers", "parsers", "analyzers"]
+        groups = ["crawlers", "fetchers", "parsers", "analyzers", "recovery"]
         for stream, group in zip(_PIPELINE_STREAMS, groups, strict=True):
             env = MessageEnvelope(source_stream=stream, type="puuid", payload={}, max_attempts=5)
             await publish(r, stream, env)
@@ -454,13 +454,14 @@ class TestIsIdleAllStreams:
         assert await _is_idle(r) is True
 
     @pytest.mark.asyncio
-    async def test_is_idle__checks_all_four_streams(self, r):
-        """Verify _PIPELINE_STREAMS contains exactly the four expected streams."""
+    async def test_is_idle__checks_all_pipeline_streams(self, r):
+        """Verify _PIPELINE_STREAMS contains all expected streams including DLQ."""
         assert set(_PIPELINE_STREAMS) == {
             "stream:puuid",
             "stream:match_id",
             "stream:parse",
             "stream:analyze",
+            "stream:dlq",
         }
 
     @pytest.mark.asyncio
@@ -957,6 +958,69 @@ class TestMainEntryPoint:
         mock_sleep.assert_any_call(1)
         assert call_count == 2
         mock_r.aclose.assert_called_once()
+
+
+class TestIsIdleDlqAndDelayed:
+    """_is_idle must also check stream:dlq and delayed:messages.
+
+    Discovery should not promote when DLQ retries or delayed messages are
+    in-flight, even if the four main pipeline streams appear drained.
+    """
+
+    @pytest.mark.asyncio
+    async def test_is_idle__dlq_stream_pending__returns_false(self, r):
+        """When stream:dlq has pending messages, pipeline is NOT idle."""
+        from lol_pipeline.models import MessageEnvelope
+        from lol_pipeline.streams import consume, publish
+
+        env = MessageEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"match_id": "NA1_999"},
+            max_attempts=5,
+        )
+        await publish(r, "stream:dlq", env)
+        await consume(r, "stream:dlq", "recovery", "r1", block=0)
+        # DLQ message delivered but not ACKed
+        assert await _is_idle(r) is False
+
+    @pytest.mark.asyncio
+    async def test_is_idle__dlq_stream_drained__returns_true(self, r):
+        """When stream:dlq exists but is fully drained, pipeline is idle."""
+        from lol_pipeline.models import MessageEnvelope
+        from lol_pipeline.streams import ack, consume, publish
+
+        env = MessageEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"match_id": "NA1_999"},
+            max_attempts=5,
+        )
+        await publish(r, "stream:dlq", env)
+        msgs = await consume(r, "stream:dlq", "recovery", "r1", block=0)
+        for msg_id, _env in msgs:
+            await ack(r, "stream:dlq", "recovery", msg_id)
+        assert await _is_idle(r) is True
+
+    @pytest.mark.asyncio
+    async def test_is_idle__delayed_messages_nonempty__returns_false(self, r):
+        """When delayed:messages ZSET has entries, pipeline is NOT idle."""
+        await r.zadd("delayed:messages", {"some-envelope-json": 1700000000000.0})
+        assert await _is_idle(r) is False
+
+    @pytest.mark.asyncio
+    async def test_is_idle__delayed_messages_empty__returns_true(self, r):
+        """When delayed:messages ZSET is empty, that check passes."""
+        # No delayed:messages key at all
+        assert await _is_idle(r) is True
+
+    @pytest.mark.asyncio
+    async def test_is_idle__delayed_messages_cleared__returns_true(self, r):
+        """After all delayed:messages are processed (ZSET empty), idle is True."""
+        await r.zadd("delayed:messages", {"msg": 100.0})
+        assert await _is_idle(r) is False
+        await r.zrem("delayed:messages", "msg")
+        assert await _is_idle(r) is True
 
 
 class TestIsIdleNoXlenCheck:

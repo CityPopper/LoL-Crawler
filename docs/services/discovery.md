@@ -27,8 +27,9 @@ Parser writes participant PUUIDs
   [Discovery polls every DISCOVERY_POLL_INTERVAL_MS ms]
          |
    _is_idle() check
-    - All consumer group pending == 0 and lag == 0? (XINFO GROUPS)
-    - No priority players in-flight? (SCAN player:priority:*)
+    - All consumer group pending == 0 and lag == 0? (XINFO GROUPS, incl. stream:dlq)
+    - delayed:messages ZSET empty? (ZCARD)
+    - No priority players in-flight? (priority:active SET)
          |
          v (idle == True)
    _promote_batch()
@@ -46,17 +47,26 @@ Parser writes participant PUUIDs
 ## Idle Check Logic
 
 Discovery only promotes when the entire pipeline is idle. The `_is_idle()` function
-checks all four pipeline streams:
-`stream:puuid`, `stream:match_id`, `stream:parse`, and `stream:analyze`.
+checks all five pipeline streams:
+`stream:puuid`, `stream:match_id`, `stream:parse`, `stream:analyze`, and `stream:dlq`.
+It also checks the `delayed:messages` sorted set to ensure no delayed retries are
+queued for re-dispatch.
 
 **Consumer group pending/lag check via XINFO GROUPS**
 
-For each stream, all registered consumer groups must report `pending == 0` and
-`lag == 0`. A non-zero pending count means messages are delivered but not yet
-ACKed; a non-zero lag means messages exist that no consumer has fetched yet.
+For each stream (including `stream:dlq`), all registered consumer groups must
+report `pending == 0` and `lag == 0`. A non-zero pending count means messages
+are delivered but not yet ACKed; a non-zero lag means messages exist that no
+consumer has fetched yet.
 
 Streams that do not exist yet (`ResponseError`) or have no consumer groups registered
 are treated as idle for that stream.
+
+**Delayed messages check**
+
+After all streams pass the XINFO GROUPS check, `_is_idle()` checks
+`ZCARD delayed:messages`. A non-zero count means the Delay Scheduler has
+queued retries that have not yet been dispatched back to their source streams.
 
 **Priority gate**
 
@@ -144,6 +154,8 @@ from environment or `.env`).
 | Missing `gameName`/`tagLine` in API response | Player permanently removed from `discover:players` | None — account is unusable |
 | `system:halted` set by any service | Loop exits immediately | Requires `just admin system-resume` |
 | `player:priority:{puuid}` keys exist (SCAN) | Promotion skipped; pipeline serves seeded players first | Automatic — resumes when all priority keys cleared or TTL expires |
+| `stream:dlq` has pending messages | Promotion skipped — DLQ retries still in-flight | Automatic — resumes when Recovery drains DLQ |
+| `delayed:messages` ZSET non-empty | Promotion skipped — delayed retries queued | Automatic — resumes when Delay Scheduler dispatches all entries |
 | Process crash mid-promotion | Player remains in `discover:players` (at-least-once) | Re-promoted on next cycle |
 
 ---
@@ -179,14 +191,13 @@ when no promotion activity occurs, to confirm the service is alive.
 | `players:all` | Sorted set | Discovery, Seed, UI | UI `/players` | All known players, score = seeded_at epoch |
 | `system:halted` | String | Any service on 403 | All services | Set to `"1"` to stop the pipeline |
 | `player:priority:{puuid}` | String | Seed via `set_priority()` | Crawler via `clear_priority()` | Presence (TTL 86400 s) indicates player is high-priority; Discovery scans for these |
+| `stream:dlq` | Stream | Any service (via `nack_to_dlq`) | Recovery, Discovery (idle check) | Dead-letter queue for failed messages |
+| `delayed:messages` | Sorted set | Recovery | Delay Scheduler, Discovery (idle check) | Messages waiting for delayed re-dispatch |
 | `stream:puuid` | Stream | Discovery, Seed | Crawler | Published player PUUIDs |
 
 ---
 
 ## Known Limitations (Open Issues)
 
-- Discovery does not observe `stream:dlq` or `delayed:messages`. Players can be promoted
-  while DLQ retries are still in-flight if those retries target a downstream stream that
-  appears drained.
 - Discovery assumes a single instance. Running multiple Discovery replicas without a
   distributed lock would cause double-promotion races on the same `discover:players` entries.
