@@ -25,41 +25,51 @@ ENV PYTHONUNBUFFERED=1 \
 
 ### Service Image Pattern (multi-stage)
 
-Each service repo has its own Dockerfile following this pattern:
+All services share a single `Dockerfile.service` at the repo root, parameterized by build args:
 
 ```dockerfile
+# Dockerfile.service — unified for all pipeline services
+ARG SERVICE_NAME
+ARG MODULE_NAME
+
 FROM python:3.14-slim AS builder
 WORKDIR /build
 
-# Install common library (version pinned via build arg)
-ARG COMMON_VERSION=main
-RUN pip install --no-cache-dir \
-    "lol-pipeline-common @ git+https://github.com/your-org/lol-pipeline-common.git@${COMMON_VERSION}"
+COPY lol-pipeline-common/ ./common/
+RUN pip install --no-cache-dir ./common/
 
-# Install service-specific deps
-COPY pyproject.toml .
-COPY src/ ./src/
+ARG SERVICE_NAME
+COPY lol-pipeline-${SERVICE_NAME}/pyproject.toml .
+COPY lol-pipeline-${SERVICE_NAME}/src/ ./src/
 RUN pip install --no-cache-dir .
 
-# ---- runtime ----
 FROM python:3.14-slim AS runtime
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 WORKDIR /app
 
-# Copy installed packages from builder
 COPY --from=builder /usr/local/lib/python3.14/site-packages \
                     /usr/local/lib/python3.14/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
-# Copy service source
-COPY src/ ./src/
+RUN adduser --disabled-password --no-create-home appuser
+USER appuser
 
-# Health check: verify Redis is reachable
-HEALTHCHECK --interval=10s --timeout=5s --retries=3 \
-    CMD python -c "import asyncio, os; from lol_pipeline.redis_client import get_redis, health_check; r=get_redis(os.environ.get('REDIS_URL', 'redis://redis:6379/0')); print(asyncio.run(health_check(r)))"
+STOPSIGNAL SIGTERM
 
-CMD ["python", "-m", "service"]
+ARG MODULE_NAME
+ENV MODULE_NAME=${MODULE_NAME}
+CMD python -m ${MODULE_NAME}
 ```
+
+Build a specific service with:
+```bash
+docker build -f Dockerfile.service \
+  --build-arg SERVICE_NAME=crawler \
+  --build-arg MODULE_NAME=lol_crawler \
+  -t lol-pipeline/crawler .
+```
+
+Healthchecks are defined in `docker-compose.yml` (workers use Redis ping, UI uses HTTP).
 
 ### Image Names
 

@@ -97,6 +97,35 @@ async def _handle_with_retry(  # noqa: PLR0913
             )
 
 
+async def _dispatch_batch(
+    r: aioredis.Redis,
+    stream: str,
+    group: str,
+    messages: list[tuple[str, MessageEnvelope]],
+    handler: MessageHandler,
+    log: logging.Logger,
+    shutdown_check: Callable[[], bool],
+) -> None:
+    """Dispatch a batch of messages to the handler with retry logic."""
+    try:
+        for msg_id, envelope in messages:
+            if shutdown_check():
+                log.info("shutdown mid-batch — skipping remaining")
+                break
+            await _handle_with_retry(
+                r,
+                stream,
+                group,
+                msg_id,
+                envelope,
+                handler,
+                log,
+            )
+    except (RedisError, OSError):
+        log.exception("dispatch error — retrying on next cycle")
+        await asyncio.sleep(1)
+
+
 async def run_consumer(
     r: aioredis.Redis,
     stream: str,
@@ -108,10 +137,9 @@ async def run_consumer(
 ) -> None:
     """Run the standard consumer loop until system:halted is set.
 
-    Checks system:halted before each batch, then calls consume() (which drains
-    the consumer's own PEL before reading new messages) and dispatches each
-    message to handler.  Caller is responsible for closing r and any other
-    resources in a try/finally block.
+    Checks system:halted before each batch, then calls consume() and
+    dispatches each message to handler.  Caller is responsible for
+    closing r and any other resources in a try/finally block.
     """
     shutdown = False
 
@@ -140,32 +168,27 @@ async def run_consumer(
                 consumer,
                 autoclaim_min_idle_ms=autoclaim_min_idle_ms,
             )
-        except RedisError, OSError:
+        except (RedisError, OSError):
             log.exception("consume error — retrying in 1s")
             await asyncio.sleep(1)
             continue
-        # R6: Sort batch by priority so higher-priority messages are processed first
         if len(messages) > 1:
             messages.sort(
-                key=lambda m: PRIORITY_ORDER.get(m[1].priority, 0), reverse=True
+                key=lambda m: PRIORITY_ORDER.get(m[1].priority, 0),
+                reverse=True,
             )
         if messages:
             idle_polls = 0
         else:
             idle_polls += 1
-            if idle_polls % 12 == 1:  # ~60s at 5s block
+            if idle_polls % 12 == 1:
                 log.debug("waiting for messages", extra={"stream": stream})
-        try:
-            for msg_id, envelope in messages:
-                await _handle_with_retry(
-                    r,
-                    stream,
-                    group,
-                    msg_id,
-                    envelope,
-                    handler,
-                    log,
-                )
-        except RedisError, OSError:
-            log.exception("dispatch error — retrying on next consume cycle")
-            await asyncio.sleep(1)
+        await _dispatch_batch(
+            r,
+            stream,
+            group,
+            messages,
+            handler,
+            log,
+            shutdown_check=lambda: shutdown,
+        )

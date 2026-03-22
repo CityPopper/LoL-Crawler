@@ -14,7 +14,13 @@ from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.riot_api import RiotClient
 from lol_pipeline.streams import consume, publish
 
-from lol_crawler.main import _compute_activity_rate, _crawl_player, _fetch_rank, main
+from lol_crawler.main import (
+    _RANK_HISTORY_MAX,
+    _compute_activity_rate,
+    _crawl_player,
+    _fetch_rank,
+    main,
+)
 
 _STREAM_IN = "stream:puuid"
 _STREAM_OUT = "stream:match_id"
@@ -1001,9 +1007,7 @@ class TestCrawlPriorityDowngrade:
         page = [f"NA1_{i}" for i in range(25)]
 
         with respx.mock:
-            respx.get(_match_ids_url(start=0)).mock(
-                return_value=httpx.Response(200, json=page)
-            )
+            respx.get(_match_ids_url(start=0)).mock(return_value=httpx.Response(200, json=page))
             riot = RiotClient("RGAPI-test")
             await _crawl_player(r, riot, cfg, msg_id, env, log)
             await riot.close()
@@ -1155,8 +1159,7 @@ class TestCrawlCursorPersistence:
         assert await r.xlen(_STREAM_OUT) == 2
         entries = await r.xrange(_STREAM_OUT)
         match_ids = [
-            MessageEnvelope.from_redis_fields(fields).payload["match_id"]
-            for _, fields in entries
+            MessageEnvelope.from_redis_fields(fields).payload["match_id"] for _, fields in entries
         ]
         assert "NA1_RESUMED_1" in match_ids
         assert "NA1_RESUMED_2" in match_ids
@@ -1217,29 +1220,30 @@ class TestFetchRank:
         puuid = "test-puuid-0001"
         with respx.mock:
             respx.get(self._summoner_url(puuid)).mock(
-                return_value=httpx.Response(
-                    200, json={"id": "summ-id-1", "summonerLevel": 150}
-                )
+                return_value=httpx.Response(200, json={"id": "summ-id-1", "summonerLevel": 150})
             )
             respx.get(self._league_url("summ-id-1")).mock(
-                return_value=httpx.Response(200, json=[
-                    {
-                        "queueType": "RANKED_SOLO_5x5",
-                        "tier": "GOLD",
-                        "rank": "II",
-                        "leaguePoints": 75,
-                        "wins": 100,
-                        "losses": 80,
-                    },
-                    {
-                        "queueType": "RANKED_FLEX_SR",
-                        "tier": "SILVER",
-                        "rank": "I",
-                        "leaguePoints": 50,
-                        "wins": 20,
-                        "losses": 15,
-                    },
-                ])
+                return_value=httpx.Response(
+                    200,
+                    json=[
+                        {
+                            "queueType": "RANKED_SOLO_5x5",
+                            "tier": "GOLD",
+                            "rank": "II",
+                            "leaguePoints": 75,
+                            "wins": 100,
+                            "losses": 80,
+                        },
+                        {
+                            "queueType": "RANKED_FLEX_SR",
+                            "tier": "SILVER",
+                            "rank": "I",
+                            "leaguePoints": 50,
+                            "wins": 20,
+                            "losses": 15,
+                        },
+                    ],
+                )
             )
             riot = RiotClient("RGAPI-test")
             await _fetch_rank(r, riot, cfg, puuid, "na1", log)
@@ -1254,6 +1258,14 @@ class TestFetchRank:
         ttl = await r.ttl(f"player:rank:{puuid}")
         assert ttl > 0
 
+        # Rank history timeline should have one entry
+        hist = await r.zrange(f"player:rank:history:{puuid}", 0, -1, withscores=True)
+        assert len(hist) == 1
+        assert hist[0][0] == "GOLD:II:75"
+        assert hist[0][1] > 0  # epoch_ms score
+        hist_ttl = await r.ttl(f"player:rank:history:{puuid}")
+        assert hist_ttl > 0
+
     @pytest.mark.asyncio
     async def test_fetch_rank__stores_summoner_level(self, r, cfg, log):
         """Summoner level is stored on player:{puuid} hash."""
@@ -1262,9 +1274,7 @@ class TestFetchRank:
             respx.get(self._summoner_url(puuid)).mock(
                 return_value=httpx.Response(200, json={"id": "summ-id-1", "summonerLevel": 250})
             )
-            respx.get(self._league_url("summ-id-1")).mock(
-                return_value=httpx.Response(200, json=[])
-            )
+            respx.get(self._league_url("summ-id-1")).mock(return_value=httpx.Response(200, json=[]))
             riot = RiotClient("RGAPI-test")
             await _fetch_rank(r, riot, cfg, puuid, "na1", log)
             await riot.close()
@@ -1405,3 +1415,92 @@ class TestActivityRate:
 
         assert await r.hget(f"player:{puuid}", "activity_rate") is None
         assert await r.hget(f"player:{puuid}", "recrawl_after") is None
+
+
+class TestRankHistoryCap:
+    """Bug 3 fix: player:rank:history:{puuid} ZSET is capped to prevent unbounded growth."""
+
+    def _summoner_url(self, puuid="test-puuid-0001", region="na1"):
+        return f"https://{region}.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/{puuid}"
+
+    def _league_url(self, summoner_id="summ-id-1", region="na1"):
+        return f"https://{region}.api.riotgames.com/lol/league/v4/entries/by-summoner/{summoner_id}"
+
+    @pytest.mark.asyncio
+    async def test_rank_history__capped_at_max(self, r, cfg, log):
+        """Rank history ZSET is trimmed to _RANK_HISTORY_MAX entries."""
+        puuid = "test-puuid-cap"
+        hist_key = f"player:rank:history:{puuid}"
+
+        # Pre-fill with _RANK_HISTORY_MAX + 50 entries
+        for i in range(_RANK_HISTORY_MAX + 50):
+            await r.zadd(hist_key, {f"GOLD:II:{i}": float(i)})
+        assert await r.zcard(hist_key) == _RANK_HISTORY_MAX + 50
+
+        with respx.mock:
+            respx.get(self._summoner_url(puuid)).mock(
+                return_value=httpx.Response(200, json={"id": "summ-id-1", "summonerLevel": 100})
+            )
+            respx.get(self._league_url("summ-id-1")).mock(
+                return_value=httpx.Response(
+                    200,
+                    json=[
+                        {
+                            "queueType": "RANKED_SOLO_5x5",
+                            "tier": "PLAT",
+                            "rank": "I",
+                            "leaguePoints": 99,
+                            "wins": 200,
+                            "losses": 150,
+                        }
+                    ],
+                )
+            )
+            riot = RiotClient("RGAPI-test")
+            await _fetch_rank(r, riot, cfg, puuid, "na1", log)
+            await riot.close()
+
+        # After trim, should be at most _RANK_HISTORY_MAX
+        count = await r.zcard(hist_key)
+        assert count <= _RANK_HISTORY_MAX
+
+    @pytest.mark.asyncio
+    async def test_rank_history__small_set_not_trimmed(self, r, cfg, log):
+        """Rank history with fewer than max entries is not trimmed."""
+        puuid = "test-puuid-small"
+        hist_key = f"player:rank:history:{puuid}"
+
+        # Pre-fill with 5 entries
+        for i in range(5):
+            await r.zadd(hist_key, {f"SILVER:III:{i}": float(i)})
+
+        with respx.mock:
+            respx.get(self._summoner_url(puuid)).mock(
+                return_value=httpx.Response(200, json={"id": "summ-id-2", "summonerLevel": 50})
+            )
+            respx.get(self._league_url("summ-id-2")).mock(
+                return_value=httpx.Response(
+                    200,
+                    json=[
+                        {
+                            "queueType": "RANKED_SOLO_5x5",
+                            "tier": "SILVER",
+                            "rank": "II",
+                            "leaguePoints": 30,
+                            "wins": 50,
+                            "losses": 40,
+                        }
+                    ],
+                )
+            )
+            riot = RiotClient("RGAPI-test")
+            await _fetch_rank(r, riot, cfg, puuid, "na1", log)
+            await riot.close()
+
+        # 5 existing + 1 new = 6, which is under the cap
+        count = await r.zcard(hist_key)
+        assert count == 6
+
+    def test_rank_history_max_constant(self):
+        """_RANK_HISTORY_MAX is 500."""
+        assert _RANK_HISTORY_MAX == 500

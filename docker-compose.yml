@@ -18,12 +18,26 @@ x-service-defaults: &service-defaults
     redis:
       condition: service_healthy
 
+# Worker services: service-defaults + Redis healthcheck
+x-worker-defaults: &worker-defaults
+  <<: *service-defaults
+  healthcheck:
+    test: ["CMD-SHELL", "python -c \"import asyncio,os,sys; from lol_pipeline.redis_client import get_redis,health_check; sys.exit(0 if asyncio.run(health_check(get_redis(os.environ.get('REDIS_URL','redis://redis:6379/0')))) else 1)\""]
+    interval: 10s
+    timeout: 5s
+    retries: 3
+    start_period: 60s
+
+x-service-build: &service-build
+  context: .
+  dockerfile: Dockerfile.service
+
 services:
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.2.11-alpine  # Pinned: CVE-2025-49844 (Lua RCE) patched in 7.2.11+
     restart: always
-    mem_limit: 1g
+    mem_limit: 2g  # Headroom for AOF rewrite fork (doubles memory briefly)
     command: >
       redis-server
       --appendonly yes
@@ -50,114 +64,92 @@ services:
         max-file: "5"
 
   crawler:
-    <<: *service-defaults
+    <<: *worker-defaults
     build:
-      context: .
-      dockerfile: lol-pipeline-crawler/Dockerfile
+      <<: *service-build
+      args:
+        SERVICE_NAME: crawler
+        MODULE_NAME: lol_crawler
     volumes:
       - ./lol-pipeline-common:/common
       - ./lol-pipeline-crawler:/svc
       - ./logs:/logs
     command: ["python", "-m", "lol_crawler"]
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import asyncio,os,sys; from lol_pipeline.redis_client import get_redis,health_check; sys.exit(0 if asyncio.run(health_check(get_redis(os.environ.get('REDIS_URL','redis://redis:6379/0')))) else 1)\""]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 60s
 
   fetcher:
-    <<: *service-defaults
+    <<: *worker-defaults
     build:
-      context: .
-      dockerfile: lol-pipeline-fetcher/Dockerfile
+      <<: *service-build
+      args:
+        SERVICE_NAME: fetcher
+        MODULE_NAME: lol_fetcher
     volumes:
       - ./lol-pipeline-common:/common
       - ./lol-pipeline-fetcher:/svc
       - ./lol-pipeline-fetcher/match-data:/match-data
       - ./logs:/logs
     command: ["python", "-m", "lol_fetcher"]
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import asyncio,os,sys; from lol_pipeline.redis_client import get_redis,health_check; sys.exit(0 if asyncio.run(health_check(get_redis(os.environ.get('REDIS_URL','redis://redis:6379/0')))) else 1)\""]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 60s
 
   parser:
-    <<: *service-defaults
+    <<: *worker-defaults
     build:
-      context: .
-      dockerfile: lol-pipeline-parser/Dockerfile
+      <<: *service-build
+      args:
+        SERVICE_NAME: parser
+        MODULE_NAME: lol_parser
     volumes:
       - ./lol-pipeline-common:/common
       - ./lol-pipeline-parser:/svc
       - ./lol-pipeline-fetcher/match-data:/match-data:ro
       - ./logs:/logs
     command: ["python", "-m", "lol_parser"]
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import asyncio,os,sys; from lol_pipeline.redis_client import get_redis,health_check; sys.exit(0 if asyncio.run(health_check(get_redis(os.environ.get('REDIS_URL','redis://redis:6379/0')))) else 1)\""]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 60s
 
   analyzer:
-    <<: *service-defaults
+    <<: *worker-defaults
     build:
-      context: .
-      dockerfile: lol-pipeline-analyzer/Dockerfile
+      <<: *service-build
+      args:
+        SERVICE_NAME: analyzer
+        MODULE_NAME: lol_analyzer
     volumes:
       - ./lol-pipeline-common:/common
       - ./lol-pipeline-analyzer:/svc
       - ./logs:/logs
     command: ["python", "-m", "lol_analyzer"]
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import asyncio,os,sys; from lol_pipeline.redis_client import get_redis,health_check; sys.exit(0 if asyncio.run(health_check(get_redis(os.environ.get('REDIS_URL','redis://redis:6379/0')))) else 1)\""]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 60s
 
   recovery:
-    <<: *service-defaults
+    <<: *worker-defaults
     build:
-      context: .
-      dockerfile: lol-pipeline-recovery/Dockerfile
+      <<: *service-build
+      args:
+        SERVICE_NAME: recovery
+        MODULE_NAME: lol_recovery
     volumes:
       - ./lol-pipeline-common:/common
       - ./lol-pipeline-recovery:/svc
       - ./logs:/logs
     command: ["python", "-m", "lol_recovery"]
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import asyncio,os,sys; from lol_pipeline.redis_client import get_redis,health_check; sys.exit(0 if asyncio.run(health_check(get_redis(os.environ.get('REDIS_URL','redis://redis:6379/0')))) else 1)\""]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 60s
 
   delay-scheduler:
-    <<: *service-defaults
+    <<: *worker-defaults
     build:
-      context: .
-      dockerfile: lol-pipeline-delay-scheduler/Dockerfile
+      <<: *service-build
+      args:
+        SERVICE_NAME: delay-scheduler
+        MODULE_NAME: lol_delay_scheduler
     volumes:
       - ./lol-pipeline-common:/common
       - ./lol-pipeline-delay-scheduler:/svc
       - ./logs:/logs
     command: ["python", "-m", "lol_delay_scheduler"]
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import asyncio,os,sys; from lol_pipeline.redis_client import get_redis,health_check; sys.exit(0 if asyncio.run(health_check(get_redis(os.environ.get('REDIS_URL','redis://redis:6379/0')))) else 1)\""]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 60s
 
   ui:
     <<: *service-defaults
     build:
-      context: .
-      dockerfile: lol-pipeline-ui/Dockerfile
+      <<: *service-build
+      args:
+        SERVICE_NAME: ui
+        MODULE_NAME: lol_ui
     volumes:
       - ./lol-pipeline-common:/common
       - ./lol-pipeline-ui:/svc
@@ -173,28 +165,26 @@ services:
       start_period: 60s
 
   discovery:
-    <<: *service-defaults
+    <<: *worker-defaults
     build:
-      context: .
-      dockerfile: lol-pipeline-discovery/Dockerfile
+      <<: *service-build
+      args:
+        SERVICE_NAME: discovery
+        MODULE_NAME: lol_discovery
     volumes:
       - ./lol-pipeline-common:/common
       - ./lol-pipeline-discovery:/svc
       - ./logs:/logs
     command: ["python", "-m", "lol_discovery"]
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import asyncio,os,sys; from lol_pipeline.redis_client import get_redis,health_check; sys.exit(0 if asyncio.run(health_check(get_redis(os.environ.get('REDIS_URL','redis://redis:6379/0')))) else 1)\""]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 60s
 
   # One-shot tools — not started by default; use `docker compose run`
   seed:
     <<: *service-defaults
     build:
-      context: .
-      dockerfile: lol-pipeline-seed/Dockerfile
+      <<: *service-build
+      args:
+        SERVICE_NAME: seed
+        MODULE_NAME: lol_seed
     volumes:
       - ./lol-pipeline-common:/common
       - ./lol-pipeline-seed:/svc
@@ -206,8 +196,10 @@ services:
   admin:
     <<: *service-defaults
     build:
-      context: .
-      dockerfile: lol-pipeline-admin/Dockerfile
+      <<: *service-build
+      args:
+        SERVICE_NAME: admin
+        MODULE_NAME: lol_admin
     volumes:
       - ./lol-pipeline-common:/common
       - ./lol-pipeline-admin:/svc

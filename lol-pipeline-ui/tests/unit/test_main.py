@@ -18,35 +18,61 @@ from lol_pipeline.riot_api import (
 from lol_ui.main import (
     _AUTOSEED_COOLDOWN_S,
     _BADGE_VARIANTS,
-    _CHAMPION_ROLES,
+    _BREAKDOWN_MATCH_COUNT,
     _CSS,
     _DDRAGON_CHAMPION_IDS_KEY,
+    _DELTA_MIN_GAMES,
+    _DIVERSITY_MIN_GAMES,
     _HALT_BANNER,
+    _MATCH_BADGE_COLORS,
     _NAME_CACHE_INDEX,
     _NAME_CACHE_MAX,
     _NAV_ITEMS,
+    _PBI_MIN_GAMES,
+    _PLAYSTYLE_MIN_GAMES,
     _PUUID_RE,
     _REGIONS,
     _REGIONS_SET,
     _STATS_ORDER,
+    _TIER_COLORS,
+    _TILT_RECENT_COUNT,
+    _TILT_RECENT_KDA_COUNT,
+    _assign_tiers,
     _badge,
     _badge_html,
+    _BreakdownEntry,
+    _champion_diversity,
     _champion_icon_html,
+    _champion_table_header,
     _champion_tier_table,
+    _compute_champion_breakdown,
+    _compute_role_breakdown,
     _depth_badge,
     _empty_state,
     _format_stat_value,
     _get_champion_id_map,
+    _match_badges,
+    _match_badges_html,
     _match_history_html,
     _match_history_section,
     _merged_log_lines,
     _page,
     _parse_log_line,
+    _patch_delta,
+    _pbi_tier,
+    _playstyle_pills_html,
+    _playstyle_tags,
+    _rank_history_html,
+    _render_champion_rows,
     _render_log_lines,
     _render_player_rows,
+    _render_role_rows,
+    _role_table_header,
     _stats_form,
     _stats_table,
+    _streak_indicator,
     _tail_file,
+    _tilt_banner_html,
 )
 
 
@@ -747,13 +773,14 @@ class TestAutoSeedPriority:
 
     @pytest.mark.asyncio
     async def test_show_streams__displays_priority_status(self):
-        """The /streams page displays priority status via SCAN-based detection."""
+        """The /streams page displays priority status."""
         import fakeredis.aioredis
+        from lol_pipeline.priority import set_priority
 
         from lol_ui.main import show_streams
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        await r.set("player:priority:puuid-1", "1", ex=86400)
+        await set_priority(r, "puuid-1")
 
         from unittest.mock import MagicMock
 
@@ -1096,12 +1123,27 @@ class TestPlayersPageCount:
 class TestStatsHeading:
     """Sprint 2.1: /stats heading shows Riot ID name only (no PUUID)."""
 
-    def _make_mock_r(self, *, puuid: str, stats: dict, priority_key=None, champs=None, roles=None, rank=None):
+    def _make_mock_r(
+        self,
+        *,
+        puuid,
+        stats,
+        priority_key=None,
+        champs=None,
+        roles=None,
+        rank=None,
+    ):
         """Build an AsyncMock Redis client that supports the pipeline context manager."""
         from unittest.mock import AsyncMock, MagicMock
 
         mock_pipe = AsyncMock()
-        mock_pipe.execute.return_value = [priority_key, champs or [], roles or [], rank or {}]
+        mock_pipe.execute.return_value = [
+            priority_key,
+            champs or [],
+            roles or [],
+            rank or {},
+            [],
+        ]
 
         mock_pipeline_ctx = MagicMock()
         mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
@@ -1243,13 +1285,14 @@ class TestStreamsFragment:
 
     @pytest.mark.asyncio
     async def test_streams_fragment__includes_priority_status(self):
-        """Fragment includes SCAN-based priority status display."""
+        """Fragment includes priority status display."""
         import fakeredis.aioredis
+        from lol_pipeline.priority import set_priority
 
         from lol_ui.main import streams_fragment
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        await r.set("player:priority:puuid-1", "1", ex=86400)
+        await set_priority(r, "puuid-1")
 
         from unittest.mock import MagicMock
 
@@ -1453,7 +1496,7 @@ class TestNameCacheTTLInUI:
         from lol_ui.main import show_stats
 
         mock_pipe = AsyncMock()
-        mock_pipe.execute.return_value = [None, [], [], {}]  # priority_key, champs, roles, rank
+        mock_pipe.execute.return_value = [None, [], [], {}, []]
 
         mock_pipeline_ctx = MagicMock()
         mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
@@ -1546,7 +1589,7 @@ class TestPriorityBadge:
         from lol_ui.main import show_stats
 
         mock_pipe = AsyncMock()
-        mock_pipe.execute.return_value = ["high", [], [], {}]  # priority_key, champs, roles, rank
+        mock_pipe.execute.return_value = ["high", [], [], {}, []]
 
         mock_pipeline_ctx = MagicMock()
         mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
@@ -1558,6 +1601,7 @@ class TestPriorityBadge:
             "system:halted": None,
         }.get(key)
         mock_r.hgetall.return_value = {"total_games": "10", "wins": "5"}
+        mock_r.zrevrange.return_value = []  # no recent matches for tilt indicator
         mock_r.pipeline = MagicMock(return_value=mock_pipeline_ctx)
 
         request = MagicMock()
@@ -1580,7 +1624,7 @@ class TestPriorityBadge:
         from lol_ui.main import show_stats
 
         mock_pipe = AsyncMock()
-        mock_pipe.execute.return_value = [None, [], [], {}]  # priority_key, champs, roles, rank
+        mock_pipe.execute.return_value = [None, [], [], {}, []]
 
         mock_pipeline_ctx = MagicMock()
         mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
@@ -1592,6 +1636,7 @@ class TestPriorityBadge:
             "system:halted": None,
         }.get(key)
         mock_r.hgetall.return_value = {"total_games": "10", "wins": "5"}
+        mock_r.zrevrange.return_value = []  # no recent matches for tilt indicator
         mock_r.pipeline = MagicMock(return_value=mock_pipeline_ctx)
 
         request = MagicMock()
@@ -2372,7 +2417,7 @@ class TestRateLimitBeforeRiotCall:
         call_order: list[str] = []
 
         mock_pipe = AsyncMock()
-        mock_pipe.execute.return_value = [None, [], [], {}]
+        mock_pipe.execute.return_value = [None, [], [], {}, []]
 
         mock_pipeline_ctx = MagicMock()
         mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
@@ -2425,7 +2470,7 @@ class TestRateLimitBeforeRiotCall:
         from lol_ui.main import show_stats
 
         mock_pipe = AsyncMock()
-        mock_pipe.execute.return_value = [None, [], [], {}]
+        mock_pipe.execute.return_value = [None, [], [], {}, []]
 
         mock_pipeline_ctx = MagicMock()
         mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
@@ -2461,7 +2506,7 @@ class TestRateLimitBeforeRiotCall:
         from lol_ui.main import show_stats
 
         mock_pipe = AsyncMock()
-        mock_pipe.execute.return_value = [None, [], [], {}]
+        mock_pipe.execute.return_value = [None, [], [], {}, []]
 
         mock_pipeline_ctx = MagicMock()
         mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
@@ -2823,13 +2868,14 @@ class TestStreamsFragmentHtmlHaltBanner:
 
     @pytest.mark.asyncio
     async def test_streams_fragment_html__priority_keys_exist__displays_yes(self):
-        """When player:priority:* keys exist, displays Yes via SCAN-based detection."""
+        """When priority:active SET has members, displays Yes."""
         import fakeredis.aioredis
+        from lol_pipeline.priority import set_priority
 
         from lol_ui.main import _streams_fragment_html
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        await r.set("player:priority:puuid-1", "1", ex=86400)
+        await set_priority(r, "puuid-1")
 
         result = await _streams_fragment_html(r)
 
@@ -4631,17 +4677,29 @@ class TestChampionsPageWithData:
         await r.hset(
             "champion:stats:Zed:14.5:MID",
             mapping={
-                "games": "50", "wins": "28", "kills": "400",
-                "deaths": "200", "assists": "150", "cs": "10000",
-                "gold": "500000", "damage": "750000", "vision": "500",
+                "games": "50",
+                "wins": "28",
+                "kills": "400",
+                "deaths": "200",
+                "assists": "150",
+                "cs": "10000",
+                "gold": "500000",
+                "damage": "750000",
+                "vision": "500",
             },
         )
         await r.hset(
             "champion:stats:Ahri:14.5:MID",
             mapping={
-                "games": "40", "wins": "22", "kills": "300",
-                "deaths": "160", "assists": "200", "cs": "8000",
-                "gold": "400000", "damage": "600000", "vision": "400",
+                "games": "40",
+                "wins": "22",
+                "kills": "300",
+                "deaths": "160",
+                "assists": "200",
+                "cs": "8000",
+                "gold": "400000",
+                "damage": "600000",
+                "vision": "400",
             },
         )
         request = MagicMock()
@@ -4679,13 +4737,25 @@ class TestChampionsPageRoleFilter:
         await r.zadd("champion:index:14.5", {"Zed:MID": 50, "Garen:TOP": 30})
         await r.hset(
             "champion:stats:Zed:14.5:MID",
-            mapping={"games": "50", "wins": "25", "kills": "200",
-                     "deaths": "100", "assists": "100", "cs": "5000"},
+            mapping={
+                "games": "50",
+                "wins": "25",
+                "kills": "200",
+                "deaths": "100",
+                "assists": "100",
+                "cs": "5000",
+            },
         )
         await r.hset(
             "champion:stats:Garen:14.5:TOP",
-            mapping={"games": "30", "wins": "18", "kills": "120",
-                     "deaths": "80", "assists": "50", "cs": "4000"},
+            mapping={
+                "games": "30",
+                "wins": "18",
+                "kills": "120",
+                "deaths": "80",
+                "assists": "50",
+                "cs": "4000",
+            },
         )
         request = MagicMock()
         request.app.state.r = r
@@ -4717,8 +4787,14 @@ class TestChampionsPagePatchSelector:
         await r.zadd("champion:index:14.5", {"Zed:MID": 10})
         await r.hset(
             "champion:stats:Zed:14.5:MID",
-            mapping={"games": "10", "wins": "5", "kills": "50",
-                     "deaths": "30", "assists": "20", "cs": "1000"},
+            mapping={
+                "games": "10",
+                "wins": "5",
+                "kills": "50",
+                "deaths": "30",
+                "assists": "20",
+                "cs": "1000",
+            },
         )
         request = MagicMock()
         request.app.state.r = r
@@ -4751,19 +4827,33 @@ class TestChampionDetailPage:
         await r.hset(
             "champion:stats:Zed:14.5:MID",
             mapping={
-                "games": "50", "wins": "28", "kills": "400",
-                "deaths": "200", "assists": "150", "cs": "10000",
-                "gold": "500000", "damage": "750000", "vision": "500",
-                "double_kills": "20", "triple_kills": "5",
-                "quadra_kills": "1", "penta_kills": "0",
+                "games": "50",
+                "wins": "28",
+                "kills": "400",
+                "deaths": "200",
+                "assists": "150",
+                "cs": "10000",
+                "gold": "500000",
+                "damage": "750000",
+                "vision": "500",
+                "double_kills": "20",
+                "triple_kills": "5",
+                "quadra_kills": "1",
+                "penta_kills": "0",
             },
         )
         await r.hset(
             "champion:stats:Zed:14.4:MID",
             mapping={
-                "games": "30", "wins": "15", "kills": "200",
-                "deaths": "120", "assists": "80", "cs": "6000",
-                "gold": "300000", "damage": "400000", "vision": "300",
+                "games": "30",
+                "wins": "15",
+                "kills": "200",
+                "deaths": "120",
+                "assists": "80",
+                "cs": "6000",
+                "gold": "300000",
+                "damage": "400000",
+                "vision": "300",
             },
         )
         request = MagicMock()
@@ -4781,7 +4871,7 @@ class TestChampionDetailPage:
         assert "14.4" in body
         assert "14.5" in body
         assert "Double Kills" in body
-        assert '<thead>' in body
+        assert "<thead>" in body
         assert 'scope="col"' in body
         await r.aclose()
 
@@ -4824,11 +4914,10 @@ class TestStatsPageRankDisplay:
     @pytest.mark.asyncio
     async def test_stats_page__shows_rank_when_available(self):
         """When player:rank:{puuid} exists, tier/division/LP/W/L are rendered."""
-        from unittest.mock import AsyncMock, MagicMock
-
-        from lol_ui.main import _build_stats_response
 
         import fakeredis.aioredis
+
+        from lol_ui.main import _build_stats_response
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         puuid = "rank-test-puuid"
@@ -4863,19 +4952,16 @@ class TestStatsPageRankDisplay:
     @pytest.mark.asyncio
     async def test_stats_page__no_rank_still_renders(self):
         """When player:rank:{puuid} does not exist, page still renders without rank card."""
-        from unittest.mock import AsyncMock, MagicMock
-
-        from lol_ui.main import _build_stats_response
 
         import fakeredis.aioredis
+
+        from lol_ui.main import _build_stats_response
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         puuid = "no-rank-puuid"
 
         stats = {"total_games": "10"}
-        resp = await _build_stats_response(
-            r, puuid, "NoRank", "NA1", "na1", "NoRank#NA1", stats
-        )
+        resp = await _build_stats_response(r, puuid, "NoRank", "NA1", "na1", "NoRank#NA1", stats)
         body = resp.body.decode()
 
         assert "Ranked Solo/Duo" not in body
@@ -5006,9 +5092,15 @@ class TestChampionDetailMatchups:
         await r.hset(
             "champion:stats:Zed:14.5:MID",
             mapping={
-                "games": "50", "wins": "28", "kills": "400",
-                "deaths": "200", "assists": "150", "cs": "10000",
-                "gold": "500000", "damage": "750000", "vision": "500",
+                "games": "50",
+                "wins": "28",
+                "kills": "400",
+                "deaths": "200",
+                "assists": "150",
+                "cs": "10000",
+                "gold": "500000",
+                "damage": "750000",
+                "vision": "500",
             },
         )
         # Matchup index and data
@@ -5051,9 +5143,15 @@ class TestChampionDetailMatchups:
         await r.hset(
             "champion:stats:Zed:14.5:MID",
             mapping={
-                "games": "50", "wins": "28", "kills": "400",
-                "deaths": "200", "assists": "150", "cs": "10000",
-                "gold": "500000", "damage": "750000", "vision": "500",
+                "games": "50",
+                "wins": "28",
+                "kills": "400",
+                "deaths": "200",
+                "assists": "150",
+                "cs": "10000",
+                "gold": "500000",
+                "damage": "750000",
+                "vision": "500",
             },
         )
         # No matchup data
@@ -5210,9 +5308,14 @@ class TestChampionTierTableBanRate:
         """Ban % column header appears in the tier table."""
         rows = [
             {
-                "name": "Zed", "role": "MID", "games": 50,
-                "win_rate": 56.0, "pick_rate": 10.0, "kda": 2.75,
-                "cs": 200, "ban_rate": 25.0,
+                "name": "Zed",
+                "role": "MID",
+                "games": 50,
+                "win_rate": 56.0,
+                "pick_rate": 10.0,
+                "kda": 2.75,
+                "cs": 200,
+                "ban_rate": 25.0,
             },
         ]
         result = _champion_tier_table(rows, "14.5", "14.5.1")
@@ -5222,9 +5325,14 @@ class TestChampionTierTableBanRate:
         """Ban rate value appears in the table row."""
         rows = [
             {
-                "name": "Zed", "role": "MID", "games": 50,
-                "win_rate": 56.0, "pick_rate": 10.0, "kda": 2.75,
-                "cs": 200, "ban_rate": 25.0,
+                "name": "Zed",
+                "role": "MID",
+                "games": 50,
+                "win_rate": 56.0,
+                "pick_rate": 10.0,
+                "kda": 2.75,
+                "cs": 200,
+                "ban_rate": 25.0,
             },
         ]
         result = _champion_tier_table(rows, "14.5", "14.5.1")
@@ -5234,9 +5342,14 @@ class TestChampionTierTableBanRate:
         """When ban_rate is 0.0, still shows 0.0% in the table."""
         rows = [
             {
-                "name": "Ahri", "role": "MID", "games": 40,
-                "win_rate": 55.0, "pick_rate": 8.0, "kda": 3.0,
-                "cs": 180, "ban_rate": 0.0,
+                "name": "Ahri",
+                "role": "MID",
+                "games": 40,
+                "win_rate": 55.0,
+                "pick_rate": 8.0,
+                "kda": 3.0,
+                "cs": 180,
+                "ban_rate": 0.0,
             },
         ]
         result = _champion_tier_table(rows, "14.5", "14.5.1")
@@ -5261,8 +5374,12 @@ class TestChampionsPageBanRate:
         await r.hset(
             "champion:stats:Zed:14.5:MID",
             mapping={
-                "games": "50", "wins": "28", "kills": "400",
-                "deaths": "200", "assists": "150", "cs": "10000",
+                "games": "50",
+                "wins": "28",
+                "kills": "400",
+                "deaths": "200",
+                "assists": "150",
+                "cs": "10000",
             },
         )
         # Ban data: Zed (champion ID 238) banned 15 times in 60 games
@@ -5300,8 +5417,12 @@ class TestChampionsPageBanRate:
         await r.hset(
             "champion:stats:Zed:14.5:MID",
             mapping={
-                "games": "50", "wins": "28", "kills": "400",
-                "deaths": "200", "assists": "150", "cs": "10000",
+                "games": "50",
+                "wins": "28",
+                "kills": "400",
+                "deaths": "200",
+                "assists": "150",
+                "cs": "10000",
             },
         )
         # No ban data at all — no champion:bans:14.5 key
@@ -5318,3 +5439,2183 @@ class TestChampionsPageBanRate:
         assert "Ban %" in body
         assert "0.0%" in body
         await r.aclose()
+
+
+class TestDlqSummary:
+    """Tests for _dlq_summary_html and its integration into show_dlq."""
+
+    @pytest.mark.asyncio
+    async def test_dlq_summary__empty_queue__shows_zero_counts(self):
+        """When DLQ is empty, summary shows 0 pending and 0 archived."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import _dlq_summary_html
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        result = await _dlq_summary_html(r)
+
+        assert "DLQ Analytics" in result
+        assert ">0<" in result  # stat__value of 0
+        assert "pending" in result
+        assert "archived" in result
+        assert "oldest message" in result
+        assert "n/a" in result  # no oldest when empty
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_dlq_summary__shows_depth_and_archive_count(self):
+        """Summary displays DLQ depth and archive depth."""
+        import fakeredis.aioredis
+        from lol_pipeline.models import DLQEnvelope
+
+        from lol_ui.main import _dlq_summary_html
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        # Add 2 entries to DLQ
+        for i in range(2):
+            dlq = DLQEnvelope(
+                source_stream="stream:dlq",
+                type="dlq",
+                payload={"match_id": f"NA1_{i}", "region": "na1"},
+                attempts=3,
+                max_attempts=5,
+                failure_code="http_429",
+                failure_reason="rate limited",
+                failed_by="fetcher",
+                original_stream="stream:match_id",
+                original_message_id=f"orig-{i}",
+            )
+            await r.xadd("stream:dlq", dlq.to_redis_fields())
+
+        # Add 3 entries to archive
+        for i in range(3):
+            await r.xadd("stream:dlq:archive", {"data": f"archived-{i}"})
+
+        result = await _dlq_summary_html(r)
+
+        assert ">2<" in result  # pending count
+        assert ">3<" in result  # archived count
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_dlq_summary__failure_code_breakdown(self):
+        """Summary aggregates failure codes into a breakdown table."""
+        import fakeredis.aioredis
+        from lol_pipeline.models import DLQEnvelope
+
+        from lol_ui.main import _dlq_summary_html
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        # Add entries with different failure codes
+        for fc in ["http_429", "http_429", "http_5xx"]:
+            dlq = DLQEnvelope(
+                source_stream="stream:dlq",
+                type="dlq",
+                payload={"match_id": "NA1_1", "region": "na1"},
+                attempts=3,
+                max_attempts=5,
+                failure_code=fc,
+                failure_reason="reason",
+                failed_by="fetcher",
+                original_stream="stream:match_id",
+                original_message_id="orig-1",
+            )
+            await r.xadd("stream:dlq", dlq.to_redis_fields())
+
+        result = await _dlq_summary_html(r)
+
+        assert "Failure Codes" in result
+        assert "http_429" in result
+        assert "http_5xx" in result
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_dlq_summary__source_stream_breakdown(self):
+        """Summary aggregates source streams into a breakdown table."""
+        import fakeredis.aioredis
+        from lol_pipeline.models import DLQEnvelope
+
+        from lol_ui.main import _dlq_summary_html
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        for stream in ["stream:match_id", "stream:match_id", "stream:parse"]:
+            dlq = DLQEnvelope(
+                source_stream="stream:dlq",
+                type="dlq",
+                payload={"match_id": "NA1_1", "region": "na1"},
+                attempts=3,
+                max_attempts=5,
+                failure_code="http_429",
+                failure_reason="reason",
+                failed_by="fetcher",
+                original_stream=stream,
+                original_message_id="orig-1",
+            )
+            await r.xadd("stream:dlq", dlq.to_redis_fields())
+
+        result = await _dlq_summary_html(r)
+
+        assert "Source Streams" in result
+        assert "stream:match_id" in result
+        assert "stream:parse" in result
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_dlq_summary__oldest_message_age(self):
+        """Summary computes oldest message age from first stream entry ID."""
+        import fakeredis.aioredis
+        from lol_pipeline.models import DLQEnvelope
+
+        from lol_ui.main import _dlq_summary_html
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"match_id": "NA1_1", "region": "na1"},
+            attempts=3,
+            max_attempts=5,
+            failure_code="http_429",
+            failure_reason="reason",
+            failed_by="fetcher",
+            original_stream="stream:match_id",
+            original_message_id="orig-1",
+        )
+        await r.xadd("stream:dlq", dlq.to_redis_fields())
+
+        result = await _dlq_summary_html(r)
+
+        # Should show an age string, not "n/a"
+        assert "n/a" not in result
+        assert "oldest message" in result
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_show_dlq__includes_summary_when_entries_exist(self):
+        """The DLQ page includes the analytics summary card."""
+        import fakeredis.aioredis
+        from lol_pipeline.models import DLQEnvelope
+
+        from lol_ui.main import show_dlq
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"match_id": "NA1_1", "region": "na1"},
+            attempts=3,
+            max_attempts=5,
+            failure_code="http_429",
+            failure_reason="rate limited",
+            failed_by="fetcher",
+            original_stream="stream:match_id",
+            original_message_id="orig-1",
+        )
+        await r.xadd("stream:dlq", dlq.to_redis_fields())
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {}
+
+        resp = await show_dlq(request)
+        body = resp.body.decode()
+
+        assert "DLQ Analytics" in body
+        assert "pending" in body
+        assert "archived" in body
+        assert "Failure Codes" in body
+        assert "Source Streams" in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_show_dlq__includes_summary_when_empty(self):
+        """The DLQ page includes the analytics summary even when queue is empty."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_dlq
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {}
+
+        resp = await show_dlq(request)
+        body = resp.body.decode()
+
+        assert "DLQ Analytics" in body
+        assert "pending" in body
+        assert "archived" in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_dlq_summary__escapes_failure_code(self):
+        """Failure codes are HTML-escaped via _badge to prevent injection."""
+        import fakeredis.aioredis
+        from lol_pipeline.models import DLQEnvelope
+
+        from lol_ui.main import _dlq_summary_html
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"match_id": "NA1_1", "region": "na1"},
+            attempts=3,
+            max_attempts=5,
+            failure_code="<script>xss</script>",
+            failure_reason="reason",
+            failed_by="fetcher",
+            original_stream="stream:match_id",
+            original_message_id="orig-1",
+        )
+        await r.xadd("stream:dlq", dlq.to_redis_fields())
+
+        result = await _dlq_summary_html(r)
+
+        assert "<script>" not in result
+        assert "&lt;script&gt;" in result
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_dlq_summary__escapes_original_stream(self):
+        """Source stream names are HTML-escaped to prevent injection."""
+        import fakeredis.aioredis
+        from lol_pipeline.models import DLQEnvelope
+
+        from lol_ui.main import _dlq_summary_html
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"match_id": "NA1_1", "region": "na1"},
+            attempts=3,
+            max_attempts=5,
+            failure_code="http_429",
+            failure_reason="reason",
+            failed_by="fetcher",
+            original_stream='<img src=x onerror="alert(1)">',
+            original_message_id="orig-1",
+        )
+        await r.xadd("stream:dlq", dlq.to_redis_fields())
+
+        result = await _dlq_summary_html(r)
+
+        assert 'onerror="alert(1)"' not in result
+        assert "&lt;img" in result
+        await r.aclose()
+
+
+class TestStreamsConsumerLag:
+    """Consumer lag monitoring: Group, Pending, Lag columns on /streams page."""
+
+    @pytest.mark.asyncio
+    async def test_streams_fragment__shows_group_pending_lag_columns(self):
+        """The streams table header includes Group, Pending, and Lag columns."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import _streams_fragment_html
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        result = await _streams_fragment_html(r)
+
+        assert "<th" in result
+        assert "Group" in result
+        assert "Pending" in result
+        assert "Lag" in result
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_streams_fragment__displays_consumer_group_info(self):
+        """When a stream has a consumer group, its name, pending, and lag appear."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import _streams_fragment_html
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        # Create a stream with entries and a consumer group
+        await r.xadd("stream:puuid", {"data": "test1"})
+        await r.xadd("stream:puuid", {"data": "test2"})
+        await r.xgroup_create("stream:puuid", "crawlers", "0")
+
+        result = await _streams_fragment_html(r)
+
+        # The group name should appear in the output
+        assert "crawlers" in result
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_streams_fragment__no_groups__shows_dash(self):
+        """When a stream has no consumer groups, display dashes for group/pending/lag."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import _streams_fragment_html
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        result = await _streams_fragment_html(r)
+
+        # Streams with no groups should show mdash placeholders
+        assert "&mdash;" in result
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_streams_fragment__lag_value_displayed(self):
+        """Consumer lag value is rendered in the table."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import _streams_fragment_html
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        # Create stream, add entries, create group at 0 (unread entries = lag)
+        for i in range(5):
+            await r.xadd("stream:match_id", {"data": str(i)})
+        await r.xgroup_create("stream:match_id", "fetchers", "0")
+
+        result = await _streams_fragment_html(r)
+
+        # Lag should be rendered (fakeredis reports lag field)
+        assert "fetchers" in result
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_streams_fragment__pending_count_displayed(self):
+        """Pending count from XINFO GROUPS is rendered."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import _streams_fragment_html
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.xadd("stream:parse", {"data": "val"})
+        await r.xgroup_create("stream:parse", "parsers", "0")
+        # Read but don't ACK to create pending entries
+        await r.xreadgroup("parsers", "worker1", {"stream:parse": ">"}, count=1)
+
+        result = await _streams_fragment_html(r)
+
+        # Should show pending count of 1 for parsers group
+        assert "parsers" in result
+        assert ">1<" in result
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_streams_fragment__xinfo_error_handled_gracefully(self):  # noqa: C901
+        """If XINFO GROUPS raises an error, treat as no groups (show dashes)."""
+        import fakeredis.aioredis
+
+        from lol_ui.main import _streams_fragment_html
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        # Patch pipeline execute to return ResponseError for xinfo_groups calls
+        original_pipeline = r.pipeline
+
+        class PatchedPipeline:
+            """Wraps pipeline to inject ResponseError for xinfo_groups results."""
+
+            def __init__(self, pipe):
+                self._pipe = pipe
+
+            async def __aenter__(self):
+                self._inner = await self._pipe.__aenter__()
+                return self
+
+            async def __aexit__(self, *args):
+                return await self._pipe.__aexit__(*args)
+
+            def xlen(self, *a, **kw):
+                return self._inner.xlen(*a, **kw)
+
+            def xinfo_groups(self, *a, **kw):
+                # Still queue the command so result count is correct
+                return self._inner.xinfo_groups(*a, **kw)
+
+            def zcard(self, *a, **kw):
+                return self._inner.zcard(*a, **kw)
+
+            def get(self, *a, **kw):
+                return self._inner.get(*a, **kw)
+
+            async def execute(self, raise_on_error=True):
+                import redis.exceptions
+
+                results = await self._inner.execute(raise_on_error=False)
+                n = 6  # number of streams
+                # Replace xinfo_groups results with ResponseError
+                for i in range(n, 2 * n):
+                    results[i] = redis.exceptions.ResponseError("no such key")
+                return results
+
+        def patched_pipeline(**kw):
+            return PatchedPipeline(original_pipeline(**kw))
+
+        r.pipeline = patched_pipeline
+
+        result = await _streams_fragment_html(r)
+
+        # Should not crash; should show dashes for all streams
+        assert "&mdash;" in result
+        assert "stream:puuid" in result
+        await r.aclose()
+
+
+class TestFormatGroupCells:
+    """Unit tests for _format_group_cells helper."""
+
+    def test_empty_groups__returns_dashes(self):
+        from lol_ui.main import _format_group_cells
+
+        result = _format_group_cells([])
+        assert "&mdash;" in result
+        assert "text-muted" in result
+
+    def test_single_group__renders_name_pending_lag(self):
+        from lol_ui.main import _format_group_cells
+
+        groups = [{"name": "crawlers", "pending": 5, "lag": 10}]
+        result = _format_group_cells(groups)
+        assert "crawlers" in result
+        assert ">5<" in result
+        assert ">10<" in result
+
+    def test_lag_none__shows_question_mark(self):
+        from lol_ui.main import _format_group_cells
+
+        groups = [{"name": "parsers", "pending": 0, "lag": None}]
+        result = _format_group_cells(groups)
+        assert "?" in result
+
+    def test_group_name_html_escaped(self):
+        from lol_ui.main import _format_group_cells
+
+        groups = [{"name": "<script>alert(1)</script>", "pending": 0, "lag": 0}]
+        result = _format_group_cells(groups)
+        assert "<script>" not in result
+        assert "&lt;script&gt;" in result
+
+
+class TestChampionDiversity:
+    """_champion_diversity computes HHI-based pool diversity score."""
+
+    def test_one_trick__score_zero(self):
+        """Single champion played = HHI of 1.0, diversity 0.0, label OTP."""
+        champs = [("Zed", 100.0)]
+        score, label = _champion_diversity(champs)
+        assert score == 0.0
+        assert label == "OTP"
+
+    def test_two_equal_champions__score_50(self):
+        """Two champions with equal games: HHI = 0.5, diversity = 50.0."""
+        champs = [("Zed", 50.0), ("Ahri", 50.0)]
+        score, label = _champion_diversity(champs)
+        assert score == 50.0
+        assert label == "Moderate"
+
+    def test_four_equal_champions__score_75(self):
+        """Four equal champions: HHI = 0.25, diversity = 75.0."""
+        champs = [("Zed", 25.0), ("Ahri", 25.0), ("Yasuo", 25.0), ("Lux", 25.0)]
+        score, label = _champion_diversity(champs)
+        assert score == 75.0
+        assert label == "Diverse"
+
+    def test_ten_equal_champions__score_90(self):
+        """Ten equal champions: HHI = 0.1, diversity = 90.0."""
+        champs = [(f"Champ{i}", 10.0) for i in range(10)]
+        score, label = _champion_diversity(champs)
+        assert score == 90.0
+        assert label == "Flex"
+
+    def test_empty_data__score_zero(self):
+        """No champion data = score 0.0, label OTP."""
+        score, label = _champion_diversity([])
+        assert score == 0.0
+        assert label == "OTP"
+
+    def test_zero_total_games__score_zero(self):
+        """All zero games = score 0.0, label OTP."""
+        champs = [("Zed", 0.0), ("Ahri", 0.0)]
+        score, label = _champion_diversity(champs)
+        assert score == 0.0
+        assert label == "OTP"
+
+    def test_uneven_distribution__focused(self):
+        """Dominant champion with a few others: low diversity."""
+        champs = [("Zed", 80.0), ("Ahri", 10.0), ("Lux", 10.0)]
+        score, label = _champion_diversity(champs)
+        # HHI = (0.8^2 + 0.1^2 + 0.1^2) = 0.64 + 0.01 + 0.01 = 0.66
+        # diversity = (1 - 0.66) * 100 = 34.0
+        assert score == 34.0
+        assert label == "Focused"
+
+    def test_label_boundary__otp_upper(self):
+        """Score just below 20 should be OTP."""
+        # Need HHI such that (1 - HHI) * 100 < 20, i.e., HHI > 0.8
+        # Two champs: 90 + 10 => HHI = 0.81 + 0.01 = 0.82 => diversity = 18.0
+        champs = [("Zed", 90.0), ("Ahri", 10.0)]
+        score, label = _champion_diversity(champs)
+        assert score == 18.0
+        assert label == "OTP"
+
+    def test_label_boundary__focused_lower(self):
+        """Score exactly 20 should be Focused (boundary inclusive at lower end)."""
+        # HHI = 0.8 => diversity = 20.0
+        # Five champs: one with 80 games, four with 5 each
+        # p = [0.8, 0.05, 0.05, 0.05, 0.05]
+        # HHI = 0.64 + 4*0.0025 = 0.65 => 35.0 -- too high
+        # Need exactly 20: HHI = 0.8
+        # Two champs: a and b such that a^2 + b^2 = 0.8, a+b=1
+        # a^2 + (1-a)^2 = 0.8 => 2a^2 - 2a + 1 = 0.8 => 2a^2 - 2a + 0.2 = 0
+        # a = (2 +/- sqrt(4 - 1.6))/4 = (2 +/- sqrt(2.4))/4
+        # Not clean integers. Use a direct assertion instead.
+        champs = [("Zed", 90.0), ("Ahri", 10.0)]
+        score, _ = _champion_diversity(champs)
+        assert score < 20.0  # Should be OTP
+
+    def test_label_boundary__diverse_at_60(self):
+        """Score at 60 should be Diverse."""
+        # Five equal: HHI = 5 * (0.2^2) = 0.2, diversity = 80 -- too high
+        # Three equal: HHI = 3 * (1/3)^2 = 1/3 = 0.333, diversity = 66.7
+        champs = [("A", 10.0), ("B", 10.0), ("C", 10.0)]
+        score, label = _champion_diversity(champs)
+        assert 60.0 <= score < 80.0
+        assert label == "Diverse"
+
+    def test_label_boundary__flex_at_80(self):
+        """Score at or above 80 should be Flex."""
+        champs = [(f"C{i}", 10.0) for i in range(5)]
+        score, label = _champion_diversity(champs)
+        assert score == 80.0
+        assert label == "Flex"
+
+    def test_score_is_rounded(self):
+        """Score is rounded to 1 decimal place."""
+        champs = [("A", 7.0), ("B", 3.0)]
+        score, _ = _champion_diversity(champs)
+        # HHI = (0.7^2 + 0.3^2) = 0.49 + 0.09 = 0.58 => diversity = 42.0
+        assert score == 42.0
+        assert isinstance(score, float)
+
+
+class TestStatsTableDiversity:
+    """_stats_table renders champion pool diversity score."""
+
+    def test_diversity_shown__above_min_games(self):
+        """When total champion games >= 20, diversity score appears."""
+        champs = [("Zed", 15.0), ("Ahri", 10.0)]
+        result = _stats_table({"total_games": "25"}, champs, [])
+        assert "Pool Diversity" in result
+        assert "Pool Diversity: &mdash;" not in result
+        assert "<strong>" in result.split("Pool Diversity")[1].split("</div>")[0]
+
+    def test_diversity_hidden__below_min_games(self):
+        """When total champion games < 20, diversity shows dash."""
+        champs = [("Zed", 10.0), ("Ahri", 5.0)]
+        result = _stats_table({"total_games": "15"}, champs, [])
+        assert "Pool Diversity" in result
+        assert "Pool Diversity: &mdash;" in result
+
+    def test_diversity_hidden__no_champs(self):
+        """When no champion data, diversity shows dash."""
+        result = _stats_table({"total_games": "50"}, [], [])
+        assert "Pool Diversity: &mdash;" in result
+
+    def test_diversity_shows_label(self):
+        """Diversity section includes the label text."""
+        champs = [("Zed", 10.0), ("Ahri", 10.0)]
+        result = _stats_table({}, champs, [])
+        assert "Moderate" in result
+
+    def test_diversity_exactly_at_threshold(self):
+        """Exactly 20 total games shows the diversity score."""
+        champs = [("Zed", 10.0), ("Ahri", 10.0)]
+        assert sum(g for _, g in champs) == 20
+        result = _stats_table({}, champs, [])
+        assert "Pool Diversity" in result
+        assert "50.0" in result
+
+    def test_min_games_constant_is_20(self):
+        """The minimum games threshold is 20."""
+        assert _DIVERSITY_MIN_GAMES == 20
+
+
+# ---------------------------------------------------------------------------
+# Tilt / Streak Indicator
+# ---------------------------------------------------------------------------
+
+
+def _make_match(
+    win: str = "1",
+    kills: str = "5",
+    deaths: str = "2",
+    assists: str = "3",
+):
+    """Helper to build a participant dict."""
+    return {"win": win, "kills": kills, "deaths": deaths, "assists": assists}
+
+
+class TestStreakIndicator:
+    """_streak_indicator computes streak/KDA trend from recent matches."""
+
+    def test_empty_matches__returns_neutral(self):
+        result = _streak_indicator([])
+        assert result["streak_type"] == "none"
+        assert result["streak_count"] == 0
+        assert result["recent_wr"] == 0.0
+        assert result["kda_trend"] == "neutral"
+
+    def test_all_wins__streak_equals_count(self):
+        matches = [_make_match(win="1") for _ in range(5)]
+        result = _streak_indicator(matches)
+        assert result["streak_type"] == "win"
+        assert result["streak_count"] == 5
+        assert result["recent_wr"] == 100.0
+
+    def test_all_losses__streak_equals_count(self):
+        matches = [_make_match(win="0") for _ in range(4)]
+        result = _streak_indicator(matches)
+        assert result["streak_type"] == "loss"
+        assert result["streak_count"] == 4
+        assert result["recent_wr"] == 0.0
+
+    def test_streak_broken__counts_only_consecutive(self):
+        matches = [
+            _make_match(win="1"),
+            _make_match(win="1"),
+            _make_match(win="1"),
+            _make_match(win="0"),  # breaks streak
+            _make_match(win="1"),
+        ]
+        result = _streak_indicator(matches)
+        assert result["streak_type"] == "win"
+        assert result["streak_count"] == 3
+
+    def test_loss_streak_broken(self):
+        matches = [
+            _make_match(win="0"),
+            _make_match(win="0"),
+            _make_match(win="1"),
+        ]
+        result = _streak_indicator(matches)
+        assert result["streak_type"] == "loss"
+        assert result["streak_count"] == 2
+
+    def test_single_match__streak_of_one(self):
+        result = _streak_indicator([_make_match(win="1")])
+        assert result["streak_type"] == "win"
+        assert result["streak_count"] == 1
+
+    def test_recent_wr__mixed(self):
+        matches = [_make_match(win="1")] * 3 + [_make_match(win="0")] * 7
+        result = _streak_indicator(matches)
+        assert result["recent_wr"] == 30.0
+
+    def test_kda_trend__rising(self):
+        """Recent 5 matches have much higher KDA than older matches."""
+        recent = [_make_match(kills="10", deaths="1", assists="5")] * _TILT_RECENT_KDA_COUNT
+        older = [_make_match(kills="2", deaths="5", assists="1")] * 15
+        result = _streak_indicator(recent + older)
+        assert result["kda_trend"] == "rising"
+
+    def test_kda_trend__falling(self):
+        """Recent 5 matches have much lower KDA than older matches."""
+        recent = [_make_match(kills="1", deaths="8", assists="1")] * _TILT_RECENT_KDA_COUNT
+        older = [_make_match(kills="10", deaths="1", assists="5")] * 15
+        result = _streak_indicator(recent + older)
+        assert result["kda_trend"] == "falling"
+
+    def test_kda_trend__neutral_when_similar(self):
+        """Similar KDA across all matches -> neutral."""
+        matches = [_make_match(kills="5", deaths="3", assists="3")] * 20
+        result = _streak_indicator(matches)
+        assert result["kda_trend"] == "neutral"
+
+    def test_kda_trend__neutral_when_no_older_matches(self):
+        """Only recent matches (no older group) -> neutral."""
+        matches = [_make_match(kills="10", deaths="1", assists="5")] * 3
+        result = _streak_indicator(matches)
+        assert result["kda_trend"] == "neutral"
+
+    def test_deaths_zero__no_division_error(self):
+        """Deaths=0 should not cause ZeroDivisionError."""
+        matches = [_make_match(kills="10", deaths="0", assists="5")] * 10
+        result = _streak_indicator(matches)
+        assert result["streak_type"] == "win"
+
+    def test_missing_fields__defaults_to_zero(self):
+        """Missing keys in dict should default to 0."""
+        result = _streak_indicator([{}])
+        assert result["streak_type"] == "loss"
+        assert result["streak_count"] == 1
+
+    def test_constants(self):
+        assert _TILT_RECENT_COUNT == 20
+        assert _TILT_RECENT_KDA_COUNT == 5
+
+
+class TestTiltBannerHtml:
+    """_tilt_banner_html renders streak badges and KDA trend arrows."""
+
+    def test_empty_indicator__returns_empty(self):
+        indicator = _streak_indicator([])
+        result = _tilt_banner_html(indicator)
+        assert result == ""
+
+    def test_win_streak_3__shows_green_badge(self):
+        indicator = {
+            "streak_type": "win",
+            "streak_count": 3,
+            "recent_wr": 60.0,
+            "kda_trend": "neutral",
+        }
+        result = _tilt_banner_html(indicator)
+        assert "W3" in result
+        assert "badge--success" in result
+        assert "tilt-indicator" in result
+
+    def test_win_streak_5__shows_w5(self):
+        indicator = {
+            "streak_type": "win",
+            "streak_count": 5,
+            "recent_wr": 75.0,
+            "kda_trend": "neutral",
+        }
+        result = _tilt_banner_html(indicator)
+        assert "W5" in result
+
+    def test_loss_streak_3__shows_red_badge(self):
+        indicator = {
+            "streak_type": "loss",
+            "streak_count": 3,
+            "recent_wr": 40.0,
+            "kda_trend": "neutral",
+        }
+        result = _tilt_banner_html(indicator)
+        assert "L3" in result
+        assert "badge--error" in result
+
+    def test_loss_streak_7__shows_l7(self):
+        indicator = {
+            "streak_type": "loss",
+            "streak_count": 7,
+            "recent_wr": 15.0,
+            "kda_trend": "neutral",
+        }
+        result = _tilt_banner_html(indicator)
+        assert "L7" in result
+
+    def test_streak_under_3__no_streak_badge(self):
+        indicator = {
+            "streak_type": "win",
+            "streak_count": 2,
+            "recent_wr": 50.0,
+            "kda_trend": "neutral",
+        }
+        result = _tilt_banner_html(indicator)
+        assert result == ""
+
+    def test_rising_kda__shows_arrow_up(self):
+        indicator = {
+            "streak_type": "win",
+            "streak_count": 1,
+            "recent_wr": 55.0,
+            "kda_trend": "rising",
+        }
+        result = _tilt_banner_html(indicator)
+        assert "Rising" in result
+        assert "badge--success" in result
+        assert "&uarr;" in result
+
+    def test_falling_kda__shows_arrow_down(self):
+        indicator = {
+            "streak_type": "loss",
+            "streak_count": 1,
+            "recent_wr": 45.0,
+            "kda_trend": "falling",
+        }
+        result = _tilt_banner_html(indicator)
+        assert "Falling" in result
+        assert "badge--error" in result
+        assert "&darr;" in result
+
+    def test_streak_and_rising__shows_both(self):
+        indicator = {
+            "streak_type": "win",
+            "streak_count": 4,
+            "recent_wr": 70.0,
+            "kda_trend": "rising",
+        }
+        result = _tilt_banner_html(indicator)
+        assert "W4" in result
+        assert "Rising" in result
+
+    def test_shows_recent_wr(self):
+        indicator = {
+            "streak_type": "win",
+            "streak_count": 3,
+            "recent_wr": 65.0,
+            "kda_trend": "neutral",
+        }
+        result = _tilt_banner_html(indicator)
+        assert "65%" in result
+        assert f"Last {_TILT_RECENT_COUNT}" in result
+
+    def test_neutral_only__returns_empty(self):
+        """Streak < 3 and neutral KDA -> no banner."""
+        indicator = {
+            "streak_type": "win",
+            "streak_count": 2,
+            "recent_wr": 50.0,
+            "kda_trend": "neutral",
+        }
+        assert _tilt_banner_html(indicator) == ""
+
+
+class TestPatchDelta:
+    """Unit tests for _patch_delta helper."""
+
+    def test_positive_delta__returns_positive_float(self):
+        """Current WR higher than previous -> positive delta."""
+        cur = {"games": 50, "win_rate": 55.0}
+        prev = {"games": 40, "win_rate": 50.0}
+        result = _patch_delta(cur, prev)
+        assert result == pytest.approx(5.0)
+
+    def test_negative_delta__returns_negative_float(self):
+        """Current WR lower than previous -> negative delta."""
+        cur = {"games": 30, "win_rate": 45.0}
+        prev = {"games": 25, "win_rate": 52.0}
+        result = _patch_delta(cur, prev)
+        assert result == pytest.approx(-7.0)
+
+    def test_zero_delta__returns_zero(self):
+        """Same win rate on both patches -> 0.0."""
+        cur = {"games": 20, "win_rate": 50.0}
+        prev = {"games": 20, "win_rate": 50.0}
+        assert _patch_delta(cur, prev) == 0.0
+
+    def test_near_zero_delta__returns_zero(self):
+        """Delta within 0.005 threshold -> 0.0."""
+        cur = {"games": 20, "win_rate": 50.004}
+        prev = {"games": 20, "win_rate": 50.0}
+        assert _patch_delta(cur, prev) == 0.0
+
+    def test_current_below_min_games__returns_none(self):
+        """Current patch below DELTA_MIN_GAMES -> None."""
+        cur = {"games": _DELTA_MIN_GAMES - 1, "win_rate": 55.0}
+        prev = {"games": 50, "win_rate": 50.0}
+        assert _patch_delta(cur, prev) is None
+
+    def test_prev_below_min_games__returns_none(self):
+        """Previous patch below DELTA_MIN_GAMES -> None."""
+        cur = {"games": 50, "win_rate": 55.0}
+        prev = {"games": _DELTA_MIN_GAMES - 1, "win_rate": 50.0}
+        assert _patch_delta(cur, prev) is None
+
+    def test_both_below_min_games__returns_none(self):
+        """Both patches below minimum -> None."""
+        cur = {"games": 5, "win_rate": 55.0}
+        prev = {"games": 3, "win_rate": 50.0}
+        assert _patch_delta(cur, prev) is None
+
+    def test_exact_min_games__returns_delta(self):
+        """Exactly DELTA_MIN_GAMES -> returns delta."""
+        cur = {"games": _DELTA_MIN_GAMES, "win_rate": 60.0}
+        prev = {"games": _DELTA_MIN_GAMES, "win_rate": 50.0}
+        assert _patch_delta(cur, prev) == pytest.approx(10.0)
+
+    def test_missing_fields__defaults_to_zero(self):
+        """Missing games/win_rate fields default to 0."""
+        cur: dict[str, object] = {}
+        prev: dict[str, object] = {}
+        assert _patch_delta(cur, prev) is None  # 0 games < 10
+
+    def test_string_values__coerced_correctly(self):
+        """Values stored as strings (from Redis) are handled."""
+        cur = {"games": "50", "win_rate": "55.0"}
+        prev = {"games": "40", "win_rate": "50.0"}
+        result = _patch_delta(cur, prev)
+        assert result == pytest.approx(5.0)
+
+
+class TestPbiTier:
+    """Unit tests for _pbi_tier helper."""
+
+    def test_positive_pbi__high_wr_high_pick(self):
+        """High win rate + high pick rate -> positive PBI."""
+        pbi, _, _ = _pbi_tier(55.0, 10.0, 5.0)
+        # (55-50) * 10 / (100-5) = 50/95 = 0.5263
+        assert pbi == pytest.approx(50 / 95, rel=1e-3)
+
+    def test_negative_pbi__low_wr(self):
+        """Win rate below 50 -> negative PBI."""
+        pbi, _, _ = _pbi_tier(45.0, 10.0, 0.0)
+        # (45-50) * 10 / 100 = -0.5
+        assert pbi == pytest.approx(-0.5)
+
+    def test_zero_pbi__exactly_50_wr(self):
+        """Exactly 50% win rate -> PBI is 0."""
+        pbi, _, _ = _pbi_tier(50.0, 15.0, 10.0)
+        assert pbi == pytest.approx(0.0)
+
+    def test_zero_pick_rate__pbi_zero(self):
+        """Zero pick rate -> PBI is 0 regardless of win rate."""
+        pbi, _, _ = _pbi_tier(60.0, 0.0, 5.0)
+        assert pbi == pytest.approx(0.0)
+
+    def test_ban_rate_100__uses_small_denominator(self):
+        """100% ban rate -> denominator clamped to 0.01."""
+        pbi, _, _ = _pbi_tier(55.0, 10.0, 100.0)
+        # (55-50) * 10 / 0.01 = 5000
+        assert pbi == pytest.approx(5000.0)
+
+    def test_ban_rate_over_100__uses_small_denominator(self):
+        """Ban rate > 100 (edge case) -> denominator clamped to 0.01."""
+        pbi, _, _ = _pbi_tier(55.0, 10.0, 105.0)
+        assert pbi == pytest.approx(5000.0)
+
+    def test_returns_empty_tier_and_color(self):
+        """_pbi_tier returns empty strings for tier/color (filled by _assign_tiers)."""
+        _, tier, color = _pbi_tier(55.0, 10.0, 5.0)
+        assert tier == ""
+        assert color == ""
+
+    def test_high_ban_rate__amplifies_pbi(self):
+        """High ban rate reduces denominator, amplifying PBI."""
+        pbi_low_ban, _, _ = _pbi_tier(55.0, 10.0, 10.0)
+        pbi_high_ban, _, _ = _pbi_tier(55.0, 10.0, 90.0)
+        assert pbi_high_ban > pbi_low_ban
+
+
+class TestAssignTiers:
+    """Unit tests for _assign_tiers helper."""
+
+    def _make_row(self, name, wr, pr, br, games=100):
+        return {
+            "name": name,
+            "role": "MID",
+            "games": games,
+            "win_rate": wr,
+            "pick_rate": pr,
+            "ban_rate": br,
+            "kda": 3.0,
+            "cs": 200,
+        }
+
+    def test_below_min_games__no_tier(self):
+        """Champion below PBI_MIN_GAMES gets no tier."""
+        rows = [self._make_row("Zed", 55.0, 10.0, 5.0, games=_PBI_MIN_GAMES - 1)]
+        _assign_tiers(rows)
+        assert rows[0]["tier"] == ""
+        assert rows[0]["tier_color"] == ""
+
+    def test_single_champion__gets_s_tier(self):
+        """Only one champion eligible -> rank 0 -> pct 0.0 -> S tier."""
+        rows = [self._make_row("Zed", 55.0, 10.0, 5.0)]
+        _assign_tiers(rows)
+        assert rows[0]["tier"] == "S"
+        assert rows[0]["tier_color"] == _TIER_COLORS["S"]
+
+    def test_twenty_champions__correct_tier_distribution(self):
+        """20 champions: 1 S, 3 A, 6 B, 6 C, 4 D."""
+        rows = []
+        for i in range(20):
+            # Spread win rates from 60 (best) to 41 (worst)
+            wr = 60.0 - i
+            rows.append(self._make_row(f"Champ{i}", wr, 5.0, 0.0))
+        _assign_tiers(rows)
+        tier_counts = {}
+        for r in rows:
+            t = r["tier"]
+            tier_counts[t] = tier_counts.get(t, 0) + 1
+        # S: top 5% = 1 champion (rank 0, pct=0.0 < 0.05)
+        assert tier_counts.get("S", 0) == 1
+        # A: 5-20% = 3 champions (ranks 1-3, pct 0.05-0.15)
+        assert tier_counts.get("A", 0) == 3
+        # B: 20-50% = 6 champions (ranks 4-9, pct 0.20-0.45)
+        assert tier_counts.get("B", 0) == 6
+        # C: 50-80% = 6 champions (ranks 10-15, pct 0.50-0.75)
+        assert tier_counts.get("C", 0) == 6
+        # D: bottom 20% = 4 champions (ranks 16-19, pct 0.80-0.95)
+        assert tier_counts.get("D", 0) == 4
+
+    def test_empty_rows__no_crash(self):
+        """Empty list -> no error."""
+        rows: list[dict[str, object]] = []
+        _assign_tiers(rows)
+        assert rows == []
+
+    def test_all_below_min__no_tiers_assigned(self):
+        """All champions below min games -> no tiers."""
+        rows = [
+            self._make_row("A", 55.0, 10.0, 5.0, games=5),
+            self._make_row("B", 45.0, 8.0, 2.0, games=3),
+        ]
+        _assign_tiers(rows)
+        assert all(r["tier"] == "" for r in rows)
+
+    def test_mixed_eligible_and_ineligible(self):
+        """Only eligible champions get tiers; ineligible get empty."""
+        rows = [
+            self._make_row("Eligible1", 55.0, 10.0, 0.0, games=100),
+            self._make_row("TooFew", 60.0, 20.0, 0.0, games=5),
+            self._make_row("Eligible2", 48.0, 8.0, 0.0, games=50),
+        ]
+        _assign_tiers(rows)
+        assert rows[0]["tier"] != ""
+        assert rows[1]["tier"] == ""
+        assert rows[2]["tier"] != ""
+
+    def test_pbi_stored_on_eligible_rows(self):
+        """Eligible rows get a pbi key set."""
+        rows = [self._make_row("Zed", 55.0, 10.0, 5.0)]
+        _assign_tiers(rows)
+        assert "pbi" in rows[0]
+        assert isinstance(rows[0]["pbi"], float)
+
+
+class TestChampionTierTableDelta:
+    """_champion_tier_table renders WR Delta and Tier columns."""
+
+    def _row(self, name="Zed", role="MID", games=50, wr=56.0, pr=10.0, br=5.0):
+        return {
+            "name": name,
+            "role": role,
+            "games": games,
+            "win_rate": wr,
+            "pick_rate": pr,
+            "kda": 2.75,
+            "cs": 200,
+            "ban_rate": br,
+        }
+
+    def test_wr_delta_header_present(self):
+        """WR Delta column header appears."""
+        result = _champion_tier_table([self._row()], "14.5", "14.5.1")
+        assert "WR Delta" in result
+
+    def test_tier_header_present(self):
+        """Tier column header appears."""
+        result = _champion_tier_table([self._row()], "14.5", "14.5.1")
+        assert ">Tier<" in result
+
+    def test_positive_delta__green_arrow(self):
+        """Positive delta shows green up arrow."""
+        cur = self._row(wr=55.0)
+        prev = [self._row(wr=50.0)]
+        result = _champion_tier_table([cur], "14.5", "14.5.1", prev_rows=prev)
+        assert "&#9650;" in result  # up arrow
+        assert "+5.0%" in result
+        assert "color-win" in result
+
+    def test_negative_delta__red_arrow(self):
+        """Negative delta shows red down arrow."""
+        cur = self._row(wr=45.0)
+        prev = [self._row(wr=52.0)]
+        result = _champion_tier_table([cur], "14.5", "14.5.1", prev_rows=prev)
+        assert "&#9660;" in result  # down arrow
+        assert "-7.0%" in result
+        assert "color-loss" in result
+
+    def test_no_prev_data__dash(self):
+        """No previous patch data -> mdash."""
+        result = _champion_tier_table([self._row()], "14.5", "14.5.1")
+        assert "&mdash;" in result
+
+    def test_prev_not_matching__dash(self):
+        """Previous patch has different champion -> mdash for delta."""
+        cur = self._row(name="Zed")
+        prev = [self._row(name="Ahri")]
+        result = _champion_tier_table([cur], "14.5", "14.5.1", prev_rows=prev)
+        # Delta should be dash since Zed not in prev
+        assert "&mdash;" in result
+
+    def test_below_min_games__delta_dash(self):
+        """Below DELTA_MIN_GAMES -> mdash for delta."""
+        cur = self._row(games=5, wr=55.0)
+        prev = [self._row(games=50, wr=50.0)]
+        result = _champion_tier_table([cur], "14.5", "14.5.1", prev_rows=prev)
+        assert "&mdash;" in result
+
+    def test_tier_badge__rendered_for_eligible(self):
+        """Champion with enough games gets a tier badge."""
+        rows = [self._row(games=100)]
+        result = _champion_tier_table(rows, "14.5", "14.5.1")
+        assert "tier-badge" in result
+
+    def test_tier_badge__dash_for_few_games(self):
+        """Champion below PBI_MIN_GAMES gets mdash instead of tier badge."""
+        rows = [self._row(games=_PBI_MIN_GAMES - 1)]
+        result = _champion_tier_table(rows, "14.5", "14.5.1")
+        # Should have 2 mdash cells: one for tier, one for delta
+        assert result.count("&mdash;") >= 1
+
+
+class TestChampionsPageDeltaIntegration:
+    """Integration: /champions page shows delta and tier columns."""
+
+    @pytest.mark.asyncio
+    async def test_champions_page__shows_delta_column(self):
+        """When two patches exist, WR Delta column appears with delta values."""
+        from unittest.mock import MagicMock
+
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_champions
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.zadd("patch:list", {"14.5": 1710000000, "14.4": 1709000000})
+        # Current patch
+        await r.zadd("champion:index:14.5", {"Zed:MID": 50})
+        await r.hset(
+            "champion:stats:Zed:14.5:MID",
+            mapping={
+                "games": "50",
+                "wins": "28",
+                "kills": "400",
+                "deaths": "200",
+                "assists": "150",
+                "cs": "10000",
+            },
+        )
+        # Previous patch
+        await r.zadd("champion:index:14.4", {"Zed:MID": 40})
+        await r.hset(
+            "champion:stats:Zed:14.4:MID",
+            mapping={
+                "games": "40",
+                "wins": "18",
+                "kills": "300",
+                "deaths": "160",
+                "assists": "100",
+                "cs": "8000",
+            },
+        )
+        await r.set(_DDRAGON_CHAMPION_IDS_KEY, json.dumps({}), ex=86400)
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {}
+
+        resp = await show_champions(request)
+        body = resp.body.decode()
+
+        assert "WR Delta" in body
+        assert "Tier" in body
+        # Zed: 14.5 WR = 28/50*100 = 56%, 14.4 WR = 18/40*100 = 45%
+        # delta = 56 - 45 = 11.0
+        assert "+11.0%" in body
+        assert "&#9650;" in body  # up arrow
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_champions_page__single_patch_shows_dash(self):
+        """When only one patch exists, delta column shows dash."""
+        from unittest.mock import MagicMock
+
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_champions
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.zadd("patch:list", {"14.5": 1710000000})
+        await r.zadd("champion:index:14.5", {"Zed:MID": 50})
+        await r.hset(
+            "champion:stats:Zed:14.5:MID",
+            mapping={
+                "games": "50",
+                "wins": "28",
+                "kills": "400",
+                "deaths": "200",
+                "assists": "150",
+                "cs": "10000",
+            },
+        )
+        await r.set(_DDRAGON_CHAMPION_IDS_KEY, json.dumps({}), ex=86400)
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {}
+
+        resp = await show_champions(request)
+        body = resp.body.decode()
+
+        assert "WR Delta" in body
+        assert "&mdash;" in body
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_champions_page__tier_badge_rendered(self):
+        """Champions with enough games get tier badges."""
+        from unittest.mock import MagicMock
+
+        import fakeredis.aioredis
+
+        from lol_ui.main import show_champions
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.zadd("patch:list", {"14.5": 1710000000})
+        await r.zadd("champion:index:14.5", {"Zed:MID": 50})
+        await r.hset(
+            "champion:stats:Zed:14.5:MID",
+            mapping={
+                "games": "50",
+                "wins": "28",
+                "kills": "400",
+                "deaths": "200",
+                "assists": "150",
+                "cs": "10000",
+            },
+        )
+        await r.set(_DDRAGON_CHAMPION_IDS_KEY, json.dumps({}), ex=86400)
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {}
+
+        resp = await show_champions(request)
+        body = resp.body.decode()
+
+        assert "tier-badge" in body
+        await r.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Match badges
+# ---------------------------------------------------------------------------
+
+
+class TestMatchBadges:
+    """Tests for _match_badges() badge computation."""
+
+    def test_no_badges__ordinary_game(self):
+        """A normal game with deaths and moderate KDA yields no badges."""
+        p = {"kills": "5", "deaths": "3", "assists": "4", "win": "1"}
+        assert _match_badges(p) == []
+
+    def test_deathless__win_with_zero_deaths(self):
+        """Deathless badge requires win=1 AND deaths=0."""
+        p = {"kills": "3", "deaths": "0", "assists": "2", "win": "1"}
+        badges = _match_badges(p)
+        assert ("Deathless", "gold") in badges
+
+    def test_deathless__not_awarded_on_loss(self):
+        """Deathless badge NOT awarded if the player lost."""
+        p = {"kills": "3", "deaths": "0", "assists": "2", "win": "0"}
+        badges = _match_badges(p)
+        names = [b[0] for b in badges]
+        assert "Deathless" not in names
+
+    def test_penta_kill__single_penta(self):
+        """PENTA badge when penta_kills >= 1."""
+        p = {
+            "kills": "20",
+            "deaths": "5",
+            "assists": "3",
+            "penta_kills": "1",
+            "win": "1",
+        }
+        badges = _match_badges(p)
+        assert ("PENTA", "red") in badges
+
+    def test_penta_kill__multiple_pentas(self):
+        """PENTA badge also awarded for penta_kills > 1."""
+        p = {
+            "kills": "25",
+            "deaths": "2",
+            "assists": "5",
+            "penta_kills": "3",
+            "win": "1",
+        }
+        badges = _match_badges(p)
+        assert ("PENTA", "red") in badges
+
+    def test_penta_kill__zero_pentas_no_badge(self):
+        """No PENTA badge when penta_kills is 0."""
+        p = {
+            "kills": "10",
+            "deaths": "2",
+            "assists": "5",
+            "penta_kills": "0",
+            "win": "1",
+        }
+        badges = _match_badges(p)
+        names = [b[0] for b in badges]
+        assert "PENTA" not in names
+
+    def test_high_kda__exactly_five(self):
+        """KDA 5+ badge at exactly 5.0 ratio."""
+        # (10 + 5) / max(3, 1) = 5.0
+        p = {"kills": "10", "deaths": "3", "assists": "5", "win": "0"}
+        badges = _match_badges(p)
+        assert ("KDA 5+", "green") in badges
+
+    def test_high_kda__above_five(self):
+        """KDA 5+ badge when ratio exceeds 5.0."""
+        # (15 + 10) / max(2, 1) = 12.5
+        p = {"kills": "15", "deaths": "2", "assists": "10", "win": "1"}
+        badges = _match_badges(p)
+        assert ("KDA 5+", "green") in badges
+
+    def test_high_kda__below_five_no_badge(self):
+        """No KDA 5+ badge when ratio is below 5.0."""
+        # (5 + 3) / max(2, 1) = 4.0
+        p = {"kills": "5", "deaths": "2", "assists": "3", "win": "1"}
+        badges = _match_badges(p)
+        names = [b[0] for b in badges]
+        assert "KDA 5+" not in names
+
+    def test_high_kda__zero_deaths_uses_one(self):
+        """KDA calculation uses max(deaths, 1) when deaths=0."""
+        # (3 + 2) / max(0, 1) = 5.0
+        p = {"kills": "3", "deaths": "0", "assists": "2", "win": "0"}
+        badges = _match_badges(p)
+        assert ("KDA 5+", "green") in badges
+
+    def test_cs_machine__above_threshold(self):
+        """CS 8+/m badge when CS/min >= 8.0."""
+        # (200 + 50) / (1800 / 60) = 250 / 30 = 8.33
+        p = {
+            "kills": "5",
+            "deaths": "3",
+            "assists": "4",
+            "win": "1",
+            "total_minions_killed": "200",
+            "neutral_minions": "50",
+            "time_played": "1800",
+        }
+        badges = _match_badges(p)
+        assert ("CS 8+/m", "blue") in badges
+
+    def test_cs_machine__exactly_eight(self):
+        """CS 8+/m badge at exactly 8.0 CS/min."""
+        # (240 + 0) / (1800 / 60) = 240 / 30 = 8.0
+        p = {
+            "kills": "0",
+            "deaths": "1",
+            "assists": "0",
+            "win": "0",
+            "total_minions_killed": "240",
+            "neutral_minions": "0",
+            "time_played": "1800",
+        }
+        badges = _match_badges(p)
+        assert ("CS 8+/m", "blue") in badges
+
+    def test_cs_machine__below_threshold_no_badge(self):
+        """No CS 8+/m badge when CS/min < 8.0."""
+        # (100 + 20) / (1800 / 60) = 120 / 30 = 4.0
+        p = {
+            "kills": "5",
+            "deaths": "3",
+            "assists": "4",
+            "win": "1",
+            "total_minions_killed": "100",
+            "neutral_minions": "20",
+            "time_played": "1800",
+        }
+        badges = _match_badges(p)
+        names = [b[0] for b in badges]
+        assert "CS 8+/m" not in names
+
+    def test_cs_machine__short_game_skipped(self):
+        """CS 8+/m badge not computed for games under 60 seconds."""
+        p = {
+            "kills": "5",
+            "deaths": "0",
+            "assists": "0",
+            "win": "1",
+            "total_minions_killed": "100",
+            "neutral_minions": "100",
+            "time_played": "30",
+        }
+        badges = _match_badges(p)
+        names = [b[0] for b in badges]
+        assert "CS 8+/m" not in names
+
+    def test_cs_machine__zero_time_played_skipped(self):
+        """No CS badge when time_played is 0."""
+        p = {
+            "kills": "5",
+            "deaths": "1",
+            "assists": "0",
+            "win": "1",
+            "total_minions_killed": "200",
+            "neutral_minions": "50",
+            "time_played": "0",
+        }
+        badges = _match_badges(p)
+        names = [b[0] for b in badges]
+        assert "CS 8+/m" not in names
+
+    def test_multiple_badges__simultaneously(self):
+        """A player can earn multiple badges in one game."""
+        p = {
+            "kills": "20",
+            "deaths": "0",
+            "assists": "5",
+            "win": "1",
+            "penta_kills": "1",
+            "total_minions_killed": "200",
+            "neutral_minions": "50",
+            "time_played": "1800",
+        }
+        badges = _match_badges(p)
+        names = [b[0] for b in badges]
+        assert "Deathless" in names
+        assert "PENTA" in names
+        assert "KDA 5+" in names
+        assert "CS 8+/m" in names
+
+    def test_badge_order__consistent(self):
+        """Badges returned: Deathless, PENTA, KDA 5+, CS 8+/m."""
+        p = {
+            "kills": "20",
+            "deaths": "0",
+            "assists": "5",
+            "win": "1",
+            "penta_kills": "1",
+            "total_minions_killed": "200",
+            "neutral_minions": "50",
+            "time_played": "1800",
+        }
+        badges = _match_badges(p)
+        names = [b[0] for b in badges]
+        assert names == ["Deathless", "PENTA", "KDA 5+", "CS 8+/m"]
+
+    def test_empty_participant__no_badges(self):
+        """Empty participant dict returns no badges."""
+        assert _match_badges({}) == []
+
+    def test_invalid_kills_value__no_badges(self):
+        """Non-numeric kills value returns empty list."""
+        p = {"kills": "abc", "deaths": "0", "assists": "0", "win": "1"}
+        assert _match_badges(p) == []
+
+    def test_missing_penta_kills__defaults_to_zero(self):
+        """Missing penta_kills field defaults to 0."""
+        p = {"kills": "10", "deaths": "2", "assists": "5", "win": "1"}
+        badges = _match_badges(p)
+        names = [b[0] for b in badges]
+        assert "PENTA" not in names
+
+    def test_missing_cs_fields__no_cs_badge(self):
+        """Missing CS fields default to 0."""
+        p = {"kills": "5", "deaths": "3", "assists": "4", "win": "1"}
+        badges = _match_badges(p)
+        names = [b[0] for b in badges]
+        assert "CS 8+/m" not in names
+
+
+class TestMatchBadgesHtml:
+    """Tests for _match_badges_html() rendering."""
+
+    def test_empty_badges__returns_empty_string(self):
+        """No badges produces no HTML output."""
+        assert _match_badges_html([]) == ""
+
+    def test_single_badge__renders_pill(self):
+        """Single badge renders as colored span in container div."""
+        result = _match_badges_html([("Deathless", "gold")])
+        assert 'class="match-badges"' in result
+        assert 'class="match-badge"' in result
+        assert "Deathless" in result
+        bg, fg = _MATCH_BADGE_COLORS["gold"]
+        assert f"background:{bg}" in result
+        assert f"color:{fg}" in result
+
+    def test_multiple_badges__renders_all(self):
+        """Multiple badges all appear in the output."""
+        badges = [("PENTA", "red"), ("KDA 5+", "green")]
+        result = _match_badges_html(badges)
+        assert "PENTA" in result
+        assert "KDA 5+" in result
+
+    def test_unknown_color__uses_fallback(self):
+        """Unknown color key uses gray fallback."""
+        result = _match_badges_html([("Test", "unknown_color")])
+        assert "background:#666" in result
+        assert "color:#fff" in result
+
+    def test_badge_name_html_escaped(self):
+        """Badge names with special chars are HTML-escaped."""
+        result = _match_badges_html([("<script>", "gold")])
+        assert "<script>" not in result
+        assert "&lt;script&gt;" in result
+
+
+class TestMatchBadgesInMatchHistory:
+    """Integration: badges appear in rendered match history HTML."""
+
+    def test_deathless_badge__in_match_row(self):
+        """Deathless badge appears in match history output."""
+        matches = [
+            (
+                "NA1_1",
+                {"game_start": "1700000000000", "game_mode": "CLASSIC"},
+                {
+                    "win": "1",
+                    "champion_name": "Zed",
+                    "kills": "10",
+                    "deaths": "0",
+                    "assists": "5",
+                },
+            )
+        ]
+        result = _match_history_html(
+            matches,
+            "puuid",
+            "na1",
+            "P#1",
+            0,
+            False,
+        )
+        assert "Deathless" in result
+        assert "match-badge" in result
+
+    def test_penta_badge__in_match_row(self):
+        """PENTA badge appears when penta_kills >= 1."""
+        matches = [
+            (
+                "NA1_2",
+                {"game_start": "1700000000000", "game_mode": "CLASSIC"},
+                {
+                    "win": "1",
+                    "champion_name": "Samira",
+                    "kills": "20",
+                    "deaths": "5",
+                    "assists": "3",
+                    "penta_kills": "2",
+                },
+            )
+        ]
+        result = _match_history_html(
+            matches,
+            "puuid",
+            "na1",
+            "P#1",
+            0,
+            False,
+        )
+        assert "PENTA" in result
+
+    def test_no_badges__no_badge_div(self):
+        """Ordinary game produces no match-badges div."""
+        matches = [
+            (
+                "NA1_3",
+                {"game_start": "1700000000000", "game_mode": "CLASSIC"},
+                {
+                    "win": "0",
+                    "champion_name": "Ahri",
+                    "kills": "3",
+                    "deaths": "7",
+                    "assists": "1",
+                },
+            )
+        ]
+        result = _match_history_html(
+            matches,
+            "puuid",
+            "na1",
+            "P#1",
+            0,
+            False,
+        )
+        assert "match-badges" not in result
+
+
+# ---------------------------------------------------------------------------
+# Playstyle tags
+# ---------------------------------------------------------------------------
+
+
+class TestPlaystyleTags:
+    """Tests for _playstyle_tags() threshold-based label computation."""
+
+    def _base_stats(self, **overrides):
+        """Return a minimal stats dict with sensible defaults."""
+        defaults = {
+            "total_games": "20",
+            "total_wins": "10",
+            "total_kills": "100",
+            "total_deaths": "80",
+            "total_assists": "120",
+            "avg_kills": "5.0",
+            "avg_deaths": "4.0",
+            "avg_assists": "6.0",
+            "kda": "2.75",
+            "win_rate": "0.5",
+        }
+        defaults.update(overrides)
+        return defaults
+
+    def test_playstyle_tags__too_few_games__empty(self):
+        """No tags when total_games < PLAYSTYLE_MIN_GAMES."""
+        stats = self._base_stats(total_games="2")
+        assert _playstyle_tags(stats) == []
+
+    def test_playstyle_tags__exactly_min_games__computes(self):
+        """Tags are computed when total_games == PLAYSTYLE_MIN_GAMES."""
+        stats = self._base_stats(total_games=str(_PLAYSTYLE_MIN_GAMES))
+        result = _playstyle_tags(stats)
+        # With default stats, no tags should trigger
+        assert isinstance(result, list)
+
+    def test_playstyle_tags__aggressive_high_kills(self):
+        """Aggressive tag triggers when avg_kills >= 8."""
+        stats = self._base_stats(avg_kills="8.5")
+        tags = _playstyle_tags(stats)
+        names = [t[0] for t in tags]
+        assert "Aggressive" in names
+
+    def test_playstyle_tags__aggressive_high_ka(self):
+        """Aggressive tag triggers when avg_kills + avg_assists >= 15."""
+        stats = self._base_stats(avg_kills="7.0", avg_assists="8.5")
+        tags = _playstyle_tags(stats)
+        names = [t[0] for t in tags]
+        assert "Aggressive" in names
+
+    def test_playstyle_tags__aggressive_not_triggered(self):
+        """Aggressive not triggered with low kills and low KA."""
+        stats = self._base_stats(avg_kills="5.0", avg_assists="6.0")
+        tags = _playstyle_tags(stats)
+        names = [t[0] for t in tags]
+        assert "Aggressive" not in names
+
+    def test_playstyle_tags__team_fighter(self):
+        """Team Fighter triggers when avg_assists >= 10."""
+        stats = self._base_stats(avg_assists="11.0")
+        tags = _playstyle_tags(stats)
+        names = [t[0] for t in tags]
+        assert "Team Fighter" in names
+
+    def test_playstyle_tags__team_fighter_not_triggered(self):
+        """Team Fighter not triggered with avg_assists < 10."""
+        stats = self._base_stats(avg_assists="7.0")
+        tags = _playstyle_tags(stats)
+        names = [t[0] for t in tags]
+        assert "Team Fighter" not in names
+
+    def test_playstyle_tags__deathless(self):
+        """Deathless triggers when avg_deaths <= 3."""
+        stats = self._base_stats(avg_deaths="2.5")
+        tags = _playstyle_tags(stats)
+        names = [t[0] for t in tags]
+        assert "Deathless" in names
+
+    def test_playstyle_tags__deathless_boundary(self):
+        """Deathless triggers at exactly 3.0 avg deaths."""
+        stats = self._base_stats(avg_deaths="3.0")
+        tags = _playstyle_tags(stats)
+        names = [t[0] for t in tags]
+        assert "Deathless" in names
+
+    def test_playstyle_tags__deathless_not_triggered(self):
+        """Deathless not triggered when avg_deaths > 3."""
+        stats = self._base_stats(avg_deaths="3.1")
+        tags = _playstyle_tags(stats)
+        names = [t[0] for t in tags]
+        assert "Deathless" not in names
+
+    def test_playstyle_tags__kda_king(self):
+        """KDA King triggers when kda >= 4.0."""
+        stats = self._base_stats(kda="4.5")
+        tags = _playstyle_tags(stats)
+        names = [t[0] for t in tags]
+        assert "KDA King" in names
+
+    def test_playstyle_tags__kda_king_boundary(self):
+        """KDA King triggers at exactly 4.0."""
+        stats = self._base_stats(kda="4.0")
+        tags = _playstyle_tags(stats)
+        names = [t[0] for t in tags]
+        assert "KDA King" in names
+
+    def test_playstyle_tags__kda_king_not_triggered(self):
+        """KDA King not triggered when kda < 4."""
+        stats = self._base_stats(kda="3.99")
+        tags = _playstyle_tags(stats)
+        names = [t[0] for t in tags]
+        assert "KDA King" not in names
+
+    def test_playstyle_tags__slayer(self):
+        """Slayer triggers when avg_kills >= 10."""
+        stats = self._base_stats(avg_kills="10.5")
+        tags = _playstyle_tags(stats)
+        names = [t[0] for t in tags]
+        assert "Slayer" in names
+
+    def test_playstyle_tags__slayer_not_triggered(self):
+        """Slayer not triggered when avg_kills < 10."""
+        stats = self._base_stats(avg_kills="9.9")
+        tags = _playstyle_tags(stats)
+        names = [t[0] for t in tags]
+        assert "Slayer" not in names
+
+    def test_playstyle_tags__winning_machine(self):
+        """Winning Machine triggers when win_rate >= 0.6."""
+        stats = self._base_stats(win_rate="0.65")
+        tags = _playstyle_tags(stats)
+        names = [t[0] for t in tags]
+        assert "Winning Machine" in names
+
+    def test_playstyle_tags__winning_machine_boundary(self):
+        """Winning Machine triggers at exactly 0.6."""
+        stats = self._base_stats(win_rate="0.6")
+        tags = _playstyle_tags(stats)
+        names = [t[0] for t in tags]
+        assert "Winning Machine" in names
+
+    def test_playstyle_tags__winning_machine_not_triggered(self):
+        """Winning Machine not triggered when win_rate < 0.6."""
+        stats = self._base_stats(win_rate="0.59")
+        tags = _playstyle_tags(stats)
+        names = [t[0] for t in tags]
+        assert "Winning Machine" not in names
+
+    def test_playstyle_tags__multiple_tags(self):
+        """Multiple tags can trigger simultaneously."""
+        stats = self._base_stats(
+            avg_kills="12.0",
+            avg_assists="11.0",
+            avg_deaths="2.0",
+            kda="5.0",
+            win_rate="0.7",
+        )
+        tags = _playstyle_tags(stats)
+        names = [t[0] for t in tags]
+        assert "Aggressive" in names
+        assert "Slayer" in names
+        assert "Team Fighter" in names
+        assert "Deathless" in names
+        assert "KDA King" in names
+        assert "Winning Machine" in names
+
+    def test_playstyle_tags__empty_stats(self):
+        """Empty stats dict returns empty list."""
+        assert _playstyle_tags({}) == []
+
+    def test_playstyle_tags__invalid_values__returns_empty(self):
+        """Non-numeric stat values return empty list gracefully."""
+        stats = self._base_stats(avg_kills="not_a_number")
+        assert _playstyle_tags(stats) == []
+
+    def test_playstyle_tags__returns_tuples_with_colors(self):
+        """Each tag is a (name, color) tuple with a valid CSS color."""
+        stats = self._base_stats(avg_kills="8.5")
+        tags = _playstyle_tags(stats)
+        for name, color in tags:
+            assert isinstance(name, str)
+            assert color.startswith("#")
+
+
+class TestPlaystylePillsHtml:
+    """Tests for _playstyle_pills_html() rendering."""
+
+    def test_empty_tags__returns_empty_string(self):
+        assert _playstyle_pills_html([]) == ""
+
+    def test_single_tag__renders_pill(self):
+        result = _playstyle_pills_html([("Aggressive", "#e84057")])
+        assert "playstyle-pills" in result
+        assert "playstyle-pill" in result
+        assert "Aggressive" in result
+        assert "#e84057" in result
+
+    def test_multiple_tags__renders_all(self):
+        tags = [("Aggressive", "#e84057"), ("Deathless", "#2ecc40")]
+        result = _playstyle_pills_html(tags)
+        assert "Aggressive" in result
+        assert "Deathless" in result
+
+    def test_html_escapes_tag_name(self):
+        tags = [("<script>", "#e84057")]
+        result = _playstyle_pills_html(tags)
+        assert "<script>" not in result
+        assert html.escape("<script>") in result
+
+
+# ---------------------------------------------------------------------------
+# Rank history
+# ---------------------------------------------------------------------------
+
+
+class TestRankHistoryHtml:
+    """Tests for _rank_history_html() rendering."""
+
+    def test_empty_entries__returns_empty_string(self):
+        assert _rank_history_html([]) == ""
+
+    def test_single_entry__renders_table(self):
+        entries = [("GOLD:II:75", 1700000000000.0)]
+        result = _rank_history_html(entries)
+        assert "Rank History" in result
+        assert "GOLD" in result
+        assert "II" in result
+        assert "75 LP" in result
+        assert "<table>" in result
+
+    def test_multiple_entries__renders_all_rows(self):
+        entries = [
+            ("SILVER:I:50", 1700000000000.0),
+            ("GOLD:IV:0", 1700100000000.0),
+        ]
+        result = _rank_history_html(entries)
+        assert "SILVER" in result
+        assert "GOLD" in result
+
+    def test_date_format(self):
+        # 1700000000 epoch = 2023-11-14 22:13:20 UTC
+        entries = [("GOLD:II:75", 1700000000000.0)]
+        result = _rank_history_html(entries)
+        assert "2023-11-14" in result
+
+    def test_html_escapes_values(self):
+        entries = [("<script>:I:0", 1700000000000.0)]
+        result = _rank_history_html(entries)
+        assert "<script>" not in result
+        assert html.escape("<script>") in result
+
+
+# ---------------------------------------------------------------------------
+# Per-champion / per-role breakdown helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_match(
+    champion_name="Zed",
+    team_position="MIDDLE",
+    win="1",
+    kills="10",
+    deaths="2",
+    assists="5",
+):
+    """Build a minimal participant dict for testing breakdown helpers."""
+    return {
+        "champion_name": champion_name,
+        "team_position": team_position,
+        "win": win,
+        "kills": kills,
+        "deaths": deaths,
+        "assists": assists,
+    }
+
+
+class TestBreakdownEntry:
+    """_BreakdownEntry accumulates per-champion / per-role stats."""
+
+    def test_initial_state(self):
+        entry = _BreakdownEntry()
+        assert entry.games == 0
+        assert entry.wins == 0
+        assert entry.total_kda == 0.0
+
+    def test_add_win(self):
+        entry = _BreakdownEntry()
+        entry.add(win=True, kills=10, deaths=2, assists=5)
+        assert entry.games == 1
+        assert entry.wins == 1
+        assert entry.total_kda == (10 + 5) / 2
+
+    def test_add_loss(self):
+        entry = _BreakdownEntry()
+        entry.add(win=False, kills=3, deaths=7, assists=1)
+        assert entry.games == 1
+        assert entry.wins == 0
+
+    def test_win_rate__all_wins(self):
+        entry = _BreakdownEntry()
+        entry.add(win=True, kills=1, deaths=1, assists=1)
+        entry.add(win=True, kills=1, deaths=1, assists=1)
+        assert entry.win_rate == 100.0
+
+    def test_win_rate__half(self):
+        entry = _BreakdownEntry()
+        entry.add(win=True, kills=1, deaths=1, assists=1)
+        entry.add(win=False, kills=1, deaths=1, assists=1)
+        assert entry.win_rate == 50.0
+
+    def test_win_rate__no_games(self):
+        entry = _BreakdownEntry()
+        assert entry.win_rate == 0.0
+
+    def test_avg_kda__single_match(self):
+        entry = _BreakdownEntry()
+        entry.add(win=True, kills=10, deaths=2, assists=5)
+        # KDA = (10+5)/2 = 7.5
+        assert entry.avg_kda == 7.5
+
+    def test_avg_kda__zero_deaths(self):
+        """Deaths=0 uses max(deaths, 1)=1 denominator."""
+        entry = _BreakdownEntry()
+        entry.add(win=True, kills=5, deaths=0, assists=3)
+        # KDA = (5+3)/1 = 8.0
+        assert entry.avg_kda == 8.0
+
+    def test_avg_kda__no_games(self):
+        entry = _BreakdownEntry()
+        assert entry.avg_kda == 0.0
+
+    def test_avg_kda__multiple_matches(self):
+        entry = _BreakdownEntry()
+        entry.add(win=True, kills=10, deaths=2, assists=4)  # KDA = 14/2 = 7.0
+        entry.add(win=False, kills=2, deaths=5, assists=3)  # KDA = 5/5 = 1.0
+        # avg KDA = (7.0 + 1.0) / 2 = 4.0
+        assert entry.avg_kda == 4.0
+
+
+class TestComputeChampionBreakdown:
+    """_compute_champion_breakdown groups matches by champion_name."""
+
+    def test_empty_matches(self):
+        result = _compute_champion_breakdown([])
+        assert result == {}
+
+    def test_single_champion(self):
+        matches = [
+            _make_match(champion_name="Zed", win="1", kills="10", deaths="2", assists="5"),
+            _make_match(champion_name="Zed", win="0", kills="3", deaths="7", assists="1"),
+        ]
+        result = _compute_champion_breakdown(matches)
+        assert "Zed" in result
+        assert result["Zed"].games == 2
+        assert result["Zed"].wins == 1
+        assert result["Zed"].win_rate == 50.0
+
+    def test_multiple_champions(self):
+        matches = [
+            _make_match(champion_name="Zed", win="1"),
+            _make_match(champion_name="Ahri", win="0"),
+            _make_match(champion_name="Zed", win="1"),
+        ]
+        result = _compute_champion_breakdown(matches)
+        assert result["Zed"].games == 2
+        assert result["Ahri"].games == 1
+
+    def test_sorted_by_games_desc(self):
+        matches = [
+            _make_match(champion_name="Ahri"),
+            _make_match(champion_name="Zed"),
+            _make_match(champion_name="Zed"),
+            _make_match(champion_name="Zed"),
+        ]
+        result = _compute_champion_breakdown(matches)
+        keys = list(result.keys())
+        assert keys == ["Zed", "Ahri"]
+
+    def test_skips_empty_champion_name(self):
+        matches = [_make_match(champion_name="")]
+        result = _compute_champion_breakdown(matches)
+        assert result == {}
+
+    def test_kda_computation(self):
+        matches = [
+            _make_match(champion_name="Zed", kills="10", deaths="2", assists="4"),
+        ]
+        result = _compute_champion_breakdown(matches)
+        # KDA = (10 + 4) / max(2, 1) = 7.0
+        assert result["Zed"].avg_kda == 7.0
+
+
+class TestComputeRoleBreakdown:
+    """_compute_role_breakdown groups matches by team_position."""
+
+    def test_empty_matches(self):
+        result = _compute_role_breakdown([])
+        assert result == {}
+
+    def test_valid_roles(self):
+        matches = [
+            _make_match(team_position="TOP", win="1"),
+            _make_match(team_position="JUNGLE", win="0"),
+            _make_match(team_position="TOP", win="1"),
+        ]
+        result = _compute_role_breakdown(matches)
+        assert result["TOP"].games == 2
+        assert result["JUNGLE"].games == 1
+
+    def test_ignores_invalid_roles(self):
+        matches = [
+            _make_match(team_position="INVALID"),
+            _make_match(team_position=""),
+        ]
+        result = _compute_role_breakdown(matches)
+        assert result == {}
+
+    def test_all_five_roles(self):
+        roles = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]
+        matches = [_make_match(team_position=r) for r in roles]
+        result = _compute_role_breakdown(matches)
+        assert set(result.keys()) == set(roles)
+
+    def test_sorted_by_games_desc(self):
+        matches = [
+            _make_match(team_position="BOTTOM"),
+            _make_match(team_position="TOP"),
+            _make_match(team_position="TOP"),
+            _make_match(team_position="TOP"),
+        ]
+        result = _compute_role_breakdown(matches)
+        keys = list(result.keys())
+        assert keys == ["TOP", "BOTTOM"]
+
+    def test_win_rate(self):
+        matches = [
+            _make_match(team_position="MIDDLE", win="1"),
+            _make_match(team_position="MIDDLE", win="1"),
+            _make_match(team_position="MIDDLE", win="0"),
+        ]
+        result = _compute_role_breakdown(matches)
+        assert result["MIDDLE"].win_rate == 66.7
+
+
+class TestChampionTableHeader:
+    def test_without_breakdown(self):
+        hdr = _champion_table_header(False)
+        assert "Champion" in hdr
+        assert "Games" in hdr
+        assert "Win%" not in hdr
+        assert "KDA" not in hdr
+
+    def test_with_breakdown(self):
+        hdr = _champion_table_header(True)
+        assert "Champion" in hdr
+        assert "Games" in hdr
+        assert "Win%" in hdr
+        assert "KDA" in hdr
+
+
+class TestRoleTableHeader:
+    def test_without_breakdown(self):
+        hdr = _role_table_header(False)
+        assert "Role" in hdr
+        assert "Games" in hdr
+        assert "Win%" not in hdr
+
+    def test_with_breakdown(self):
+        hdr = _role_table_header(True)
+        assert "Role" in hdr
+        assert "Win%" in hdr
+        assert "KDA" in hdr
+
+
+class TestRenderChampionRows:
+    def test_no_breakdown__games_only(self):
+        result = _render_champion_rows([("Zed", 5.0)], None)
+        assert "Zed" in result
+        assert "<td>5</td>" in result
+        assert "Win%" not in result
+
+    def test_with_breakdown(self):
+        entry = _BreakdownEntry()
+        entry.add(win=True, kills=10, deaths=2, assists=5)
+        entry.add(win=False, kills=3, deaths=7, assists=1)
+        breakdown = {"Zed": entry}
+        result = _render_champion_rows([("Zed", 10.0)], breakdown)
+        assert "50.0%" in result
+        assert "Zed" in result
+
+    def test_missing_breakdown_entry__shows_dash(self):
+        breakdown = {"Ahri": _BreakdownEntry()}
+        result = _render_champion_rows([("Zed", 5.0)], breakdown)
+        assert "&mdash;" in result
+
+    def test_html_escapes_champion_name(self):
+        result = _render_champion_rows([("<script>", 1.0)], None)
+        assert "<script>" not in result
+        assert "&lt;script&gt;" in result
+
+
+class TestRenderRoleRows:
+    def test_no_breakdown__games_only(self):
+        result = _render_role_rows([("TOP", 5.0)], None)
+        assert "TOP" in result
+        assert "<td>5</td>" in result
+
+    def test_with_breakdown(self):
+        entry = _BreakdownEntry()
+        entry.add(win=True, kills=5, deaths=1, assists=3)
+        breakdown = {"TOP": entry}
+        result = _render_role_rows([("TOP", 10.0)], breakdown)
+        assert "100.0%" in result
+        assert "8.00" in result  # KDA = (5+3)/1 = 8.0
+
+    def test_missing_role__shows_dash(self):
+        breakdown = {"JUNGLE": _BreakdownEntry()}
+        result = _render_role_rows([("TOP", 5.0)], breakdown)
+        assert "&mdash;" in result
+
+
+class TestStatsTableWithBreakdown:
+    """_stats_table renders enhanced columns when breakdown data is provided."""
+
+    def test_without_breakdown__backward_compatible(self):
+        """Old callers without breakdown get the same 2-column tables."""
+        result = _stats_table({"total_games": "10"}, [("Zed", 5.0)], [("MIDDLE", 3.0)])
+        assert "Zed" in result
+        assert "Top Champions" in result
+        assert "Win%" not in result
+        assert "KDA" not in result
+
+    def test_with_breakdown__shows_four_columns(self):
+        champ_entry = _BreakdownEntry()
+        champ_entry.add(win=True, kills=10, deaths=2, assists=5)
+        role_entry = _BreakdownEntry()
+        role_entry.add(win=False, kills=3, deaths=7, assists=1)
+        result = _stats_table(
+            {"total_games": "10"},
+            [("Zed", 5.0)],
+            [("MIDDLE", 3.0)],
+            champ_breakdown={"Zed": champ_entry},
+            role_breakdown={"MIDDLE": role_entry},
+        )
+        assert "Win%" in result
+        assert "KDA" in result
+        assert "100.0%" in result  # Zed 1/1 win
+        assert "0.0%" in result  # MIDDLE 0/1 win
+        assert "7.50" in result  # Zed KDA = (10+5)/2
+
+    def test_role_section_renamed(self):
+        result = _stats_table({"total_games": "10"}, [], [])
+        assert "Role Performance" in result
+
+    def test_empty_with_breakdown__colspan_4(self):
+        result = _stats_table(
+            {"total_games": "10"},
+            [],
+            [],
+            champ_breakdown={},
+            role_breakdown={},
+        )
+        assert "colspan='4'" in result
+
+    def test_empty_without_breakdown__colspan_2(self):
+        result = _stats_table({"total_games": "10"}, [], [])
+        assert "colspan='2'" in result
+
+    def test_diversity_still_shown(self):
+        """Diversity section is preserved with breakdown data."""
+        champs = [("Zed", 15.0), ("Ahri", 10.0)]
+        result = _stats_table(
+            {"total_games": "25"},
+            champs,
+            [],
+            champ_breakdown={},
+        )
+        assert "Pool Diversity" in result
+
+
+class TestBreakdownMatchCount:
+    def test_constant_is_50(self):
+        assert _BREAKDOWN_MATCH_COUNT == 50

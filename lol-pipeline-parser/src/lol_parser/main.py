@@ -136,7 +136,11 @@ async def _write_participants(
         for participant in participants:
             try:
                 puuid = _queue_participant(
-                    pipe, match_id, game_start, participant, cfg.match_data_ttl_seconds,
+                    pipe,
+                    match_id,
+                    game_start,
+                    participant,
+                    cfg.match_data_ttl_seconds,
                 )
             except (KeyError, TypeError) as exc:
                 log.warning(
@@ -153,7 +157,9 @@ async def _write_participants(
         async with r.pipeline(transaction=False) as trim_pipe:
             for puuid in seen:
                 trim_pipe.zremrangebyrank(
-                    f"player:matches:{puuid}", 0, -(cfg.player_matches_max + 1),
+                    f"player:matches:{puuid}",
+                    0,
+                    -(cfg.player_matches_max + 1),
                 )
                 trim_pipe.expire(f"player:matches:{puuid}", PLAYER_DATA_TTL_SECONDS)  # 30 days
             await trim_pipe.execute()
@@ -260,6 +266,63 @@ async def _write_matchups(
     log.debug("wrote matchups", extra={"match_id": match_id, "patch": patch})
 
 
+def _extract_timeline_events(
+    frames: list[dict[str, Any]],
+) -> tuple[dict[int, list[int]], dict[int, list[int]]]:
+    """Extract build and skill orders from timeline frames."""
+    build_orders: dict[int, list[int]] = {}
+    skill_orders: dict[int, list[int]] = {}
+    for frame in frames:
+        for event in frame.get("events", []):
+            event_type = event.get("type", "")
+            pid = event.get("participantId", 0)
+            if not pid:
+                continue
+            if event_type == "ITEM_PURCHASED":
+                build_orders.setdefault(pid, []).append(
+                    event.get("itemId", 0),
+                )
+            elif event_type == "SKILL_LEVEL_UP" and event.get("levelUpType") == "NORMAL":
+                skill_orders.setdefault(pid, []).append(
+                    event.get("skillSlot", 0),
+                )
+    return build_orders, skill_orders
+
+
+async def _store_timeline_data(
+    r: aioredis.Redis,
+    match_id: str,
+    info: dict[str, Any],
+    cfg: Config,
+) -> None:
+    """Store build and skill order data extracted from timeline."""
+    build_orders, skill_orders = _extract_timeline_events(
+        info.get("frames", []),
+    )
+    pid_to_puuid: dict[int, str] = {}
+    for p in info.get("participants", []):
+        pid_to_puuid[p.get("participantId", 0)] = p.get("puuid", "")
+
+    async with r.pipeline(transaction=False) as pipe:
+        for pid, items in build_orders.items():
+            puuid = pid_to_puuid.get(pid, "")
+            if puuid:
+                pipe.set(
+                    f"build:{match_id}:{puuid}",
+                    json.dumps(items),
+                    ex=cfg.match_data_ttl_seconds,
+                )
+        for pid, skills in skill_orders.items():
+            puuid = pid_to_puuid.get(pid, "")
+            if puuid:
+                pipe.set(
+                    f"skills:{match_id}:{puuid}",
+                    json.dumps(skills),
+                    ex=cfg.match_data_ttl_seconds,
+                )
+        await pipe.execute()
+
+
 async def _parse_timeline(
     r: aioredis.Redis,
     match_id: str,
@@ -278,47 +341,43 @@ async def _parse_timeline(
         log.warning("invalid timeline JSON", extra={"match_id": match_id})
         return
 
-    info = data.get("info", {})
-    frames = info.get("frames", [])
-
-    # Extract per-participant item build order and skill order from events
-    build_orders: dict[int, list[int]] = {}  # participantId -> [itemId, ...]
-    skill_orders: dict[int, list[int]] = {}  # participantId -> [skillSlot, ...]
-
-    for frame in frames:
-        for event in frame.get("events", []):
-            event_type = event.get("type", "")
-            pid = event.get("participantId", 0)
-            if not pid:
-                continue
-            if event_type == "ITEM_PURCHASED":
-                build_orders.setdefault(pid, []).append(event.get("itemId", 0))
-            elif event_type == "SKILL_LEVEL_UP":
-                if event.get("levelUpType") == "NORMAL":
-                    skill_orders.setdefault(pid, []).append(event.get("skillSlot", 0))
-
-    # Map participantId -> puuid from timeline participants
-    pid_to_puuid: dict[int, str] = {}
-    for p in info.get("participants", []):
-        pid_to_puuid[p.get("participantId", 0)] = p.get("puuid", "")
-
-    async with r.pipeline(transaction=False) as pipe:
-        for pid, items in build_orders.items():
-            puuid = pid_to_puuid.get(pid, "")
-            if not puuid:
-                continue
-            key = f"build:{match_id}:{puuid}"
-            pipe.set(key, json.dumps(items), ex=cfg.match_data_ttl_seconds)
-
-        for pid, skills in skill_orders.items():
-            puuid = pid_to_puuid.get(pid, "")
-            if not puuid:
-                continue
-            key = f"skills:{match_id}:{puuid}"
-            pipe.set(key, json.dumps(skills), ex=cfg.match_data_ttl_seconds)
-
-        await pipe.execute()
+    await _store_timeline_data(r, match_id, data.get("info", {}), cfg)
     log.debug("parsed timeline", extra={"match_id": match_id})
+
+
+async def _discover_co_players(
+    r: aioredis.Redis,
+    cfg: Config,
+    seen_puuids: set[str],
+    region: str,
+    game_start: int,
+    log: logging.Logger,
+) -> None:
+    """Queue unseeded co-players for discovery."""
+    puuid_list = sorted(seen_puuids)
+    async with r.pipeline(transaction=False) as pipe:
+        for puuid in puuid_list:
+            await pipe.hexists(f"player:{puuid}", "seeded_at")  # type: ignore[misc]
+        seeded_results: list[bool] = await pipe.execute()
+    discover_scores: dict[str, float] = {}
+    for puuid, already_seeded in zip(
+        puuid_list,
+        seeded_results,
+        strict=True,
+    ):
+        if not already_seeded:
+            discover_scores[f"{puuid}:{region}"] = float(game_start)
+    if discover_scores:
+        await r.zadd(_DISCOVER_KEY, discover_scores, gt=True)
+        await r.zremrangebyrank(
+            _DISCOVER_KEY,
+            0,
+            -(cfg.max_discover_players + 1),
+        )
+        log.debug(
+            "queued for discovery",
+            extra={"count": len(discover_scores)},
+        )
 
 
 async def _parse_match(
@@ -367,10 +426,15 @@ async def _parse_match(
 
     game_start: int = info["gameStartTimestamp"]
 
-    # Idempotency guard: if match was already parsed, skip ban/matchup writes
-    # (those use HINCRBY which double-counts on retry) but still re-publish
-    # analyze messages (cursor-based, safe to repeat).
-    already_parsed: bool = await r.sismember("match:status:parsed", match_id)
+    # Atomic idempotency guard: SADD returns 1 if the member was newly added
+    # (first writer wins) or 0 if it already existed (another worker parsed
+    # this match first). This eliminates the TOCTOU race where two workers
+    # could both see SISMEMBER=False and double-count HINCRBY in bans/matchups.
+    first_parse: int = await r.sadd("match:status:parsed", match_id)
+    # Only set TTL when none exists (ttl < 0) to avoid resetting expiry on every write.
+    parsed_ttl: int = await r.ttl("match:status:parsed")
+    if parsed_ttl < 0:
+        await r.expire("match:status:parsed", 7776000)  # 90 days
 
     match_key = f"match:{match_id}"
     async with r.pipeline(transaction=True) as pipe:
@@ -389,8 +453,6 @@ async def _parse_match(
                 "status": "parsed",
             },
         )
-        pipe.sadd("match:status:parsed", match_id)
-        pipe.expire("match:status:parsed", 7776000)  # 90 days
         pipe.expire(match_key, cfg.match_data_ttl_seconds)
         await pipe.execute()
 
@@ -398,7 +460,7 @@ async def _parse_match(
 
     # Ban and matchup tracking (ranked solo only).
     # Only on first parse — HINCRBY is not idempotent.
-    if not already_parsed:
+    if first_parse:
         patch = _normalize_patch(info.get("gameVersion", ""))
         await _write_bans(r, match_id, info, patch, cfg, log)
         await _write_matchups(r, match_id, info, patch, cfg, log)
@@ -416,6 +478,7 @@ async def _parse_match(
                     payload={"puuid": puuid},
                     max_attempts=cfg.max_attempts,
                     priority=envelope.priority,
+                    correlation_id=envelope.correlation_id,
                 )
                 pub_pipe.xadd(
                     _OUT_STREAM,
@@ -425,25 +488,7 @@ async def _parse_match(
                 )
             await pub_pipe.execute()
 
-    # Discover co-players: ZADD with GT so score only increases (newest game wins).
-    # Member encodes "puuid:region" so discovery service has full context.
-    # Only add PUUIDs not already seeded (no seeded_at field in player:{puuid}).
-    # Note: backfill above may create player:{puuid} with game_name/tag_line,
-    # but those still need discovery to crawl their match history.
-    # Batch all HEXISTS checks in a single pipeline round-trip (avoid N+1).
-    puuid_list = sorted(seen_puuids)
-    async with r.pipeline(transaction=False) as pipe:
-        for puuid in puuid_list:
-            await pipe.hexists(f"player:{puuid}", "seeded_at")  # type: ignore[misc]
-        seeded_results: list[bool] = await pipe.execute()
-    discover_scores: dict[str, float] = {}
-    for puuid, already_seeded in zip(puuid_list, seeded_results, strict=True):
-        if not already_seeded:
-            discover_scores[f"{puuid}:{region}"] = float(game_start)
-    if discover_scores:
-        await r.zadd(_DISCOVER_KEY, discover_scores, gt=True)
-        await r.zremrangebyrank(_DISCOVER_KEY, 0, -(cfg.max_discover_players + 1))
-        log.debug("queued for discovery", extra={"count": len(discover_scores)})
+    await _discover_co_players(r, cfg, seen_puuids, region, game_start, log)
 
     await ack(r, _IN_STREAM, _GROUP, msg_id)
     log.info(

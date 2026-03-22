@@ -18,9 +18,9 @@ from lol_parser.main import (
     _extract_perks,
     _normalize_patch,
     _parse_match,
+    _parse_timeline,
     _write_bans,
     _write_matchups,
-    _parse_timeline,
     main,
 )
 
@@ -257,6 +257,63 @@ class TestParserIdempotent:
         # Sorted set is idempotent but stream:analyze gets new messages (idempotent at consumer)
         score = await r.zscore("player:matches:test-puuid-0001", match_id)
         assert score == 1700000000000.0
+
+    @pytest.mark.asyncio
+    async def test_reparse__bans_matchups_not_double_counted(self, r, cfg, log):
+        """TOCTOU fix: SADD atomic guard prevents HINCRBY double-count on retry.
+
+        Parsing the same ranked match twice must produce ban count=1 and
+        matchup games=1, not 2.
+        """
+        raw_store = RawStore(r)
+        match_id = "NA1_IDEMPOTENT_BAN"
+        participants = [
+            _make_participant(
+                "puuid-top-a",
+                teamId=100,
+                teamPosition="TOP",
+                championName="Garen",
+                win=True,
+            ),
+            _make_participant(
+                "puuid-top-b",
+                teamId=200,
+                teamPosition="TOP",
+                championName="Renekton",
+                win=False,
+            ),
+        ]
+        data = _make_match_data(
+            match_id,
+            participants,
+            queueId=420,
+            teams=[
+                {"teamId": 100, "bans": [{"championId": 238, "pickTurn": 1}]},
+                {"teamId": 200, "bans": [{"championId": 67, "pickTurn": 2}]},
+            ],
+        )
+        await raw_store.set(match_id, json.dumps(data))
+
+        # Parse first time
+        env1 = _parse_envelope(match_id)
+        msg_id1 = await _setup_message(r, env1)
+        await _parse_match(r, raw_store, cfg, msg_id1, env1, log)
+
+        # Parse second time (simulates retry or concurrent worker)
+        env2 = _parse_envelope(match_id)
+        msg_id2 = await _setup_message(r, env2)
+        await _parse_match(r, raw_store, cfg, msg_id2, env2, log)
+
+        # Bans: each champion should be counted exactly once
+        patch = "14.1"
+        ban_key = f"champion:bans:{patch}"
+        assert await r.hget(ban_key, "238") == "1"
+        assert await r.hget(ban_key, "67") == "1"
+        assert await r.hget(ban_key, "_total_games") == "1"
+
+        # Matchups: games should be 1, not 2
+        assert await r.hget("matchup:Garen:Renekton:TOP:14.1", "games") == "1"
+        assert await r.hget("matchup:Renekton:Garen:TOP:14.1", "games") == "1"
 
 
 class TestParserItems:
@@ -676,11 +733,11 @@ class TestMatchDataTTL:
 
 
 class TestAtomicMatchWrite:
-    """I2-H11: match HSET + SADD + EXPIRE are atomic (transactional pipeline)."""
+    """I2-H11: match HSET + EXPIRE atomic; SADD is the atomic idempotency guard."""
 
     @pytest.mark.asyncio
     async def test_match_hset_and_sadd_both_written(self, r, cfg, log):
-        """Both match:{id} hash and match:status:parsed set are written atomically."""
+        """Both match:{id} hash and match:status:parsed set are written."""
         raw_store = RawStore(r)
         match_id = "NA1_1234567890"
         env = _parse_envelope(match_id)
@@ -1313,26 +1370,36 @@ class TestWriteBans:
 def _ranked_matchup_participants():
     """Build participants for a standard ranked 5v5 with all positions filled."""
     return [
-        _make_participant("puuid-top-a", teamId=100, teamPosition="TOP",
-                          championName="Garen", win=True),
-        _make_participant("puuid-jgl-a", teamId=100, teamPosition="JUNGLE",
-                          championName="LeeSin", win=True),
-        _make_participant("puuid-mid-a", teamId=100, teamPosition="MID",
-                          championName="Annie", win=True),
-        _make_participant("puuid-bot-a", teamId=100, teamPosition="BOTTOM",
-                          championName="Jinx", win=True),
-        _make_participant("puuid-sup-a", teamId=100, teamPosition="UTILITY",
-                          championName="Thresh", win=True),
-        _make_participant("puuid-top-b", teamId=200, teamPosition="TOP",
-                          championName="Renekton", win=False),
-        _make_participant("puuid-jgl-b", teamId=200, teamPosition="JUNGLE",
-                          championName="Sejuani", win=False),
-        _make_participant("puuid-mid-b", teamId=200, teamPosition="MID",
-                          championName="Zed", win=False),
-        _make_participant("puuid-bot-b", teamId=200, teamPosition="BOTTOM",
-                          championName="Caitlyn", win=False),
-        _make_participant("puuid-sup-b", teamId=200, teamPosition="UTILITY",
-                          championName="Janna", win=False),
+        _make_participant(
+            "puuid-top-a", teamId=100, teamPosition="TOP", championName="Garen", win=True
+        ),
+        _make_participant(
+            "puuid-jgl-a", teamId=100, teamPosition="JUNGLE", championName="LeeSin", win=True
+        ),
+        _make_participant(
+            "puuid-mid-a", teamId=100, teamPosition="MID", championName="Annie", win=True
+        ),
+        _make_participant(
+            "puuid-bot-a", teamId=100, teamPosition="BOTTOM", championName="Jinx", win=True
+        ),
+        _make_participant(
+            "puuid-sup-a", teamId=100, teamPosition="UTILITY", championName="Thresh", win=True
+        ),
+        _make_participant(
+            "puuid-top-b", teamId=200, teamPosition="TOP", championName="Renekton", win=False
+        ),
+        _make_participant(
+            "puuid-jgl-b", teamId=200, teamPosition="JUNGLE", championName="Sejuani", win=False
+        ),
+        _make_participant(
+            "puuid-mid-b", teamId=200, teamPosition="MID", championName="Zed", win=False
+        ),
+        _make_participant(
+            "puuid-bot-b", teamId=200, teamPosition="BOTTOM", championName="Caitlyn", win=False
+        ),
+        _make_participant(
+            "puuid-sup-b", teamId=200, teamPosition="UTILITY", championName="Janna", win=False
+        ),
     ]
 
 
@@ -1518,3 +1585,52 @@ class TestParseTimeline:
         # No crash, no keys written
         keys = [k async for k in r.scan_iter(f"build:{match_id}:*")]
         assert len(keys) == 0
+
+
+class TestParsedSetTTL:
+    """Bug 2 fix: match:status:parsed TTL is only set once, not reset on every write."""
+
+    @pytest.mark.asyncio
+    async def test_parsed_set__ttl_set_on_first_parse(self, r, cfg, log):
+        """First parse sets TTL on match:status:parsed."""
+        raw_store = RawStore(r)
+        match_id = "NA1_TTL_FIRST"
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, _load_fixture("match_normal.json"))
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        ttl = await r.ttl("match:status:parsed")
+        assert ttl > 0  # TTL was set
+
+    @pytest.mark.asyncio
+    async def test_parsed_set__ttl_not_reset_on_subsequent_parse(self, r, cfg, log):
+        """Subsequent parses do not reset the TTL on match:status:parsed."""
+        raw_store = RawStore(r)
+
+        # First parse — sets TTL
+        match_id_1 = "NA1_TTL_A"
+        env1 = _parse_envelope(match_id_1)
+        msg_id_1 = await _setup_message(r, env1)
+        await raw_store.set(match_id_1, _load_fixture("match_normal.json"))
+        await _parse_match(r, raw_store, cfg, msg_id_1, env1, log)
+
+        original_ttl = await r.ttl("match:status:parsed")
+        assert original_ttl > 0
+
+        # Artificially lower the TTL to simulate time passing
+        await r.expire("match:status:parsed", 1000)
+        lowered_ttl = await r.ttl("match:status:parsed")
+        assert lowered_ttl <= 1000
+
+        # Second parse — should NOT reset TTL back to 90 days
+        match_id_2 = "NA1_TTL_B"
+        env2 = _parse_envelope(match_id_2)
+        msg_id_2 = await _setup_message(r, env2)
+        await raw_store.set(match_id_2, _load_fixture("match_normal.json"))
+        await _parse_match(r, raw_store, cfg, msg_id_2, env2, log)
+
+        after_ttl = await r.ttl("match:status:parsed")
+        # TTL should still be around 1000 (not reset to 7776000)
+        assert after_ttl <= 1000

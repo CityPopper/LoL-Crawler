@@ -427,12 +427,12 @@ async def test_crawler__successful_crawl__publishes_matches():
 
    ```yaml
    new-service:
-     <<: *service-defaults
+     <<: *worker-defaults
      build:
-       context: .
-       dockerfile: lol-pipeline-new-service/Dockerfile
+       <<: *service-build
        args:
-         COMMON_VERSION: local
+         SERVICE_NAME: new-service
+         MODULE_NAME: lol_new_service
      volumes:
        - ./lol-pipeline-common:/common
        - ./lol-pipeline-new-service:/svc

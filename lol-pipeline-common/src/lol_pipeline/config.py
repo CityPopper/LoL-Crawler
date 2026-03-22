@@ -39,4 +39,5 @@ class Config(BaseSettings):
     # Dedup
     seen_matches_ttl_seconds: int = Field(default=604800, ge=1)  # 7 days
     # Activity-rate discovery
-    activity_rate_weight: float = Field(default=1.0, ge=0.0)  # weight for activity rate in discovery scoring
+    # Weight for activity rate in discovery scoring
+    activity_rate_weight: float = Field(default=1.0, ge=0.0)

@@ -147,9 +147,9 @@ class TestPublishMaxlenNone:
 class TestStreamMaxlenConstants:
     """I2-H3/H4: exported constants for per-stream maxlen policy."""
 
-    def test_match_id_stream_maxlen_is_none(self):
-        """stream:match_id should have no trimming."""
-        assert MATCH_ID_STREAM_MAXLEN is None
+    def test_match_id_stream_maxlen_is_bounded(self):
+        """stream:match_id should have a large but bounded maxlen."""
+        assert MATCH_ID_STREAM_MAXLEN == 500_000
 
     def test_analyze_stream_maxlen_is_50k(self):
         """stream:analyze should have 50_000 maxlen."""
@@ -938,10 +938,10 @@ class TestConsumeUsesConsumeTyped:
 class TestMaxlenForReplay:
     """_maxlen_for_replay() returns per-stream MAXLEN policy."""
 
-    def test_returns_zero_for_match_id_stream(self):
-        """stream:match_id is unbounded (MATCH_ID_STREAM_MAXLEN=None → 0)."""
-        assert MATCH_ID_STREAM_MAXLEN is None
-        assert _maxlen_for_replay("stream:match_id") == 0
+    def test_returns_maxlen_for_match_id_stream(self):
+        """stream:match_id uses its bounded MAXLEN for replay."""
+        assert MATCH_ID_STREAM_MAXLEN == 500_000
+        assert _maxlen_for_replay("stream:match_id") == 500_000
 
     def test_returns_analyze_maxlen_for_analyze_stream(self):
         assert _maxlen_for_replay("stream:analyze") == ANALYZE_STREAM_MAXLEN

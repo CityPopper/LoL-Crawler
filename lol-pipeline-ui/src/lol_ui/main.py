@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import contextlib
 import heapq
 import html
 import json
 import math
 import re
 import time
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -205,6 +207,13 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
 .badge--info { background: var(--color-info); color: #fff; }
 .badge--muted { background: var(--color-border); color: var(--color-text); }
 
+/* Playstyle pills */
+.playstyle-pills { display: flex; flex-wrap: wrap; gap: 6px;
+  margin: var(--space-sm) 0; }
+.playstyle-pill { display: inline-block; padding: 3px 10px; border-radius: 12px;
+  font-size: 11px; font-weight: 700; font-family: var(--font-sans);
+  white-space: nowrap; line-height: 1.4; }
+
 /* Stat counters */
 .stat { display: inline-block; text-align: center; padding: var(--space-md); }
 .stat__value { display: block; font-size: var(--font-size-2xl); font-weight: bold; }
@@ -384,9 +393,12 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
 .match-kda__ratio { font-size: var(--font-size-sm); color: var(--color-muted);
   font-family: var(--font-sans); }
 .match-kda__ratio--good { color: var(--color-win); }
-.match-meta-col { display: flex; flex-direction: column; gap: 2px; min-width: 70px; flex-shrink: 0; }
-.match-meta-col__value { font-size: var(--font-size-sm); font-family: var(--font-sans); }
-.match-meta-col__label { font-size: 10px; color: var(--color-muted); font-family: var(--font-sans); }
+.match-meta-col { display: flex; flex-direction: column; gap: 2px;
+  min-width: 70px; flex-shrink: 0; }
+.match-meta-col__value { font-size: var(--font-size-sm);
+  font-family: var(--font-sans); }
+.match-meta-col__label { font-size: 10px; color: var(--color-muted);
+  font-family: var(--font-sans); }
 .match-items { display: flex; gap: 2px; flex-wrap: nowrap; flex-shrink: 0; }
 .match-item { width: var(--icon-item); height: var(--icon-item); border-radius: 4px;
   background: var(--color-surface2); object-fit: cover; border: 1px solid var(--color-border); }
@@ -401,6 +413,10 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
   border: 1px solid var(--color-border); border-radius: var(--radius);
   color: var(--color-muted); cursor: pointer; font-size: var(--font-size-sm); }
 .match-load-more:hover { background: var(--color-surface2); color: var(--color-text); }
+.match-badges { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; flex-shrink: 0; }
+.match-badge { display: inline-block; padding: 1px 6px; border-radius: 10px;
+  font-size: 10px; font-weight: 700; font-family: var(--font-sans);
+  white-space: nowrap; line-height: 1.4; }
 @media (max-width: 600px) {
   .match-meta-col, .match-items { display: none; }
 }
@@ -436,6 +452,118 @@ _STATS_ORDER = [
 
 _STATS_ORDER_SET = frozenset(_STATS_ORDER)
 
+_DIVERSITY_MIN_GAMES = 20
+
+_DIVERSITY_LABELS: list[tuple[float, str]] = [
+    (20.0, "OTP"),
+    (40.0, "Focused"),
+    (60.0, "Moderate"),
+    (80.0, "Diverse"),
+    (100.1, "Flex"),
+]
+
+
+def _champion_diversity(champ_data: list[tuple[str, float]]) -> tuple[float, str]:
+    """Compute champion pool diversity from (champion_name, games_played) tuples.
+
+    Returns (score, label) where score is ``(1 - HHI) * 100``.
+    HHI = sum(p_i^2) where p_i = games_on_champ / total_games.
+    """
+    total = sum(g for _, g in champ_data)
+    if total <= 0:
+        return 0.0, "OTP"
+    hhi = sum((g / total) ** 2 for _, g in champ_data)
+    score = (1.0 - hhi) * 100.0
+    label = "Flex"
+    for threshold, lbl in _DIVERSITY_LABELS:
+        if score < threshold:
+            label = lbl
+            break
+    return round(score, 1), label
+
+
+_BREAKDOWN_MATCH_COUNT = 50
+
+
+class _BreakdownEntry:
+    """Per-champion or per-role aggregated stats."""
+
+    __slots__ = ("games", "total_kda", "wins")
+
+    def __init__(self) -> None:
+        self.games: int = 0
+        self.wins: int = 0
+        self.total_kda: float = 0.0
+
+    def add(self, win: bool, kills: int, deaths: int, assists: int) -> None:
+        """Record one match result."""
+        self.games += 1
+        if win:
+            self.wins += 1
+        self.total_kda += (kills + assists) / max(deaths, 1)
+
+    @property
+    def win_rate(self) -> float:
+        """Win rate as 0-100 percentage."""
+        return round(self.wins / self.games * 100, 1) if self.games else 0.0
+
+    @property
+    def avg_kda(self) -> float:
+        """Average KDA ratio across all recorded matches."""
+        return round(self.total_kda / self.games, 2) if self.games else 0.0
+
+
+def _compute_champion_breakdown(
+    matches: list[dict[str, str]],
+) -> dict[str, _BreakdownEntry]:
+    """Group participant dicts by champion_name and compute stats.
+
+    Returns ``{champion_name: _BreakdownEntry}`` sorted by games desc.
+    """
+    buckets: dict[str, _BreakdownEntry] = {}
+    for m in matches:
+        champ = m.get("champion_name", "")
+        if not champ:
+            continue
+        entry = buckets.get(champ)
+        if entry is None:
+            entry = _BreakdownEntry()
+            buckets[champ] = entry
+        entry.add(
+            win=str(m.get("win", "0")) == "1",
+            kills=int(m.get("kills", "0")),
+            deaths=int(m.get("deaths", "0")),
+            assists=int(m.get("assists", "0")),
+        )
+    return dict(sorted(buckets.items(), key=lambda kv: kv[1].games, reverse=True))
+
+
+def _compute_role_breakdown(
+    matches: list[dict[str, str]],
+) -> dict[str, _BreakdownEntry]:
+    """Group participant dicts by team_position and compute stats.
+
+    Returns ``{role: _BreakdownEntry}`` sorted by games desc.
+    Only includes known roles (TOP, JUNGLE, MIDDLE, BOTTOM, UTILITY).
+    """
+    valid_roles = {"TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"}
+    buckets: dict[str, _BreakdownEntry] = {}
+    for m in matches:
+        role = m.get("team_position", "")
+        if role not in valid_roles:
+            continue
+        entry = buckets.get(role)
+        if entry is None:
+            entry = _BreakdownEntry()
+            buckets[role] = entry
+        entry.add(
+            win=str(m.get("win", "0")) == "1",
+            kills=int(m.get("kills", "0")),
+            deaths=int(m.get("deaths", "0")),
+            assists=int(m.get("assists", "0")),
+        )
+    return dict(sorted(buckets.items(), key=lambda kv: kv[1].games, reverse=True))
+
 
 def _format_stat_value(key: str, value: str) -> str:  # noqa: PLR0911
     """Format a stat value for display.
@@ -459,6 +587,61 @@ def _format_stat_value(key: str, value: str) -> str:  # noqa: PLR0911
         except ValueError:
             return value
     return value
+
+
+# ---------------------------------------------------------------------------
+# Playstyle tags
+# ---------------------------------------------------------------------------
+
+_PLAYSTYLE_MIN_GAMES = 5
+
+
+def _playstyle_tags(stats: dict[str, str]) -> list[tuple[str, str]]:
+    """Compute threshold-based playstyle labels from aggregate player stats.
+
+    Returns a list of ``(tag_name, css_color)`` tuples.  Tags are derived from
+    the ``player:stats:{puuid}`` hash fields (avg_kills, avg_deaths,
+    avg_assists, kda, win_rate).
+    """
+    games = int(stats.get("total_games", "0"))
+    if games < _PLAYSTYLE_MIN_GAMES:
+        return []
+
+    try:
+        avg_kills = float(stats.get("avg_kills", "0"))
+        avg_deaths = float(stats.get("avg_deaths", "0"))
+        avg_assists = float(stats.get("avg_assists", "0"))
+        kda = float(stats.get("kda", "0"))
+        win_rate = float(stats.get("win_rate", "0"))
+    except (ValueError, TypeError):
+        return []
+
+    tags: list[tuple[str, str]] = []
+    if avg_kills >= 8 or (avg_kills + avg_assists) >= 15:
+        tags.append(("Aggressive", "#e84057"))
+    if avg_assists >= 10:
+        tags.append(("Team Fighter", "#5383e8"))
+    if avg_deaths <= 3:
+        tags.append(("Deathless", "#2ecc40"))
+    if kda >= 4.0:
+        tags.append(("KDA King", "#ffdc00"))
+    if avg_kills >= 10:
+        tags.append(("Slayer", "#ff6b35"))
+    if win_rate >= 0.6:
+        tags.append(("Winning Machine", "#9b59b6"))
+    return tags
+
+
+def _playstyle_pills_html(tags: list[tuple[str, str]]) -> str:
+    """Render playstyle tags as colored pill badges."""
+    if not tags:
+        return ""
+    pills = "".join(
+        f'<span class="playstyle-pill" style="background:{color};color:#111">'
+        f"{html.escape(name)}</span>"
+        for name, color in tags
+    )
+    return f'<div class="playstyle-pills">{pills}</div>'
 
 
 def _depth_badge(stream_name: str, depth: int) -> str:
@@ -542,10 +725,7 @@ async def _get_champion_id_map(r: aioredis.Redis) -> dict[str, str]:
     if not version:
         return {}
     try:
-        url = (
-            f"https://ddragon.leagueoflegends.com/cdn/{version}"
-            "/data/en_US/champion.json"
-        )
+        url = f"https://ddragon.leagueoflegends.com/cdn/{version}/data/en_US/champion.json"
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(url)
             resp.raise_for_status()
@@ -591,7 +771,7 @@ def _item_icon_html(item_id: str, version: str | None) -> str:
     url = f"https://ddragon.leagueoflegends.com/cdn/{safe_v}/img/item/{safe_id}.png"
     return (
         f'<img src="{url}" alt="item {safe_id}" class="match-item"'
-        f" loading=\"lazy\" onerror=\"this.style.display='none'\">"
+        f' loading="lazy" onerror="this.style.display=\'none\'">'
     )
 
 
@@ -690,6 +870,7 @@ def _make_replay_envelope(dlq: DLQEnvelope, max_attempts: int) -> MessageEnvelop
         enqueued_at=dlq.enqueued_at,
         dlq_attempts=dlq.dlq_attempts,
         priority=dlq.priority,
+        correlation_id=dlq.correlation_id,
     )
 
 
@@ -737,7 +918,8 @@ def _stats_form(
 {msg_html}
 <form class="form-inline" method="get" action="/stats">
   <label for="stats-riot-id">Riot ID:</label>
-  <input id="stats-riot-id" name="riot_id" placeholder="GameName#TagLine" required value="{escaped_value}">
+  <input id="stats-riot-id" name="riot_id"
+    placeholder="GameName#TagLine" required value="{escaped_value}">
   <label for="stats-region">Region:</label>
   <select id="stats-region" name="region">
       {options}
@@ -754,6 +936,8 @@ def _stats_table(
     stats: dict[str, str],
     champs: list[tuple[str, float]],
     roles: list[tuple[str, float]],
+    champ_breakdown: dict[str, _BreakdownEntry] | None = None,
+    role_breakdown: dict[str, _BreakdownEntry] | None = None,
 ) -> str:
     ordered = [(k, stats[k]) for k in _STATS_ORDER if k in stats]
     remaining = [(k, v) for k, v in sorted(stats.items()) if k not in _STATS_ORDER_SET]
@@ -761,8 +945,27 @@ def _stats_table(
         f"<tr><td>{html.escape(k)}</td><td>{html.escape(_format_stat_value(k, v))}</td></tr>"
         for k, v in ordered + remaining
     )
-    champ_rows = "".join(f"<tr><td>{html.escape(c)}</td><td>{int(n)}</td></tr>" for c, n in champs)
-    role_rows = "".join(f"<tr><td>{html.escape(r)}</td><td>{int(n)}</td></tr>" for r, n in roles)
+    has_bd = champ_breakdown is not None
+    champ_rows = _render_champion_rows(champs, champ_breakdown)
+    role_rows = _render_role_rows(roles, role_breakdown)
+    champ_hdr = _champion_table_header(has_bd)
+    role_hdr = _role_table_header(has_bd)
+    empty_cols = "4" if has_bd else "2"
+    total_champ_games = sum(g for _, g in champs)
+    if total_champ_games >= _DIVERSITY_MIN_GAMES:
+        div_score, div_label = _champion_diversity(champs)
+        diversity_html = (
+            f'<div style="margin-top:var(--space-sm);font-size:var(--font-size-sm);'
+            f'color:var(--color-muted)">'
+            f"Pool Diversity: <strong>{div_score:.1f}</strong> &mdash; {html.escape(div_label)}"
+            f"</div>"
+        )
+    else:
+        diversity_html = (
+            '<div style="margin-top:var(--space-sm);font-size:var(--font-size-sm);'
+            'color:var(--color-muted)">'
+            "Pool Diversity: &mdash;</div>"
+        )
     return f"""
 <h3>Verified (Riot API) {_badge_html("success", "&#10003; Verified")}</h3>
 <div class="table-scroll">
@@ -773,19 +976,74 @@ def _stats_table(
 <div>
 <h3>Top Champions</h3>
 <div class="table-scroll">
-<table><thead><tr><th scope="col">Champion</th><th scope="col">Games</th></tr></thead>
-<tbody>{champ_rows or "<tr><td colspan='2'>No data</td></tr>"}</tbody></table>
+<table><thead><tr>{champ_hdr}</tr></thead>
+<tbody>{champ_rows or f"<tr><td colspan='{empty_cols}'>No data</td></tr>"}</tbody></table>
 </div>
+{diversity_html}
 </div>
 <div>
-<h3>Roles</h3>
+<h3>Role Performance</h3>
 <div class="table-scroll">
-<table><thead><tr><th scope="col">Role</th><th scope="col">Games</th></tr></thead>
-<tbody>{role_rows or "<tr><td colspan='2'>No data</td></tr>"}</tbody></table>
+<table><thead><tr>{role_hdr}</tr></thead>
+<tbody>{role_rows or f"<tr><td colspan='{empty_cols}'>No data</td></tr>"}</tbody></table>
 </div>
 </div>
 </div>
 """
+
+
+def _champion_table_header(has_breakdown: bool) -> str:
+    """Return <th> elements for the champion table."""
+    base = '<th scope="col">Champion</th><th scope="col">Games</th>'
+    if has_breakdown:
+        return base + '<th scope="col">Win%</th><th scope="col">KDA</th>'
+    return base
+
+
+def _role_table_header(has_breakdown: bool) -> str:
+    """Return <th> elements for the role table."""
+    base = '<th scope="col">Role</th><th scope="col">Games</th>'
+    if has_breakdown:
+        return base + '<th scope="col">Win%</th><th scope="col">KDA</th>'
+    return base
+
+
+def _render_champion_rows(
+    champs: list[tuple[str, float]],
+    breakdown: dict[str, _BreakdownEntry] | None,
+) -> str:
+    """Render champion table rows, with optional breakdown columns."""
+    parts: list[str] = []
+    for c, n in champs:
+        safe = html.escape(c)
+        base = f"<tr><td>{safe}</td><td>{int(n)}</td>"
+        if breakdown is not None:
+            entry = breakdown.get(c)
+            if entry and entry.games:
+                base += f"<td>{entry.win_rate:.1f}%</td><td>{entry.avg_kda:.2f}</td>"
+            else:
+                base += "<td>&mdash;</td><td>&mdash;</td>"
+        parts.append(base + "</tr>")
+    return "".join(parts)
+
+
+def _render_role_rows(
+    roles: list[tuple[str, float]],
+    breakdown: dict[str, _BreakdownEntry] | None,
+) -> str:
+    """Render role table rows, with optional breakdown columns."""
+    parts: list[str] = []
+    for r_name, n in roles:
+        safe = html.escape(r_name)
+        base = f"<tr><td>{safe}</td><td>{int(n)}</td>"
+        if breakdown is not None:
+            entry = breakdown.get(r_name)
+            if entry and entry.games:
+                base += f"<td>{entry.win_rate:.1f}%</td><td>{entry.avg_kda:.2f}</td>"
+            else:
+                base += "<td>&mdash;</td><td>&mdash;</td>"
+        parts.append(base + "</tr>")
+    return "".join(parts)
 
 
 def _match_history_section(puuid: str, region: str, riot_id: str) -> str:
@@ -795,7 +1053,8 @@ def _match_history_section(puuid: str, region: str, riot_id: str) -> str:
     safe_id = html.escape(riot_id, quote=True)
     return f"""
 <h3>Match History</h3>
-<div id="match-history-container" data-puuid="{safe_puuid}" data-region="{safe_region}" data-riot-id="{safe_id}">
+<div id="match-history-container" data-puuid="{safe_puuid}"
+  data-region="{safe_region}" data-riot-id="{safe_id}">
 <div class="loading-state"><span class="spinner"></span> Loading\u2026</div></div>
 <script>
 var _loadingMatches = false;
@@ -997,7 +1256,9 @@ async def index(request: Request) -> HTMLResponse:
   <h3 class="card__title">Stream Depths</h3>
   <div class="table-scroll">
   <table class="streams">
-    <thead><tr><th scope="col">Key</th><th scope="col" class="text-right">Length</th><th scope="col">Status</th></tr></thead>
+    <thead><tr><th scope="col">Key</th>
+    <th scope="col" class="text-right">Length</th>
+    <th scope="col">Status</th></tr></thead>
     <tbody>{stream_rows}</tbody>
   </table>
   </div>
@@ -1051,7 +1312,9 @@ async def _resolve_and_cache_puuid(
         return cached_puuid
     try:
         await wait_for_token(
-            r, limit_per_second=cfg.api_rate_limit_per_second, region=region,
+            r,
+            limit_per_second=cfg.api_rate_limit_per_second,
+            region=region,
         )
         account = await riot.get_account_by_riot_id(game_name, tag_line, region)
     except NotFoundError:
@@ -1157,6 +1420,7 @@ async def _auto_seed_player(
         },
         max_attempts=cfg.max_attempts,
         priority=PRIORITY_MANUAL_20,
+        correlation_id=str(uuid.uuid4()),
     )
     # Set priority before publishing so clear_priority() by downstream
     # services cannot race against a not-yet-set priority key.
@@ -1207,12 +1471,43 @@ def _rank_card_html(rank: dict[str, str]) -> str:
         f"{html.escape(tier)} {html.escape(division)}</div>"
         f'<div style="font-size:var(--font-size-sm);color:var(--color-muted)">'
         f"{lp} LP &mdash; {wins}W {losses}L</div>"
-        f'<div style="background:var(--color-surface2);border-radius:4px;height:6px;margin-top:6px">'
-        f'<div style="background:{wr_color};width:{wr}%;height:6px;border-radius:4px"></div></div>'
+        f'<div style="background:var(--color-surface2);'
+        f'border-radius:4px;height:6px;margin-top:6px">'
+        f'<div style="background:{wr_color};width:{wr}%;'
+        f'height:6px;border-radius:4px"></div></div>'
         f"</div>"
         f'<div style="margin-left:auto;text-align:right">'
-        f'<span style="font-family:var(--font-sans);font-size:var(--font-size-xl);font-weight:700;color:{wr_color}">{wr}%</span>'
+        f'<span style="font-family:var(--font-sans);'
+        f"font-size:var(--font-size-xl);"
+        f'font-weight:700;color:{wr_color}">{wr}%</span>'
         f'<div style="font-size:10px;color:var(--color-muted)">Win Rate</div></div></div>'
+    )
+
+
+def _rank_history_html(entries: list[tuple[str, float]]) -> str:
+    """Render rank history as a table from ZRANGE WITHSCORES data.
+
+    Each entry is ``("TIER:DIVISION:LP", epoch_ms_score)``.
+    """
+    if not entries:
+        return ""
+    rows = ""
+    for value, score in entries:
+        parts = value.split(":", 2)
+        tier = html.escape(parts[0]) if len(parts) > 0 else ""
+        division = html.escape(parts[1]) if len(parts) > 1 else ""
+        lp = html.escape(parts[2]) if len(parts) > 2 else "0"
+        dt = datetime.fromtimestamp(score / 1000, tz=UTC)
+        date_str = dt.strftime("%Y-%m-%d %H:%M")
+        rows += (
+            f"<tr><td>{html.escape(date_str)}</td><td>{tier} {division}</td><td>{lp} LP</td></tr>"
+        )
+    return (
+        '<h3>Rank History</h3><div class="table-scroll">'
+        "<table><thead><tr>"
+        '<th scope="col">Date</th><th scope="col">Rank</th>'
+        '<th scope="col">LP</th></tr></thead>'
+        f"<tbody>{rows}</tbody></table></div>"
     )
 
 
@@ -1225,19 +1520,175 @@ def _profile_header_html(game_name: str, tag_line: str, rank: dict[str, str]) ->
     lp = rank.get("lp", "0") if rank else "0"
     rank_text = f"{tier} {division}".strip() if tier != "UNRANKED" else "Unranked"
     return (
-        f'<div class="card" style="display:flex;align-items:center;gap:var(--space-lg);padding:var(--space-lg)">'
-        f'<div style="width:64px;height:64px;border-radius:50%;background:var(--color-surface2);'
+        f'<div class="card" style="display:flex;'
+        f"align-items:center;gap:var(--space-lg);"
+        f'padding:var(--space-lg)">'
+        f'<div style="width:64px;height:64px;border-radius:50%;'
+        f"background:var(--color-surface2);"
         f"display:flex;align-items:center;justify-content:center;"
         f"border:3px solid var(--color-win);flex-shrink:0;"
-        f'font-family:var(--font-sans);font-size:28px;font-weight:700;color:var(--color-win)">'
+        f"font-family:var(--font-sans);font-size:28px;"
+        f'font-weight:700;color:var(--color-win)">'
         f"{html.escape(game_name[:1].upper())}</div>"
         f"<div>"
-        f'<div style="font-family:var(--font-sans);font-size:var(--font-size-xl);font-weight:700">'
-        f'{safe_name}<span style="color:var(--color-muted);font-size:var(--font-size-base)">#{safe_tag}</span></div>'
+        f'<div style="font-family:var(--font-sans);'
+        f'font-size:var(--font-size-xl);font-weight:700">'
+        f"{safe_name}"
+        f'<span style="color:var(--color-muted);'
+        f'font-size:var(--font-size-base)">#{safe_tag}</span></div>'
         f'<div style="font-size:var(--font-size-sm);color:var(--color-muted);margin-top:2px">'
         f"{html.escape(rank_text)} &mdash; {html.escape(lp)} LP</div>"
         f"</div></div>"
     )
+
+
+_TILT_RECENT_COUNT = 20
+_TILT_RECENT_KDA_COUNT = 5
+_TILT_KDA_THRESHOLD = 0.20
+
+
+def _streak_indicator(matches: list[dict[str, str]]) -> dict[str, object]:
+    """Compute tilt/streak data from recent match participant data.
+
+    Each dict in *matches* must have ``win``, ``kills``, ``deaths``, ``assists``
+    keys (string values from Redis HGETALL).  Matches are ordered newest-first.
+
+    Returns a dict with:
+      streak_type  - "win" | "loss" | "none"
+      streak_count - int (consecutive from most recent)
+      recent_wr    - float 0-100 (win rate over all supplied matches)
+      kda_trend    - "rising" | "falling" | "neutral"
+    """
+    if not matches:
+        return {
+            "streak_type": "none",
+            "streak_count": 0,
+            "recent_wr": 0.0,
+            "kda_trend": "neutral",
+        }
+
+    # --- streak ---
+    first_win = str(matches[0].get("win", "0")) == "1"
+    streak_type = "win" if first_win else "loss"
+    streak_count = 0
+    for m in matches:
+        is_win = str(m.get("win", "0")) == "1"
+        if is_win == first_win:
+            streak_count += 1
+        else:
+            break
+
+    # --- recent win rate ---
+    wins = sum(1 for m in matches if str(m.get("win", "0")) == "1")
+    recent_wr = round(wins / len(matches) * 100, 1) if matches else 0.0
+
+    # --- KDA trend (last 5 vs 6-20) ---
+    def _avg_kda(group: list[dict[str, str]]) -> float:
+        if not group:
+            return 0.0
+        total = 0.0
+        for m in group:
+            k = int(m.get("kills", "0"))
+            d = int(m.get("deaths", "0"))
+            a = int(m.get("assists", "0"))
+            total += (k + a) / max(d, 1)
+        return total / len(group)
+
+    recent_kda = _avg_kda(matches[:_TILT_RECENT_KDA_COUNT])
+    older_kda = _avg_kda(matches[_TILT_RECENT_KDA_COUNT:])
+
+    kda_trend = "neutral"
+    if older_kda > 0:
+        ratio = (recent_kda - older_kda) / older_kda
+        if ratio >= _TILT_KDA_THRESHOLD:
+            kda_trend = "rising"
+        elif ratio <= -_TILT_KDA_THRESHOLD:
+            kda_trend = "falling"
+
+    return {
+        "streak_type": streak_type,
+        "streak_count": streak_count,
+        "recent_wr": recent_wr,
+        "kda_trend": kda_trend,
+    }
+
+
+def _tilt_banner_html(indicator: dict[str, object]) -> str:
+    """Render a tilt/streak banner from ``_streak_indicator`` output.
+
+    Returns empty string when there is nothing notable to show.
+    """
+    parts: list[str] = []
+
+    streak_type = indicator.get("streak_type", "none")
+    streak_count = int(str(indicator.get("streak_count", 0)))
+    kda_trend = str(indicator.get("kda_trend", "neutral"))
+
+    # Streak badge (3+ only)
+    if streak_count >= 3:
+        if streak_type == "win":
+            label = f"W{streak_count}"
+            parts.append(_badge("success", label))
+        elif streak_type == "loss":
+            label = f"L{streak_count}"
+            parts.append(_badge("error", label))
+
+    # KDA trend arrow
+    if kda_trend == "rising":
+        parts.append(
+            '<span class="badge badge--success" title="KDA trending up">&uarr; Rising</span>'
+        )
+    elif kda_trend == "falling":
+        parts.append(
+            '<span class="badge badge--error" title="KDA trending down">&darr; Falling</span>'
+        )
+
+    if not parts:
+        return ""
+
+    recent_wr = indicator.get("recent_wr", 0.0)
+    wr_str = f"{recent_wr:.0f}%" if isinstance(recent_wr, float) else f"{recent_wr}%"
+    wr_html = (
+        f'<span style="font-size:var(--font-size-sm);color:var(--color-muted)">'
+        f"Last {_TILT_RECENT_COUNT} WR: {html.escape(wr_str)}</span>"
+    )
+    return (
+        f'<div class="tilt-indicator" '
+        f'style="display:flex;align-items:center;gap:var(--space-sm);'
+        f'margin:var(--space-sm) 0">'
+        f"{' '.join(parts)} {wr_html}</div>"
+    )
+
+
+async def _load_recent_matches(
+    r: Any,
+    puuid: str,
+    count: int = _BREAKDOWN_MATCH_COUNT,
+) -> list[dict[str, str]]:
+    """Load up to *count* recent match participant dicts for *puuid*.
+
+    Returns a list of non-empty participant hashes, newest first.
+    """
+    match_pairs: list[tuple[str, float]] = await r.zrevrange(
+        f"player:matches:{puuid}", 0, count - 1, withscores=True
+    )
+    if not match_pairs:
+        return []
+
+    # Batch HGETALL for all participant records in one pipeline RTT
+    async with r.pipeline(transaction=False) as pipe:
+        for match_id, _ in match_pairs:
+            pipe.hgetall(f"participant:{match_id}:{puuid}")
+        participant_results: list[dict[str, str]] = await pipe.execute()
+
+    # Filter out empty results (match not yet parsed)
+    return [p for p in participant_results if p]
+
+
+async def _load_tilt_data(r: Any, puuid: str) -> dict[str, object]:
+    """Load recent match data and compute tilt/streak indicator."""
+    matches = await _load_recent_matches(r, puuid, _TILT_RECENT_COUNT)
+    return _streak_indicator(matches)
 
 
 async def _build_stats_response(
@@ -1250,22 +1701,35 @@ async def _build_stats_response(
     stats: dict[str, str],
 ) -> HTMLResponse:
     """Read Redis hashes and build the stats HTML response."""
-    # Batch the four independent reads into a single pipeline RTT.
+    # Batch the five independent reads into a single pipeline RTT.
     async with r.pipeline(transaction=False) as pipe:
         pipe.get(f"player:priority:{puuid}")
         pipe.zrevrange(f"player:champions:{puuid}", 0, 9, withscores=True)
         pipe.zrevrange(f"player:roles:{puuid}", 0, -1, withscores=True)
         pipe.hgetall(f"player:rank:{puuid}")
-        priority_key, champs, roles, rank = await pipe.execute()
+        pipe.zrange(f"player:rank:history:{puuid}", 0, -1, withscores=True)
+        priority_key, champs, roles, rank, rank_hist = await pipe.execute()
 
     champs = champs or []
     roles = roles or []
     rank = rank or {}
+    rank_hist = rank_hist or []
     priority_html = f" {_badge('info', 'Priority')}" if priority_key else ""
     profile_html = _profile_header_html(game_name, tag_line, rank)
     rank_html = _rank_card_html(rank)
+    rank_hist_html = _rank_history_html(rank_hist)
+    playstyle_html = _playstyle_pills_html(_playstyle_tags(stats))
+
+    # Load recent matches for tilt indicator + per-champion/role breakdowns
+    recent_matches = await _load_recent_matches(r, puuid)
+    tilt_data = _streak_indicator(recent_matches[:_TILT_RECENT_COUNT])
+    tilt_html = _tilt_banner_html(tilt_data)
+
+    champ_breakdown = _compute_champion_breakdown(recent_matches) if recent_matches else None
+    role_breakdown = _compute_role_breakdown(recent_matches) if recent_matches else None
+
     api_html = (
-        _stats_table(stats, champs, roles)
+        _stats_table(stats, champs, roles, champ_breakdown, role_breakdown)
         if stats
         else "<p class='warning'>No verified API stats yet (pipeline still processing).</p>"
     )
@@ -1276,7 +1740,15 @@ async def _build_stats_response(
         _stats_form(
             heading,
             "success",
-            profile_html + rank_html + api_html + history_html,
+            (
+                profile_html
+                + playstyle_html
+                + rank_html
+                + rank_hist_html
+                + tilt_html
+                + api_html
+                + history_html
+            ),
             selected_region=region,
             value=riot_id,
         )
@@ -1465,7 +1937,9 @@ async def show_players(request: Request) -> HTMLResponse:
   aria-label="Filter players by name">
 <div class="table-scroll">
 <table id="players-table">
-  <thead><tr><th scope="col">Riot ID</th><th scope="col">Region</th><th scope="col">Seeded</th></tr></thead>
+  <thead><tr><th scope="col">Riot ID</th>
+  <th scope="col">Region</th>
+  <th scope="col">Seeded</th></tr></thead>
   <tbody>
   {rows}
   </tbody>
@@ -1487,33 +1961,102 @@ _STREAM_KEYS = [
 ]
 
 
+def _format_group_cells(groups: list[dict[str, Any]]) -> str:
+    """Render Group / Pending / Lag table cells from XINFO GROUPS output."""
+    if not groups:
+        return (
+            '<td class="text-muted">&mdash;</td>'
+            '<td class="text-right text-muted">&mdash;</td>'
+            '<td class="text-right text-muted">&mdash;</td>'
+        )
+    parts: list[str] = []
+    for g in groups:
+        name = html.escape(str(g.get("name", "")))
+        pending = g.get("pending", 0)
+        lag = g.get("lag")
+        lag_display = str(lag) if lag is not None else "?"
+        parts.append(
+            f"<td>{name}</td>"
+            f'<td class="text-right">{pending}</td>'
+            f'<td class="text-right">{lag_display}</td>'
+        )
+    return "".join(parts)
+
+
 async def _streams_fragment_html(r: Any) -> str:
     """Build the inner HTML for the streams table + status (no page wrapper).
 
-    Uses a single Redis pipeline round-trip for all 9 calls (6 XLEN + 1 ZCARD + 2 GET).
+    Uses a single Redis pipeline round-trip for all calls
+    (6 XLEN + 6 XINFO GROUPS + 1 ZCARD + 1 GET).
     """
     async with r.pipeline(transaction=False) as pipe:
         for s in _STREAM_KEYS:
             pipe.xlen(s)
+        for s in _STREAM_KEYS:
+            pipe.xinfo_groups(s)
         pipe.zcard("delayed:messages")
         pipe.get("system:halted")
-        results = await pipe.execute()
+        results = await pipe.execute(raise_on_error=False)
 
-    # Unpack: 6 XLEN results, 1 ZCARD, 1 GET
-    stream_lengths: list[int] = results[: len(_STREAM_KEYS)]
-    delayed: int = results[len(_STREAM_KEYS)]
-    halted = results[len(_STREAM_KEYS) + 1]
+    n = len(_STREAM_KEYS)
+    # Unpack: N XLEN, N XINFO GROUPS, 1 ZCARD, 1 GET
+    stream_lengths: list[int] = results[:n]
+    group_infos_raw: list[Any] = results[n : 2 * n]
+    delayed: int = results[2 * n]
+    halted = results[2 * n + 1]
+
+    # Normalise XINFO GROUPS results: ResponseError → empty list
+    group_infos: list[list[dict[str, Any]]] = []
+    for info in group_infos_raw:
+        if isinstance(info, Exception):
+            group_infos.append([])
+        else:
+            group_infos.append(info)
 
     has_priority = await has_priority_players(r)
 
     rows = ""
-    for s, length in zip(_STREAM_KEYS, stream_lengths, strict=True):
+    for s, length, groups in zip(_STREAM_KEYS, stream_lengths, group_infos, strict=True):
         status_badge = _depth_badge(s, length)
-        rows += f'<tr><td>{s}</td><td class="text-right">{length}</td><td>{status_badge}</td></tr>'
+        group_cells = _format_group_cells(groups)
+        if not groups:
+            rows += (
+                f"<tr><td>{s}</td>"
+                f'<td class="text-right">{length}</td>'
+                f"{group_cells}"
+                f"<td>{status_badge}</td></tr>"
+            )
+        else:
+            for i, g in enumerate(groups):
+                name = html.escape(str(g.get("name", "")))
+                pending = g.get("pending", 0)
+                lag = g.get("lag")
+                lag_display = str(lag) if lag is not None else "?"
+                if i == 0:
+                    rowspan = f' rowspan="{len(groups)}"' if len(groups) > 1 else ""
+                    rows += (
+                        f"<tr><td{rowspan}>{s}</td>"
+                        f'<td class="text-right"{rowspan}>{length}</td>'
+                        f"<td>{name}</td>"
+                        f'<td class="text-right">{pending}</td>'
+                        f'<td class="text-right">{lag_display}</td>'
+                        f"<td{rowspan}>{status_badge}</td></tr>"
+                    )
+                else:
+                    rows += (
+                        f"<tr><td>{name}</td>"
+                        f'<td class="text-right">{pending}</td>'
+                        f'<td class="text-right">{lag_display}</td></tr>'
+                    )
+
     delayed_badge = _depth_badge("delayed:messages", delayed)
     rows += (
         f"<tr><td>delayed:messages</td>"
-        f'<td class="text-right">{delayed}</td><td>{delayed_badge}</td></tr>'
+        f'<td class="text-right">{delayed}</td>'
+        f'<td class="text-muted">&mdash;</td>'
+        f'<td class="text-right text-muted">&mdash;</td>'
+        f'<td class="text-right text-muted">&mdash;</td>'
+        f"<td>{delayed_badge}</td></tr>"
     )
 
     status = (
@@ -1529,6 +2072,8 @@ async def _streams_fragment_html(r: Any) -> str:
 <div class="table-scroll">
 <table class="streams">
   <thead><tr><th scope="col">Key</th><th scope="col" class="text-right">Length</th>\
+<th scope="col">Group</th><th scope="col" class="text-right">Pending</th>\
+<th scope="col" class="text-right">Lag</th>\
 <th scope="col">Status</th></tr></thead>
   <tbody>{rows}</tbody>
 </table>
@@ -1600,12 +2145,101 @@ async def show_streams(request: Request) -> HTMLResponse:
     return HTMLResponse(_page("Streams", body, path="/streams"))
 
 
+async def _dlq_summary_html(r: aioredis.Redis) -> str:
+    """Build an analytics summary card for the DLQ page."""
+    dlq_depth = await r.xlen("stream:dlq")
+    archive_depth = await r.xlen("stream:dlq:archive")
+
+    # Read up to 500 entries for breakdown aggregation
+    scan_entries: list[tuple[str, dict[str, str]]] = await r.xrange(
+        "stream:dlq",
+        min="-",
+        max="+",
+        count=500,
+    )
+
+    # Aggregate by failure_code and source_stream (original_stream)
+    code_counts: dict[str, int] = {}
+    stream_counts: dict[str, int] = {}
+    oldest_ts_ms: int | None = None
+
+    for entry_id, fields in scan_entries:
+        fc = fields.get("failure_code", "unknown")
+        code_counts[fc] = code_counts.get(fc, 0) + 1
+        os = fields.get("original_stream", "unknown")
+        stream_counts[os] = stream_counts.get(os, 0) + 1
+        if oldest_ts_ms is None:
+            # First entry is the oldest (XRANGE returns ascending)
+            ts_part = entry_id.split("-", 1)[0]
+            with contextlib.suppress(ValueError):
+                oldest_ts_ms = int(ts_part)
+
+    oldest_age = _time_ago(oldest_ts_ms) if oldest_ts_ms else "n/a"
+
+    # Build failure-code breakdown rows
+    code_rows = ""
+    for fc, count in sorted(code_counts.items(), key=lambda x: x[1], reverse=True):
+        code_rows += (
+            f'<tr><td>{_badge("error", fc)}</td><td style="text-align:right">{count}</td></tr>'
+        )
+
+    # Build source-stream breakdown rows
+    stream_rows = ""
+    for os, count in sorted(stream_counts.items(), key=lambda x: x[1], reverse=True):
+        stream_rows += (
+            f'<tr><td>{html.escape(os)}</td><td style="text-align:right">{count}</td></tr>'
+        )
+
+    breakdowns = ""
+    if code_rows:
+        breakdowns += (
+            '<div style="flex:1;min-width:200px">'
+            '<h4 style="margin:0 0 var(--space-sm);color:var(--color-muted)">'
+            "Failure Codes</h4>"
+            '<table style="margin:0"><thead><tr>'
+            '<th scope="col">Code</th><th scope="col" style="text-align:right">Count</th>'
+            f"</tr></thead><tbody>{code_rows}</tbody></table></div>"
+        )
+    if stream_rows:
+        breakdowns += (
+            '<div style="flex:1;min-width:200px">'
+            '<h4 style="margin:0 0 var(--space-sm);color:var(--color-muted)">'
+            "Source Streams</h4>"
+            '<table style="margin:0"><thead><tr>'
+            '<th scope="col">Stream</th><th scope="col" style="text-align:right">Count</th>'
+            f"</tr></thead><tbody>{stream_rows}</tbody></table></div>"
+        )
+
+    return f"""<div class="card">
+  <h3 class="card__title">DLQ Analytics</h3>
+  <div style="display:flex;gap:var(--space-xl);flex-wrap:wrap;margin-bottom:var(--space-md)">
+    <div class="stat">
+      <span class="stat__value">{dlq_depth}</span>
+      <span class="stat__label">pending</span>
+    </div>
+    <div class="stat">
+      <span class="stat__value">{archive_depth}</span>
+      <span class="stat__label">archived</span>
+    </div>
+    <div class="stat">
+      <span class="stat__value">{html.escape(oldest_age)}</span>
+      <span class="stat__label">oldest message</span>
+    </div>
+  </div>
+  <div style="display:flex;gap:var(--space-xl);flex-wrap:wrap">
+    {breakdowns}
+  </div>
+</div>
+"""
+
+
 @app.get("/dlq", response_class=HTMLResponse)
 async def show_dlq(request: Request) -> HTMLResponse:
     """Display dead-letter queue entries with cursor-based pagination."""
     r = request.app.state.r
     halted = await r.get("system:halted")
     halt_html = _HALT_BANNER if halted else ""
+    summary_html = await _dlq_summary_html(r)
     try:
         per_page = min(
             int(request.query_params.get("per_page", str(_DLQ_DEFAULT_PER_PAGE))), _DLQ_MAX_PER_PAGE
@@ -1627,7 +2261,7 @@ async def show_dlq(request: Request) -> HTMLResponse:
         body = (
             halt_html
             + "<h2>Dead Letter Queue</h2>"
-            + f"<p>Total entries: {total_count}</p>"
+            + summary_html
             + _empty_state(
                 "DLQ is empty",
                 "No failed messages. The pipeline is healthy.",
@@ -1671,7 +2305,7 @@ async def show_dlq(request: Request) -> HTMLResponse:
 
     next_link = (
         f'<a class="page-link" href="/dlq?cursor={html.escape(next_cursor)}'
-        f"&amp;per_page={per_page}\">Next &rarr;</a>"
+        f'&amp;per_page={per_page}">Next &rarr;</a>'
         if next_cursor
         else ""
     )
@@ -1682,6 +2316,7 @@ async def show_dlq(request: Request) -> HTMLResponse:
     )
 
     body = f"""{halt_html}<h2>Dead Letter Queue</h2>
+{summary_html}
 <p>Total entries: {total_count}. Showing {per_page} per page.</p>
 <div class="table-scroll">
 <table>
@@ -1748,8 +2383,77 @@ async def dlq_replay(request: Request, entry_id: str) -> Response:
 
 _MATCH_PAGE_SIZE = 20
 
+# Badge color definitions (CSS color, text color)
+_MATCH_BADGE_COLORS: dict[str, tuple[str, str]] = {
+    "gold": ("#ffd700", "#111"),
+    "red": ("#ff4136", "#fff"),
+    "green": ("#2ecc40", "#111"),
+    "blue": ("#4fc3f7", "#111"),
+}
 
-def _match_history_html(  # noqa: PLR0912
+
+def _match_badges(participant: dict[str, str]) -> list[tuple[str, str]]:
+    """Return a list of (badge_name, color_key) for notable match achievements.
+
+    All participant values are strings from Redis hashes.
+    """
+    badges: list[tuple[str, str]] = []
+    try:
+        kills = int(participant.get("kills", "0"))
+        deaths = int(participant.get("deaths", "0"))
+        assists = int(participant.get("assists", "0"))
+    except ValueError:
+        return badges
+
+    win = participant.get("win") == "1"
+
+    # Deathless: 0 deaths AND a win
+    if deaths == 0 and win:
+        badges.append(("Deathless", "gold"))
+
+    # Penta Kill
+    try:
+        penta = int(participant.get("penta_kills", "0"))
+    except ValueError:
+        penta = 0
+    if penta >= 1:
+        badges.append(("PENTA", "red"))
+
+    # High KDA: (kills + assists) / max(deaths, 1) >= 5.0
+    kda = (kills + assists) / max(deaths, 1)
+    if kda >= 5.0:
+        badges.append(("KDA 5+", "green"))
+
+    # CS Machine: (total_minions_killed + neutral_minions) / (time_played / 60) >= 8.0
+    try:
+        total_cs = int(participant.get("total_minions_killed", "0"))
+        neutral = int(participant.get("neutral_minions", "0"))
+        time_played = int(participant.get("time_played", "0"))
+    except ValueError:
+        total_cs = neutral = time_played = 0
+    if time_played >= 60:
+        cs_per_min = (total_cs + neutral) / (time_played / 60)
+        if cs_per_min >= 8.0:
+            badges.append(("CS 8+/m", "blue"))
+
+    return badges
+
+
+def _match_badges_html(badges: list[tuple[str, str]]) -> str:
+    """Render badge pills as HTML spans."""
+    if not badges:
+        return ""
+    parts = ""
+    for name, color_key in badges:
+        bg, fg = _MATCH_BADGE_COLORS.get(color_key, ("#666", "#fff"))
+        parts += (
+            f'<span class="match-badge" style="background:{bg};color:{fg}">'
+            f"{html.escape(name)}</span>"
+        )
+    return f'<div class="match-badges">{parts}</div>'
+
+
+def _match_history_html(
     matches: list[tuple[str, dict[str, str], dict[str, str]]],
     puuid: str,
     region: str,
@@ -1790,13 +2494,12 @@ def _match_history_html(  # noqa: PLR0912
         # Items: parse the JSON items field
         raw_items = participant.get("items", "")
         try:
-            item_list = (
-                json.loads(raw_items) if raw_items.startswith("[") else raw_items.split(",")
-            )
+            item_list = json.loads(raw_items) if raw_items.startswith("[") else raw_items.split(",")
         except (json.JSONDecodeError, AttributeError):
             item_list = []
         item_ids = (list(map(str, item_list)) + ["0"] * 7)[:7]
         items_html = "".join(_item_icon_html(iid, version) for iid in item_ids)
+        badges_html = _match_badges_html(_match_badges(participant))
 
         cards += (
             f'<div class="match-row {row_cls}">'
@@ -1814,6 +2517,7 @@ def _match_history_html(  # noqa: PLR0912
             f'<span class="match-meta-col__value">{cs} CS</span>'
             f'<span class="match-meta-col__label">{duration}</span></div>'
             f'<div class="match-items">{items_html}</div>'
+            f"{badges_html}"
             f'<div class="match-info-col">'
             f"<span>{mode}</span><span>{role}</span><span>{ago}</span></div>"
             f"</div>"
@@ -1896,11 +2600,99 @@ _CHAMPION_ROLE_LABELS: dict[str, str] = {
     "UTILITY": "SUP",
 }
 
+_PBI_MIN_GAMES = 20
+_DELTA_MIN_GAMES = 10
+
+_TIER_COLORS: dict[str, str] = {
+    "S": "#d4a017",
+    "A": "#2d8a4e",
+    "B": "#3b82f6",
+    "C": "#888",
+    "D": "#c0392b",
+}
+
+
+def _patch_delta(
+    current_stats: dict[str, object],
+    prev_stats: dict[str, object],
+) -> float | None:
+    """Compute win-rate delta between current and previous patch.
+
+    Returns None when either patch has fewer than DELTA_MIN_GAMES games.
+    """
+    cur_games = int(current_stats.get("games", 0))  # type: ignore[arg-type]
+    prev_games = int(prev_stats.get("games", 0))  # type: ignore[arg-type]
+    if cur_games < _DELTA_MIN_GAMES or prev_games < _DELTA_MIN_GAMES:
+        return None
+    cur_wr = float(current_stats.get("win_rate", 0.0))  # type: ignore[arg-type]
+    prev_wr = float(prev_stats.get("win_rate", 0.0))  # type: ignore[arg-type]
+    delta = cur_wr - prev_wr
+    if abs(delta) < 0.005:
+        return 0.0
+    return delta
+
+
+def _pbi_tier(
+    win_rate: float,
+    pick_rate: float,
+    ban_rate: float,
+) -> tuple[float, str, str]:
+    """Compute PBI score, tier letter, and color.
+
+    PBI = (win_rate - 50) * pick_rate / (100 - ban_rate).
+    Tier assignment requires ranking across all champions, so this returns
+    the raw PBI score; use _assign_tiers() for percentile-based tier letters.
+    Returns (pbi_score, "", "") -- tier/color filled by _assign_tiers.
+    """
+    denominator = 100.0 - ban_rate
+    if denominator <= 0:
+        denominator = 0.01
+    pbi = (win_rate - 50.0) * pick_rate / denominator
+    return pbi, "", ""
+
+
+def _assign_tiers(rows: list[dict[str, object]]) -> None:
+    """Assign PBI-based tier letters to rows in-place using percentile rank."""
+    scored: list[tuple[int, float]] = []
+    for i, row in enumerate(rows):
+        games = int(row.get("games", 0))  # type: ignore[arg-type]
+        if games < _PBI_MIN_GAMES:
+            row["tier"] = ""
+            row["tier_color"] = ""
+            continue
+        wr = float(row.get("win_rate", 0.0))  # type: ignore[arg-type]
+        pr = float(row.get("pick_rate", 0.0))  # type: ignore[arg-type]
+        br = float(row.get("ban_rate", 0.0))  # type: ignore[arg-type]
+        pbi, _, _ = _pbi_tier(wr, pr, br)
+        row["pbi"] = pbi
+        scored.append((i, pbi))
+
+    if not scored:
+        return
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    n = len(scored)
+    for rank, (idx, _pbi) in enumerate(scored):
+        pct = rank / n  # 0.0 = best
+        if pct < 0.05:
+            tier, color = "S", _TIER_COLORS["S"]
+        elif pct < 0.20:
+            tier, color = "A", _TIER_COLORS["A"]
+        elif pct < 0.50:
+            tier, color = "B", _TIER_COLORS["B"]
+        elif pct < 0.80:
+            tier, color = "C", _TIER_COLORS["C"]
+        else:
+            tier, color = "D", _TIER_COLORS["D"]
+        rows[idx]["tier"] = tier
+        rows[idx]["tier_color"] = color
+
 
 def _champion_tier_table(
     rows: list[dict[str, object]],
     patch: str,
     version: str | None,
+    prev_rows: list[dict[str, object]] | None = None,
 ) -> str:
     """Render the champion tier list table HTML."""
     if not rows:
@@ -1908,6 +2700,15 @@ def _champion_tier_table(
             "No champion data for this patch",
             "Try a different patch or role filter.",
         )
+    # Build lookup: (name, role) -> prev row for delta computation
+    prev_lookup: dict[tuple[str, str], dict[str, object]] = {}
+    if prev_rows:
+        for pr in prev_rows:
+            prev_lookup[(str(pr["name"]), str(pr["role"]))] = pr
+
+    # Assign PBI tiers
+    _assign_tiers(rows)
+
     trs = ""
     for row in rows:
         name = str(row["name"])
@@ -1921,25 +2722,51 @@ def _champion_tier_table(
         safe_name = html.escape(name)
         icon = _champion_icon_html(name, version)
         wr_color = (
-            "var(--color-win)" if win_rate >= 52
+            "var(--color-win)"
+            if win_rate >= 52
             else ("var(--color-warning)" if win_rate >= 48 else "var(--color-loss)")
         )
         wr_cell = (
-            f'<td style="min-width:120px"><div style="display:flex;align-items:center;gap:6px">'
-            f'<div style="flex:1;background:var(--color-surface2);border-radius:3px;height:5px">'
-            f'<div style="background:{wr_color};width:{min(win_rate, 100):.0f}%;height:5px;border-radius:3px"></div></div>'
-            f'<span style="font-family:var(--font-sans);font-size:var(--font-size-sm);color:{wr_color};min-width:42px">'
+            f'<td style="min-width:120px"><div style="display:flex;align-items:center;'
+            f'gap:6px">'
+            f'<div style="flex:1;background:var(--color-surface2);border-radius:3px;'
+            f'height:5px">'
+            f'<div style="background:{wr_color};width:{min(win_rate, 100):.0f}%;'
+            f'height:5px;border-radius:3px"></div></div>'
+            f'<span style="font-family:var(--font-sans);font-size:var(--font-size-sm);'
+            f'color:{wr_color};min-width:42px">'
             f"{win_rate:.1f}%</span></div></td>"
         )
+        # Patch-over-patch delta column
+        prev_row = prev_lookup.get((name, role))
+        delta = _patch_delta(row, prev_row) if prev_row is not None else None
+        if delta is not None and delta > 0:
+            delta_cell = f'<td style="color:var(--color-win)">&#9650; +{delta:.1f}%</td>'
+        elif delta is not None and delta < 0:
+            delta_cell = f'<td style="color:var(--color-loss)">&#9660; {delta:.1f}%</td>'
+        else:
+            delta_cell = '<td style="color:#888">&mdash;</td>'
+        # Tier badge column
+        tier = str(row.get("tier", ""))
+        tier_color = str(row.get("tier_color", ""))
+        if tier:
+            tier_cell = (
+                f'<td><span class="tier-badge" style="display:inline-block;'
+                f"padding:2px 8px;border-radius:4px;font-weight:bold;"
+                f'color:#fff;background:{tier_color}">{tier}</span></td>'
+            )
+        else:
+            tier_cell = '<td style="color:#888">&mdash;</td>'
         href = (
-            f"/champions/{_url_quote(name)}"
-            f"?patch={_url_quote(patch)}&amp;role={_url_quote(role)}"
+            f"/champions/{_url_quote(name)}?patch={_url_quote(patch)}&amp;role={_url_quote(role)}"
         )
         trs += (
             f'<tr><td><a href="{href}">{icon}{safe_name}</a></td>'
+            f"{tier_cell}"
             f"<td>{html.escape(role)}</td>"
             f"<td>{games}</td>"
             f"{wr_cell}"
+            f"{delta_cell}"
             f"<td>{pick_rate:.1f}%</td>"
             f"<td>{ban_rate:.1f}%</td>"
             f"<td>{kda:.2f}</td>"
@@ -1950,9 +2777,11 @@ def _champion_tier_table(
         "<table>"
         "<thead><tr>"
         '<th scope="col">Champion</th>'
+        '<th scope="col">Tier</th>'
         '<th scope="col">Role</th>'
         '<th scope="col">Games</th>'
         '<th scope="col">Win Rate</th>'
+        '<th scope="col">WR Delta</th>'
         '<th scope="col">Pick Rate</th>'
         '<th scope="col">Ban %</th>'
         '<th scope="col">Avg KDA</th>'
@@ -1971,17 +2800,14 @@ def _champion_filter_html(
     """Render patch selector and role filter buttons."""
     patch_options = "\n      ".join(
         f'<option value="{html.escape(p)}"'
-        f'{" selected" if p == selected_patch else ""}>'
+        f"{' selected' if p == selected_patch else ''}>"
         f"{html.escape(p)}</option>"
         for p in patches
     )
     role_links = []
     for role_key, role_label in _CHAMPION_ROLE_LABELS.items():
         active = ' class="active"' if role_key == selected_role else ""
-        href = (
-            f"/champions?patch={_url_quote(selected_patch)}"
-            f"&amp;role={_url_quote(role_key)}"
-        )
+        href = f"/champions?patch={_url_quote(selected_patch)}&amp;role={_url_quote(role_key)}"
         role_links.append(
             f'<a href="{href}"{active}'
             f' aria-label="Filter by {html.escape(role_label)}">'
@@ -2011,9 +2837,7 @@ async def _build_champion_rows(
 ) -> list[dict[str, object]]:
     """Fetch champion index and stats for a given patch/role, return row dicts."""
     index_key = f"champion:index:{patch}"
-    members: list[tuple[str, float]] = await r.zrevrange(
-        index_key, 0, -1, withscores=True
-    )
+    members: list[tuple[str, float]] = await r.zrevrange(index_key, 0, -1, withscores=True)
     if role:
         members = [(m, s) for m, s in members if m.endswith(f":{role}")]
     if not members:
@@ -2047,11 +2871,18 @@ async def _build_champion_rows(
         champ_id = _name_to_id.get(name, "")
         bans = int((ban_hash or {}).get(champ_id, "0")) if champ_id else 0
         br = (bans / total_ban_games * 100) if total_ban_games > 0 else 0.0
-        rows.append({
-            "name": name, "role": pos, "games": games,
-            "win_rate": wr, "kda": avg_kda, "cs": avg_cs, "pick_rate": pr,
-            "ban_rate": br,
-        })
+        rows.append(
+            {
+                "name": name,
+                "role": pos,
+                "games": games,
+                "win_rate": wr,
+                "kda": avg_kda,
+                "cs": avg_cs,
+                "pick_rate": pr,
+                "ban_rate": br,
+            }
+        )
     rows.sort(key=lambda x: int(x["games"]), reverse=True)  # type: ignore[arg-type]
     return rows
 
@@ -2060,9 +2891,7 @@ async def _build_champion_rows(
 async def show_champions(request: Request) -> HTMLResponse:
     """Champion tier list page."""
     r: aioredis.Redis = request.app.state.r
-    patches_raw: list[tuple[str, float]] = await r.zrevrange(
-        "patch:list", 0, 19, withscores=True
-    )
+    patches_raw: list[tuple[str, float]] = await r.zrevrange("patch:list", 0, 19, withscores=True)
     if not patches_raw:
         body = _empty_state(
             "No champion data yet",
@@ -2083,11 +2912,28 @@ async def show_champions(request: Request) -> HTMLResponse:
     # Build reverse mapping: champion_name → numeric_id
     name_to_id = {v: k for k, v in champ_id_map.items()}
     rows = await _build_champion_rows(
-        r, patch, role, ban_hash=ban_hash, name_to_id=name_to_id,
+        r,
+        patch,
+        role,
+        ban_hash=ban_hash,
+        name_to_id=name_to_id,
     )
+    # Fetch previous-patch rows for delta column
+    patch_idx = patch_list.index(patch) if patch in patch_list else 0
+    prev_rows: list[dict[str, object]] | None = None
+    if patch_idx + 1 < len(patch_list):
+        prev_patch = patch_list[patch_idx + 1]
+        prev_ban_hash: dict[str, str] = await r.hgetall(f"champion:bans:{prev_patch}")
+        prev_rows = await _build_champion_rows(
+            r,
+            prev_patch,
+            role,
+            ban_hash=prev_ban_hash,
+            name_to_id=name_to_id,
+        )
     version = await _get_ddragon_version(r)
     filter_html = _champion_filter_html(patch_list, patch, role)
-    table_html = _champion_tier_table(rows, patch, version)
+    table_html = _champion_tier_table(rows, patch, version, prev_rows=prev_rows)
     body = f"<h2>Champions &mdash; Patch {html.escape(patch)}</h2>\n{filter_html}\n{table_html}"
     return HTMLResponse(_page("Champions", body, path="/champions"))
 
@@ -2191,11 +3037,7 @@ def _matchup_table_html(
     for opponent, games, wr in matchups:
         wr_cls = "success" if wr >= 52 else ("error" if wr < 48 else "")
         safe_opp = html.escape(opponent)
-        trs += (
-            f"<tr><td>{safe_opp}</td>"
-            f"<td>{games}</td>"
-            f'<td class="{wr_cls}">{wr:.1f}%</td></tr>'
-        )
+        trs += f'<tr><td>{safe_opp}</td><td>{games}</td><td class="{wr_cls}">{wr:.1f}%</td></tr>'
     return (
         '<h3>Matchups</h3><div class="table-scroll"><table>'
         "<thead><tr>"
@@ -2238,15 +3080,29 @@ async def _fetch_champion_matchups(
     return matchups
 
 
+async def _fetch_patch_history(
+    r: aioredis.Redis,
+    name: str,
+    role: str,
+    patch_list: list[str],
+) -> list[tuple[str, dict[str, str]]]:
+    """Fetch champion stats across last 10 patches."""
+    if not patch_list:
+        return []
+    async with r.pipeline(transaction=False) as pipe:
+        for p in patch_list[:10]:
+            pipe.hgetall(f"champion:stats:{name}:{p}:{role}")
+        patch_stats_list: list[dict[str, str]] = await pipe.execute()
+    return [(p, ps) for p, ps in zip(patch_list[:10], patch_stats_list, strict=True) if ps]
+
+
 @app.get("/champions/{name}", response_class=HTMLResponse)
 async def show_champion_detail(request: Request, name: str) -> HTMLResponse:
     """Single champion detail page."""
     if not _CHAMPION_NAME_RE.match(name):
         raise HTTPException(status_code=400, detail="Invalid champion name")
     r: aioredis.Redis = request.app.state.r
-    patches_raw: list[tuple[str, float]] = await r.zrevrange(
-        "patch:list", 0, 19, withscores=True
-    )
+    patches_raw: list[tuple[str, float]] = await r.zrevrange("patch:list", 0, 19, withscores=True)
     if not patches_raw:
         body = _empty_state(
             "No champion data yet",
@@ -2260,40 +3116,21 @@ async def show_champion_detail(request: Request, name: str) -> HTMLResponse:
     role = request.query_params.get("role", "")
     # Determine all roles this champion appears in on this patch
     index_key = f"champion:index:{patch}"
-    all_members: list[tuple[str, float]] = await r.zrevrange(
-        index_key, 0, -1, withscores=True
-    )
-    all_roles = [
-        m.rsplit(":", 1)[1]
-        for m, _s in all_members
-        if m.rsplit(":", 1)[0] == name
-    ]
+    all_members: list[tuple[str, float]] = await r.zrevrange(index_key, 0, -1, withscores=True)
+    all_roles = [m.rsplit(":", 1)[1] for m, _s in all_members if m.rsplit(":", 1)[0] == name]
     if not all_roles:
         body = _empty_state(
             f"No data for {html.escape(name)}",
             "This champion has no stats on this patch.",
         )
-        return HTMLResponse(
-            _page(f"{html.escape(name)}", body, path="/champions")
-        )
+        return HTMLResponse(_page(f"{html.escape(name)}", body, path="/champions"))
     if not role or role not in all_roles:
         role = all_roles[0]
     # Fetch current stats
-    stats: dict[str, str] = await r.hgetall(
-        f"champion:stats:{name}:{patch}:{role}"
-    )
+    stats: dict[str, str] = await r.hgetall(f"champion:stats:{name}:{patch}:{role}")
     if not stats:
         stats = {}
-    # Fetch patch history (last 10 patches)
-    history: list[tuple[str, dict[str, str]]] = []
-    if patch_list:
-        async with r.pipeline(transaction=False) as pipe:
-            for p in patch_list[:10]:
-                pipe.hgetall(f"champion:stats:{name}:{p}:{role}")
-            patch_stats_list: list[dict[str, str]] = await pipe.execute()
-        for p, ps in zip(patch_list[:10], patch_stats_list, strict=True):
-            if ps:
-                history.append((p, ps))
+    history = await _fetch_patch_history(r, name, role, patch_list)
     version = await _get_ddragon_version(r)
     matchups = await _fetch_champion_matchups(r, name, role, patch)
     mu_html = _matchup_table_html(matchups)
@@ -2301,9 +3138,7 @@ async def show_champion_detail(request: Request, name: str) -> HTMLResponse:
         name, role, stats, history, all_roles, version, matchups_html=mu_html
     )
     safe_name = html.escape(name)
-    return HTMLResponse(
-        _page(f"{safe_name} — Champions", detail, path="/champions")
-    )
+    return HTMLResponse(_page(f"{safe_name} — Champions", detail, path="/champions"))
 
 
 # ---------------------------------------------------------------------------
@@ -2502,9 +3337,7 @@ async def logs_fragment(request: Request) -> HTMLResponse:
     """Return just the log lines HTML for AJAX polling."""
     cfg: Config = request.app.state.cfg
     if not cfg.log_dir:
-        return HTMLResponse(
-            _empty_state("LOG_DIR not configured", "Add it to docker-compose.yml.")
-        )
+        return HTMLResponse(_empty_state("LOG_DIR not configured", "Add it to docker-compose.yml."))
     log_dir = Path(cfg.log_dir)
     lines = await asyncio.to_thread(_merged_log_lines, log_dir, _LOG_LINES)
     return HTMLResponse(_render_log_lines(lines))

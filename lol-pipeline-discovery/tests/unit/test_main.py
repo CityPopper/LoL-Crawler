@@ -10,6 +10,7 @@ import httpx
 import pytest
 import respx
 from lol_pipeline.config import Config
+from lol_pipeline.priority import set_priority
 from lol_pipeline.riot_api import RiotClient
 from redis.exceptions import RedisError, ResponseError
 
@@ -303,8 +304,8 @@ class TestIsIdlePriority:
     @pytest.mark.asyncio
     async def test_is_idle__priority_keys_exist__returns_false(self, r):
         """When player:priority:* keys exist, pipeline is NOT idle."""
-        await r.set("player:priority:puuid-1", "1", ex=86400)
-        await r.set("player:priority:puuid-2", "1", ex=86400)
+        await set_priority(r, "puuid-1")
+        await set_priority(r, "puuid-2")
         assert await _is_idle(r) is False
 
     @pytest.mark.asyncio
@@ -315,7 +316,7 @@ class TestIsIdlePriority:
 
     @pytest.mark.asyncio
     async def test_is_idle__stale_counter_ignored(self, r):
-        """A stale system:priority_count key does NOT block idle detection (SCAN-based)."""
+        """A stale system:priority_count key does NOT block idle detection."""
         await r.set("system:priority_count", "99")
         # No actual player:priority:* keys → should be idle
         assert await _is_idle(r) is True

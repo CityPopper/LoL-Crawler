@@ -272,7 +272,7 @@ broken `pip install -e` for a service. Check that:
 - The Dockerfile uses the correct Python base image.
 
 Note: there is a known parity gap (R7 in `CLAUDE.md`) — Dockerfiles use
-`python:3.12-slim` while CI uses Python 3.14. This is a tracked open item.
+`python:3.14-slim` while CI uses Python 3.14. This is a tracked open item.
 
 ---
 

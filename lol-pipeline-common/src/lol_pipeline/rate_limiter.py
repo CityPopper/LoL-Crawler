@@ -46,7 +46,23 @@ local count_s = redis.call("ZCARD", key_s)
 local count_l = redis.call("ZCARD", key_l)
 
 if count_s >= limit_s or count_l >= limit_l then
-    return 0
+    -- Return negative wait hint: ms until the earliest slot opens.
+    local wait_s = 0
+    local wait_l = 0
+    if count_s >= limit_s then
+        local oldest_s = redis.call("ZRANGE", key_s, 0, 0, "WITHSCORES")
+        if #oldest_s >= 2 then
+            wait_s = tonumber(oldest_s[2]) + win_s - now
+        end
+    end
+    if count_l >= limit_l then
+        local oldest_l = redis.call("ZRANGE", key_l, 0, 0, "WITHSCORES")
+        if #oldest_l >= 2 then
+            wait_l = tonumber(oldest_l[2]) + win_l - now
+        end
+    end
+    local wait = math.max(wait_s, wait_l, 1)
+    return -wait  -- negative signals denial; absolute value = ms to wait
 end
 
 redis.call("ZADD", key_s, now, uid)
@@ -66,8 +82,11 @@ async def acquire_token(
     r: aioredis.Redis,
     key_prefix: str = "ratelimit",
     limit_per_second: int = _SHORT_LIMIT,
-) -> bool:
-    """Return True and record a token if within both rate windows; False otherwise.
+) -> int:
+    """Try to acquire a rate limit token.
+
+    Returns 1 on success.  On denial, returns a negative value whose absolute
+    value is the estimated wait time in milliseconds until a slot opens.
 
     ``limit_per_second`` controls the 1-second sliding window cap (default: 20).
     The 2-minute window cap is fixed at Riot's hard limit of 100 req/2 min.
@@ -88,7 +107,7 @@ async def acquire_token(
         _LONG_WINDOW_MS,
         uid,
     )
-    return int(result) == 1
+    return int(result)
 
 
 async def wait_for_token(
@@ -98,7 +117,11 @@ async def wait_for_token(
     max_wait_s: float = 60.0,
     region: str = "",  # kept for API compat, not used
 ) -> None:
-    """Block until a rate limit token is acquired, polling every 50ms.
+    """Block until a rate limit token is acquired.
+
+    Uses the wait hint returned by the Lua script to sleep precisely until
+    the next slot opens, instead of polling at a fixed interval.  Adds
+    jitter (10-50% of wait time) to prevent thundering herd.
 
     Riot API rate limits are global (not per-region), so the *region*
     parameter is accepted for API compatibility but ignored.  All callers
@@ -109,12 +132,23 @@ async def wait_for_token(
 
     Raises ``TimeoutError`` if *max_wait_s* seconds elapse without acquiring a token.
     """
+    import random
+
     # Proactive throttle: slow down when RiotClient signals near-capacity
-    throttled: str | None = await r.get("ratelimit:throttle")  # type: ignore[assignment]
+    throttled: str | None = await r.get("ratelimit:throttle")
     if throttled:
         await asyncio.sleep(0.2)
     deadline = time.monotonic() + max_wait_s
-    while not await acquire_token(r, key_prefix, limit_per_second):
+    while True:
+        result = await acquire_token(r, key_prefix, limit_per_second)
+        if result == 1:
+            return
         if time.monotonic() >= deadline:
             raise TimeoutError(f"Rate limiter wait exceeded {max_wait_s}s")
-        await asyncio.sleep(0.05)
+        # result is negative: abs(result) = ms until next slot opens
+        wait_ms = max(abs(result), 10)
+        # Add 10-50% jitter to prevent thundering herd
+        jitter = wait_ms * random.uniform(0.1, 0.5)  # noqa: S311
+        sleep_s = min((wait_ms + jitter) / 1000.0, deadline - time.monotonic())
+        if sleep_s > 0:
+            await asyncio.sleep(sleep_s)

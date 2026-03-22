@@ -1,0 +1,39 @@
+# Dev container — all services + dev dependencies installed.
+# Used by `just ci` and `just test` for consistent, reproducible checks.
+#
+# Build:  docker build -f Dockerfile.dev -t lol-crawler-dev .
+# Run:    docker run --rm -v .:/workspace -w /workspace lol-crawler-dev just lint
+
+FROM python:3.14-slim
+
+ENV PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /workspace
+
+# Install system deps
+RUN pip install --no-cache-dir ruff mypy types-requests
+
+# Install common library with dev deps
+COPY lol-pipeline-common/ /tmp/common/
+RUN pip install --no-cache-dir -e "/tmp/common/[dev]"
+
+# Install all services
+COPY lol-pipeline-admin/      /tmp/admin/
+COPY lol-pipeline-analyzer/   /tmp/analyzer/
+COPY lol-pipeline-crawler/    /tmp/crawler/
+COPY lol-pipeline-delay-scheduler/ /tmp/delay-scheduler/
+COPY lol-pipeline-discovery/  /tmp/discovery/
+COPY lol-pipeline-fetcher/    /tmp/fetcher/
+COPY lol-pipeline-parser/     /tmp/parser/
+COPY lol-pipeline-recovery/   /tmp/recovery/
+COPY lol-pipeline-seed/       /tmp/seed/
+COPY lol-pipeline-ui/         /tmp/ui/
+
+RUN for d in admin analyzer crawler delay-scheduler discovery fetcher parser recovery seed ui; do \
+      pip install --no-cache-dir -e "/tmp/$d" 2>/dev/null || pip install --no-cache-dir -e "/tmp/$d[dev]" 2>/dev/null || true; \
+    done
+
+# Install just
+RUN apt-get update && apt-get install -y --no-install-recommends just && rm -rf /var/lib/apt/lists/*
+
+CMD ["bash"]

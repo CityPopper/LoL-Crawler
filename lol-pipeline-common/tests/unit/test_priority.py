@@ -1,4 +1,4 @@
-"""Unit tests for lol_pipeline.priority — SCAN-based priority detection."""
+"""Unit tests for lol_pipeline.priority — O(1) SET-based priority detection."""
 
 from __future__ import annotations
 
@@ -6,9 +6,12 @@ import fakeredis.aioredis
 import pytest
 
 from lol_pipeline.priority import (
+    PRIORITY_ACTIVE_SET,
+    PRIORITY_ACTIVE_SET_TTL_SECONDS,
     PRIORITY_AUTO_20,
     PRIORITY_AUTO_NEW,
     PRIORITY_DOWNGRADE_THRESHOLD,
+    PRIORITY_KEY_TTL_SECONDS,
     PRIORITY_MANUAL_20,
     PRIORITY_MANUAL_20PLUS,
     PRIORITY_ORDER,
@@ -51,6 +54,19 @@ class TestSetPriority:
         await set_priority(r, "puuid-abc")
         assert await r.exists("system:priority_count") == 0
 
+    @pytest.mark.asyncio
+    async def test_set_priority__adds_to_active_set(self, r):
+        """set_priority adds puuid to priority:active SET for O(1) lookup."""
+        await set_priority(r, "puuid-abc")
+        assert await r.sismember(PRIORITY_ACTIVE_SET, "puuid-abc")
+
+    @pytest.mark.asyncio
+    async def test_set_priority__duplicate__still_in_active_set(self, r):
+        """Calling set_priority twice keeps puuid in priority:active (SADD idempotent)."""
+        await set_priority(r, "puuid-abc")
+        await set_priority(r, "puuid-abc")
+        assert await r.scard(PRIORITY_ACTIVE_SET) == 1
+
 
 class TestClearPriority:
     @pytest.mark.asyncio
@@ -75,6 +91,20 @@ class TestClearPriority:
         await clear_priority(r, "puuid-abc")
         assert await r.exists("system:priority_count") == 0
 
+    @pytest.mark.asyncio
+    async def test_clear_priority__removes_from_active_set(self, r):
+        """clear_priority removes puuid from priority:active SET."""
+        await set_priority(r, "puuid-abc")
+        assert await r.sismember(PRIORITY_ACTIVE_SET, "puuid-abc")
+        await clear_priority(r, "puuid-abc")
+        assert not await r.sismember(PRIORITY_ACTIVE_SET, "puuid-abc")
+
+    @pytest.mark.asyncio
+    async def test_clear_priority__nonexistent__srem_no_error(self, r):
+        """Clearing a puuid not in priority:active SET does not raise."""
+        await clear_priority(r, "puuid-nonexistent")
+        assert await r.scard(PRIORITY_ACTIVE_SET) == 0
+
 
 class TestSetPriorityIdempotency:
     @pytest.mark.asyncio
@@ -86,13 +116,14 @@ class TestSetPriorityIdempotency:
 
     @pytest.mark.asyncio
     async def test_set_priority__different_puuids__creates_separate_keys(self, r):
-        """set_priority for distinct PUUIDs creates one key each."""
+        """set_priority for distinct PUUIDs creates one key each and all in active SET."""
         await set_priority(r, "puuid-a")
         await set_priority(r, "puuid-b")
         await set_priority(r, "puuid-c")
         assert await r.exists("player:priority:puuid-a") == 1
         assert await r.exists("player:priority:puuid-b") == 1
         assert await r.exists("player:priority:puuid-c") == 1
+        assert await r.scard(PRIORITY_ACTIVE_SET) == 3
 
 
 class TestHasPriorityPlayers:
@@ -144,7 +175,7 @@ class TestHasPriorityPlayers:
 
     @pytest.mark.asyncio
     async def test_has_priority_players__ignores_non_priority_keys(self, r):
-        """Keys like player:{puuid} do not match player:priority:* pattern."""
+        """Non-priority Redis keys do not affect has_priority_players."""
         await r.set("player:puuid-abc", "data")
         await r.set("player:stats:puuid-abc", "data")
         result = await has_priority_players(r)
@@ -266,3 +297,76 @@ class TestDowngradePriority:
     def test_legacy_normal__returns_itself(self):
         """Legacy 'normal' is not in downgrade map — returns itself."""
         assert downgrade_priority("normal") == "normal"
+
+
+class TestPriorityActiveSetTTL:
+    """Bug 1 fix: priority:active SET gets a TTL to prevent orphan accumulation."""
+
+    @pytest.mark.asyncio
+    async def test_set_priority__active_set_has_ttl(self, r):
+        """set_priority sets a TTL on the priority:active SET itself."""
+        await set_priority(r, "puuid-abc")
+        ttl = await r.ttl(PRIORITY_ACTIVE_SET)
+        assert ttl > 0
+        assert ttl <= PRIORITY_ACTIVE_SET_TTL_SECONDS
+
+    @pytest.mark.asyncio
+    async def test_active_set_ttl__longer_than_key_ttl(self, r):
+        """priority:active SET TTL is longer than individual key TTL (buffer)."""
+        assert PRIORITY_ACTIVE_SET_TTL_SECONDS > PRIORITY_KEY_TTL_SECONDS
+
+    @pytest.mark.asyncio
+    async def test_set_priority__active_set_ttl_refreshed_on_each_add(self, r):
+        """Each set_priority call refreshes the active SET TTL."""
+        await set_priority(r, "puuid-a")
+        ttl1 = await r.ttl(PRIORITY_ACTIVE_SET)
+        await set_priority(r, "puuid-b")
+        ttl2 = await r.ttl(PRIORITY_ACTIVE_SET)
+        # TTL should be refreshed (close to max)
+        assert ttl2 >= ttl1
+
+
+class TestHasPriorityPlayersOrphanCleanup:
+    """Bug 1 fix: has_priority_players spot-checks to clean orphaned SET entries."""
+
+    @pytest.mark.asyncio
+    async def test_orphaned_entry__cleaned_and_returns_false(self, r):
+        """When priority key expired but puuid remains in SET, spot-check cleans it."""
+        # Simulate orphan: add to SET without a corresponding priority key
+        await r.sadd(PRIORITY_ACTIVE_SET, "orphan-puuid")
+        assert await r.scard(PRIORITY_ACTIVE_SET) == 1
+
+        result = await has_priority_players(r)
+        assert result is False
+        # Orphan should be removed from the SET
+        assert await r.scard(PRIORITY_ACTIVE_SET) == 0
+
+    @pytest.mark.asyncio
+    async def test_orphaned_entry__mixed_with_live__returns_true(self, r):
+        """When SET has both orphans and live entries, returns True."""
+        # Add a live priority player
+        await set_priority(r, "live-puuid")
+        # Add an orphan (SET member without key)
+        await r.sadd(PRIORITY_ACTIVE_SET, "orphan-puuid")
+        assert await r.scard(PRIORITY_ACTIVE_SET) == 2
+
+        result = await has_priority_players(r)
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_all_orphaned__returns_false_after_cleanup(self, r):
+        """When all SET members are orphans, returns False after spot-check cleanup."""
+        # Add only orphans (no corresponding priority keys)
+        await r.sadd(PRIORITY_ACTIVE_SET, "orphan-1")
+
+        result = await has_priority_players(r)
+        assert result is False
+        assert await r.scard(PRIORITY_ACTIVE_SET) == 0
+
+    @pytest.mark.asyncio
+    async def test_live_entry__not_removed(self, r):
+        """Live priority keys are not removed by spot-check."""
+        await set_priority(r, "live-puuid")
+        result = await has_priority_players(r)
+        assert result is True
+        assert await r.sismember(PRIORITY_ACTIVE_SET, "live-puuid")

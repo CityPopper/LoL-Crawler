@@ -339,7 +339,7 @@ class TestRawStoreAsyncDiskIO:
 
     @pytest.mark.asyncio
     async def test_set_uses_to_thread_for_bundle_check(self, r, tmp_path):
-        """set() delegates _exists_in_bundles to asyncio.to_thread for dedup check."""
+        """set() delegates _exists_in_current_bundle to asyncio.to_thread for dedup check."""
         store = RawStore(r, data_dir=str(tmp_path))
 
         calls = []
@@ -352,7 +352,7 @@ class TestRawStoreAsyncDiskIO:
         with patch("lol_pipeline.raw_store.asyncio.to_thread", side_effect=tracking_to_thread):
             await store.set("NA1_T3", '{"data": 3}')
 
-        assert "_exists_in_bundles" in calls
+        assert "_exists_in_current_bundle" in calls
 
     @pytest.mark.asyncio
     async def test_exists_skips_disk_when_redis_hit(self, r):
@@ -427,3 +427,75 @@ class TestRawStoreTtlConfigurable:
         assert raw_store_mod._TTL_SECONDS == 999
         monkeypatch.delenv("RAW_STORE_TTL_SECONDS", raising=False)
         importlib.reload(raw_store_mod)
+
+
+class TestRawStoreSetScopedDedup:
+    """set() only checks the current month's bundle, not all historical bundles."""
+
+    @pytest.mark.asyncio
+    async def test_set_skips_old_bundles_on_dedup(self, r, tmp_path):
+        """set() does NOT scan old-month bundles for dedup — only current month."""
+        platform_dir = tmp_path / "NA1"
+        platform_dir.mkdir(parents=True)
+
+        # Write the match into an old month's bundle (simulating historical data)
+        old_bundle = platform_dir / "2024-01.jsonl"
+        old_bundle.write_text('NA1_OLD\t{"old": true}\n')
+
+        store = RawStore(r, data_dir=str(tmp_path))
+        # Redis key does not exist (simulates Redis restart), match only on old disk
+        await store.set("NA1_OLD", '{"new": true}')
+
+        # The current month's bundle should have the new write because set()
+        # only checked the current bundle (where NA1_OLD was absent)
+        current_bundles = list(platform_dir.glob("202*.jsonl"))
+        # Should have 2 bundles: the old one and the current month
+        assert len(current_bundles) == 2
+
+        # The current month's bundle should contain the match
+        current_month_bundles = [b for b in current_bundles if b.name != "2024-01.jsonl"]
+        assert len(current_month_bundles) == 1
+        content = current_month_bundles[0].read_text()
+        assert "NA1_OLD" in content
+
+    @pytest.mark.asyncio
+    async def test_set_dedup_within_current_bundle(self, r, tmp_path):
+        """set() still prevents duplicates within the current month's bundle."""
+        store = RawStore(r, data_dir=str(tmp_path))
+        await store.set("NA1_DUP", '{"first": true}')
+
+        # Simulate Redis restart: delete the key, then try to write again
+        await r.delete("raw:match:NA1_DUP")
+        await store.set("NA1_DUP", '{"second": true}')
+
+        # The current bundle should have exactly one entry
+        jsonl_files = list((tmp_path / "NA1").glob("*.jsonl"))
+        assert len(jsonl_files) == 1
+        lines = jsonl_files[0].read_text().strip().split("\n")
+        assert len(lines) == 1
+        assert '"first"' in lines[0]
+
+    @pytest.mark.asyncio
+    async def test_set_does_not_call_search_bundles(self, r, tmp_path):
+        """set() calls _exists_in_current_bundle, never _search_bundles."""
+        store = RawStore(r, data_dir=str(tmp_path))
+
+        with patch.object(store, "_search_bundles", wraps=store._search_bundles) as mock_search:
+            await store.set("NA1_PERF", '{"data": 1}')
+            mock_search.assert_not_called()
+
+    def test_exists_in_current_bundle__missing_file__returns_false(self, tmp_path):
+        """_exists_in_current_bundle returns False when current bundle does not exist."""
+        import fakeredis.aioredis
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        store = RawStore(r, data_dir=str(tmp_path))
+        assert store._exists_in_current_bundle("NA1_MISS") is False
+
+    def test_exists_in_current_bundle__no_data_dir__returns_false(self):
+        """_exists_in_current_bundle returns False when no data_dir configured."""
+        import fakeredis.aioredis
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        store = RawStore(r)
+        assert store._exists_in_current_bundle("NA1_MISS") is False

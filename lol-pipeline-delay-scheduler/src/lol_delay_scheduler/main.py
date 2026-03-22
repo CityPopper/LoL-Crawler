@@ -92,6 +92,15 @@ local zkey   = KEYS[2]
 local member = ARGV[1]
 local maxlen = tonumber(ARGV[2])
 
+-- Guard: member must still exist in the ZSET.
+-- If a prior run completed XADD but crashed before ZREM, the member may have
+-- been removed by a subsequent successful dispatch.  Skip the XADD to prevent
+-- duplicate delivery.
+local exists = redis.call("ZSCORE", zkey, member)
+if not exists then
+    return 0
+end
+
 local n = #ARGV
 local fields = {}
 for i = 3, n, 2 do
@@ -147,7 +156,7 @@ async def _tick(r: aioredis.Redis, log: logging.Logger) -> None:
                 for k, v in redis_fields.items():
                     flat_args.append(str(k))
                     flat_args.append(str(v))
-                await r.eval(  # type: ignore[misc]
+                result = await r.eval(  # type: ignore[misc]
                     _DISPATCH_LUA,
                     2,
                     env.source_stream,
@@ -156,10 +165,16 @@ async def _tick(r: aioredis.Redis, log: logging.Logger) -> None:
                 )
                 _record_success(member)
                 dispatched += 1
-                log.info(
-                    "dispatched delayed message",
-                    extra={"stream": env.source_stream, "id": env.id},
-                )
+                if result == 0:
+                    log.info(
+                        "skipped duplicate dispatch — member already removed",
+                        extra={"stream": env.source_stream, "id": env.id},
+                    )
+                else:
+                    log.info(
+                        "dispatched delayed message",
+                        extra={"stream": env.source_stream, "id": env.id},
+                    )
             except (RedisError, OSError) as exc:
                 _record_failure(member, log)
                 log.error(
@@ -188,7 +203,7 @@ async def main() -> None:
         while not shutdown_event.is_set():
             try:
                 await _tick(r, log)
-            except RedisError, OSError:
+            except (RedisError, OSError):
                 log.exception("Redis error — retrying in 1s")
                 await asyncio.sleep(1)
                 continue

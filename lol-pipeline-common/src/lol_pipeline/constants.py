@@ -30,6 +30,4 @@ VALID_REPLAY_STREAMS: frozenset[str] = frozenset(
 PLAYER_DATA_TTL_SECONDS: int = 30 * 24 * 3600  # 2592000
 
 # TTL for champion aggregate stats keys. 90 days default; configurable via env.
-CHAMPION_STATS_TTL_SECONDS: int = int(
-    os.getenv("CHAMPION_STATS_TTL_SECONDS", str(90 * 24 * 3600))
-)
+CHAMPION_STATS_TTL_SECONDS: int = int(os.getenv("CHAMPION_STATS_TTL_SECONDS", str(90 * 24 * 3600)))

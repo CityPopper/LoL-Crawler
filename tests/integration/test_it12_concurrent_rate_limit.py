@@ -56,8 +56,8 @@ async def test_concurrent_acquire_token__never_exceeds_limit(
         *[acquire_token(r, limit_per_second=limit) for _ in range(_CONCURRENT_CALLS)]
     )
 
-    admitted = sum(1 for ok in results if ok)
-    denied = sum(1 for ok in results if not ok)
+    admitted = sum(1 for r in results if r == 1)
+    denied = sum(1 for r in results if r != 1)
 
     # At most 'limit' tokens should be admitted in the 1-second window
     assert admitted <= limit, (
@@ -107,10 +107,10 @@ async def test_wait_for_token__sequential_beyond_limit(r: aioredis.Redis) -> Non
 
     # Exhaust the short window
     for _ in range(limit):
-        assert await acquire_token(r, limit_per_second=limit) is True
+        assert await acquire_token(r, limit_per_second=limit) == 1
 
     # Next acquire should be denied (window is full)
-    assert await acquire_token(r, limit_per_second=limit) is False
+    assert await acquire_token(r, limit_per_second=limit) < 1
 
     # wait_for_token should eventually succeed (within ~1s as window slides)
     await asyncio.wait_for(

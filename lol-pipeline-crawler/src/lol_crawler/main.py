@@ -25,11 +25,130 @@ from lol_pipeline.riot_api import (
     ServerError,
 )
 from lol_pipeline.service import run_consumer
-from lol_pipeline.streams import ack, nack_to_dlq
+from lol_pipeline.streams import MATCH_ID_STREAM_MAXLEN, ack, nack_to_dlq
 
 _IN_STREAM = "stream:puuid"
 _OUT_STREAM = "stream:match_id"
 _GROUP = "crawlers"
+_PAGE_SIZE = 100
+_RANK_HISTORY_MAX = 500
+
+
+async def _check_backpressure(
+    r: aioredis.Redis,
+    cfg: Config,
+    puuid: str,
+    log: logging.Logger,
+) -> bool:
+    """Return True if stream:match_id depth exceeds the threshold."""
+    if cfg.match_id_backpressure_threshold <= 0:
+        return False
+    depth = await r.xlen(_OUT_STREAM)
+    if depth > cfg.match_id_backpressure_threshold:
+        log.warning(
+            "backpressure — match_id queue too deep, pausing crawl",
+            extra={
+                "depth": depth,
+                "threshold": cfg.match_id_backpressure_threshold,
+                "puuid": puuid,
+            },
+        )
+        return True
+    return False
+
+
+async def _dedup_ids(
+    r: aioredis.Redis,
+    ids: list[str],
+    known: set[str],
+) -> list[str]:
+    """Filter out IDs that are locally known or globally seen."""
+    new_ids = [mid for mid in ids if mid not in known]
+    if not new_ids:
+        return new_ids
+    async with r.pipeline(transaction=False) as check_pipe:
+        for mid in new_ids:
+            check_pipe.sismember("seen:matches", mid)
+        seen_results = await check_pipe.execute()
+    return [mid for mid, seen in zip(new_ids, seen_results, strict=True) if not seen]
+
+
+async def _publish_batch(  # noqa: PLR0913
+    r: aioredis.Redis,
+    cfg: Config,
+    new_ids: list[str],
+    puuid: str,
+    region: str,
+    published: int,
+    priority: str,
+    current_priority: str,
+    correlation_id: str,
+) -> tuple[int, str]:
+    """Batch-publish match IDs to stream:match_id. Return (published, priority)."""
+    async with r.pipeline(transaction=False) as pipe:
+        for match_id in new_ids:
+            if published >= PRIORITY_DOWNGRADE_THRESHOLD and current_priority == priority:
+                current_priority = downgrade_priority(priority)
+            env = MessageEnvelope(
+                source_stream=_OUT_STREAM,
+                type="match_id",
+                payload={
+                    "match_id": match_id,
+                    "puuid": puuid,
+                    "region": region,
+                },
+                max_attempts=cfg.max_attempts,
+                priority=current_priority,
+                correlation_id=correlation_id,
+            )
+            pipe.xadd(  # type: ignore[arg-type]
+                _OUT_STREAM,
+                env.to_redis_fields(),
+                maxlen=MATCH_ID_STREAM_MAXLEN,
+                approximate=True,
+            )
+            published += 1
+        await pipe.execute()
+    return published, current_priority
+
+
+async def _should_stop_pagination(
+    r: aioredis.Redis,
+    cfg: Config,
+    puuid: str,
+    region: str,
+    log: logging.Logger,
+) -> bool:
+    """Return True if pagination should be aborted (halt, backpressure, rate limit)."""
+    if await is_system_halted(r):
+        log.info("system halted — aborting", extra={"puuid": puuid})
+        return True
+    if await _check_backpressure(r, cfg, puuid, log):
+        return True
+    try:
+        await wait_for_token(
+            r,
+            limit_per_second=cfg.api_rate_limit_per_second,
+            region=region,
+        )
+    except TimeoutError:
+        log.warning(
+            "rate limiter timeout — aborting crawl",
+            extra={"puuid": puuid},
+        )
+        return True
+    return False
+
+
+async def _resume_cursor(r: aioredis.Redis, puuid: str) -> int:
+    """Return the saved cursor offset, or 0 if none exists."""
+    saved = await r.get(f"crawl:cursor:{puuid}")
+    if saved:
+        try:
+            return int(saved)  # type: ignore[arg-type]
+        except (ValueError, TypeError):
+            pass
+    return 0
 
 
 async def _fetch_match_ids_paginated(  # noqa: PLR0913
@@ -41,110 +160,59 @@ async def _fetch_match_ids_paginated(  # noqa: PLR0913
     known: set[str],
     log: logging.Logger,
     priority: str = "normal",
+    correlation_id: str = "",
 ) -> tuple[int, int]:
-    """Paginate through Riot match-ID API and publish new IDs to stream:match_id.
+    """Paginate through Riot match-ID API and publish new IDs.
 
-    Returns ``(published, pages_fetched)`` — the number of newly published match
-    IDs and the number of API pages successfully fetched.  Raises Riot API
-    exceptions (NotFoundError, AuthError, RateLimitError, ServerError) to the
-    caller.
-
-    After ``PRIORITY_DOWNGRADE_THRESHOLD`` (20) match IDs have been published,
-    the priority tier is downgraded (e.g. manual_20 -> manual_20plus) for the
-    remaining messages so that the first 20 get highest priority downstream.
+    Returns ``(published, pages_fetched)``.  Raises Riot API exceptions
+    to the caller.
     """
-    start = 0
-    count = 100
+    start = await _resume_cursor(r, puuid)
     published = 0
     pages_fetched = 0
     current_priority = priority
-
-    # R2: Resume from saved cursor if available
     cursor_key = f"crawl:cursor:{puuid}"
-    saved_start = await r.get(cursor_key)
-    if saved_start:
-        try:
-            start = int(saved_start)  # type: ignore[arg-type]
-        except (ValueError, TypeError):
-            start = 0
 
-    while True:
-        if await is_system_halted(r):
-            log.info("system halted — aborting pagination", extra={"puuid": puuid})
-            break
-        # R1: Backpressure — pause if stream:match_id is too deep
-        if cfg.match_id_backpressure_threshold > 0:
-            depth = await r.xlen(_OUT_STREAM)
-            if depth > cfg.match_id_backpressure_threshold:
-                log.warning(
-                    "backpressure — match_id queue too deep, pausing crawl",
-                    extra={
-                        "depth": depth,
-                        "threshold": cfg.match_id_backpressure_threshold,
-                        "puuid": puuid,
-                    },
-                )
-                break
-        try:
-            await wait_for_token(
-                r, limit_per_second=cfg.api_rate_limit_per_second, region=region,
-            )
-        except TimeoutError:
-            log.warning("rate limiter timeout — aborting crawl", extra={"puuid": puuid})
-            break
-        page: list[str] = await riot.get_match_ids(puuid, region, start=start, count=count)
-        pages_fetched += 1
-        # R2: Persist cursor after each successful page fetch
-        await r.set(cursor_key, str(start + count), ex=600)  # 10-minute TTL
-        log.debug(
-            "fetched match ids page",
-            extra={"puuid": puuid, "start": start, "returned": len(page)},
+    while not await _should_stop_pagination(r, cfg, puuid, region, log):
+        page = await riot.get_match_ids(
+            puuid,
+            region,
+            start=start,
+            count=_PAGE_SIZE,
         )
+        pages_fetched += 1
+        await r.set(cursor_key, str(start + _PAGE_SIZE), ex=600)
         if not page:
             break
 
-        new_ids = [mid for mid in page if mid not in known]
-        # Global dedup: filter out matches already seen by any crawler
-        if new_ids:
-            async with r.pipeline(transaction=False) as check_pipe:
-                for mid in new_ids:
-                    check_pipe.sismember("seen:matches", mid)
-                seen_results = await check_pipe.execute()
-            new_ids = [mid for mid, seen in zip(new_ids, seen_results) if not seen]
+        new_ids = await _dedup_ids(r, page, known)
         log.debug(
             "match id page filtered",
-            extra={"puuid": puuid, "page_size": len(page), "new": len(new_ids)},
+            extra={
+                "puuid": puuid,
+                "page_size": len(page),
+                "new": len(new_ids),
+            },
         )
-        # P14-OPT-4: Batch all publishes for the page into a single pipeline.
         if new_ids:
-            async with r.pipeline(transaction=False) as pipe:
-                for match_id in new_ids:
-                    # Downgrade priority after the threshold
-                    if (
-                        published >= PRIORITY_DOWNGRADE_THRESHOLD
-                        and current_priority == priority
-                    ):
-                        current_priority = downgrade_priority(priority)
-                    env = MessageEnvelope(
-                        source_stream=_OUT_STREAM,
-                        type="match_id",
-                        payload={"match_id": match_id, "puuid": puuid, "region": region},
-                        max_attempts=cfg.max_attempts,
-                        priority=current_priority,
-                    )
-                    pipe.xadd(_OUT_STREAM, env.to_redis_fields())  # type: ignore[arg-type]
-                    published += 1
-                await pipe.execute()
+            published, current_priority = await _publish_batch(
+                r,
+                cfg,
+                new_ids,
+                puuid,
+                region,
+                published,
+                priority,
+                current_priority,
+                correlation_id,
+            )
 
-        # Stop early if a full page was entirely known
-        if len(page) == count and not new_ids:
-            log.debug("full page already known — stopping", extra={"puuid": puuid})
+        if len(page) == _PAGE_SIZE and not new_ids:
             break
-        if len(page) < count:
+        if len(page) < _PAGE_SIZE:
             break
-        start += count
+        start += _PAGE_SIZE
 
-    # R2: Clear cursor on successful completion
     await r.delete(cursor_key)
     return published, pages_fetched
 
@@ -184,7 +252,7 @@ async def _handle_crawl_error(
     await ack(r, _IN_STREAM, _GROUP, msg_id)
 
 
-async def _fetch_rank(  # noqa: PLR0913
+async def _fetch_rank(
     r: aioredis.Redis,
     riot: RiotClient,
     cfg: Config,
@@ -197,7 +265,9 @@ async def _fetch_rank(  # noqa: PLR0913
         return
     try:
         await wait_for_token(
-            r, limit_per_second=cfg.api_rate_limit_per_second, region=region,
+            r,
+            limit_per_second=cfg.api_rate_limit_per_second,
+            region=region,
         )
         summoner = await riot.get_summoner_by_puuid(puuid, region)
         summoner_id: str = summoner.get("id", "")
@@ -208,20 +278,35 @@ async def _fetch_rank(  # noqa: PLR0913
         if level is not None:
             await r.hset(f"player:{puuid}", "summoner_level", str(level))  # type: ignore[misc]
         await wait_for_token(
-            r, limit_per_second=cfg.api_rate_limit_per_second, region=region,
+            r,
+            limit_per_second=cfg.api_rate_limit_per_second,
+            region=region,
         )
         entries: list[dict[str, object]] = await riot.get_league_entries(summoner_id, region)
         rank_key = f"player:rank:{puuid}"
         for entry in entries:
             if entry.get("queueType") == "RANKED_SOLO_5x5":
-                await r.hset(rank_key, mapping={  # type: ignore[misc]
-                    "tier": str(entry.get("tier", "")),
-                    "division": str(entry.get("rank", "")),
-                    "lp": str(entry.get("leaguePoints", 0)),
-                    "wins": str(entry.get("wins", 0)),
-                    "losses": str(entry.get("losses", 0)),
-                })
+                tier = str(entry.get("tier", ""))
+                division = str(entry.get("rank", ""))
+                lp = str(entry.get("leaguePoints", 0))
+                await r.hset(
+                    rank_key,
+                    mapping={  # type: ignore[misc]
+                        "tier": tier,
+                        "division": division,
+                        "lp": lp,
+                        "wins": str(entry.get("wins", 0)),
+                        "losses": str(entry.get("losses", 0)),
+                    },
+                )
                 await r.expire(rank_key, 86400)  # 24h TTL
+                # Append to rank history timeline
+                epoch_ms = int(time.time() * 1000)
+                hist_key = f"player:rank:history:{puuid}"
+                await r.zadd(hist_key, {f"{tier}:{division}:{lp}": epoch_ms})
+                # Cap rank history to prevent unbounded growth
+                await r.zremrangebyrank(hist_key, 0, -(_RANK_HISTORY_MAX + 1))
+                await r.expire(hist_key, PLAYER_DATA_TTL_SECONDS)
                 break
     except Exception:
         log.debug("rank fetch failed — non-critical", extra={"puuid": puuid}, exc_info=True)
@@ -235,7 +320,10 @@ async def _compute_activity_rate(
     """Compute activity rate (matches/day) and set dynamic recrawl cooldown."""
     try:
         first_match = await r.zrange(
-            f"player:matches:{puuid}", 0, 0, withscores=True,
+            f"player:matches:{puuid}",
+            0,
+            0,
+            withscores=True,
         )
         if not first_match:
             return
@@ -303,7 +391,15 @@ async def _crawl_player(
 
     try:
         published, pages_fetched = await _fetch_match_ids_paginated(
-            r, riot, cfg, puuid, region, known, log, priority=envelope.priority
+            r,
+            riot,
+            cfg,
+            puuid,
+            region,
+            known,
+            log,
+            priority=envelope.priority,
+            correlation_id=envelope.correlation_id,
         )
     except (NotFoundError, AuthError, RateLimitError, ServerError) as exc:
         await _handle_crawl_error(r, msg_id, envelope, exc, puuid, log)

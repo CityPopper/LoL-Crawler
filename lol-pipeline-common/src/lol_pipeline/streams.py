@@ -21,7 +21,8 @@ _DEFAULT_MAXLEN = 10_000
 
 # Per-stream maxlen overrides.  Import these from consuming services to keep
 # the policy in one place.
-MATCH_ID_STREAM_MAXLEN: int | None = None  # bursty production, rate-limited consumption
+# ~20 MB buffer; trimmed IDs are re-discoverable via crawler re-crawl
+MATCH_ID_STREAM_MAXLEN: int = 500_000
 ANALYZE_STREAM_MAXLEN: int = 50_000  # 10x amplification from parser
 
 # Cache of (stream, group) pairs for which _ensure_group has already succeeded.
@@ -91,8 +92,11 @@ async def _archive_corrupt(
         "original_message_id": msg_id,
         "raw_fields": json.dumps({str(k): str(v) for k, v in fields.items()}),
     }
-    await r.xadd(  # type: ignore[arg-type]
-        STREAM_DLQ_ARCHIVE, archive_fields, maxlen=50_000, approximate=True,
+    await r.xadd(
+        STREAM_DLQ_ARCHIVE,
+        archive_fields,  # type: ignore[arg-type]
+        maxlen=50_000,
+        approximate=True,
     )
     _log.warning(
         "corrupt message — archived and acking",
@@ -241,6 +245,7 @@ async def nack_to_dlq(
         enqueued_at=envelope.enqueued_at,
         dlq_attempts=envelope.dlq_attempts,
         priority=envelope.priority,
+        correlation_id=envelope.correlation_id,
     )
     fields: dict[str, Any] = dlq.to_redis_fields()
     await r.xadd(STREAM_DLQ, fields, maxlen=50_000, approximate=True)  # type: ignore[arg-type]
@@ -280,7 +285,7 @@ return 1
 def _maxlen_for_replay(stream: str) -> int:
     """Return the MAXLEN to use when replaying to *stream*."""
     if stream == "stream:match_id":
-        return MATCH_ID_STREAM_MAXLEN or 0
+        return MATCH_ID_STREAM_MAXLEN
     if stream == "stream:analyze":
         return ANALYZE_STREAM_MAXLEN
     return _DEFAULT_MAXLEN
