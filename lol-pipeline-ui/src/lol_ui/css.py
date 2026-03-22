@@ -468,6 +468,73 @@ details[open] > summary::before { transform: rotate(90deg); }
   color: var(--color-muted); font-size: 10px; text-transform: uppercase;
   letter-spacing: 0.06em; margin-top: -4px; }
 
+/* Build tab (T3-1) */
+.build-tab { display: flex; flex-direction: column; gap: var(--space-md); }
+.build-team { }
+.build-team--blue .build-team__label { color: var(--color-win); }
+.build-team--red .build-team__label { color: var(--color-loss); }
+.build-team__label { font-size: var(--font-size-sm); font-weight: 700;
+  font-family: var(--font-sans); padding: var(--space-xs) 0;
+  border-bottom: 1px solid var(--color-border); margin-bottom: var(--space-xs); }
+.build-player { padding: var(--space-sm); margin-bottom: var(--space-xs);
+  border-radius: var(--radius); }
+.build-player--me { background: rgba(255,255,255,0.04); }
+.build-player__header { display: flex; align-items: center; gap: var(--space-sm);
+  margin-bottom: var(--space-xs); font-family: var(--font-sans);
+  font-size: var(--font-size-sm); }
+.build-player__name { font-weight: 600; color: var(--color-text); }
+.build-final-items { display: flex; gap: 2px; margin-bottom: var(--space-xs); }
+.build-section { margin: var(--space-xs) 0; }
+.build-section__label { font-size: var(--font-size-sm); font-weight: 600;
+  font-family: var(--font-sans); color: var(--color-muted);
+  margin-bottom: var(--space-xs); }
+.build-sequence { display: flex; gap: 2px; flex-wrap: wrap; align-items: center; }
+.build-arrow { color: var(--color-muted); font-size: 10px;
+  padding: 0 2px; font-family: var(--font-sans); }
+
+/* Skill order grid (T3-2) */
+.skill-grid { border-collapse: collapse; font-family: var(--font-sans); }
+.skill-grid th, .skill-grid td { width: 28px; height: 24px; text-align: center;
+  padding: 0; font-size: 10px; border: 1px solid var(--color-border); }
+.skill-grid th { background: var(--color-surface2); color: var(--color-muted);
+  font-weight: 600; }
+.skill-header { min-width: 28px; }
+.skill-label { font-weight: 700; min-width: 28px; background: var(--color-surface); }
+.skill-cell { background: var(--color-surface); }
+.skill-cell--r-unlock { background: rgba(232,64,87,0.08); }
+.skill-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
+
+/* Rune page (T3-3) */
+.rune-page { display: flex; gap: var(--space-md); flex-wrap: wrap;
+  padding: var(--space-xs) 0; align-items: flex-start; }
+.rune-path { display: flex; flex-direction: column; gap: var(--space-xs);
+  align-items: center; }
+.rune-path__label { font-size: 10px; font-weight: 600; font-family: var(--font-sans);
+  color: var(--color-muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.rune-path__keystone { margin-bottom: var(--space-xs); }
+.rune-path__selections { display: flex; gap: var(--space-xs); flex-wrap: wrap;
+  justify-content: center; }
+.rune-icon { width: 28px; height: 28px; border-radius: 50%; object-fit: cover;
+  border: 1px solid var(--color-border); }
+.rune-icon--lg { width: 36px; height: 36px; border-radius: 50%; object-fit: cover;
+  border: 2px solid var(--color-gold); }
+.rune-icon--empty { display: inline-block; width: 28px; height: 28px;
+  border-radius: 50%; background: var(--color-surface2);
+  border: 1px solid var(--color-border); opacity: 0.4; }
+.rune-shards { display: flex; gap: var(--space-xs); flex-wrap: wrap;
+  align-items: center; }
+.rune-shard { display: inline-block; padding: 2px 6px; border-radius: var(--radius);
+  font-size: 10px; font-family: var(--font-sans); color: var(--color-muted);
+  background: var(--color-surface2); }
+
+/* Summoner spell icons (T3-4) */
+.spell-pair { display: flex; gap: 2px; flex-shrink: 0; }
+.spell-icon { width: 28px; height: 28px; border-radius: 4px; object-fit: cover;
+  border: 1px solid var(--color-border); }
+.spell-icon--empty { display: inline-block; width: 28px; height: 28px;
+  border-radius: 4px; background: var(--color-surface2);
+  border: 1px solid var(--color-border); opacity: 0.4; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important; }
