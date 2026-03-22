@@ -1002,3 +1002,78 @@ class TestReplayFromDlq:
 
         assert await r.xlen(STREAM_DLQ) == 1
         assert await r.xlen("stream:puuid") == 1
+
+
+class TestNackToDlqCorrelationId:
+    """nack_to_dlq must propagate correlation_id from the source envelope."""
+
+    @pytest.mark.asyncio
+    async def test_nack_to_dlq__preserves_correlation_id(self, r):
+        """DLQ envelope carries the same correlation_id as the source envelope."""
+        from lol_pipeline.models import DLQEnvelope
+
+        env = _env(stream="stream:match_id", correlation_id="trace-nack-001")
+        await nack_to_dlq(
+            r,
+            env,
+            failure_code="http_5xx",
+            failed_by="fetcher",
+            original_message_id="msg-1",
+        )
+
+        entries = await r.xrange("stream:dlq")
+        assert len(entries) == 1
+        dlq = DLQEnvelope.from_redis_fields(entries[0][1])
+        assert dlq.correlation_id == "trace-nack-001"
+
+    @pytest.mark.asyncio
+    async def test_nack_to_dlq__preserves_priority(self, r):
+        """DLQ envelope carries the same priority as the source envelope."""
+        from lol_pipeline.models import DLQEnvelope
+
+        env = _env(stream="stream:match_id", priority="high", correlation_id="c-1")
+        await nack_to_dlq(
+            r,
+            env,
+            failure_code="http_429",
+            failed_by="fetcher",
+            original_message_id="msg-2",
+        )
+
+        entries = await r.xrange("stream:dlq")
+        assert len(entries) == 1
+        dlq = DLQEnvelope.from_redis_fields(entries[0][1])
+        assert dlq.priority == "high"
+        assert dlq.correlation_id == "c-1"
+
+
+class TestArchiveCorruptAuditTrail:
+    """R2: _archive_corrupt writes an audit trail to stream:dlq:archive."""
+
+    @pytest.mark.asyncio
+    async def test_archive_corrupt__writes_audit_fields(self, r):
+        """Corrupt message is written to dlq:archive with failure_code and raw_fields."""
+        from lol_pipeline.streams import _archive_corrupt
+
+        raw_fields = {"garbage": "data", "extra": "stuff"}
+        await _archive_corrupt(
+            r,
+            stream="stream:test",
+            msg_id="123-0",
+            fields=raw_fields,
+            error="KeyError: 'payload'",
+        )
+
+        archive_entries = await r.xrange("stream:dlq:archive")
+        assert len(archive_entries) == 1
+        entry = archive_entries[0][1]
+        assert entry["failure_code"] == "corrupt_message"
+        assert entry["failure_reason"] == "KeyError: 'payload'"
+        assert entry["original_stream"] == "stream:test"
+        assert entry["original_message_id"] == "123-0"
+        # raw_fields is stored as JSON for operator inspection
+        import json
+
+        raw = json.loads(entry["raw_fields"])
+        assert raw["garbage"] == "data"
+        assert raw["extra"] == "stuff"

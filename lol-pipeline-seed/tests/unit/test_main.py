@@ -456,24 +456,22 @@ class TestSeedPublishBeforeHset:
 
     @pytest.mark.asyncio
     async def test_publish_before_hset_seeded_at(self, r, cfg, log):
-        """seed() publishes to stream:puuid BEFORE writing seeded_at to player hash."""
-        call_order: list[str] = []
+        """seed() publishes to stream:puuid BEFORE writing seeded_at to player hash.
 
-        original_hset = r.hset
-
-        async def tracking_hset(key, *args, **kwargs):
-            mapping = kwargs.get("mapping", {})
-            if "seeded_at" in mapping:
-                call_order.append("hset_seeded_at")
-            return await original_hset(key, *args, **kwargs)
+        After publish(), seeded_at must not yet exist. After seed() completes,
+        seeded_at must exist. This proves publish() happens first.
+        """
+        seeded_at_before_publish: bool | None = None
 
         original_publish = __import__("lol_pipeline.streams", fromlist=["publish"]).publish
 
         async def tracking_publish(redis, stream, envelope):
-            call_order.append("publish")
+            nonlocal seeded_at_before_publish
+            # Check if seeded_at already exists BEFORE publish runs
+            val = await r.hget("player:test-puuid-0001", "seeded_at")
+            seeded_at_before_publish = val is not None
             return await original_publish(redis, stream, envelope)
 
-        r.hset = tracking_hset  # type: ignore[assignment]
         with (
             respx.mock,
             patch("lol_seed.main.publish", side_effect=tracking_publish),
@@ -486,7 +484,10 @@ class TestSeedPublishBeforeHset:
             await riot.close()
 
         assert result == 0
-        assert call_order == ["publish", "hset_seeded_at"]
+        # seeded_at must NOT exist at the moment publish() runs
+        assert seeded_at_before_publish is False
+        # But it must exist after seed() completes
+        assert await r.hget("player:test-puuid-0001", "seeded_at") is not None
 
 
 class TestSeedPriorityBeforePublish:

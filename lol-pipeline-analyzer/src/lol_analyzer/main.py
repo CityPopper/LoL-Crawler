@@ -239,6 +239,17 @@ async def _analyze_player(
                 await ack(r, _IN_STREAM, _GROUP, msg_id)
                 return
 
+            # Refresh the lock before champion stats to prevent TTL expiry
+            # during large batches (the Lua script inside _process_matches
+            # refreshes per-match, but time may have elapsed since the last one).
+            if not await _refresh_lock(r, lock_key, worker_id, lock_ttl_ms):
+                log.warning(
+                    "lock lost before champion stats — skipping",
+                    extra={"puuid": puuid},
+                )
+                await ack(r, _IN_STREAM, _GROUP, msg_id)
+                return
+
             await _update_champion_stats(r, new_matches, participant_data, match_metadata)
             log.info("analyzed", extra={"puuid": puuid, "new_matches": len(new_matches)})
         else:

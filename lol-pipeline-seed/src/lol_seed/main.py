@@ -113,18 +113,21 @@ async def seed(
     entry_id = await publish(r, _STREAM, envelope)
 
     now_iso = datetime.now(tz=UTC).isoformat()
-    await r.hset(  # type: ignore[misc]
-        f"player:{puuid}",
-        mapping={
-            "game_name": game_name,
-            "tag_line": tag_line,
-            "region": region,
-            "seeded_at": now_iso,
-        },
-    )
-    await r.expire(f"player:{puuid}", PLAYER_DATA_TTL_SECONDS)  # 30 days
-    await r.zadd("players:all", {puuid: time.time()})
-    await r.zremrangebyrank("players:all", 0, -(cfg.players_all_max + 1))
+    player_key = f"player:{puuid}"
+    async with r.pipeline(transaction=False) as seed_pipe:
+        seed_pipe.hset(
+            player_key,
+            mapping={
+                "game_name": game_name,
+                "tag_line": tag_line,
+                "region": region,
+                "seeded_at": now_iso,
+            },
+        )
+        seed_pipe.expire(player_key, PLAYER_DATA_TTL_SECONDS)  # 30 days
+        seed_pipe.zadd("players:all", {puuid: time.time()})
+        seed_pipe.zremrangebyrank("players:all", 0, -(cfg.players_all_max + 1))
+        await seed_pipe.execute()
 
     log.info(
         "player seeded",

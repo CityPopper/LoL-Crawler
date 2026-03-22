@@ -7,6 +7,9 @@ Provides:
 
 from __future__ import annotations
 
+import html as html_mod
+
+from lol_ui._helpers import _safe_float
 from lol_ui.strings import t
 
 # Minimum games required before generating insights
@@ -17,14 +20,6 @@ _HIGH_KDA_THRESHOLD = 3.0
 _LOW_VISION_THRESHOLD = 10.0
 _HIGH_CS_THRESHOLD = 7.0
 _DOMINANT_ROLE_PCT = 0.60
-
-
-def _safe_float(value: str) -> float:
-    """Parse a float from a string, returning 0.0 on failure."""
-    try:
-        return float(value)
-    except (ValueError, TypeError):
-        return 0.0
 
 
 def _evaluate_insight_rules(
@@ -67,8 +62,9 @@ def _evaluate_insight_rules(
     if roles and total_games > 0:
         top_role_name, top_role_games = roles[0]
         if top_role_games / total_games >= _DOMINANT_ROLE_PCT:
-            # We use t_raw here since the role name is safe (from our own data)
-            insights.append(t("insight_dominant_role_prefix") + " " + top_role_name + ".")
+            insights.append(
+                t("insight_dominant_role_prefix") + " " + html_mod.escape(top_role_name) + "."
+            )
 
     return insights
 

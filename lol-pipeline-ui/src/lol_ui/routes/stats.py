@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import html
 import json
@@ -137,8 +138,13 @@ async def _build_timeline_tab(
     sorted_puuids: list[str],
     focused_puuid: str,
     version: str | None,
+    participant_map: dict[str, dict[str, str]] | None = None,
 ) -> str:
-    """Build the Timeline tab content: gold chart + minimap + kill timeline."""
+    """Build the Timeline tab content: gold chart + minimap + kill timeline.
+
+    *participant_map* is an optional ``{puuid: participant_hash}`` dict to avoid
+    redundant Redis reads when the caller already loaded participant data.
+    """
     # Batch gold timeline + kill events reads
     async with r.pipeline(transaction=False) as pipe:
         for p in sorted_puuids:
@@ -160,7 +166,11 @@ async def _build_timeline_tab(
         with contextlib.suppress(json.JSONDecodeError, TypeError):
             values = json.loads(raw)
             if isinstance(values, list):
-                part_data: dict[str, str] = await r.hgetall(f"participant:{match_id}:{p}")
+                part_data = (
+                    participant_map.get(p, {})
+                    if participant_map is not None
+                    else await r.hgetall(f"participant:{match_id}:{p}")
+                )
                 team_id = part_data.get("team_id", "100")
                 champ = part_data.get("champion_name", "?")
                 if team_id == "200":
@@ -413,7 +423,8 @@ async def _build_stats_response(
         pipe.hgetall(f"player:rank:{puuid}")
         pipe.zrange(f"player:rank:history:{puuid}", 0, -1, withscores=True)
         pipe.hgetall(f"player:{puuid}")
-        priority_key, rank, rank_hist, player_data = await pipe.execute()
+        pipe.zrevrange(f"player:matches:{puuid}", 0, 19, withscores=True)
+        priority_key, rank, rank_hist, player_data, recent_id_pairs = await pipe.execute()
 
     rank = rank or {}
     rank_hist = rank_hist or []
@@ -466,11 +477,8 @@ async def _build_stats_response(
     # 7-day sparkline from recent match data
     sparkline_html = _sparkline_html(split_matches[:_BREAKDOWN_MATCH_COUNT])
 
-    # Recently Played With — get match IDs from sorted set (last 20)
-    match_id_pairs: list[tuple[str, float]] = await r.zrevrange(
-        f"player:matches:{puuid}", 0, 19, withscores=True
-    )
-    recent_match_ids = [mid for mid, _ in match_id_pairs]
+    # Recently Played With — reuse match IDs already loaded in pipeline
+    recent_match_ids = [mid for mid, _ in (recent_id_pairs or [])]
     recently_played_html = await _recently_played_html(r, puuid, recent_match_ids)
 
     # Two-column layout: sidebar (profile+rank+champions) | main (tilt+history)
@@ -653,13 +661,22 @@ async def _render_match_detail(
             pipe.hgetall(f"player:{p}")
             pipe.get(f"build:{match_id}:{p}")
             pipe.get(f"skills:{match_id}:{p}")
+        pipe.hgetall(f"match:{match_id}")
         pipe_results = await pipe.execute()
 
-    version = await _get_ddragon_version(r)
-    spell_map = await _get_summoner_spell_map(r)
-    runes_data = await _get_runes_data(r)
+    # Last pipeline result is match:{match_id}
+    match_data: dict[str, str] = pipe_results[-1]
+    participant_pipe_results = pipe_results[:-1]
 
-    blue_team, red_team, skill_orders, max_damage = _group_participants(sorted_puuids, pipe_results)
+    version, spell_map, runes_data = await asyncio.gather(
+        _get_ddragon_version(r),
+        _get_summoner_spell_map(r),
+        _get_runes_data(r),
+    )
+
+    blue_team, red_team, skill_orders, max_damage = _group_participants(
+        sorted_puuids, participant_pipe_results
+    )
 
     blue_html = "".join(
         _render_detail_player(p, part, player, puuid, max_damage, version)
@@ -694,8 +711,7 @@ async def _render_match_detail(
         f"{red_html}</div>"
     )
 
-    # --- Team Analysis tab ---
-    match_data: dict[str, str] = await r.hgetall(f"match:{match_id}")
+    # --- Team Analysis tab (match_data already loaded in pipeline above) ---
     blue_parts = [part for _p, part, _pl, _b in blue_team]
     red_parts = [part for _p, part, _pl, _b in red_team]
     team_tab_html = _team_analysis_html(blue_parts, red_parts, match_data)
@@ -706,9 +722,15 @@ async def _render_match_detail(
     ai_tab_html = _ai_score_tab_html(ai_scores, puuid, version)
 
     # --- Timeline tab: gold chart + kill timeline + minimap ---
+    # Build puuid->participant map from already-loaded data to avoid redundant reads
+    participant_map: dict[str, dict[str, str]] = {
+        p: part for p, part, _pl, _b in blue_team + red_team
+    }
     timeline_tab_html = ""
     if has_timeline:
-        timeline_tab_html = await _build_timeline_tab(r, match_id, sorted_puuids, puuid, version)
+        timeline_tab_html = await _build_timeline_tab(
+            r, match_id, sorted_puuids, puuid, version, participant_map
+        )
 
     tabbed = _tabbed_match_detail(
         overview_html=overview_html,

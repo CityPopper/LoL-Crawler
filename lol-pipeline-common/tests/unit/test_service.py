@@ -543,3 +543,50 @@ class TestPriorityReordering:
 
         # Should be sorted: manual_20 (4) > auto_20 (2) > auto_new (1)
         assert processed_priorities == ["manual_20", "auto_20", "auto_new"]
+
+
+class TestDispatchBatchShutdownMidBatch:
+    """R2: _dispatch_batch stops processing when shutdown_check returns True."""
+
+    @pytest.mark.asyncio
+    async def test_dispatch_batch__shutdown_mid_batch__skips_remaining(self, r, log):
+        """When shutdown is signalled mid-batch, remaining messages are skipped."""
+        from lol_pipeline.service import _dispatch_batch
+
+        # Publish 3 messages
+        envs = []
+        for i in range(3):
+            env = MessageEnvelope(
+                source_stream=_STREAM,
+                type="test",
+                payload={"idx": str(i)},
+                max_attempts=5,
+            )
+            await publish(r, _STREAM, env)
+            envs.append(env)
+
+        msgs = await consume(r, _STREAM, _GROUP, "test-consumer", block=0, count=10)
+        assert len(msgs) == 3
+
+        processed = []
+        shutdown_flag = False
+
+        async def handler(mid, envelope):
+            nonlocal shutdown_flag
+            processed.append(envelope.payload["idx"])
+            await ack(r, _STREAM, _GROUP, mid)
+            # Signal shutdown after first message
+            shutdown_flag = True
+
+        await _dispatch_batch(
+            r,
+            _STREAM,
+            _GROUP,
+            msgs,
+            handler,
+            log,
+            shutdown_check=lambda: shutdown_flag,
+        )
+
+        # Only first message should be processed; shutdown stops the rest
+        assert processed == ["0"]

@@ -570,11 +570,12 @@ async def _parse_match(
     # (first writer wins) or 0 if it already existed (another worker parsed
     # this match first). This eliminates the TOCTOU race where two workers
     # could both see SISMEMBER=False and double-count HINCRBY in bans/matchups.
-    first_parse: int = await r.sadd("match:status:parsed", match_id)  # type: ignore[misc]
-    # Only set TTL when none exists (ttl < 0) to avoid resetting expiry on every write.
-    parsed_ttl: int = await r.ttl("match:status:parsed")
-    if parsed_ttl < 0:
-        await r.expire("match:status:parsed", _STATUS_TTL)
+    # EXPIRE is idempotent — always refresh TTL (avoids extra TTL check RTT).
+    async with r.pipeline(transaction=False) as idem_pipe:
+        idem_pipe.sadd("match:status:parsed", match_id)
+        idem_pipe.expire("match:status:parsed", _STATUS_TTL)
+        idem_results = await idem_pipe.execute()
+    first_parse: int = idem_results[0]
 
     match_key = f"match:{match_id}"
     match_fields: dict[str, str] = {

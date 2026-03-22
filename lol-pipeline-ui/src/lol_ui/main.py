@@ -16,6 +16,7 @@ from lol_pipeline.riot_api import RiotClient
 from starlette.responses import Response
 
 from lol_ui.health import _health_status
+from lol_ui.language import _current_lang, get_lang
 from lol_ui.rendering import _page
 from lol_ui.routes.champions import router as champions_router
 from lol_ui.routes.dashboard import router as dashboard_router
@@ -68,6 +69,22 @@ async def add_security_headers(request: Request, call_next: Any) -> Response:
         "img-src 'self' ddragon.leagueoflegends.com data:; "
         "connect-src 'self'"
     )
+    return response
+
+
+@app.middleware("http")
+async def set_lang_middleware(request: Request, call_next: Any) -> Response:
+    """Resolve the active language and set it in the context variable.
+
+    Every downstream call to ``t()``, ``t_raw()``, and ``_page()`` will
+    automatically use this language without needing an explicit parameter.
+    """
+    lang = get_lang(request)
+    token = _current_lang.set(lang)
+    try:
+        response: Response = await call_next(request)
+    finally:
+        _current_lang.reset(token)
     return response
 
 

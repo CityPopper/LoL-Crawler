@@ -83,6 +83,42 @@ class TestKeyParity:
         assert not placeholders, f"zh-CN still has placeholders: {placeholders}"
 
 
+class TestContextVar:
+    """t() and t_raw() read the _current_lang context var when lang is not explicit."""
+
+    def test_t_uses_context_var(self):
+        from lol_ui.language import _current_lang
+
+        token = _current_lang.set("zh-CN")
+        try:
+            assert mod.t("win") == "\u80dc\u5229"
+        finally:
+            _current_lang.reset(token)
+
+    def test_t_raw_uses_context_var(self):
+        from lol_ui.language import _current_lang
+
+        token = _current_lang.set("zh-CN")
+        try:
+            assert mod.t_raw("win") == "\u80dc\u5229"
+        finally:
+            _current_lang.reset(token)
+
+    def test_explicit_lang_overrides_context_var(self):
+        from lol_ui.language import _current_lang
+
+        token = _current_lang.set("zh-CN")
+        try:
+            # Explicit lang="en" should override the context var
+            assert mod.t("win", lang="en") == "Win"
+        finally:
+            _current_lang.reset(token)
+
+    def test_default_context_var_is_english(self):
+        """Without setting context var, t() defaults to English."""
+        assert mod.t("win") == "Win"
+
+
 class TestSupportedLanguages:
     """SUPPORTED_LANGUAGES list is accurate."""
 

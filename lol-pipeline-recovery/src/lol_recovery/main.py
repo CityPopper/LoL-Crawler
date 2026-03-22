@@ -58,13 +58,32 @@ async def _archive(
     log: logging.Logger,
     cfg: Config,
 ) -> None:
-    await r.xadd(_ARCHIVE_STREAM, dlq.to_redis_fields(), maxlen=50_000, approximate=True)  # type: ignore[arg-type]
     match_id: str | None = dlq.payload.get("match_id")
     if match_id:
-        await r.hset(f"match:{match_id}", mapping={"status": "failed"})  # type: ignore[misc]
-        await r.expire(f"match:{match_id}", cfg.match_data_ttl_seconds)
-        await r.sadd("match:status:failed", match_id)  # type: ignore[misc]
-        await r.expire("match:status:failed", _STATUS_TTL)
+        match_key = f"match:{match_id}"
+        async with r.pipeline(transaction=False) as pipe:
+            pipe.xadd(
+                _ARCHIVE_STREAM,
+                dlq.to_redis_fields(),  # type: ignore[arg-type]
+                maxlen=50_000,
+                approximate=True,
+            )
+            pipe.hset(match_key, mapping={"status": "failed"})
+            pipe.expire(match_key, cfg.match_data_ttl_seconds)
+            pipe.sadd("match:status:failed", match_id)
+            pipe.ttl("match:status:failed")
+            results = await pipe.execute()
+        # Only set TTL when none exists (ttl < 0) — same guard as parser
+        failed_ttl: int = results[4]
+        if failed_ttl < 0:
+            await r.expire("match:status:failed", _STATUS_TTL)
+    else:
+        await r.xadd(
+            _ARCHIVE_STREAM,
+            dlq.to_redis_fields(),  # type: ignore[arg-type]
+            maxlen=50_000,
+            approximate=True,
+        )
     log.warning(
         "archived exhausted DLQ entry",
         extra={"id": dlq.id, "failure_code": dlq.failure_code, "dlq_attempts": dlq.dlq_attempts},

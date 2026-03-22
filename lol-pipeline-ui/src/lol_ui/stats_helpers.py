@@ -6,6 +6,7 @@ import html
 import math
 from datetime import UTC, datetime
 
+from lol_ui._helpers import _safe_int
 from lol_ui.constants import (
     _DIVERSITY_LABELS,
     _DIVERSITY_MIN_GAMES,
@@ -73,56 +74,53 @@ class _BreakdownEntry:
         return round(self.total_kda / self.games, 2) if self.games else 0.0
 
 
-def _compute_champion_breakdown(
-    matches: list[dict[str, str]],
-) -> dict[str, _BreakdownEntry]:
-    """Group participant dicts by champion_name and compute stats.
+_VALID_ROLES = frozenset({"TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"})
 
-    Returns ``{champion_name: _BreakdownEntry}`` sorted by games desc.
+
+def _compute_breakdown(
+    matches: list[dict[str, str]],
+    key: str,
+    valid_values: frozenset[str] | None = None,
+) -> dict[str, _BreakdownEntry]:
+    """Group participant dicts by *key* and compute stats.
+
+    When *valid_values* is provided, only values in that set are accepted.
+    Otherwise, empty strings are skipped but all non-empty values are kept.
+    Returns ``{value: _BreakdownEntry}`` sorted by games desc.
     """
     buckets: dict[str, _BreakdownEntry] = {}
     for m in matches:
-        champ = m.get("champion_name", "")
-        if not champ:
+        value = m.get(key, "")
+        if valid_values is not None:
+            if value not in valid_values:
+                continue
+        elif not value:
             continue
-        entry = buckets.get(champ)
+        entry = buckets.get(value)
         if entry is None:
             entry = _BreakdownEntry()
-            buckets[champ] = entry
+            buckets[value] = entry
         entry.add(
             win=str(m.get("win", "0")) == "1",
-            kills=int(m.get("kills", "0")),
-            deaths=int(m.get("deaths", "0")),
-            assists=int(m.get("assists", "0")),
+            kills=_safe_int(m.get("kills", "0")),
+            deaths=_safe_int(m.get("deaths", "0")),
+            assists=_safe_int(m.get("assists", "0")),
         )
     return dict(sorted(buckets.items(), key=lambda kv: kv[1].games, reverse=True))
+
+
+def _compute_champion_breakdown(
+    matches: list[dict[str, str]],
+) -> dict[str, _BreakdownEntry]:
+    """Group participant dicts by champion_name and compute stats."""
+    return _compute_breakdown(matches, "champion_name")
 
 
 def _compute_role_breakdown(
     matches: list[dict[str, str]],
 ) -> dict[str, _BreakdownEntry]:
-    """Group participant dicts by team_position and compute stats.
-
-    Returns ``{role: _BreakdownEntry}`` sorted by games desc.
-    Only includes known roles (TOP, JUNGLE, MIDDLE, BOTTOM, UTILITY).
-    """
-    valid_roles = {"TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"}
-    buckets: dict[str, _BreakdownEntry] = {}
-    for m in matches:
-        role = m.get("team_position", "")
-        if role not in valid_roles:
-            continue
-        entry = buckets.get(role)
-        if entry is None:
-            entry = _BreakdownEntry()
-            buckets[role] = entry
-        entry.add(
-            win=str(m.get("win", "0")) == "1",
-            kills=int(m.get("kills", "0")),
-            deaths=int(m.get("deaths", "0")),
-            assists=int(m.get("assists", "0")),
-        )
-    return dict(sorted(buckets.items(), key=lambda kv: kv[1].games, reverse=True))
+    """Group participant dicts by team_position (known roles only)."""
+    return _compute_breakdown(matches, "team_position", valid_values=_VALID_ROLES)
 
 
 def _format_stat_value(key: str, value: str) -> str:  # noqa: PLR0911
@@ -212,20 +210,41 @@ def _stats_table(
 """
 
 
-def _champion_table_header(has_breakdown: bool) -> str:
-    """Return <th> elements for the champion table."""
-    base = '<th scope="col">Champion</th><th scope="col">Games</th>'
+def _breakdown_table_header(label: str, has_breakdown: bool) -> str:
+    """Return <th> elements for a breakdown table with the given first-column *label*."""
+    base = f'<th scope="col">{html.escape(label)}</th><th scope="col">Games</th>'
     if has_breakdown:
         return base + '<th scope="col">Win%</th><th scope="col">KDA</th>'
     return base
+
+
+def _champion_table_header(has_breakdown: bool) -> str:
+    """Return <th> elements for the champion table."""
+    return _breakdown_table_header("Champion", has_breakdown)
 
 
 def _role_table_header(has_breakdown: bool) -> str:
     """Return <th> elements for the role table."""
-    base = '<th scope="col">Role</th><th scope="col">Games</th>'
-    if has_breakdown:
-        return base + '<th scope="col">Win%</th><th scope="col">KDA</th>'
-    return base
+    return _breakdown_table_header("Role", has_breakdown)
+
+
+def _render_breakdown_rows(
+    items: list[tuple[str, float]],
+    breakdown: dict[str, _BreakdownEntry] | None,
+) -> str:
+    """Render breakdown table rows, with optional win%/KDA columns."""
+    parts: list[str] = []
+    for name, n in items:
+        safe = html.escape(name)
+        base = f"<tr><td>{safe}</td><td>{int(n)}</td>"
+        if breakdown is not None:
+            entry = breakdown.get(name)
+            if entry and entry.games:
+                base += f"<td>{entry.win_rate:.1f}%</td><td>{entry.avg_kda:.2f}</td>"
+            else:
+                base += "<td>&mdash;</td><td>&mdash;</td>"
+        parts.append(base + "</tr>")
+    return "".join(parts)
 
 
 def _render_champion_rows(
@@ -233,18 +252,7 @@ def _render_champion_rows(
     breakdown: dict[str, _BreakdownEntry] | None,
 ) -> str:
     """Render champion table rows, with optional breakdown columns."""
-    parts: list[str] = []
-    for c, n in champs:
-        safe = html.escape(c)
-        base = f"<tr><td>{safe}</td><td>{int(n)}</td>"
-        if breakdown is not None:
-            entry = breakdown.get(c)
-            if entry and entry.games:
-                base += f"<td>{entry.win_rate:.1f}%</td><td>{entry.avg_kda:.2f}</td>"
-            else:
-                base += "<td>&mdash;</td><td>&mdash;</td>"
-        parts.append(base + "</tr>")
-    return "".join(parts)
+    return _render_breakdown_rows(champs, breakdown)
 
 
 def _render_role_rows(
@@ -252,15 +260,4 @@ def _render_role_rows(
     breakdown: dict[str, _BreakdownEntry] | None,
 ) -> str:
     """Render role table rows, with optional breakdown columns."""
-    parts: list[str] = []
-    for r_name, n in roles:
-        safe = html.escape(r_name)
-        base = f"<tr><td>{safe}</td><td>{int(n)}</td>"
-        if breakdown is not None:
-            entry = breakdown.get(r_name)
-            if entry and entry.games:
-                base += f"<td>{entry.win_rate:.1f}%</td><td>{entry.avg_kda:.2f}</td>"
-            else:
-                base += "<td>&mdash;</td><td>&mdash;</td>"
-        parts.append(base + "</tr>")
-    return "".join(parts)
+    return _render_breakdown_rows(roles, breakdown)

@@ -1635,3 +1635,81 @@ class TestUpdateChampionStatsDirect:
 
         assert not await r.exists("champion:stats:Annie:14.5:MID")
         assert await r.zcard("champion:index:14.5") == 0
+
+
+class TestLockRefreshBeforeChampionStats:
+    """Lock must be refreshed between _process_matches and _update_champion_stats.
+
+    If the lock TTL (300s) expires during a large batch, another worker could
+    steal it.  Without a refresh check, _update_champion_stats would run under
+    a stolen lock, causing champion stats to be permanently skipped for the
+    legitimate lock holder.
+    """
+
+    @pytest.mark.asyncio
+    async def test_lock_refresh_called_between_process_and_champion_stats(self, r, cfg, log):
+        """After _process_matches, lock is refreshed before _update_champion_stats."""
+        puuid = "test-puuid-refresh"
+        await _add_ranked_participant(
+            r,
+            "NA1_RF1",
+            puuid,
+            1000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
+            kills=5,
+            deaths=1,
+            assists=3,
+        )
+        env = _analyze_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        # Track _refresh_lock calls via patching
+        refresh_calls: list[str] = []
+        original_refresh = _refresh_lock
+
+        async def tracking_refresh(redis, lock_key, worker_id, ttl_ms):
+            refresh_calls.append(lock_key)
+            return await original_refresh(redis, lock_key, worker_id, ttl_ms)
+
+        with patch("lol_analyzer.main._refresh_lock", side_effect=tracking_refresh):
+            await _analyze_player(r, cfg, "my-worker", msg_id, env, log)
+
+        # _refresh_lock must have been called at least once between
+        # _process_matches and _update_champion_stats
+        assert len(refresh_calls) >= 1
+        assert refresh_calls[0] == f"player:stats:lock:{puuid}"
+        # Champion stats should still be written
+        assert await r.hgetall("champion:stats:Annie:14.5:MID")
+
+    @pytest.mark.asyncio
+    async def test_lock_lost_before_champion_stats__skips_champion_update(self, r, cfg, log):
+        """When lock refresh fails after _process_matches, _update_champion_stats is skipped."""
+        puuid = "test-puuid-skip-champ"
+        await _add_ranked_participant(
+            r,
+            "NA1_SC1",
+            puuid,
+            1000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
+            kills=5,
+            deaths=1,
+            assists=3,
+        )
+        env = _analyze_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        # Make _refresh_lock return False (simulating lock stolen)
+        async def fake_refresh(redis, lock_key, worker_id, ttl_ms):
+            return False
+
+        with patch("lol_analyzer.main._refresh_lock", side_effect=fake_refresh):
+            await _analyze_player(r, cfg, "my-worker", msg_id, env, log)
+
+        # Player stats should be written (by _process_matches which has its own lock check)
+        assert await r.hget(f"player:stats:{puuid}", "total_games") == "1"
+        # Champion stats should NOT be written (lock refresh failed)
+        assert not await r.exists("champion:stats:Annie:14.5:MID")

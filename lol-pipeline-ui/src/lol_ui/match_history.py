@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import html
-import json
 
+from lol_ui._helpers import _parse_item_ids
 from lol_ui.match_badges import _match_badges, _match_badges_html
 from lol_ui.rendering import (
     _champion_icon_html,
@@ -184,12 +184,7 @@ def _match_history_html(
         kda = _kda_ratio_html(k, d, a)
 
         # Items: parse the JSON items field
-        raw_items = participant.get("items", "")
-        try:
-            item_list = json.loads(raw_items) if raw_items.startswith("[") else raw_items.split(",")
-        except (json.JSONDecodeError, AttributeError):
-            item_list = []
-        item_ids = (list(map(str, item_list)) + ["0"] * 7)[:7]
+        item_ids = _parse_item_ids(participant)
         items_html = "".join(_item_icon_html(iid, version) for iid in item_ids)
         badges_html = _match_badges_html(_match_badges(participant))
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 from typing import Any
 
 from lol_ui.strings import SUPPORTED_LANGUAGES
@@ -9,6 +10,13 @@ from lol_ui.strings import SUPPORTED_LANGUAGES
 _DEFAULT_LANG = "en"
 _COOKIE_NAME = "lang"
 _COOKIE_MAX_AGE = 365 * 24 * 3600  # 1 year
+
+# Context variable holding the active language for the current request.
+# Set by middleware; read by t(), t_raw(), and _page() so call sites
+# do not need to pass lang explicitly.
+_current_lang: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "_current_lang", default=_DEFAULT_LANG
+)
 
 _LANG_LABELS: dict[str, str] = {
     "en": "EN",

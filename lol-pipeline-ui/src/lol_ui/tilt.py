@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 
+from lol_ui._helpers import _safe_int
 from lol_ui.constants import (
     _TILT_KDA_THRESHOLD,
     _TILT_MIN_STREAK_DISPLAY,
@@ -54,9 +55,9 @@ def _streak_indicator(matches: list[dict[str, str]]) -> dict[str, object]:
             return 0.0
         total = 0.0
         for m in group:
-            k = int(m.get("kills", "0"))
-            d = int(m.get("deaths", "0"))
-            a = int(m.get("assists", "0"))
+            k = _safe_int(m.get("kills", "0"))
+            d = _safe_int(m.get("deaths", "0"))
+            a = _safe_int(m.get("assists", "0"))
             total += (k + a) / max(d, 1)
         return total / len(group)
 

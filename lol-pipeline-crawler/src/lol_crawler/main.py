@@ -306,24 +306,24 @@ async def _fetch_rank(
                 tier = str(entry.get("tier", ""))
                 division = str(entry.get("rank", ""))
                 lp = str(entry.get("leaguePoints", 0))
-                await r.hset(
-                    rank_key,
-                    mapping={  # type: ignore[misc]
-                        "tier": tier,
-                        "division": division,
-                        "lp": lp,
-                        "wins": str(entry.get("wins", 0)),
-                        "losses": str(entry.get("losses", 0)),
-                    },
-                )
-                await r.expire(rank_key, _RANK_TTL)
-                # Append to rank history timeline
                 epoch_ms = int(time.time() * 1000)
                 hist_key = f"player:rank:history:{puuid}"
-                await r.zadd(hist_key, {f"{tier}:{division}:{lp}": epoch_ms})
-                # Cap rank history to prevent unbounded growth
-                await r.zremrangebyrank(hist_key, 0, -(_RANK_HISTORY_MAX + 1))
-                await r.expire(hist_key, PLAYER_DATA_TTL_SECONDS)
+                async with r.pipeline(transaction=False) as rank_pipe:
+                    rank_pipe.hset(
+                        rank_key,
+                        mapping={
+                            "tier": tier,
+                            "division": division,
+                            "lp": lp,
+                            "wins": str(entry.get("wins", 0)),
+                            "losses": str(entry.get("losses", 0)),
+                        },
+                    )
+                    rank_pipe.expire(rank_key, _RANK_TTL)
+                    rank_pipe.zadd(hist_key, {f"{tier}:{division}:{lp}": epoch_ms})
+                    rank_pipe.zremrangebyrank(hist_key, 0, -(_RANK_HISTORY_MAX + 1))
+                    rank_pipe.expire(hist_key, PLAYER_DATA_TTL_SECONDS)
+                    await rank_pipe.execute()
                 break
     except Exception:
         log.debug("rank fetch failed — non-critical", extra={"puuid": puuid}, exc_info=True)
@@ -336,19 +336,18 @@ async def _compute_activity_rate(
 ) -> None:
     """Compute activity rate (matches/day) and set dynamic recrawl cooldown."""
     try:
-        first_match = await r.zrange(
-            f"player:matches:{puuid}",
-            0,
-            0,
-            withscores=True,
-        )
+        matches_key = f"player:matches:{puuid}"
+        async with r.pipeline(transaction=False) as read_pipe:
+            read_pipe.zrange(matches_key, 0, 0, withscores=True)
+            read_pipe.zcard(matches_key)
+            results = await read_pipe.execute()
+        first_match: list[tuple[str, float]] = results[0]
         if not first_match:
             return
         first_ts = first_match[0][1] / 1000  # ms to seconds
-        total_matches = await r.zcard(f"player:matches:{puuid}")
+        total_matches: int = results[1]
         days = max((time.time() - first_ts) / 86400, 1)
         rate = total_matches / days
-        await r.hset(f"player:{puuid}", "activity_rate", f"{rate:.2f}")  # type: ignore[misc]
         # Dynamic cooldown based on activity
         if rate > _COOLDOWN_HIGH_RATE:
             cooldown_hours = _COOLDOWN_HIGH_HOURS
@@ -357,7 +356,11 @@ async def _compute_activity_rate(
         else:
             cooldown_hours = _COOLDOWN_LOW_HOURS
         recrawl_after = str(time.time() + cooldown_hours * 3600)
-        await r.hset(f"player:{puuid}", "recrawl_after", recrawl_after)  # type: ignore[misc]
+        player_key = f"player:{puuid}"
+        await r.hset(  # type: ignore[misc]
+            player_key,
+            mapping={"activity_rate": f"{rate:.2f}", "recrawl_after": recrawl_after},
+        )
     except Exception:
         log.debug("activity rate compute failed", extra={"puuid": puuid}, exc_info=True)
 
@@ -434,8 +437,11 @@ async def _crawl_player(
         return
 
     now_iso = datetime.now(tz=UTC).isoformat()
-    await r.hset(f"player:{puuid}", mapping={"last_crawled_at": now_iso})  # type: ignore[misc]
-    await r.expire(f"player:{puuid}", PLAYER_DATA_TTL_SECONDS)  # refreshed on each successful crawl
+    player_key = f"player:{puuid}"
+    async with r.pipeline(transaction=False) as post_pipe:
+        post_pipe.hset(player_key, mapping={"last_crawled_at": now_iso})
+        post_pipe.expire(player_key, PLAYER_DATA_TTL_SECONDS)  # refreshed on each crawl
+        await post_pipe.execute()
     # Rank data: fetch summoner + league entries (non-critical)
     await _fetch_rank(r, riot, cfg, puuid, region, log)
     # Activity rate: compute matches/day and dynamic recrawl cooldown

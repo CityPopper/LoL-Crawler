@@ -14,5 +14,5 @@ _RANKED_QUEUE_ID = "420"
 _GOLD_TIMELINE_MAX_FRAMES = 120
 _KILL_EVENTS_MAX = 200
 
-# Status set TTL: 90 days.
-_STATUS_TTL = 7776000
+# Status set TTL: 7 days (aligned with match data TTL).
+_STATUS_TTL = 604800
