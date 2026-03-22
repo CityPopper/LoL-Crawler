@@ -64,7 +64,25 @@ just ui             # prints URL and opens browser
 # or navigate to http://localhost:8080
 ```
 
-Pages: **Stats** (look up player stats), **Players** (paginated list of all seeded players), **Streams** (stream depths + system status), **DLQ** (dead letter queue browser), **Logs** (merged service logs with auto-refresh).
+### Dashboard
+![Dashboard](screenshots/screen_1.PNG)
+
+System status, stream depths, player lookup. Language switcher (EN | 中文) in the top-right.
+
+### Player Stats
+![Player Stats](screenshots/screen_2.PNG)
+
+Two-column layout: rank card + champion breakdown (left), match history with expandable detail tabs (right). Tabbed match detail: Overview | Build | Team Analysis | AI Score | Timeline.
+
+### Champion Tier List
+![Champions](screenshots/screen_3.PNG)
+
+Per-patch tier list with win rate, pick rate, ban rate, and PBI tier (S/A/B/C/D). Patch-over-patch delta. Role filter.
+
+### Matchups
+![Matchups](screenshots/screen_4.PNG)
+
+Head-to-head champion matchup lookup by role and patch.
 
 ## Admin CLI
 
