@@ -25,11 +25,13 @@ from redis.exceptions import RedisError, ResponseError
 
 _STREAM_PUUID = "stream:puuid"
 _DISCOVER_KEY = "discover:players"
+_DELAYED_KEY = "delayed:messages"
 _PIPELINE_STREAMS = (
     "stream:puuid",
     "stream:match_id",
     "stream:parse",
     "stream:analyze",
+    "stream:dlq",
 )
 
 
@@ -47,7 +49,9 @@ def _parse_member(member: str) -> tuple[str, str]:
 async def _is_idle(r: aioredis.Redis) -> bool:
     """Return True when ALL pipeline streams are drained (no pending or lagging messages).
 
-    Checks stream:puuid, stream:match_id, stream:parse, and stream:analyze.
+    Checks stream:puuid, stream:match_id, stream:parse, stream:analyze, and
+    stream:dlq.  Also checks delayed:messages (ZSET) cardinality to ensure
+    no delayed retries are waiting to be re-dispatched.
 
     Uses XINFO GROUPS pending/lag: both zero across all groups on all streams
     means the pipeline has caught up. Streams that do not exist yet (ResponseError)
@@ -72,7 +76,9 @@ async def _is_idle(r: aioredis.Redis) -> bool:
             continue  # no consumer groups registered — idle for this stream
         if not all(int(g.get("pending") or 0) == 0 and int(g.get("lag") or 0) == 0 for g in groups):
             return False
-    return True
+    # Check delayed:messages ZSET — non-empty means retries are queued
+    delayed_count: int = await r.zcard(_DELAYED_KEY)
+    return not delayed_count > 0
 
 
 async def _resolve_names(
