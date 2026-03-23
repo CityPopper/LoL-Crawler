@@ -69,10 +69,15 @@ just ui             # prints URL and opens browser
 
 System status, stream depths, player lookup. Language switcher (EN | 中文) + theme switcher.
 
-### Player Stats (中文)
-![Player Stats](screenshots/02_stats_zh.png)
+### Dashboard (中文)
+![Dashboard Chinese](screenshots/02_dashboard_zh.png)
 
-Two-column layout with localized UI. Tabbed match detail: Overview | Build | Team Analysis | AI Score | Timeline.
+Full Chinese localization — all text translated including nav, cards, form labels, footer.
+
+### Player Stats
+![Player Stats](screenshots/03_stats_en.png)
+
+Two-column layout. Tabbed match detail: Overview | Build | Team Analysis | AI Score | Timeline.
 
 ### Champion Tier List
 ![Champions](screenshots/03_champions_en.png)
