@@ -19,8 +19,15 @@ from lol_ui.champions_helpers import (
     _matchup_table_html,
 )
 from lol_ui.constants import _CHAMPION_NAME_RE, _CHAMPION_ROLES_SET
-from lol_ui.ddragon import _get_champion_id_map, _get_ddragon_version
+from lol_ui.ddragon import (
+    _get_champion_id_map,
+    _get_ddragon_version,
+    get_champion_name_map,
+    localize_champion_name,
+)
+from lol_ui.language import _current_lang
 from lol_ui.rendering import _empty_state, _page
+from lol_ui.strings import t
 
 router = APIRouter()
 
@@ -29,13 +36,14 @@ router = APIRouter()
 async def show_champions(request: Request) -> HTMLResponse:
     """Champion tier list page."""
     r: aioredis.Redis = request.app.state.r
+    lang = _current_lang.get()
     patches_raw: list[tuple[str, float]] = await r.zrevrange("patch:list", 0, 19, withscores=True)
     if not patches_raw:
         body = _empty_state(
-            "No champion data yet",
-            "Seed some players and wait for matches to be analyzed.",
+            t("champions_no_data"),
+            t("champions_no_data_hint"),
         )
-        return HTMLResponse(_page("Champions", body, path="/champions"))
+        return HTMLResponse(_page(t("page_champions"), body, path="/champions"))
     patch_list = [p for p, _s in patches_raw]
     patch = request.query_params.get("patch", "")
     if not patch or patch not in patch_list:
@@ -43,10 +51,17 @@ async def show_champions(request: Request) -> HTMLResponse:
     role = request.query_params.get("role", "")
     if role and role not in _CHAMPION_ROLES_SET:
         role = ""
-    # Fetch ban data and champion ID->name mapping concurrently
-    ban_hash_coro = r.hgetall(f"champion:bans:{patch}")
-    id_map_coro = _get_champion_id_map(r)
-    ban_hash, champ_id_map = await asyncio.gather(ban_hash_coro, id_map_coro)  # type: ignore[arg-type]
+
+    # Fetch ban data, champion ID->name mapping, and localized name map concurrently
+    async def _bans() -> dict[str, str]:
+        result: dict[str, str] = await r.hgetall(f"champion:bans:{patch}")  # type: ignore[misc]
+        return result
+
+    ban_hash, champ_id_map, champ_name_map = await asyncio.gather(
+        _bans(),
+        _get_champion_id_map(r),
+        get_champion_name_map(r, lang),
+    )
     # Build reverse mapping: champion_name -> numeric_id
     name_to_id = {v: k for k, v in champ_id_map.items()}
     # Fetch current rows, previous-patch rows, and DDragon version concurrently
@@ -81,9 +96,13 @@ async def show_champions(request: Request) -> HTMLResponse:
         _get_ddragon_version(r),
     )
     filter_html = _champion_filter_html(patch_list, patch, role)
-    table_html = _champion_tier_table(rows, patch, version, prev_rows=prev_rows)
-    body = f"<h2>Champions &mdash; Patch {html.escape(patch)}</h2>\n{filter_html}\n{table_html}"
-    return HTMLResponse(_page("Champions", body, path="/champions"))
+    table_html = _champion_tier_table(
+        rows, patch, version, prev_rows=prev_rows, name_map=champ_name_map
+    )
+    body = (
+        f"<h2>{t('champions_patch_prefix')} {html.escape(patch)}</h2>\n{filter_html}\n{table_html}"
+    )
+    return HTMLResponse(_page(t("page_champions"), body, path="/champions"))
 
 
 @router.get("/champions/{name}", response_class=HTMLResponse)
@@ -92,13 +111,14 @@ async def show_champion_detail(request: Request, name: str) -> HTMLResponse:
     if not _CHAMPION_NAME_RE.match(name):
         raise HTTPException(status_code=400, detail="Invalid champion name")
     r: aioredis.Redis = request.app.state.r
+    lang = _current_lang.get()
     patches_raw: list[tuple[str, float]] = await r.zrevrange("patch:list", 0, 19, withscores=True)
     if not patches_raw:
         body = _empty_state(
-            "No champion data yet",
-            "Seed some players and wait for matches to be analyzed.",
+            t("champions_no_data"),
+            t("champions_no_data_hint"),
         )
-        return HTMLResponse(_page("Champion Detail", body, path="/champions"))
+        return HTMLResponse(_page(t("page_champion_detail"), body, path="/champions"))
     patch_list = [p for p, _s in patches_raw]
     patch = request.query_params.get("patch", "")
     if not patch or patch not in patch_list:
@@ -110,29 +130,39 @@ async def show_champion_detail(request: Request, name: str) -> HTMLResponse:
     all_roles = [m.rsplit(":", 1)[1] for m, _s in all_members if m.rsplit(":", 1)[0] == name]
     if not all_roles:
         body = _empty_state(
-            f"No data for {html.escape(name)}",
-            "This champion has no stats on this patch.",
+            f"{t('champions_no_data_for')} {html.escape(name)}",
+            t("champions_no_stats_hint"),
         )
         return HTMLResponse(_page(f"{html.escape(name)}", body, path="/champions"))
     if not role or role not in all_roles:
         role = all_roles[0]
 
-    # Fetch current stats, patch history, DDragon version, and matchups concurrently
+    # Fetch current stats, patch history, DDragon version, matchups, and name map concurrently
     async def _get_stats() -> dict[str, str]:
         result: dict[str, str] = await r.hgetall(  # type: ignore[misc]
             f"champion:stats:{name}:{patch}:{role}"
         )
         return result or {}
 
-    stats, history, version, matchups = await asyncio.gather(
+    stats, history, version, matchups, champ_name_map = await asyncio.gather(
         _get_stats(),
         _fetch_patch_history(r, name, role, patch_list),
         _get_ddragon_version(r),
         _fetch_champion_matchups(r, name, role, patch),
+        get_champion_name_map(r, lang),
     )
-    mu_html = _matchup_table_html(matchups)
+    mu_html = _matchup_table_html(matchups, name_map=champ_name_map)
     detail = _champion_detail_html(
-        name, role, stats, history, all_roles, version, matchups_html=mu_html
+        name,
+        role,
+        stats,
+        history,
+        all_roles,
+        version,
+        matchups_html=mu_html,
+        name_map=champ_name_map,
     )
-    safe_name = html.escape(name)
-    return HTMLResponse(_page(f"{safe_name} — Champions", detail, path="/champions"))
+    display_name = html.escape(localize_champion_name(champ_name_map, name))
+    return HTMLResponse(
+        _page(f"{display_name} \u2014 {t('page_champions')}", detail, path="/champions")
+    )

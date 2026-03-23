@@ -17,6 +17,9 @@ from lol_ui.constants import (
 )
 from lol_ui.css import _CSS, _FAVICON, _NAV_ITEMS
 from lol_ui.language import language_switcher_html
+from lol_ui.strings import t as _t
+from lol_ui.strings import t_raw as _t_raw
+from lol_ui.themes import get_theme_css, theme_switcher_html
 
 # Re-export constants so callers that previously imported from main.py can use rendering
 # as a single entry point if needed.
@@ -139,24 +142,38 @@ def _duration_fmt(seconds: int) -> str:
     return f"{seconds // 60}:{seconds % 60:02d}"
 
 
-def _page(title: str, body: str, path: str = "", lang: str | None = None) -> str:
+def _page(
+    title: str,
+    body: str,
+    path: str = "",
+    lang: str | None = None,
+    theme: str | None = None,
+) -> str:
     """Render a full HTML page with nav, body, and footer.
 
     When *lang* is ``None`` (the default), reads the active language from the
-    ``_current_lang`` context variable set by middleware.  This avoids threading
-    ``lang`` through every call site.
+    ``_current_lang`` context variable set by middleware.  When *theme* is
+    ``None``, reads the active theme from ``_current_theme``.
     """
     if lang is None:
         from lol_ui.language import _current_lang
 
         lang = _current_lang.get()
+    if theme is None:
+        from lol_ui.themes import _current_theme
+
+        theme = _current_theme.get()
     nav_links = []
-    for href, label in _NAV_ITEMS:
+    for href, label_key in _NAV_ITEMS:
         active = (href != "/" and path.startswith(href)) or href == path
         cls = ' class="active" aria-current="page"' if active else ""
-        nav_links.append(f'<a href="{href}"{cls}>{label}</a>')
+        nav_links.append(f'<a href="{href}"{cls}>{_t(label_key)}</a>')
     nav_html = "\n  ".join(nav_links)
-    switcher = language_switcher_html(lang)
+    lang_switcher = language_switcher_html(lang)
+    theme_css = get_theme_css(theme)
+    theme_style = f"\n  <style>{theme_css}</style>" if theme_css else ""
+    body_class = f' class="theme-{theme}"' if theme != "default" else ""
+    theme_switcher = theme_switcher_html(theme)
     html_lang = "zh-Hans" if lang == "zh-CN" else lang
     return f"""<!doctype html>
 <html lang="{html_lang}">
@@ -166,11 +183,11 @@ def _page(title: str, body: str, path: str = "", lang: str | None = None) -> str
   <meta name="color-scheme" content="dark">
   <title>{html.escape(title)} — LoL Pipeline</title>
   <link rel="icon" href="{_FAVICON}">
-  <style>{_CSS}</style>
+  <style>{_CSS}</style>{theme_style}
 </head>
-<body>
+<body{body_class}>
 <a class="skip-link" href="#main-content">Skip to content</a>
-{switcher}
+{lang_switcher}
 <h1>LoL Pipeline</h1>
 <nav aria-label="Main navigation">
   {nav_html}
@@ -180,12 +197,9 @@ def _page(title: str, body: str, path: str = "", lang: str | None = None) -> str
 {body}
 </main>
 <footer class="site-footer">
-  LoL Pipeline isn&rsquo;t endorsed by Riot Games and doesn&rsquo;t
-  reflect the views or opinions of Riot Games or anyone officially
-  involved in producing or managing Riot Games properties.
-  League of Legends and Riot Games are trademarks or registered
-  trademarks of Riot Games, Inc.
+{_t_raw("footer_disclaimer")}
 </footer>
+{theme_switcher}
 </body>
 </html>"""
 
@@ -205,21 +219,40 @@ def _stats_form(
         for r in _REGIONS
     )
     escaped_value = html.escape(value, quote=True)
+    hash_encode_js = """<script>
+(function() {
+  var form = document.querySelector('.form-inline');
+  if (!form) return;
+  form.addEventListener('submit', function(e) {
+    var input = document.getElementById('stats-riot-id');
+    if (input && input.value.indexOf('#') !== -1) {
+      e.preventDefault();
+      var region = document.getElementById('stats-region');
+      var url = '/stats?riot_id=' + encodeURIComponent(input.value)
+        + '&region=' + (region ? region.value : 'na1');
+      window.location.href = url;
+    }
+  });
+})();
+</script>"""
     return _page(
-        "Player Stats",
+        _t("stats_form_title"),
         f"""
-<h2>Player Stats</h2>
+<h2>{_t("stats_form_title")}</h2>
 {msg_html}
 <form class="form-inline" method="get" action="/stats">
-  <label for="stats-riot-id">Riot ID:</label>
-  <input id="stats-riot-id" name="riot_id"
-    placeholder="GameName#TagLine" required value="{escaped_value}">
-  <label for="stats-region">Region:</label>
-  <select id="stats-region" name="region">
+  <label for="stats-riot-id">{_t("stats_form_riot_id_label")}
+    <input id="stats-riot-id" name="riot_id"
+      placeholder="GameName#TagLine" required value="{escaped_value}">
+  </label>
+  <label for="stats-region">{_t("stats_form_region_label")}
+    <select id="stats-region" name="region">
       {options}
-  </select>
-  <button type="submit">Look Up</button>
+    </select>
+  </label>
+  <button type="submit">{_t("stats_form_submit")}</button>
 </form>
+{hash_encode_js}
 {
             '<button class="btn btn--refresh"'
             ' onclick="document.querySelector(&apos;.form-inline&apos;).submit()"'

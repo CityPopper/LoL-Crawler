@@ -7,12 +7,35 @@ import html
 import redis.asyncio as aioredis
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
+from lol_pipeline.i18n import label
 
 from lol_ui._helpers import _safe_int
 from lol_ui.constants import _CHAMPION_NAME_RE, _MATCHUP_ROLES, _PATCH_RE
+from lol_ui.ddragon import get_champion_name_map, localize_champion_name
+from lol_ui.language import _current_lang
 from lol_ui.rendering import _empty_state, _page
+from lol_ui.strings import t
 
 router = APIRouter()
+
+
+def _champion_datalist(name_map: dict[str, str]) -> str:
+    """Render a ``<datalist>`` element with champion names for autocomplete."""
+    if not name_map:
+        return ""
+    options = "\n".join(
+        f'<option value="{html.escape(display_name)}">'
+        for display_name in sorted(name_map.values())
+    )
+    return f'<datalist id="champion-list">\n{options}\n</datalist>'
+
+
+def _role_options(lang: str) -> str:
+    """Render localized ``<option>`` elements for the role dropdown."""
+    roles = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]
+    return "\n    ".join(
+        f'<option value="{key}">{html.escape(label("role", key, lang))}</option>' for key in roles
+    )
 
 
 @router.get("/matchups", response_class=HTMLResponse)
@@ -23,6 +46,7 @@ async def show_matchups(request: Request) -> HTMLResponse:
     champ_b = request.query_params.get("champ_b", "")
     role = request.query_params.get("role", "")
     patch = request.query_params.get("patch", "")
+    lang = _current_lang.get()
 
     # Validate inputs to prevent Redis key injection
     if champ_a and not _CHAMPION_NAME_RE.match(champ_a):
@@ -35,25 +59,26 @@ async def show_matchups(request: Request) -> HTMLResponse:
         raise HTTPException(status_code=400, detail="Invalid patch format")
 
     if not champ_a or not champ_b:
-        body = """<h2>Champion Matchups</h2>
+        name_map = await get_champion_name_map(r, lang)
+        datalist_html = _champion_datalist(name_map)
+        body = f"""<h2>{t("page_champion_matchups")}</h2>
 <form class="form-inline" method="get" action="/matchups">
-  <label for="matchup-a">Champion A:</label>
-  <input id="matchup-a" name="champ_a" placeholder="e.g. Jinx" required>
-  <label for="matchup-b">Champion B:</label>
-  <input id="matchup-b" name="champ_b" placeholder="e.g. Caitlyn" required>
-  <label for="matchup-role">Role:</label>
+  <label for="matchup-a">{t("matchups_champ_a")}</label>
+  <input id="matchup-a" name="champ_a" placeholder="e.g. Jinx" required\
+ list="champion-list">
+  <label for="matchup-b">{t("matchups_champ_b")}</label>
+  <input id="matchup-b" name="champ_b" placeholder="e.g. Caitlyn" required\
+ list="champion-list">
+  <label for="matchup-role">{t("matchups_role")}</label>
   <select id="matchup-role" name="role">
-    <option value="TOP">Top</option>
-    <option value="JUNGLE">Jungle</option>
-    <option value="MIDDLE">Mid</option>
-    <option value="BOTTOM">Bot</option>
-    <option value="UTILITY">Support</option>
+    {_role_options(lang)}
   </select>
-  <label for="matchup-patch">Patch (optional):</label>
+  <label for="matchup-patch">{t("matchups_patch_optional")}</label>
   <input id="matchup-patch" name="patch" placeholder="e.g. 14.5">
-  <button type="submit">Compare</button>
-</form>"""
-        return HTMLResponse(_page("Matchups", body, path="/matchups"))
+  <button type="submit">{t("matchups_compare")}</button>
+</form>
+{datalist_html}"""
+        return HTMLResponse(_page(t("page_matchups"), body, path="/matchups"))
 
     # Resolve current patch if not provided
     if not patch:
@@ -64,38 +89,39 @@ async def show_matchups(request: Request) -> HTMLResponse:
 
     if not patch:
         body = _empty_state(
-            "No patch data",
-            "No patches found. Seed players and wait for analysis.",
+            t("matchups_no_patch_data"),
+            t("matchups_no_patch_hint"),
         )
-        return HTMLResponse(_page("Matchups", body, path="/matchups"))
+        return HTMLResponse(_page(t("page_matchups"), body, path="/matchups"))
 
     key = f"matchup:{champ_a}:{champ_b}:{role}:{patch}"
     data: dict[str, str] = await r.hgetall(key)  # type: ignore[misc]
 
+    # Localize champion display names for results
+    name_map = await get_champion_name_map(r, lang)
+    display_a = html.escape(localize_champion_name(name_map, champ_a))
+    display_b = html.escape(localize_champion_name(name_map, champ_b))
+    safe_role = html.escape(label("role", role, lang))
+
     if not data:
-        safe_a = html.escape(champ_a)
-        safe_b = html.escape(champ_b)
-        safe_role = html.escape(role)
         body = _empty_state(
-            "No matchup data",
-            f"No games found for {safe_a} vs {safe_b} as {safe_role}.",
+            t("matchups_no_matchup_data"),
+            f"{t('matchups_no_games_for')} {display_a} {t('matchups_vs')}"
+            f" {display_b} {t('matchups_as')} {safe_role}.",
         )
-        return HTMLResponse(_page("Matchups", body, path="/matchups"))
+        return HTMLResponse(_page(t("page_matchups"), body, path="/matchups"))
 
     games = _safe_int(data.get("games", "0"))
     wins = _safe_int(data.get("wins", "0"))
     win_rate = (wins / games * 100) if games > 0 else 0.0
-    safe_a = html.escape(champ_a)
-    safe_b = html.escape(champ_b)
-    safe_role = html.escape(role)
     safe_patch = html.escape(patch)
     wr_a = f"{win_rate:.1f}%"
     wr_b = f"{100 - win_rate:.1f}%"
-    body = f"""<h2>{safe_a} vs {safe_b} ({safe_role})</h2>
-<p>Patch {safe_patch} &mdash; {games} games</p>
+    body = f"""<h2>{display_a} vs {display_b} ({safe_role})</h2>
+<p>Patch {safe_patch} &mdash; {games} {t("matchups_games")}</p>
 <div class="card">
-  <p>Win Rate ({safe_a}): <strong>{wr_a}</strong></p>
-  <p>Win Rate ({safe_b}): <strong>{wr_b}</strong></p>
+  <p>{t("matchups_win_rate")} ({display_a}): <strong>{wr_a}</strong></p>
+  <p>{t("matchups_win_rate")} ({display_b}): <strong>{wr_b}</strong></p>
 </div>
-<p><a href="/matchups">&larr; New matchup lookup</a></p>"""
-    return HTMLResponse(_page("Matchups", body, path="/matchups"))
+<p><a href="/matchups">&larr; {t("matchups_new_lookup")}</a></p>"""
+    return HTMLResponse(_page(t("page_matchups"), body, path="/matchups"))

@@ -193,9 +193,26 @@ _BADGE_CS_MIN_TIME_PLAYED = 60
 
 _PLAYERS_PAGE_SIZE = 25
 
-_PLAYERS_SORT_OPTIONS = frozenset({"date", "name", "region"})
+_PLAYERS_SORT_OPTIONS = frozenset({"rank", "name", "region"})
 
-_PlayerRow = tuple[str, str, str, str]  # (game_name, tag_line, region, seeded_at)
+# (game_name, tag_line, region, seeded_at, rank_data)
+_PlayerRow = tuple[str, str, str, str, dict[str, str]]
+
+# Ranked tier ordering - lower index = higher rank.
+_TIER_ORDER: dict[str, int] = {
+    "CHALLENGER": 0,
+    "GRANDMASTER": 1,
+    "MASTER": 2,
+    "DIAMOND": 3,
+    "EMERALD": 4,
+    "PLATINUM": 5,
+    "GOLD": 6,
+    "SILVER": 7,
+    "BRONZE": 8,
+    "IRON": 9,
+}
+
+_DIVISION_ORDER: dict[str, int] = {"I": 0, "II": 1, "III": 2, "IV": 3}
 
 # ---------------------------------------------------------------------------
 # Streams

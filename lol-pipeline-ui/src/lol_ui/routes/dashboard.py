@@ -7,6 +7,7 @@ from fastapi.responses import HTMLResponse
 
 from lol_ui.constants import _HALT_BANNER, _REGIONS, _STREAM_KEYS
 from lol_ui.rendering import _badge, _depth_badge, _page
+from lol_ui.strings import t
 
 router = APIRouter()
 
@@ -32,9 +33,11 @@ async def index(request: Request) -> HTMLResponse:
     dlq_depth: int = results[len(_STREAM_KEYS) + 3]
 
     halt_html = _HALT_BANNER if halted else ""
-    system_badge = _badge("error", "HALTED") if halted else _badge("success", "Running")
+    system_badge = _badge("error", t("halted")) if halted else _badge("success", t("running"))
     dlq_badge = (
-        _badge("error", f"{dlq_depth} errors") if dlq_depth > 0 else _badge("success", "Clean")
+        _badge("error", f"{dlq_depth} {t('errors')}")
+        if dlq_depth > 0
+        else _badge("success", t("clean"))
     )
 
     stream_rows = ""
@@ -53,70 +56,77 @@ async def index(request: Request) -> HTMLResponse:
     region_options = "\n        ".join(f'<option value="{reg}">{reg}</option>' for reg in _REGIONS)
 
     body = f"""{halt_html}
-<h2>Dashboard</h2>
+<h2>{t("dashboard")}</h2>
 <div class="dashboard-grid">
   <div class="card">
-    <h3 class="card__title">System Status</h3>
+    <h3 class="card__title">{t("system_status")}</h3>
     <div>{system_badge}</div>
     <p style="margin:var(--space-sm) 0 0">
-      <a href="/streams">View streams &rarr;</a>
+      <a href="/streams">{t("view_streams")} &rarr;</a>
     </p>
   </div>
   <div class="card">
-    <h3 class="card__title">Players Tracked</h3>
+    <h3 class="card__title">{t("players_tracked")}</h3>
     <div class="stat">
       <span class="stat__value">{total_players}</span>
-      <span class="stat__label">total players</span>
+      <span class="stat__label">{t("total_players")}</span>
     </div>
     <p style="margin:var(--space-sm) 0 0">
-      <a href="/players">Browse players &rarr;</a>
+      <a href="/players">{t("browse_players")} &rarr;</a>
     </p>
   </div>
   <div class="card">
-    <h3 class="card__title">Dead Letter Queue</h3>
+    <h3 class="card__title">{t("dead_letter_queue")}</h3>
     <div>{dlq_badge}</div>
     <p style="margin:var(--space-sm) 0 0">
-      <a href="/dlq">View DLQ &rarr;</a>
+      <a href="/dlq">{t("view_dlq")} &rarr;</a>
     </p>
   </div>
 </div>
 
 <div class="card">
-  <h3 class="card__title">Stream Depths</h3>
+  <h3 class="card__title">{t("stream_depths")}</h3>
   <div class="table-scroll">
   <table class="streams">
-    <thead><tr><th scope="col">Key</th>
-    <th scope="col" class="text-right">Length</th>
-    <th scope="col">Status</th></tr></thead>
+    <thead><tr><th scope="col">{t("key")}</th>
+    <th scope="col" class="text-right">{t("length")}</th>
+    <th scope="col">{t("status")}</th></tr></thead>
     <tbody>{stream_rows}</tbody>
   </table>
   </div>
 </div>
 
 <div class="card">
-  <h3 class="card__title">Look Up a Player</h3>
+  <h3 class="card__title">{t("look_up_player")}</h3>
   <p style="color:var(--color-muted);font-size:var(--font-size-sm)">
-    Enter a Riot ID to view stats or auto-seed the player into the pipeline.
+    {t("look_up_player_desc")}
   </p>
-  <form class="form-inline" method="get" action="/stats">
-    <label for="dash-riot-id">Riot ID:</label>
+  <form class="form-inline" method="get" action="/stats" id="dash-lookup-form">
+    <label for="dash-riot-id">{t("riot_id")}:</label>
     <input id="dash-riot-id" name="riot_id" placeholder="GameName#TagLine" required>
-    <label for="dash-region">Region:</label>
+    <label for="dash-region">{t("region")}:</label>
     <select id="dash-region" name="region">
         {region_options}
     </select>
-    <button type="submit">Look Up</button>
+    <button type="submit">{t("look_up")}</button>
   </form>
-  <p><a href="/stats">All regions &rarr;</a></p>
+  <script>
+(function() {{
+  var form = document.getElementById('dash-lookup-form');
+  if (!form) return;
+  form.addEventListener('submit', function(e) {{
+    var input = document.getElementById('dash-riot-id');
+    if (input && input.value.indexOf('#') !== -1) {{
+      e.preventDefault();
+      var region = document.getElementById('dash-region');
+      var url = '/stats?riot_id=' + encodeURIComponent(input.value)
+        + '&region=' + (region ? region.value : 'na1');
+      window.location.href = url;
+    }}
+  }});
+}})();
+</script>
+  <p><a href="/stats">{t("all_regions")} &rarr;</a></p>
 </div>
-
-<p style="color:var(--color-muted);font-size:var(--font-size-sm)">
-  Quick links:
-  <a href="/stats">Stats</a> &middot;
-  <a href="/players">Players</a> &middot;
-  <a href="/streams">Streams</a> &middot;
-  <a href="/dlq">DLQ</a> &middot;
-  <a href="/logs">Logs</a>
-</p>
 """
-    return HTMLResponse(_page("Dashboard", body, path="/"))
+    return HTMLResponse(_page(t("dashboard"), body, path="/"))

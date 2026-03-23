@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 _NAV_ITEMS = [
-    ("/", "Dashboard"),
-    ("/stats", "Stats"),
-    ("/champions", "Champions"),
-    ("/matchups", "Matchups"),
-    ("/players", "Players"),
-    ("/streams", "Streams"),
-    ("/dlq", "DLQ"),
-    ("/logs", "Logs"),
+    ("/", "nav_dashboard"),
+    ("/stats", "nav_stats"),
+    ("/champions", "nav_champions"),
+    ("/matchups", "nav_matchups"),
+    ("/players", "nav_players"),
+    ("/streams", "nav_streams"),
+    ("/dlq", "nav_dlq"),
+    ("/logs", "nav_logs"),
 ]
 
 _CSS = """
@@ -265,12 +265,14 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
   td, th { padding: 0.3rem 0.4rem; }
 }
 
-/* Tablet (768px+) */
+/* Tablet (768px+) — horizontal form layout */
 @media (min-width: 768px) {
-  .form-inline { flex-direction: row; flex-wrap: wrap; align-items: flex-end; }
+  .form-inline { flex-direction: row; flex-wrap: nowrap; align-items: flex-end; }
   .form-inline label { flex: 1; min-width: 0; }
+  .form-inline label:has(input) { flex: 3; }
+  .form-inline label:has(select) { flex: 1; }
   .form-inline input, .form-inline select { width: 100%; }
-  .form-inline button { width: auto; }
+  .form-inline button { width: auto; flex-shrink: 0; }
   body { padding: 0 1rem; }
   .log-line { flex-direction: row; gap: 0.5rem; align-items: baseline; }
   .log-ts, .log-badge, .log-svc { font-size: inherit; }
@@ -660,6 +662,9 @@ details[open] > summary::before { transform: rotate(90deg); }
   text-overflow: ellipsis; white-space: nowrap; max-width: 180px; }
 .recently-played__count { color: var(--color-muted); font-variant-numeric: tabular-nums;
   flex-shrink: 0; margin-left: var(--space-sm); }
+
+/* Theme switcher */
+.theme-switcher select { min-height: 32px; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important;

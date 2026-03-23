@@ -23,6 +23,7 @@ from lol_ui.constants import (
 )
 from lol_ui.dlq_helpers import _dlq_summary_html, _make_replay_envelope
 from lol_ui.rendering import _badge, _empty_state, _page
+from lol_ui.strings import t
 
 _log = get_logger("ui")
 
@@ -56,14 +57,14 @@ async def show_dlq(request: Request) -> HTMLResponse:
     if not entries:
         body = (
             halt_html
-            + "<h2>Dead Letter Queue</h2>"
+            + f"<h2>{t('page_dlq')}</h2>"
             + summary_html
             + _empty_state(
-                "DLQ is empty",
-                "No failed messages. The pipeline is healthy.",
+                t("dlq_empty"),
+                t("dlq_healthy"),
             )
         )
-        return HTMLResponse(_page("Dead Letter Queue", body, path="/dlq"))
+        return HTMLResponse(_page(t("page_dlq"), body, path="/dlq"))
 
     has_next = len(entries) > per_page
     page_entries = entries[:per_page]
@@ -90,8 +91,8 @@ async def show_dlq(request: Request) -> HTMLResponse:
             f'<form method="post" action="/dlq/replay/{_url_quote(entry_id)}"'
             f' style="display:inline">'
             f'<button type="submit" class="btn-sm"'
-            f' aria-label="Replay DLQ entry {safe_id}">'
-            f"Replay</button></form>"
+            f' aria-label="{t("dlq_replay")} {safe_id}">'
+            f"{t('dlq_replay')}</button></form>"
         )
         # Full envelope JSON for detail expansion
         full_json = json.dumps(dlq.payload, indent=2)
@@ -105,7 +106,7 @@ async def show_dlq(request: Request) -> HTMLResponse:
             f"<td>{replay_form}</td></tr>"
             f'<tr class="dlq-detail"><td colspan="7">'
             f'<div class="dlq-detail__body">'
-            f"<p><strong>Failure Reason:</strong> {reason}</p>"
+            f"<p><strong>{t('dlq_failure_reason')}</strong> {reason}</p>"
             f"<pre>{safe_full}</pre>"
             f"</div></td></tr>"
         )
@@ -122,21 +123,25 @@ async def show_dlq(request: Request) -> HTMLResponse:
         else ""
     )
 
-    body = f"""{halt_html}<h2>Dead Letter Queue</h2>
+    body = f"""{halt_html}<h2>{t("page_dlq")}</h2>
 {summary_html}
-<p>Total entries: {total_count}. Showing {per_page} per page.</p>
+<p>{t("dlq_total_entries")} {total_count}.
+{t("dlq_showing_per_page").replace("{n}", str(per_page))}</p>
 <div class="table-scroll">
 <table>
-  <thead><tr><th scope="col">Entry ID</th><th scope="col">Failure Code</th>
-      <th scope="col">Original Stream</th><th scope="col">Service</th>\
-<th scope="col">Attempts</th>
-      <th scope="col">Payload</th><th scope="col">Action</th></tr></thead>
+  <thead><tr><th scope="col">{t("dlq_col_entry_id")}</th>\
+<th scope="col">{t("dlq_col_failure_code")}</th>
+      <th scope="col">{t("dlq_col_original_stream")}</th>\
+<th scope="col">{t("dlq_col_service")}</th>\
+<th scope="col">{t("dlq_col_attempts")}</th>
+      <th scope="col">{t("dlq_col_payload")}</th>\
+<th scope="col">{t("dlq_col_action")}</th></tr></thead>
   <tbody>{rows}</tbody>
 </table>
 </div>
 {pagination}
 """
-    return HTMLResponse(_page("Dead Letter Queue", body, path="/dlq"))
+    return HTMLResponse(_page(t("page_dlq"), body, path="/dlq"))
 
 
 @router.post("/dlq/replay/{entry_id:path}")
@@ -152,11 +157,11 @@ async def dlq_replay(request: Request, entry_id: str) -> Response:
     if not entries:
         safe_id = html.escape(entry_id)
         body = (
-            f"<h2>DLQ Replay Failed</h2>"
-            f'<div class="banner banner--error">Entry {safe_id} not found.</div>'
-            f'<p><a href="/dlq">&larr; Back to DLQ</a></p>'
+            f"<h2>{t('page_dlq_replay_failed')}</h2>"
+            f'<div class="banner banner--error">{safe_id} {t("dlq_entry_not_found")}</div>'
+            f'<p><a href="/dlq">&larr; {t("dlq_back")}</a></p>'
         )
-        return HTMLResponse(_page("DLQ Replay Failed", body, path="/dlq"), status_code=404)
+        return HTMLResponse(_page(t("page_dlq_replay_failed"), body, path="/dlq"), status_code=404)
     _eid, fields = entries[0]
     try:
         dlq = DLQEnvelope.from_redis_fields(fields)
@@ -164,25 +169,25 @@ async def dlq_replay(request: Request, entry_id: str) -> Response:
         _log.warning("corrupt DLQ entry during replay", extra={"entry_id": entry_id})
         safe_id = html.escape(entry_id)
         body = (
-            f"<h2>DLQ Replay Failed</h2>"
-            f'<div class="banner banner--error">Entry {safe_id} is corrupt '
-            f"and cannot be replayed. To remove it, run "
-            f"<code>just admin dlq clear {safe_id}</code>.</div>"
-            f'<p><a href="/dlq">&larr; Back to DLQ</a></p>'
+            f"<h2>{t('page_dlq_replay_failed')}</h2>"
+            f'<div class="banner banner--error">{safe_id} {t("dlq_entry_corrupt")}'
+            f" {t('dlq_remove_hint')}"
+            f" <code>just admin dlq clear {safe_id}</code>.</div>"
+            f'<p><a href="/dlq">&larr; {t("dlq_back")}</a></p>'
         )
-        return HTMLResponse(_page("DLQ Replay Failed", body, path="/dlq"), status_code=422)
+        return HTMLResponse(_page(t("page_dlq_replay_failed"), body, path="/dlq"), status_code=422)
     if dlq.original_stream not in VALID_REPLAY_STREAMS:
         safe_id = html.escape(entry_id)
         safe_stream = html.escape(dlq.original_stream)
         body = (
-            f"<h2>DLQ Replay Failed</h2>"
-            f'<div class="banner banner--error">Entry {safe_id} has invalid '
-            f"original_stream <code>{safe_stream}</code> — replay refused. "
-            f"To remove this entry, run "
-            f"<code>just admin dlq clear {safe_id}</code>.</div>"
-            f'<p><a href="/dlq">&larr; Back to DLQ</a></p>'
+            f"<h2>{t('page_dlq_replay_failed')}</h2>"
+            f'<div class="banner banner--error">{safe_id} {t("dlq_invalid_stream")}'
+            f" <code>{safe_stream}</code> \u2014 {t('dlq_replay_refused')}"
+            f" {t('dlq_remove_hint')}"
+            f" <code>just admin dlq clear {safe_id}</code>.</div>"
+            f'<p><a href="/dlq">&larr; {t("dlq_back")}</a></p>'
         )
-        return HTMLResponse(_page("DLQ Replay Failed", body, path="/dlq"), status_code=422)
+        return HTMLResponse(_page(t("page_dlq_replay_failed"), body, path="/dlq"), status_code=422)
     envelope = _make_replay_envelope(dlq, cfg.max_attempts)
     await replay_from_dlq(r, entry_id, dlq.original_stream, envelope)
     return RedirectResponse("/dlq", status_code=303)

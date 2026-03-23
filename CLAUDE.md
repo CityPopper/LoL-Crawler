@@ -51,6 +51,13 @@ Platform: macOS. Container runtime: Podman (default). Switch with `RUNTIME=docke
 | Integration tests | `tests/integration/` (IT-01 through IT-12, testcontainers) |
 | Rejected ideas (do not re-propose) | `.claude/archive/REJECTED.md` |
 
+## i18n Architecture
+
+Two-layer localization:
+- **`lol_pipeline/i18n.py`** (common) — shared domain vocabulary: role names, rank tiers, queue types, status labels, failure codes. `label("role", "TOP", "zh-CN")` → "上单". Missing translations tracked in Redis SET `i18n:missing:{lang}`.
+- **`strings.py`** (per-service) — UI text stays in UI (`t()`), admin stays English.
+- **DDragon game data** — fetch per-locale at render time (`ddragon:champion_names:{lang}`), 24h TTL. English keys everywhere in data layer, translate only at HTML render.
+
 ## TODO — Phase 25 UI POLISH
 
 - [x] R2-1: Delete dead code `_load_tilt_data` (stats.py) and `_render_build_section` (match_detail.py)

@@ -47,8 +47,9 @@ from lol_ui.constants import (
     _STREAM_PUUID,
     _TILT_RECENT_COUNT,
 )
-from lol_ui.ddragon import _get_ddragon_version
+from lol_ui.ddragon import _get_ddragon_version, get_champion_name_map
 from lol_ui.kill_timeline import _kill_timeline_html
+from lol_ui.language import _current_lang
 from lol_ui.match_detail import _render_detail_player
 from lol_ui.match_history import _match_history_html, _match_history_section
 from lol_ui.playstyle import _playstyle_pills_html, _playstyle_tags
@@ -67,6 +68,7 @@ from lol_ui.stats_helpers import (
     _current_split,
     _stats_table,
 )
+from lol_ui.strings import t, t_raw
 from lol_ui.tabs import _tab_js, _tabbed_match_detail
 from lol_ui.team_analysis import _team_analysis_html
 from lol_ui.tilt import _streak_indicator, _tilt_banner_html
@@ -238,7 +240,7 @@ async def _resolve_and_cache_puuid(
     except NotFoundError:
         return HTMLResponse(
             _stats_form(
-                "Player not found. Check the spelling of the Riot ID.",
+                t("stats_player_not_found"),
                 "error",
                 selected_region=region,
                 value=riot_id,
@@ -247,7 +249,7 @@ async def _resolve_and_cache_puuid(
     except RateLimitError:
         return HTMLResponse(
             _stats_form(
-                "Rate limited. Try again in a few seconds.",
+                t("stats_rate_limited"),
                 "warning",
                 selected_region=region,
                 value=riot_id,
@@ -256,9 +258,7 @@ async def _resolve_and_cache_puuid(
     except AuthError:
         return HTMLResponse(
             _stats_form(
-                "API key invalid or expired. Update <code>RIOT_API_KEY</code> in"
-                " <code>.env</code> and restart, then run"
-                " <code>just admin system-resume</code>.",
+                t_raw("stats_auth_error"),
                 "error",
                 selected_region=region,
                 value=riot_id,
@@ -267,7 +267,7 @@ async def _resolve_and_cache_puuid(
     except ServerError:
         return HTMLResponse(
             _stats_form(
-                "Riot servers temporarily unavailable. Try again later.",
+                t("stats_server_error"),
                 "warning",
                 selected_region=region,
                 value=riot_id,
@@ -528,7 +528,7 @@ async def show_stats(request: Request) -> HTMLResponse:
     if "#" not in riot_id:
         return HTMLResponse(
             _stats_form(
-                "Invalid Riot ID — expected GameName#TagLine",
+                t("stats_invalid_riot_id"),
                 "error",
                 selected_region=region,
                 value=riot_id,
@@ -595,9 +595,16 @@ async def stats_matches(request: Request) -> HTMLResponse:
             participant_data: dict[str, str] = pipe_results[i * 2 + 1]
             results.append((match_id, match_data, participant_data))
 
-    version = await _get_ddragon_version(r)
+    lang = _current_lang.get()
+    version, champ_name_map = await asyncio.gather(
+        _get_ddragon_version(r),
+        get_champion_name_map(r, lang),
+    )
     return HTMLResponse(
-        halt_html + _match_history_html(results, puuid, region, riot_id, page, has_more, version)
+        halt_html
+        + _match_history_html(
+            results, puuid, region, riot_id, page, has_more, version, name_map=champ_name_map
+        )
     )
 
 
@@ -665,10 +672,12 @@ async def _render_match_detail(
     match_data: dict[str, str] = pipe_results[-1]
     participant_pipe_results = pipe_results[:-1]
 
-    version, spell_map, runes_data = await asyncio.gather(
+    lang = _current_lang.get()
+    version, spell_map, runes_data, champ_name_map = await asyncio.gather(
         _get_ddragon_version(r),
         _get_summoner_spell_map(r),
         _get_runes_data(r),
+        get_champion_name_map(r, lang),
     )
 
     blue_team, red_team, skill_orders, max_damage = _group_participants(
@@ -676,11 +685,11 @@ async def _render_match_detail(
     )
 
     blue_html = "".join(
-        _render_detail_player(p, part, player, puuid, max_damage, version)
+        _render_detail_player(p, part, player, puuid, max_damage, version, name_map=champ_name_map)
         for p, part, player, _build in blue_team
     )
     red_html = "".join(
-        _render_detail_player(p, part, player, puuid, max_damage, version)
+        _render_detail_player(p, part, player, puuid, max_damage, version, name_map=champ_name_map)
         for p, part, player, _build in red_team
     )
 
@@ -700,11 +709,11 @@ async def _render_match_detail(
     overview_html = (
         f'<div class="match-detail__team">'
         f'<div class="match-detail__team-label match-detail__team-label--blue">'
-        f"Blue Team</div>"
+        f"{t('blue_team')}</div>"
         f"{blue_html}</div>"
         f'<div class="match-detail__team">'
         f'<div class="match-detail__team-label match-detail__team-label--red">'
-        f"Red Team</div>"
+        f"{t('red_team')}</div>"
         f"{red_html}</div>"
     )
 
@@ -741,7 +750,14 @@ async def _render_match_detail(
 
 
 def _has_timeline_data(html_content: str) -> bool:
-    """Check if the rendered HTML contains actual timeline data (not placeholder)."""
+    """Check if the rendered HTML has real content worth caching.
+
+    Returns False for placeholder/error responses that should not be cached:
+    - "Match details not available" (empty match:participants)
+    - "Timeline data unavailable" (FETCH_TIMELINE=false)
+    """
+    if "Match details not available" in html_content:
+        return False
     return "Timeline data unavailable" not in html_content
 
 

@@ -2502,7 +2502,7 @@ class TestRegionValidation400:
         body = resp.body.decode()
 
         assert resp.status_code == 400
-        assert "<script>" not in body
+        assert "<script>alert(1)</script>" not in body
         assert html.escape("<script>alert(1)</script>") in body
 
 
@@ -3453,7 +3453,7 @@ class TestDashboardRegionSelector:
 class TestRenderPlayerRowsSeededTruncated:
     def test_render_player_rows__seeded_at_truncated_to_date(self):
         """P10-RD-9: seeded_at ISO timestamp must be truncated to date-only."""
-        rows = [("TestPlayer", "NA1", "na1", "2024-01-15T14:23:11+00:00")]
+        rows = [("TestPlayer", "NA1", "na1", "2024-01-15T14:23:11+00:00", {})]
         result = _render_player_rows(rows)
         assert "2024-01-15" in result
         assert "T14:23:11" not in result

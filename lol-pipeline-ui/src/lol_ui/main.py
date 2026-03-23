@@ -27,6 +27,9 @@ from lol_ui.routes.matchups import router as matchups_router
 from lol_ui.routes.players import router as players_router
 from lol_ui.routes.stats import router as stats_router
 from lol_ui.routes.streams import router as streams_router
+from lol_ui.routes.theme import router as theme_router
+from lol_ui.strings import t, t_raw
+from lol_ui.themes import _current_theme, get_theme
 
 _log = get_logger("ui")
 
@@ -89,12 +92,24 @@ async def set_lang_middleware(request: Request, call_next: Any) -> Response:
     return response
 
 
+@app.middleware("http")
+async def set_theme_middleware(request: Request, call_next: Any) -> Response:
+    """Resolve the active theme from cookie and set it in the context variable."""
+    theme = get_theme(request)
+    token = _current_theme.set(theme)
+    try:
+        response: Response = await call_next(request)
+    finally:
+        _current_theme.reset(token)
+    return response
+
+
 @app.exception_handler(redis.exceptions.RedisError)
 async def redis_error_handler(request: Request, exc: redis.exceptions.RedisError) -> HTMLResponse:
     """Return a user-friendly 503 page when Redis is unreachable."""
     body = _page(
-        "Error",
-        "<p>Cannot connect to Redis. Is the stack running? Try: <code>just up</code></p>",
+        t("error_title"),
+        f"<p>{t_raw('redis_error')}</p>",
     )
     return HTMLResponse(content=body, status_code=503)
 
@@ -103,8 +118,8 @@ async def redis_error_handler(request: Request, exc: redis.exceptions.RedisError
 async def connection_error_handler(request: Request, exc: ConnectionError) -> HTMLResponse:
     """Return a user-friendly 503 page on connection errors."""
     body = _page(
-        "Error",
-        "<p>Cannot connect to Redis. Is the stack running? Try: <code>just up</code></p>",
+        t("error_title"),
+        f"<p>{t_raw('redis_error')}</p>",
     )
     return HTMLResponse(content=body, status_code=503)
 
@@ -136,3 +151,4 @@ app.include_router(champions_router)
 app.include_router(matchups_router)
 app.include_router(logs_router)
 app.include_router(language_router)
+app.include_router(theme_router)

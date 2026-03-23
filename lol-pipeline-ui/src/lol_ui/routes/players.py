@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
@@ -9,16 +11,45 @@ from lol_ui.constants import (
     _HALT_BANNER,
     _PLAYERS_PAGE_SIZE,
     _PLAYERS_SORT_OPTIONS,
+    _REGIONS,
     _PlayerRow,
 )
 from lol_ui.player_helpers import _apply_player_sort, _render_player_rows
 from lol_ui.rendering import _empty_state, _page
+from lol_ui.strings import t, t_raw
 
 router = APIRouter()
 
 
+async def _build_player_rows(
+    r: Any,
+    puuids: list[str],
+) -> list[_PlayerRow]:
+    """Fetch player metadata + rank data for a list of PUUIDs."""
+    if not puuids:
+        return []
+    async with r.pipeline(transaction=False) as pipe:
+        for puuid in puuids:
+            pipe.hmget(
+                f"player:{puuid}",
+                ["game_name", "tag_line", "region", "seeded_at"],
+            )
+            pipe.hgetall(f"player:rank:{puuid}")
+        results = await pipe.execute()
+
+    player_rows: list[_PlayerRow] = []
+    for i in range(len(puuids)):
+        meta = results[i * 2]
+        rank = results[i * 2 + 1]
+        g, t_val, region, seeded_at = meta
+        if g and t_val:
+            player_rows.append((g, t_val, (region or "na1"), (seeded_at or ""), rank or {}))
+    return player_rows
+
+
 @router.get("/players", response_class=HTMLResponse)
 async def show_players(request: Request) -> HTMLResponse:
+    """Show paginated player list with rank sort and region filter."""
     r = request.app.state.r
     halted = await r.get("system:halted")
     halt_html = _HALT_BANNER if halted else ""
@@ -28,69 +59,83 @@ async def show_players(request: Request) -> HTMLResponse:
         page = 0
     page = max(0, page)
 
-    sort = request.query_params.get("sort", "date")
+    sort = request.query_params.get("sort", "rank")
     if sort not in _PLAYERS_SORT_OPTIONS:
-        sort = "date"
+        sort = "rank"
+
+    region_filter = request.query_params.get("region", "")
 
     total: int = await r.zcard("players:all")
     if total == 0:
         body = (
             halt_html
-            + "<h2>Players</h2>"
+            + f"<h2>{t('page_players')}</h2>"
             + _empty_state(
-                "No players seeded yet",
-                "Run <code>just seed GameName#Tag</code> to get started.",
+                t("players_no_players"),
+                t_raw("players_seed_hint"),
             )
         )
-        return HTMLResponse(_page("Players", body, path="/players"))
+        return HTMLResponse(_page(t("page_players"), body, path="/players"))
 
-    # Always fetch the current page by date order first (ZREVRANGE),
-    # then re-sort in Python when a different sort key is requested.
-    start = page * _PLAYERS_PAGE_SIZE
-    end = start + _PLAYERS_PAGE_SIZE - 1
-    page_puuids: list[str] = await r.zrevrange("players:all", start, end)
+    # Fetch all PUUIDs with metadata+rank, then sort+filter in Python.
+    all_puuids: list[str] = await r.zrevrange("players:all", 0, -1)
+    player_rows = await _build_player_rows(r, all_puuids)
 
-    # Fetch player metadata for current page only
-    async with r.pipeline(transaction=False) as pipe:
-        for puuid in page_puuids:
-            pipe.hmget(f"player:{puuid}", ["game_name", "tag_line", "region", "seeded_at"])
-        results: list[list[str | None]] = await pipe.execute()
+    if region_filter:
+        player_rows = [row for row in player_rows if row[2] == region_filter]
 
-    # Build list of (game_name, tag_line, region, seeded_at) tuples for sorting
-    player_rows: list[_PlayerRow] = [
-        (g, t, (region or "na1"), (seeded_at or ""))
-        for g, t, region, seeded_at in results
-        if g and t
-    ]
     _apply_player_sort(player_rows, sort)
+    display_total = len(player_rows)
+    start = page * _PLAYERS_PAGE_SIZE
+    player_rows = player_rows[start : start + _PLAYERS_PAGE_SIZE]
+    has_prev = page > 0
+    has_next = start + _PLAYERS_PAGE_SIZE < display_total
+    total_pages = max(1, (display_total + _PLAYERS_PAGE_SIZE - 1) // _PLAYERS_PAGE_SIZE)
+
     rows = _render_player_rows(player_rows)
 
-    has_prev = page > 0
-    has_next = start + _PLAYERS_PAGE_SIZE < total
-    total_pages = max(1, (total + _PLAYERS_PAGE_SIZE - 1) // _PLAYERS_PAGE_SIZE)
-
-    def _sort_link(key: str, label: str) -> str:
+    def _sort_link(key: str, label_key: str) -> str:
         cls = ' class="active"' if sort == key else ""
+        label = t(label_key)
         return (
-            f'<a href="/players?sort={key}&amp;page={page}"{cls}'
+            f'<a href="/players?sort={key}&amp;page={page}'
+            f'&amp;region={region_filter}"{cls}'
             f' aria-label="Sort by {label}">{label}</a>'
         )
 
     sort_controls = f"""<div class="sort-controls">
-  <span>Sort:</span>
-  {_sort_link("date", "Date")}
-  {_sort_link("name", "Name")}
-  {_sort_link("region", "Region")}
+  <span>{t("players_sort")}</span>
+  {_sort_link("rank", "players_sort_rank")}
+  {_sort_link("name", "players_sort_name")}
+  {_sort_link("region", "players_sort_region")}
 </div>"""
 
+    region_options = f'<option value="">{t("players_all_regions")}</option>\n'
+    region_options += "\n".join(
+        f'<option value="{reg}"{" selected" if reg == region_filter else ""}>{reg}</option>'
+        for reg in _REGIONS
+    )
+    region_select = (
+        '<div class="filter-controls" style="margin:var(--space-sm) 0">'
+        f'<label for="region-filter">{t("players_col_region")}:</label>'
+        f'<select id="region-filter"'
+        f" onchange=\"window.location.href='/players?sort={sort}"
+        f"&region='+this.value\">"
+        f"{region_options}</select></div>"
+    )
+
     prev_link = (
-        f'<a class="page-link" href="/players?sort={sort}&amp;page={page - 1}">&larr; Prev</a>'
+        f'<a class="page-link" href="/players?sort={sort}'
+        f'&amp;region={region_filter}&amp;page={page - 1}">'
+        f"&larr; {t('players_prev')}</a>"
         if has_prev
         else ""
     )
-    page_indicator = f"page {page + 1} of {total_pages}"
+    page_indicator = f"{t('players_page')} {page + 1} / {total_pages}"
     next_link = (
-        f'<a class="page-link" href="/players?sort={sort}&amp;page={page + 1}">Next &rarr;</a>'
+        f'<a class="page-link" href="/players?sort={sort}'
+        f'&amp;region={region_filter}&amp;page={page + 1}">'
+        f"{t('players_next')} &rarr;</a>"
         if has_next
         else ""
     )
@@ -117,15 +162,18 @@ async def show_players(request: Request) -> HTMLResponse:
 </script>
 """
 
-    body = f"""{halt_html}<h2>Players ({total} total, page {page + 1} of {total_pages})</h2>
+    body = f"""{halt_html}<h2>{t("page_players")} ({display_total}\
+ {t("players_total_page")} {page + 1} {t("players_of")} {total_pages})</h2>
 {sort_controls}
-<input id="player-search" placeholder="Filter players..." type="text"
-  aria-label="Filter players by name">
+{region_select}
+<input id="player-search" placeholder="{t("players_filter")}" type="text"
+  aria-label="{t("players_filter_aria")}">
 <div class="table-scroll">
 <table id="players-table">
-  <thead><tr><th scope="col">Riot ID</th>
-  <th scope="col">Region</th>
-  <th scope="col">Seeded</th></tr></thead>
+  <thead><tr><th scope="col">{t("players_col_riot_id")}</th>
+  <th scope="col">{t("players_col_region")}</th>
+  <th scope="col">{t("players_col_rank")}</th>
+  <th scope="col">{t("players_col_seeded")}</th></tr></thead>
   <tbody>
   {rows}
   </tbody>
@@ -134,4 +182,4 @@ async def show_players(request: Request) -> HTMLResponse:
 {pagination}
 {filter_script}
 """
-    return HTMLResponse(_page("Players", body, path="/players"))
+    return HTMLResponse(_page(t("page_players"), body, path="/players"))

@@ -9,6 +9,7 @@ from lol_pipeline.priority import has_priority_players
 
 from lol_ui.constants import _HALT_BANNER, _STREAM_KEYS
 from lol_ui.rendering import _depth_badge
+from lol_ui.strings import t
 
 
 def _format_group_cells(groups: list[dict[str, Any]]) -> str:
@@ -112,19 +113,21 @@ async def _streams_fragment_html(r: Any) -> str:
     status = (
         _HALT_BANNER
         if halted
-        else '<div class="banner banner--success">&#10003; System running</div>'
+        else f'<div class="banner banner--success">&#10003; {t("streams_system_running")}</div>'
     )
 
-    priority_display = "Yes" if has_priority else "No"
+    priority_display = t("streams_yes") if has_priority else t("streams_no")
 
     return f"""{status}
-<p>Priority players in-flight: <strong>{priority_display}</strong></p>
+<p>{t("streams_priority_label")} <strong>{priority_display}</strong></p>
 <div class="table-scroll">
 <table class="streams">
-  <thead><tr><th scope="col">Key</th><th scope="col" class="text-right">Length</th>\
-<th scope="col">Group</th><th scope="col" class="text-right">Pending</th>\
-<th scope="col" class="text-right">Lag</th>\
-<th scope="col">Status</th></tr></thead>
+  <thead><tr><th scope="col">{t("streams_col_key")}</th>\
+<th scope="col" class="text-right">{t("streams_col_length")}</th>\
+<th scope="col">{t("streams_col_group")}</th>\
+<th scope="col" class="text-right">{t("streams_col_pending")}</th>\
+<th scope="col" class="text-right">{t("streams_col_lag")}</th>\
+<th scope="col">{t("streams_col_status")}</th></tr></thead>
   <tbody>{rows}</tbody>
 </table>
 </div>

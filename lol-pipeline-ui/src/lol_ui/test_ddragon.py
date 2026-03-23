@@ -11,12 +11,15 @@ import respx
 
 from lol_ui.ddragon import (
     _DDRAGON_CHAMPION_IDS_KEY,
+    _DDRAGON_CHAMPION_NAMES_KEY_PREFIX,
     _DDRAGON_MAX_RESPONSE_BYTES,
     _DDRAGON_VERSION_KEY,
     _get_champion_id_map,
     _get_ddragon_json,
     _get_ddragon_version,
     _validate_ddragon_version,
+    get_champion_name_map,
+    localize_champion_name,
 )
 
 
@@ -164,3 +167,123 @@ class TestGetChampionIdMap:
         )
         result = await _get_champion_id_map(r)
         assert result == {}
+
+
+# --- Champion name map fixtures ---
+
+_CHAMPION_JSON_EN = {
+    "data": {
+        "Annie": {"id": "Annie", "key": "1", "name": "Annie"},
+        "MonkeyKing": {"id": "MonkeyKing", "key": "62", "name": "Wukong"},
+        "Jinx": {"id": "Jinx", "key": "222", "name": "Jinx"},
+    }
+}
+
+_CHAMPION_JSON_ZH_CN = {
+    "data": {
+        "Annie": {"id": "Annie", "key": "1", "name": "\u5b89\u59ae"},
+        "MonkeyKing": {"id": "MonkeyKing", "key": "62", "name": "\u5b59\u609f\u7a7a"},
+        "Jinx": {"id": "Jinx", "key": "222", "name": "\u91d1\u514b\u4e1d"},
+    }
+}
+
+
+class TestGetChampionNameMap:
+    """get_champion_name_map returns {english_id: localized_display_name}."""
+
+    @pytest.fixture
+    async def r(self):
+        redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        yield redis
+        await redis.aclose()
+
+    @respx.mock
+    async def test_returns_cached_mapping(self, r):
+        mapping = {"Annie": "Annie", "MonkeyKing": "Wukong"}
+        cache_key = f"{_DDRAGON_CHAMPION_NAMES_KEY_PREFIX}:en_US"
+        await r.set(cache_key, json.dumps(mapping), ex=3600)
+        result = await get_champion_name_map(r, "en")
+        assert result == mapping
+
+    @respx.mock
+    async def test_fetches_english_names(self, r):
+        await r.set(_DDRAGON_VERSION_KEY, "14.10.1", ex=3600)
+        respx.get("https://ddragon.leagueoflegends.com/cdn/14.10.1/data/en_US/champion.json").mock(
+            return_value=httpx.Response(200, json=_CHAMPION_JSON_EN)
+        )
+        result = await get_champion_name_map(r, "en")
+        assert result["Annie"] == "Annie"
+        assert result["MonkeyKing"] == "Wukong"
+        assert result["Jinx"] == "Jinx"
+
+    @respx.mock
+    async def test_fetches_chinese_names(self, r):
+        await r.set(_DDRAGON_VERSION_KEY, "14.10.1", ex=3600)
+        respx.get("https://ddragon.leagueoflegends.com/cdn/14.10.1/data/zh_CN/champion.json").mock(
+            return_value=httpx.Response(200, json=_CHAMPION_JSON_ZH_CN)
+        )
+        result = await get_champion_name_map(r, "zh-CN")
+        assert result["Annie"] == "\u5b89\u59ae"
+        assert result["MonkeyKing"] == "\u5b59\u609f\u7a7a"
+
+    @respx.mock
+    async def test_caches_result_in_redis(self, r):
+        await r.set(_DDRAGON_VERSION_KEY, "14.10.1", ex=3600)
+        respx.get("https://ddragon.leagueoflegends.com/cdn/14.10.1/data/en_US/champion.json").mock(
+            return_value=httpx.Response(200, json=_CHAMPION_JSON_EN)
+        )
+        await get_champion_name_map(r, "en")
+        cache_key = f"{_DDRAGON_CHAMPION_NAMES_KEY_PREFIX}:en_US"
+        cached = await r.get(cache_key)
+        assert cached is not None
+        parsed = json.loads(cached)
+        assert "Annie" in parsed
+
+    @respx.mock
+    async def test_falls_back_to_english_on_locale_failure(self, r):
+        await r.set(_DDRAGON_VERSION_KEY, "14.10.1", ex=3600)
+        # zh_CN fails
+        respx.get("https://ddragon.leagueoflegends.com/cdn/14.10.1/data/zh_CN/champion.json").mock(
+            return_value=httpx.Response(500)
+        )
+        # en_US succeeds
+        respx.get("https://ddragon.leagueoflegends.com/cdn/14.10.1/data/en_US/champion.json").mock(
+            return_value=httpx.Response(200, json=_CHAMPION_JSON_EN)
+        )
+        result = await get_champion_name_map(r, "zh-CN")
+        assert result["Annie"] == "Annie"
+
+    @respx.mock
+    async def test_returns_empty_dict_when_no_version(self, r):
+        respx.get("https://ddragon.leagueoflegends.com/api/versions.json").mock(
+            return_value=httpx.Response(500)
+        )
+        result = await get_champion_name_map(r, "en")
+        assert result == {}
+
+    @respx.mock
+    async def test_default_lang_is_english(self, r):
+        mapping = {"Jinx": "Jinx"}
+        cache_key = f"{_DDRAGON_CHAMPION_NAMES_KEY_PREFIX}:en_US"
+        await r.set(cache_key, json.dumps(mapping), ex=3600)
+        result = await get_champion_name_map(r)
+        assert result == mapping
+
+
+class TestLocalizeChampionName:
+    """localize_champion_name looks up display names with safe fallback."""
+
+    def test_found_in_map__returns_localized(self):
+        name_map = {"MonkeyKing": "Wukong", "Jinx": "Jinx"}
+        assert localize_champion_name(name_map, "MonkeyKing") == "Wukong"
+
+    def test_not_found__returns_champion_id_unchanged(self):
+        name_map = {"Jinx": "Jinx"}
+        assert localize_champion_name(name_map, "UnknownChamp") == "UnknownChamp"
+
+    def test_empty_map__returns_champion_id(self):
+        assert localize_champion_name({}, "Annie") == "Annie"
+
+    def test_chinese_name__returns_chinese(self):
+        name_map = {"Annie": "\u5b89\u59ae"}
+        assert localize_champion_name(name_map, "Annie") == "\u5b89\u59ae"

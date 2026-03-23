@@ -18,6 +18,7 @@ from lol_ui.constants import (
     _WR_COLOR_HIGH_THRESHOLD,
     _WR_COLOR_MID_THRESHOLD,
 )
+from lol_ui.ddragon import localize_champion_name
 from lol_ui.rendering import _champion_icon_html, _empty_state
 
 
@@ -97,13 +98,20 @@ def _champion_tier_table(
     patch: str,
     version: str | None,
     prev_rows: list[dict[str, object]] | None = None,
+    name_map: dict[str, str] | None = None,
 ) -> str:
-    """Render the champion tier list table HTML."""
+    """Render the champion tier list table HTML.
+
+    *name_map* is an optional ``{english_id: localized_display_name}`` dict.
+    When provided, champion names are localized for display while keeping
+    English IDs for links and icon URLs.
+    """
     if not rows:
         return _empty_state(
             "No champion data for this patch",
             "Try a different patch or role filter.",
         )
+    _name_map = name_map or {}
     # Build lookup: (name, role) -> prev row for delta computation
     prev_lookup: dict[tuple[str, str], dict[str, object]] = {}
     if prev_rows:
@@ -123,7 +131,7 @@ def _champion_tier_table(
         kda = float(row["kda"])  # type: ignore[arg-type]
         cs = float(row["cs"])  # type: ignore[arg-type]
         ban_rate = float(row.get("ban_rate", 0.0))  # type: ignore[arg-type]
-        safe_name = html.escape(name)
+        display_name = html.escape(localize_champion_name(_name_map, name))
         icon = _champion_icon_html(name, version)
         wr_color = (
             "var(--color-win)"
@@ -169,7 +177,7 @@ def _champion_tier_table(
             f"/champions/{_url_quote(name)}?patch={_url_quote(patch)}&amp;role={_url_quote(role)}"
         )
         trs += (
-            f'<tr><td><a href="{href}">{icon}{safe_name}</a></td>'
+            f'<tr><td><a href="{href}">{icon}{display_name}</a></td>'
             f"{tier_cell}"
             f"<td>{html.escape(role)}</td>"
             f"<td>{games}</td>"
@@ -295,7 +303,7 @@ async def _build_champion_rows(
     return rows
 
 
-def _champion_detail_html(
+def _champion_detail_html(  # noqa: PLR0913
     name: str,
     role: str,
     stats: dict[str, str],
@@ -303,9 +311,14 @@ def _champion_detail_html(
     all_roles: list[str],
     version: str | None,
     matchups_html: str = "",
+    name_map: dict[str, str] | None = None,
 ) -> str:
-    """Render champion detail page body."""
-    safe_name = html.escape(name)
+    """Render champion detail page body.
+
+    *name_map* localizes display names while keeping English IDs for URLs/icons.
+    """
+    _name_map = name_map or {}
+    display_name = html.escape(localize_champion_name(_name_map, name))
     icon = _champion_icon_html(name, version)
     games = _safe_int(stats.get("games"))
     wins = _safe_int(stats.get("wins"))
@@ -335,8 +348,8 @@ def _champion_detail_html(
     # Multi-kill stats (optional)
     for mk in ("double_kills", "triple_kills", "quadra_kills", "penta_kills"):
         val = stats.get(mk, "0")
-        label = mk.replace("_", " ").title()
-        stat_rows += f"<tr><td>{html.escape(label)}</td><td>{val}</td></tr>"
+        mk_label = mk.replace("_", " ").title()
+        stat_rows += f"<tr><td>{html.escape(mk_label)}</td><td>{val}</td></tr>"
     role_links = " ".join(
         f'<a href="/champions/{_url_quote(name)}?role={_url_quote(rl)}"'
         f' class="btn-sm{" active" if rl == role else ""}">'
@@ -371,7 +384,7 @@ def _champion_detail_html(
             "</tr></thead>"
             f"<tbody>{ph_rows}</tbody></table></div>"
         )
-    return f"""<h2>{icon}{safe_name} &mdash; {html.escape(role)}</h2>
+    return f"""<h2>{icon}{display_name} &mdash; {html.escape(role)}</h2>
 <p>Roles: {role_links}</p>
 <div class="table-scroll">
 <table>
@@ -386,10 +399,12 @@ def _champion_detail_html(
 
 def _matchup_table_html(
     matchups: list[tuple[str, int, float]],
+    name_map: dict[str, str] | None = None,
 ) -> str:
     """Render a matchup table from (opponent, games, win_rate) tuples."""
     if not matchups:
         return ""
+    _name_map = name_map or {}
     trs = ""
     for opponent, games, wr in matchups:
         wr_cls = (
@@ -397,7 +412,7 @@ def _matchup_table_html(
             if wr >= _WR_COLOR_HIGH_THRESHOLD
             else ("error" if wr < _WR_COLOR_MID_THRESHOLD else "")
         )
-        safe_opp = html.escape(opponent)
+        safe_opp = html.escape(localize_champion_name(_name_map, opponent))
         trs += f'<tr><td>{safe_opp}</td><td>{games}</td><td class="{wr_cls}">{wr:.1f}%</td></tr>'
     return (
         '<h3>Matchups</h3><div class="table-scroll"><table>'

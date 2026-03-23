@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 
 from lol_ui._helpers import _parse_item_ids
+from lol_ui.ddragon import localize_champion_name
 from lol_ui.match_badges import _match_badges, _match_badges_html
 from lol_ui.rendering import (
     _champion_icon_html,
@@ -145,7 +146,7 @@ document.addEventListener('click', function(e) {{
 """
 
 
-def _match_history_html(
+def _match_history_html(  # noqa: PLR0913
     matches: list[tuple[str, dict[str, str], dict[str, str]]],
     puuid: str,
     region: str,
@@ -153,10 +154,15 @@ def _match_history_html(
     page: int,
     has_more: bool,
     version: str | None = None,
+    name_map: dict[str, str] | None = None,
 ) -> str:
-    """Render match history rows + optional next-page button."""
+    """Render match history rows + optional next-page button.
+
+    *name_map* localizes champion display names; English IDs are kept for icons.
+    """
     if not matches:
         return _empty_state("No match history", "This player has no parsed matches yet.")
+    _name_map = name_map or {}
     cards = ""
     for match_id, match_meta, participant in matches:
         win = participant.get("win") == "1"
@@ -165,6 +171,7 @@ def _match_history_html(
         result_text = "WIN" if win else "LOSS"
 
         champ_name = participant.get("champion_name", "?")
+        display_champ = localize_champion_name(_name_map, champ_name)
         icon = _champion_icon_html(champ_name, version)
         k = html.escape(participant.get("kills", "0"))
         d = html.escape(participant.get("deaths", "0"))
@@ -193,7 +200,7 @@ def _match_history_html(
             f'<div class="match-row {row_cls}" data-match-id="{safe_match_id}">'
             f'<div class="match-result {result_cls}">{result_text}</div>'
             f'<div class="match-champ">{icon}'
-            f'<span class="match-champ__name">{html.escape(champ_name)}</span></div>'
+            f'<span class="match-champ__name">{html.escape(display_champ)}</span></div>'
             f'<div class="match-kda">'
             f'<div class="match-kda__score"><span>{k}</span>'
             f'<span class="match-kda__sep">/</span>'

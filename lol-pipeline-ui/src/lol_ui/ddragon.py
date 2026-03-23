@@ -1,4 +1,4 @@
-"""Data Dragon (DDragon) — version, champion ID map, and generic JSON cache helper."""
+"""Data Dragon (DDragon) — version, champion ID/name maps, and generic JSON cache helper."""
 
 from __future__ import annotations
 
@@ -8,12 +8,20 @@ from typing import Any
 
 import httpx
 import redis.asyncio as aioredis
+from lol_pipeline.i18n import DDRAGON_LOCALE_MAP
 
 _DDRAGON_VERSION_KEY = "ddragon:version"
 _DDRAGON_CHAMPION_IDS_KEY = "ddragon:champion_ids"
+_DDRAGON_CHAMPION_NAMES_KEY_PREFIX = "ddragon:champion_names"
 _DDRAGON_TTL_S = 86400  # 24 hours
 _DDRAGON_MAX_RESPONSE_BYTES = 5 * 1024 * 1024  # 5 MB
 _DDRAGON_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+
+# zh_CN champion.json uses "name" for the localized display name,
+# while Western locales use "name" for the English display name.
+# The "id" field is always the English programmatic ID (e.g. "MonkeyKing").
+_ZH_CN_NAME_FIELD = "name"
+_WESTERN_NAME_FIELD = "name"
 
 
 def _validate_ddragon_version(version: str) -> bool:
@@ -107,3 +115,54 @@ async def _get_champion_id_map(r: aioredis.Redis) -> dict[str, str]:
     # Overwrite with just the mapping (not the full champion.json)
     await r.set(_DDRAGON_CHAMPION_IDS_KEY, json.dumps(mapping), ex=_DDRAGON_TTL_S)
     return mapping
+
+
+async def get_champion_name_map(
+    r: aioredis.Redis,
+    lang: str = "en",
+) -> dict[str, str]:
+    """Return ``{english_champion_id: localized_display_name}`` mapping.
+
+    Cache key: ``ddragon:champion_names:{ddragon_locale}`` with 24h TTL.
+    For ``zh_CN`` the ``name`` field contains the Chinese display name.
+    For Western locales the ``name`` field is the English display name.
+    Falls back to English on failure.
+    """
+    ddragon_locale = DDRAGON_LOCALE_MAP.get(lang, "en_US")
+    cache_key = f"{_DDRAGON_CHAMPION_NAMES_KEY_PREFIX}:{ddragon_locale}"
+    cached = await r.get(cache_key)
+    if cached:
+        try:
+            return json.loads(str(cached))  # type: ignore[no-any-return]
+        except (json.JSONDecodeError, TypeError):
+            pass
+    version = await _get_ddragon_version(r)
+    if not version:
+        return {}
+    url = f"https://ddragon.leagueoflegends.com/cdn/{version}/data/{ddragon_locale}/champion.json"
+    data = await _get_ddragon_json(r, f"_tmp:{cache_key}", url)
+    if not data:
+        # Fall back to English if a non-English locale failed
+        if ddragon_locale != "en_US":
+            return await get_champion_name_map(r, "en")
+        return {}
+    name_field = _ZH_CN_NAME_FIELD if ddragon_locale == "zh_CN" else _WESTERN_NAME_FIELD
+    mapping: dict[str, str] = {}
+    for champ_data in data.get("data", {}).values():
+        champ_id = champ_data.get("id", "")
+        display_name = champ_data.get(name_field, champ_id)
+        if champ_id:
+            mapping[champ_id] = display_name
+    await r.set(cache_key, json.dumps(mapping), ex=_DDRAGON_TTL_S)
+    return mapping
+
+
+def localize_champion_name(
+    name_map: dict[str, str],
+    champion_id: str,
+) -> str:
+    """Look up the localized display name for *champion_id*.
+
+    Returns *champion_id* unchanged when the map has no entry (safe fallback).
+    """
+    return name_map.get(champion_id, champion_id)

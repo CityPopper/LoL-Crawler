@@ -6,6 +6,7 @@ import html
 from urllib.parse import quote as _url_quote
 
 from lol_ui._helpers import _parse_item_ids
+from lol_ui.ddragon import localize_champion_name
 from lol_ui.rendering import _champion_icon_html, _item_icon_html
 
 
@@ -16,11 +17,17 @@ def _render_detail_player(
     current_puuid: str,
     max_damage: int,
     version: str | None,
+    name_map: dict[str, str] | None = None,
 ) -> str:
-    """Render a single player row inside the match detail expansion."""
+    """Render a single player row inside the match detail expansion.
+
+    *name_map* localizes champion display names; English IDs kept for icons.
+    """
+    _name_map = name_map or {}
     is_me = p_puuid == current_puuid
     me_cls = " match-detail__player--me" if is_me else ""
     champ = part.get("champion_name", "?")
+    display_champ = localize_champion_name(_name_map, champ)
     icon = _champion_icon_html(champ, version)
     name = player.get("game_name", "")
     tag = player.get("tag_line", "")
@@ -60,8 +67,9 @@ def _render_detail_player(
     item_ids = _parse_item_ids(part)
     items_html = "".join(_item_icon_html(iid, version) for iid in item_ids)
 
+    safe_champ = html.escape(display_champ)
     return (
-        f'<div class="match-detail__player{me_cls}">'
+        f'<div class="match-detail__player{me_cls}" title="{safe_champ}">'
         f"{icon}"
         f'<div class="match-detail__name">{name_link}</div>'
         f'<div class="match-detail__kda">{k}/{d}/{a}</div>'
