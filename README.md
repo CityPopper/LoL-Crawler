@@ -1,5 +1,7 @@
 # LoL Match Intelligence Pipeline
 
+[中文版](README.zh-CN.md)
+
 A streaming data pipeline that collects League of Legends match history via the Riot API and computes per-player aggregate stats. Stateless Python microservices communicate through Redis Streams.
 
 ## Pipeline
@@ -24,20 +26,38 @@ Seed → Crawler → Fetcher → Parser → Analyzer
 | Discovery       | Promotes discovered players into the pipeline when idle |
 | Web UI          | Seed players and view stats at http://localhost:8080   |
 
-Pipeline state lives in Redis. All config is injected via environment variables.
+## Screenshots
 
-## Prerequisites
+### Dashboard
+![Dashboard](screenshots/dashboard_en.png)
 
-- [Python 3.14+](https://www.python.org/downloads/)
-- [Podman](https://podman.io/getting-started/installation) (default) or [Docker](https://docs.docker.com/get-docker/)
-- [just](https://github.com/casey/just#installation)
+### Player Stats
+![Player Stats](screenshots/stats_en.png)
+
+### Champion Tier List
+![Champions](screenshots/champions_en.png)
+
+### Matchups
+![Matchups](screenshots/matchups_en.png)
+
+### Players
+![Players](screenshots/players_en.png)
+
+### Streams
+![Streams](screenshots/streams_en.png)
+
+### Logs
+![Logs](screenshots/logs_en.png)
+
+### Mobile
+![Mobile](screenshots/mobile_en.png)
 
 ## Setup
 
 ```bash
 just setup          # copies .env.example → .env
 # edit .env and set RIOT_API_KEY
-just build          # builds all Docker images
+just up             # setup + build + run (hot reload enabled)
 ```
 
 ## Run
@@ -46,12 +66,9 @@ Podman is the default runtime. To use Docker instead: `RUNTIME=docker just <cmd>
 
 ```bash
 just up                         # setup + build + run in one step
-just run                        # start all services (auto-runs via `just seed` too)
-just seed "Faker#KR1" kr        # seed a player (auto-starts stack if needed)
+just seed "Faker#KR1" kr        # seed a player
 just logs fetcher               # tail logs for a service
 just streams                    # inspect Redis stream depths
-just restart crawler            # restart a single service after code change
-just scale fetcher 3            # scale a service to N replicas
 just stop                       # pause containers (data preserved)
 just down                       # remove containers (data preserved)
 just reset                      # remove containers + wipe Redis data
@@ -59,55 +76,18 @@ just reset                      # remove containers + wipe Redis data
 
 ## Web UI
 
-```bash
-just ui             # prints URL and opens browser
-# or navigate to http://localhost:8080
-```
+Navigate to http://localhost:8080. Features:
 
-### Dashboard
-![Dashboard](screenshots/01_dashboard_en.png)
+- **Dashboard** — system status, stream depths, player lookup
+- **Stats** — player profile with match history, AI Score, champion breakdown
+- **Champions** — tier list by patch with PBI scoring
+- **Matchups** — head-to-head champion lookup with autocomplete
+- **Players** — ranked player list with region filter
+- **Streams** — pipeline health monitor
+- **DLQ** — dead letter queue browser with expandable entries
+- **Logs** — merged service logs with service filter
 
-System status, stream depths, player lookup. Language switcher (EN | 中文) + theme switcher.
-
-### Dashboard (中文)
-![Dashboard Chinese](screenshots/02_dashboard_zh.png)
-
-Full Chinese localization — all text translated including nav, cards, form labels, footer.
-
-### Player Stats
-![Player Stats](screenshots/03_stats_en.png)
-
-Two-column layout. Tabbed match detail: Overview | Build | Team Analysis | AI Score | Timeline.
-
-### Champion Tier List
-![Champions](screenshots/03_champions_en.png)
-
-Per-patch tier list with win rate, pick rate, ban rate, PBI tier (S/A/B/C/D), and patch-over-patch delta.
-
-### Matchups (中文)
-![Matchups](screenshots/04_matchups_zh.png)
-
-Champion matchup lookup with autocomplete datalist, localized role names.
-
-### Players
-![Players](screenshots/05_players_en.png)
-
-Player listing sorted by ranked standing. Region filter, rank column.
-
-### Streams (中文)
-![Streams](screenshots/06_streams_zh.png)
-
-Pipeline health monitor — stream depths, consumer lag, system status.
-
-### Logs (中文)
-![Logs](screenshots/08_logs_zh.png)
-
-Merged service logs with expandable entries, service filter, clear button.
-
-### Mobile
-![Mobile](screenshots/09_mobile_en.png)
-
-Responsive layout on mobile devices.
+Language switcher (EN | 中文) and theme switcher (Default | Art Pop) included.
 
 ## Admin CLI
 
@@ -115,53 +95,29 @@ Responsive layout on mobile devices.
 just admin stats "Faker#KR1" --region kr
 just admin dlq list
 just admin dlq replay --all
-just admin system-resume         # clear system:halted after key rotation
-just admin reseed "Faker#KR1" --region kr   # force re-crawl bypassing cooldown
+just admin system-resume
+just admin reseed "Faker#KR1" --region kr
 ```
 
 ## Testing
 
-1161 unit tests + 44 contract tests across all services.
-
 ```bash
-just test                       # run all unit tests (services tested in parallel)
-just test-svc crawler           # run unit tests for a single service
-just contract                   # run PACT contract tests for all services
-just integration                # integration tests (requires Podman/Docker for testcontainers)
-just e2e                        # end-to-end test (requires running stack + valid API key)
-just test-all                   # unit + contract tests combined
-just coverage                   # run all unit tests with coverage report
-just lint                       # ruff check + format check on all services
-just fix                        # auto-fix lint issues + format all services
-just format                     # format all services (ruff format)
-just typecheck                  # mypy on all services
-just check                      # lint + typecheck
-just update-mocks               # refresh Pwnerer#1337 fixtures from live Riot API
-```
-
-## Data Management
-
-```bash
-just consolidate                # bundle individual match JSON files into JSONL+zstd archives
-```
-
-## Code Changes (No Rebuild Needed)
-
-Service source is volume-mounted. Edit `main.py`, then:
-
-```bash
-just restart crawler   # picks up changes immediately
+just test           # all unit tests in parallel
+just test-svc ui    # single service
+just contract       # PACT contract tests
+just integration    # integration tests (needs Docker)
+just lint           # ruff check + format
+just typecheck      # mypy
+just check          # lint + typecheck
 ```
 
 ## Environment Variables
 
 Create `.env` (from `.env.example`) and set at minimum:
 
-| Variable                    | Description                          |
-|-----------------------------|--------------------------------------|
-| `RIOT_API_KEY`              | Riot Games API key (required)        |
-| `REDIS_URL`                 | Redis connection string (no code default; `.env.example` sets `redis://redis:6379/0`) |
-| `SEED_COOLDOWN_MINUTES`     | Minutes before a player can be re-seeded (default: `30`) |
-| `API_RATE_LIMIT_PER_SECOND` | Riot API per-second cap (default: `20`) |
+| Variable        | Description                   |
+|-----------------|-------------------------------|
+| `RIOT_API_KEY`  | Riot Games API key (required) |
+| `REDIS_URL`     | Redis connection string       |
 
-See `docs/architecture/01-overview.md` for the full variable reference.
+See `.env.example` for all options.

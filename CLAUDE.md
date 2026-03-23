@@ -58,7 +58,13 @@ Two-layer localization:
 - **`strings.py`** (per-service) — UI text stays in UI (`t()`), admin stays English.
 - **DDragon game data** — fetch per-locale at render time (`ddragon:champion_names:{lang}`), 24h TTL. English keys everywhere in data layer, translate only at HTML render.
 
-## TODO — Phase 25 UI POLISH
+## TODO
+
+- [ ] Audit all fallback/default values — replace with explicit errors. No silent fallbacks to magic strings/numbers.
+- [ ] Wire `lol_pipeline.i18n.label()` into all UI displays of roles, tiers, queues (currently raw English codes)
+- [ ] Bugfix: switching themes should keep you on the same page (currently redirects to /)
+
+## DONE — Phase 25 UI POLISH
 
 - [x] R2-1: Delete dead code `_load_tilt_data` (stats.py) and `_render_build_section` (match_detail.py)
 - [x] R2-2: Replace bare `int()` with `_safe_int()` in champions_helpers.py and rank.py

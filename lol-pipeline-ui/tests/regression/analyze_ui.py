@@ -20,6 +20,9 @@ import argparse
 import sys
 from pathlib import Path
 
+from lol_ui.strings import SUPPORTED_LANGUAGES
+from lol_ui.themes import SUPPORTED_THEMES
+
 try:
     from playwright.sync_api import sync_playwright
 except ImportError:
@@ -42,9 +45,12 @@ VIEWPORTS = [
     (375, 812, "mobile"),
 ]
 
+LANGS = SUPPORTED_LANGUAGES
+THEMES = SUPPORTED_THEMES
+
 
 def capture(base_url: str, out_dir: Path) -> list[Path]:
-    """Capture screenshots of all pages at all viewports."""
+    """Capture screenshots of all pages at all viewports, languages, and themes."""
     out_dir.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
 
@@ -53,32 +59,31 @@ def capture(base_url: str, out_dir: Path) -> list[Path]:
 
         for width, height, viewport_name in VIEWPORTS:
             for route, page_name in PAGES:
-                for lang in ("en", "zh-CN"):
-                    ctx = browser.new_context(
-                        viewport={"width": width, "height": height},
-                    )
-                    page = ctx.new_page()
-                    # Set language cookie
-                    ctx.add_cookies(
-                        [
-                            {
-                                "name": "lang",
-                                "value": lang,
-                                "url": base_url,
-                            }
-                        ]
-                    )
-                    url = f"{base_url}{route}"
-                    try:
-                        page.goto(url, wait_until="networkidle", timeout=10000)
-                    except Exception:
-                        page.goto(url, timeout=10000)
+                for lang in LANGS:
+                    for theme in THEMES:
+                        ctx = browser.new_context(
+                            viewport={"width": width, "height": height},
+                        )
+                        page = ctx.new_page()
+                        # Set language and theme cookies
+                        ctx.add_cookies(
+                            [
+                                {"name": "lang", "value": lang, "url": base_url},
+                                {"name": "theme", "value": theme, "url": base_url},
+                            ]
+                        )
+                        url = f"{base_url}{route}"
+                        try:
+                            page.goto(url, wait_until="networkidle", timeout=10000)
+                        except Exception:
+                            page.goto(url, timeout=10000)
 
-                    fname = f"{page_name}_{viewport_name}_{lang}.png"
-                    fpath = out_dir / fname
-                    page.screenshot(path=str(fpath), full_page=True)
-                    paths.append(fpath)
-                    print(f"  Captured: {fname}")
+                        theme_tag = f"_{theme}" if theme != "default" else ""
+                        fname = f"{page_name}_{viewport_name}_{lang}{theme_tag}.png"
+                        fpath = out_dir / fname
+                        page.screenshot(path=str(fpath), full_page=True)
+                        paths.append(fpath)
+                        print(f"  Captured: {fname}")
                     page.close()
                     ctx.close()
 
