@@ -63,6 +63,21 @@ Two-layer localization:
 - [ ] Audit all fallback/default values — replace with explicit errors. No silent fallbacks to magic strings/numbers.
 - [ ] Wire `lol_pipeline.i18n.label()` into all UI displays of roles, tiers, queues (currently raw English codes)
 - [ ] Bugfix: switching themes should keep you on the same page (currently redirects to /)
+- [ ] Art Pop theme overhaul (graded C+ by graphic designer):
+  - [ ] Bright colored header bar (solid #ff2d9b or #00c8ff with dark text) — Pop Art backgrounds ARE the color
+  - [ ] Ben-Day dots: raise opacity to 35%, increase radius to 2.5px, reduce grid to 12px
+  - [ ] Decorative shapes: double all opacities to 25-40%
+  - [ ] Nav bar: add colored bottom border + slight background tint
+  - [ ] Table headers: solid color block (Impact, dark text on bright bg)
+  - [ ] Card borders: thicken to 3px solid #f5f0e6 (visible white outline)
+  - [ ] Champions page: add row separation, fix dark-on-dark text
+- [ ] Bugfix: skip-to-content link visible in Art Pop theme (themes.py line 208 sets position:relative, breaks absolute hiding)
+- [ ] Bugfix: theme switcher overlaps footer on mobile (add padding-bottom to footer)
+- [ ] Bugfix: DLQ Analytics card has hardcoded English (dlq_helpers.py ~10 strings need t())
+- [ ] Bugfix: stream status badges (OK/Busy/Backlog) not translated in zh-CN
+- [ ] UX: mobile nav has no scroll affordance (4 of 8 items hidden, no indicator)
+- [ ] UX: mobile streams table columns truncated (Lag/Status cut off)
+- [ ] Nit: logs auto-refresh interval label discrepancy
 
 ## DONE — Phase 25 UI POLISH
 
