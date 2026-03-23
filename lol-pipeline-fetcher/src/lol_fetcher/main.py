@@ -50,6 +50,11 @@ async def _store_and_publish(
     await raw_store.set(match_id, json.dumps(data))
 
     # Batch independent metadata writes into a single Redis round-trip.
+    # TODO: seen:matches is a single SET that grows unbounded within its TTL window.
+    # At high throughput (~1M matches/week) this can consume significant memory.
+    # Consider daily-bucketed sets (seen:matches:{YYYY-MM-DD}) with per-bucket TTL
+    # and multi-key SISMEMBER checks in crawler dedup. This is a larger architectural
+    # change — see docs/architecture/04-storage.md for current schema.
     match_key = f"match:{match_id}"
     async with r.pipeline(transaction=False) as pipe:
         pipe.hset(match_key, mapping={"status": "fetched"})

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 
+from lol_ui._helpers import _safe_int
 from lol_ui.constants import _PLAYSTYLE_MIN_GAMES, _PLAYSTYLE_RULES
 
 
@@ -18,7 +19,7 @@ def _playstyle_tags(stats: dict[str, str]) -> list[tuple[str, str]]:
     to a comparison operator and threshold.  The synthetic field ``ka_sum``
     is the sum of ``avg_kills + avg_assists``.
     """
-    games = int(stats.get("total_games", "0"))
+    games = _safe_int(stats.get("total_games", "0"))
     if games < _PLAYSTYLE_MIN_GAMES:
         return []
 

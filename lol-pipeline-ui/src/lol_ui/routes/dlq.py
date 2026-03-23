@@ -9,6 +9,7 @@ from urllib.parse import quote as _url_quote
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from lol_pipeline.config import Config
+from lol_pipeline.constants import VALID_REPLAY_STREAMS
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import DLQEnvelope
 from lol_pipeline.streams import replay_from_dlq
@@ -19,7 +20,6 @@ from lol_ui.constants import (
     _DLQ_MAX_PER_PAGE,
     _HALT_BANNER,
     _STREAM_ENTRY_ID_RE,
-    _VALID_REPLAY_STREAMS,
 )
 from lol_ui.dlq_helpers import _dlq_summary_html, _make_replay_envelope
 from lol_ui.rendering import _badge, _empty_state, _page
@@ -93,10 +93,21 @@ async def show_dlq(request: Request) -> HTMLResponse:
             f' aria-label="Replay DLQ entry {safe_id}">'
             f"Replay</button></form>"
         )
+        # Full envelope JSON for detail expansion
+        full_json = json.dumps(dlq.payload, indent=2)
+        safe_full = html.escape(full_json)
+        reason = html.escape(dlq.failure_reason or "")
         rows += (
-            f"<tr><td>{safe_id}</td><td>{fc_badge}</td>"
+            f'<tr class="dlq-row" onclick="this.nextElementSibling.classList.toggle(\'open\')">'
+            f"<td>{safe_id}</td><td>{fc_badge}</td>"
             f"<td>{orig_stream}</td><td>{service}</td><td>{attempts}</td>"
-            f'<td class="cell-wrap"><code>{payload_preview}</code></td><td>{replay_form}</td></tr>'
+            f'<td class="cell-wrap"><code>{payload_preview}</code></td>'
+            f"<td>{replay_form}</td></tr>"
+            f'<tr class="dlq-detail"><td colspan="7">'
+            f'<div class="dlq-detail__body">'
+            f"<p><strong>Failure Reason:</strong> {reason}</p>"
+            f"<pre>{safe_full}</pre>"
+            f"</div></td></tr>"
         )
 
     next_link = (
@@ -160,7 +171,7 @@ async def dlq_replay(request: Request, entry_id: str) -> Response:
             f'<p><a href="/dlq">&larr; Back to DLQ</a></p>'
         )
         return HTMLResponse(_page("DLQ Replay Failed", body, path="/dlq"), status_code=422)
-    if dlq.original_stream not in _VALID_REPLAY_STREAMS:
+    if dlq.original_stream not in VALID_REPLAY_STREAMS:
         safe_id = html.escape(entry_id)
         safe_stream = html.escape(dlq.original_stream)
         body = (

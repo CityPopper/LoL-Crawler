@@ -164,7 +164,7 @@ def _page(title: str, body: str, path: str = "", lang: str | None = None) -> str
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>{title} — LoL Pipeline</title>
+  <title>{html.escape(title)} — LoL Pipeline</title>
   <link rel="icon" href="{_FAVICON}">
   <style>{_CSS}</style>
 </head>

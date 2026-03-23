@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -190,7 +191,7 @@ async def _write_participants(
     log: logging.Logger,
     cfg: Config,
 ) -> set[str]:
-    """Batch all participant writes into a single pipeline round-trip."""
+    """Batch all participant writes + trim ops into a single pipeline round-trip."""
     seen: set[str] = set()
     async with r.pipeline(transaction=False) as pipe:
         for participant in participants:
@@ -209,20 +210,17 @@ async def _write_participants(
                 )
                 continue
             seen.add(puuid)
+        # P10-CR-6: Cap player:matches per player to prevent unbounded growth.
+        # Merged into same pipeline (2 RTTs -> 1).
+        for puuid in seen:
+            pipe.zremrangebyrank(
+                f"player:matches:{puuid}",
+                0,
+                -(cfg.player_matches_max + 1),
+            )
+            pipe.expire(f"player:matches:{puuid}", PLAYER_DATA_TTL_SECONDS)  # 30 days
         if seen:
             await pipe.execute()
-    # P10-CR-6: Cap player:matches per player to prevent unbounded growth.
-    # P13-OPT-6: Batch all trim + expire ops into one pipeline round-trip.
-    if seen:
-        async with r.pipeline(transaction=False) as trim_pipe:
-            for puuid in seen:
-                trim_pipe.zremrangebyrank(
-                    f"player:matches:{puuid}",
-                    0,
-                    -(cfg.player_matches_max + 1),
-                )
-                trim_pipe.expire(f"player:matches:{puuid}", PLAYER_DATA_TTL_SECONDS)  # 30 days
-            await trim_pipe.execute()
     return seen
 
 
@@ -598,15 +596,17 @@ async def _parse_match(
 
     seen_puuids = await _write_participants(r, match_id, game_start, info["participants"], log, cfg)
 
-    # Ban and matchup tracking (ranked solo only).
-    # Only on first parse — HINCRBY is not idempotent.
+    # Ban/matchup tracking + timeline parsing run concurrently (3 RTTs -> 1).
+    # Bans/matchups only on first parse — HINCRBY is not idempotent.
     if first_parse:
         patch = _normalize_patch(info.get("gameVersion", ""))
-        await _write_bans(r, match_id, info, patch, cfg, log)
-        await _write_matchups(r, match_id, info, patch, cfg, log)
-
-    # Timeline parsing (build order, skill order).
-    await _parse_timeline(r, match_id, cfg, log)
+        await asyncio.gather(
+            _write_bans(r, match_id, info, patch, cfg, log),
+            _write_matchups(r, match_id, info, patch, cfg, log),
+            _parse_timeline(r, match_id, cfg, log),
+        )
+    else:
+        await _parse_timeline(r, match_id, cfg, log)
 
     # P13-OPT-7: Batch all analyze publishes into one pipeline round-trip.
     if seen_puuids:

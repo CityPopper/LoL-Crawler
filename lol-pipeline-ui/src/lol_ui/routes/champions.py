@@ -116,13 +116,20 @@ async def show_champion_detail(request: Request, name: str) -> HTMLResponse:
         return HTMLResponse(_page(f"{html.escape(name)}", body, path="/champions"))
     if not role or role not in all_roles:
         role = all_roles[0]
-    # Fetch current stats
-    stats: dict[str, str] = await r.hgetall(f"champion:stats:{name}:{patch}:{role}")  # type: ignore[misc]
-    if not stats:
-        stats = {}
-    history = await _fetch_patch_history(r, name, role, patch_list)
-    version = await _get_ddragon_version(r)
-    matchups = await _fetch_champion_matchups(r, name, role, patch)
+
+    # Fetch current stats, patch history, DDragon version, and matchups concurrently
+    async def _get_stats() -> dict[str, str]:
+        result: dict[str, str] = await r.hgetall(  # type: ignore[misc]
+            f"champion:stats:{name}:{patch}:{role}"
+        )
+        return result or {}
+
+    stats, history, version, matchups = await asyncio.gather(
+        _get_stats(),
+        _fetch_patch_history(r, name, role, patch_list),
+        _get_ddragon_version(r),
+        _fetch_champion_matchups(r, name, role, patch),
+    )
     mu_html = _matchup_table_html(matchups)
     detail = _champion_detail_html(
         name, role, stats, history, all_roles, version, matchups_html=mu_html

@@ -18,6 +18,9 @@ async def set_lang(request: Request) -> Response:
     if lang not in SUPPORTED_LANGUAGES:
         lang = "en"
     referrer = request.headers.get("referer", "/")
+    # Prevent open redirect: only allow relative paths (starts with "/" but not "//")
+    if not referrer.startswith("/") or referrer.startswith("//"):
+        referrer = "/"
     response = RedirectResponse(url=referrer, status_code=303)
     set_lang_cookie(response, lang)
     return response

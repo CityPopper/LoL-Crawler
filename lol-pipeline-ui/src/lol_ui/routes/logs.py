@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import re
 from pathlib import Path
 
 from fastapi import APIRouter, Request
@@ -16,6 +17,29 @@ from lol_ui.rendering import _empty_state, _page
 
 router = APIRouter()
 
+_SERVICE_NAMES = [
+    "crawler",
+    "fetcher",
+    "parser",
+    "analyzer",
+    "recovery",
+    "delay-scheduler",
+    "discovery",
+    "ui",
+]
+
+# Only allow safe service name chars to prevent path traversal
+_SAFE_SERVICE_RE = re.compile(r"^[a-z][a-z0-9-]{0,30}$")
+
+
+def _service_filter_html(selected: str) -> str:
+    """Render a <select> dropdown for service filtering."""
+    options = '<option value="">All services</option>'
+    for svc in _SERVICE_NAMES:
+        sel = " selected" if svc == selected else ""
+        options += f'<option value="{html.escape(svc)}"{sel}>{html.escape(svc)}</option>'
+    return f'<label for="svc-filter">Service:</label><select id="svc-filter">{options}</select>'
+
 
 @router.get("/logs/fragment", response_class=HTMLResponse)
 async def logs_fragment(request: Request) -> HTMLResponse:
@@ -23,8 +47,11 @@ async def logs_fragment(request: Request) -> HTMLResponse:
     cfg: Config = request.app.state.cfg
     if not cfg.log_dir:
         return HTMLResponse(_empty_state("LOG_DIR not configured", "Add it to docker-compose.yml."))
+    service = request.query_params.get("service", "")
+    if service and not _SAFE_SERVICE_RE.match(service):
+        service = ""
     log_dir = Path(cfg.log_dir)
-    lines = await asyncio.to_thread(_merged_log_lines, log_dir, _LOG_LINES)
+    lines = await asyncio.to_thread(_merged_log_lines, log_dir, _LOG_LINES, service)
     return HTMLResponse(_render_log_lines(lines))
 
 
@@ -63,16 +90,23 @@ async def show_logs(request: Request) -> HTMLResponse:
             )
         )
 
-    lines = await asyncio.to_thread(_merged_log_lines, log_dir, _LOG_LINES)
+    service = request.query_params.get("service", "")
+    if service and not _SAFE_SERVICE_RE.match(service):
+        service = ""
+    lines = await asyncio.to_thread(_merged_log_lines, log_dir, _LOG_LINES, service)
     svc_list = ", ".join(f.stem for f in log_files)
     log_content = f'<div class="log-wrap" id="log-container">{_render_log_lines(lines)}</div>'
+
+    svc_filter = _service_filter_html(service)
 
     script = """
 <script>
 (function() {
   var paused = false;
   var btn = document.getElementById('pause-btn');
+  var clearBtn = document.getElementById('clear-btn');
   var container = document.getElementById('log-container');
+  var svcSelect = document.getElementById('svc-filter');
   var timer;
 
   btn.addEventListener('click', function() {
@@ -82,9 +116,19 @@ async def show_logs(request: Request) -> HTMLResponse:
     btn.setAttribute('aria-label', paused ? 'Resume auto-refresh' : 'Pause auto-refresh');
   });
 
+  clearBtn.addEventListener('click', function() {
+    container.innerHTML = '';
+  });
+
+  svcSelect.addEventListener('change', function() {
+    refresh();
+  });
+
   function refresh() {
     if (paused) return;
-    fetch('/logs/fragment')
+    var svc = svcSelect.value;
+    var url = '/logs/fragment' + (svc ? '?service=' + encodeURIComponent(svc) : '');
+    fetch(url)
       .then(function(r) { if (!r.ok) { throw new Error('HTTP ' + r.status); } return r.text(); })
       .then(function(html) { container.innerHTML = html; })
       .catch(function(e) {
@@ -106,7 +150,9 @@ async def show_logs(request: Request) -> HTMLResponse:
         f"{halt_html}<h2>Logs</h2>"
         f'<div class="log-controls">'
         f'<button id="pause-btn" aria-label="Pause auto-refresh">Pause</button>'
-        f'<span class="log-meta">All services: {html.escape(svc_list)} &mdash; '
+        f'<button id="clear-btn" aria-label="Clear displayed logs">Clear</button>'
+        f"{svc_filter}"
+        f'<span class="log-meta">Services: {html.escape(svc_list)} &mdash; '
         f"last {_LOG_LINES} lines, auto-refresh 2s</span>"
         f"</div>"
         f"{log_content}{script}"
