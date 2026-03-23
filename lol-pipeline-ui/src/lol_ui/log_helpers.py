@@ -9,32 +9,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-# ---------------------------------------------------------------------------
-# Constants (will move to constants.py when that module is created)
-# ---------------------------------------------------------------------------
-
-_LOG_LINES = 50
-_LOG_LEVEL_CSS: dict[str, str] = {
-    "CRITICAL": "log-critical",
-    "ERROR": "log-error",
-    "WARNING": "log-warning",
-    "DEBUG": "log-debug",
-}
-_EST_BYTES_PER_LOG_LINE = 600  # heuristic for JSON structured log lines
-
-
-# ---------------------------------------------------------------------------
-# Inline rendering helper (will import from rendering.py when that module
-# is created)
-# ---------------------------------------------------------------------------
-
-
-def _empty_state(title: str, body_html: str) -> str:
-    """Render an empty-state message. Both params are raw HTML -- callers MUST
-    pre-escape any dynamic content with html.escape().
-    """
-    return f'<div class="empty-state"><p><strong>{title}</strong></p><p>{body_html}</p></div>'
-
+from lol_ui.constants import _EST_BYTES_PER_LOG_LINE, _LOG_LEVEL_CSS
+from lol_ui.rendering import _empty_state
 
 # ---------------------------------------------------------------------------
 # Log helpers
@@ -76,18 +52,34 @@ def _parse_log_line(line: str) -> tuple[str, str, str, str, str]:
 
 
 def _render_log_lines(raw_lines: list[str]) -> str:
+    """Render log lines as expandable HTML divs.
+
+    Each log line is clickable. Clicking toggles a detail section showing the
+    full extra key-value fields. Uses the same ``classList.toggle('open')``
+    pattern as match detail.
+    """
     rows: list[str] = []
     for line in raw_lines:
         ts, level, logger, msg, extra = _parse_log_line(line)
         line_cls = _LOG_LEVEL_CSS.get(level, "")
         badge_cls = _LOG_LEVEL_CSS.get(level, "log-info")
+        detail_html = ""
+        if extra:
+            detail_html = (
+                f'<div class="log-detail">'
+                f'<pre class="log-detail__pre">{html.escape(extra)}</pre>'
+                f"</div>"
+            )
         rows.append(
-            f'<div class="log-line {line_cls}">'
+            f'<div class="log-entry {line_cls}">'
+            f'<div class="log-line" onclick="this.parentElement.classList.toggle(\'open\')">'
             f'<span class="log-ts">{html.escape(ts)}</span>'
             f'<span class="log-badge {badge_cls}">{html.escape(level)}</span>'
             f'<span class="log-svc">{html.escape(logger)}</span>'
             f'<span class="log-msg">{html.escape(msg)}</span>'
-            + (f'<span class="log-extra">{html.escape(extra)}</span>' if extra else "")
+            + ('<span class="log-expand-hint">&#9654;</span>' if extra else "")
+            + "</div>"
+            + detail_html
             + "</div>"
         )
     return (
@@ -97,15 +89,26 @@ def _render_log_lines(raw_lines: list[str]) -> str:
     )
 
 
-def _merged_log_lines(log_dir: Path, n: int) -> list[str]:
-    """Read last n lines from ALL log files, merge by timestamp, return newest n.
+def _merged_log_lines(
+    log_dir: Path,
+    n: int,
+    service_filter: str = "",
+) -> list[str]:
+    """Read last n lines from log files, merge by timestamp, return newest n.
+
+    When *service_filter* is non-empty, only the matching ``<service>.log``
+    file is read.  Otherwise all ``*.log`` files are merged.
 
     Each per-file tail is already sorted (log files are append-only), so we
     use ``heapq.merge`` on the pre-sorted iterables instead of a full sort.
     We then take the last *n* items with ``collections.deque(maxlen=n)``
     to bound memory when the merged stream is large.
     """
-    log_files = list(log_dir.glob("*.log"))
+    if service_filter:
+        target = log_dir / f"{service_filter}.log"
+        log_files = [target] if target.exists() else []
+    else:
+        log_files = list(log_dir.glob("*.log"))
     per_file = max(n // len(log_files) + 1, 10) if log_files else 0
 
     def _keyed(f: Path) -> list[tuple[str, str]]:

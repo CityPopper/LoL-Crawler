@@ -69,6 +69,7 @@ async def add_security_headers(request: Request, call_next: Any) -> Response:
         "img-src 'self' ddragon.leagueoflegends.com data:; "
         "connect-src 'self'"
     )
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()"
     return response
 
 

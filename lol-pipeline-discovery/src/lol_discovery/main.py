@@ -44,6 +44,18 @@ def _parse_member(member: str) -> tuple[str, str]:
     return puuid, region
 
 
+async def _xinfo_groups_safe(r: aioredis.Redis, stream: str) -> list[Any] | None:
+    """Fetch XINFO GROUPS for a stream, returning None if the stream does not exist."""
+    try:
+        result: list[Any] = await r.xinfo_groups(stream)
+        return result
+    except ResponseError as exc:
+        exc_str = str(exc)
+        if "NOGROUP" not in exc_str and "no such key" not in exc_str:
+            raise
+        return None  # stream does not exist yet — idle for this stream
+
+
 async def _is_idle(r: aioredis.Redis) -> bool:
     """Return True when ALL pipeline streams are drained (no pending or lagging messages).
 
@@ -59,24 +71,33 @@ async def _is_idle(r: aioredis.Redis) -> bool:
     key exists) to avoid promoting discovery players that would compete with
     seeded players.  Uses SCAN-based detection instead of a counter to avoid
     TTL-expiry drift.
+
+    All checks (priority, XINFO GROUPS per stream, ZCARD) run concurrently
+    via asyncio.gather to reduce sequential RTTs.
     """
-    if await has_priority_players(r):
+    # Fire all checks concurrently: priority + XINFO per stream + ZCARD
+    results = await asyncio.gather(
+        has_priority_players(r),
+        *[_xinfo_groups_safe(r, stream) for stream in _PIPELINE_STREAMS],
+        r.zcard(_DELAYED_KEY),
+    )
+    # results[0] = has_priority_players
+    # results[1..N] = XINFO GROUPS per stream (None = stream missing)
+    # results[-1] = delayed:messages ZCARD
+    has_priority: bool = results[0]
+    if has_priority:
         return False
-    for stream in _PIPELINE_STREAMS:
-        try:
-            groups: list[Any] = await r.xinfo_groups(stream)
-        except ResponseError as exc:
-            exc_str = str(exc)
-            if "NOGROUP" not in exc_str and "no such key" not in exc_str:
-                raise
-            continue  # stream does not exist yet — idle for this stream
-        if not groups:
-            continue  # no consumer groups registered — idle for this stream
+
+    xinfo_results: list[list[Any] | None] = results[1:-1]
+    for groups in xinfo_results:
+        if groups is None or not groups:
+            continue  # stream missing or no consumer groups — idle
         if not all(int(g.get("pending") or 0) == 0 and int(g.get("lag") or 0) == 0 for g in groups):
             return False
+
     # Check delayed:messages ZSET — non-empty means retries are queued
-    delayed_count: int = await r.zcard(_DELAYED_KEY)
-    return not delayed_count > 0
+    delayed_count: int = results[-1]
+    return delayed_count == 0
 
 
 async def _resolve_names(

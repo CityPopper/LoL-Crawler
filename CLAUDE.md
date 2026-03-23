@@ -51,6 +51,13 @@ Platform: macOS. Container runtime: Podman (default). Switch with `RUNTIME=docke
 | Integration tests | `tests/integration/` (IT-01 through IT-12, testcontainers) |
 | Rejected ideas (do not re-propose) | `.claude/archive/REJECTED.md` |
 
-## TODO
+## TODO — Phase 25 UI POLISH
 
-_(Phase 24 complete. All sprints, future tasks, and directives implemented.)_
+- [x] R2-1: Delete dead code `_load_tilt_data` (stats.py) and `_render_build_section` (match_detail.py)
+- [x] R2-2: Replace bare `int()` with `_safe_int()` in champions_helpers.py and rank.py
+- [x] R2-3: Fix log_helpers.py DRY violation (import from constants.py and rendering.py)
+- [x] UX-1: Logs page expandable log entries
+- [x] UX-2: Logs page Clear button
+- [x] UX-3: Logs page service filter dropdown
+- [x] UX-4: DLQ page expandable entries
+- [x] SEC-1: Add Permissions-Policy header

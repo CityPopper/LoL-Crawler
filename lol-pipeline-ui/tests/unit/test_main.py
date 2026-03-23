@@ -3704,6 +3704,7 @@ class TestLogsAsyncIo:
         mock_cfg.log_dir = str(tmp_path)
         request = MagicMock()
         request.app.state.cfg = mock_cfg
+        request.query_params = {}
 
         call_tracker: dict[str, object] = {"called": False, "func": None}
         original_to_thread = __import__("asyncio").to_thread
@@ -3741,6 +3742,7 @@ class TestLogsAsyncIo:
         request = MagicMock()
         request.app.state.r = r
         request.app.state.cfg = mock_cfg
+        request.query_params = {}
 
         call_tracker: dict[str, object] = {"called": False, "func": None}
         original_to_thread = __import__("asyncio").to_thread

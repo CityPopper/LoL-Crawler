@@ -14,6 +14,7 @@ from lol_pipeline.config import Config
 from lol_pipeline.models import DLQEnvelope
 from lol_pipeline.riot_api import RiotClient
 
+from lol_admin._helpers import _relative_age
 from lol_admin.main import (
     _confirm,
     _dispatch,
@@ -2320,3 +2321,95 @@ class TestBackfillChampionsIdempotent:
         # Stats should NOT have doubled
         stats2 = await r.hgetall("champion:stats:Yasuo:14.5:MID")
         assert stats2["games"] == "1"
+
+
+# ---------------------------------------------------------------------------
+# _relative_age — ISO timestamp to human-readable relative age
+# ---------------------------------------------------------------------------
+
+
+class TestRelativeAge:
+    """_relative_age converts ISO timestamp to human-readable relative age."""
+
+    def test_seconds_ago(self):
+        """Timestamp 30 seconds ago returns '30s ago'."""
+        from datetime import UTC, datetime, timedelta
+
+        then = datetime.now(tz=UTC) - timedelta(seconds=30)
+        result = _relative_age(then.isoformat())
+        assert result.endswith("s ago")
+        # Should be close to 30 (within 2s of test execution)
+        num = int(result.replace("s ago", ""))
+        assert 28 <= num <= 32
+
+    def test_minutes_ago(self):
+        """Timestamp 5 minutes ago returns '5m ago'."""
+        from datetime import UTC, datetime, timedelta
+
+        then = datetime.now(tz=UTC) - timedelta(minutes=5)
+        result = _relative_age(then.isoformat())
+        assert result == "5m ago"
+
+    def test_hours_ago(self):
+        """Timestamp 3 hours ago returns '3h ago'."""
+        from datetime import UTC, datetime, timedelta
+
+        then = datetime.now(tz=UTC) - timedelta(hours=3)
+        result = _relative_age(then.isoformat())
+        assert result == "3h ago"
+
+    def test_days_ago(self):
+        """Timestamp 2 days ago returns '2d ago'."""
+        from datetime import UTC, datetime, timedelta
+
+        then = datetime.now(tz=UTC) - timedelta(days=2)
+        result = _relative_age(then.isoformat())
+        assert result == "2d ago"
+
+    def test_future_timestamp(self):
+        """Timestamp in the future returns 'future'."""
+        from datetime import UTC, datetime, timedelta
+
+        then = datetime.now(tz=UTC) + timedelta(hours=1)
+        result = _relative_age(then.isoformat())
+        assert result == "future"
+
+    def test_invalid_string(self):
+        """Non-ISO string returns '?'."""
+        assert _relative_age("not-a-timestamp") == "?"
+
+    def test_empty_string(self):
+        """Empty string returns '?'."""
+        assert _relative_age("") == "?"
+
+    def test_boundary_59_seconds(self):
+        """59 seconds ago is still in the seconds range."""
+        from datetime import UTC, datetime, timedelta
+
+        then = datetime.now(tz=UTC) - timedelta(seconds=59)
+        result = _relative_age(then.isoformat())
+        assert result.endswith("s ago")
+
+    def test_boundary_60_seconds(self):
+        """Exactly 60 seconds ago crosses into minutes."""
+        from datetime import UTC, datetime, timedelta
+
+        then = datetime.now(tz=UTC) - timedelta(seconds=60)
+        result = _relative_age(then.isoformat())
+        assert result == "1m ago"
+
+    def test_boundary_3599_seconds(self):
+        """3599 seconds ago is still in minutes range."""
+        from datetime import UTC, datetime, timedelta
+
+        then = datetime.now(tz=UTC) - timedelta(seconds=3599)
+        result = _relative_age(then.isoformat())
+        assert result == "59m ago"
+
+    def test_boundary_3600_seconds(self):
+        """Exactly 3600 seconds ago crosses into hours."""
+        from datetime import UTC, datetime, timedelta
+
+        then = datetime.now(tz=UTC) - timedelta(seconds=3600)
+        result = _relative_age(then.isoformat())
+        assert result == "1h ago"

@@ -401,12 +401,6 @@ async def _load_recent_matches(
     return [p for p in participant_results if p]
 
 
-async def _load_tilt_data(r: Any, puuid: str) -> dict[str, object]:
-    """Load recent match data and compute tilt/streak indicator."""
-    matches = await _load_recent_matches(r, puuid, _TILT_RECENT_COUNT)
-    return _streak_indicator(matches)
-
-
 async def _build_stats_response(
     r: Any,
     puuid: str,
@@ -430,7 +424,19 @@ async def _build_stats_response(
     rank_hist = rank_hist or []
     player_data = player_data or {}
     priority_html = f" {_badge('info', 'Priority')}" if priority_key else ""
-    version = await _get_ddragon_version(r)
+
+    # Load DDragon version and current-split matches concurrently (2 RTTs -> 1)
+    split_label, split_start_ms = _current_split()
+    version, split_matches = await asyncio.gather(
+        _get_ddragon_version(r),
+        _load_recent_matches(
+            r,
+            puuid,
+            count=_SPLIT_MATCH_LIMIT,
+            since_ms=split_start_ms,
+        ),
+    )
+
     profile_html = _profile_header_html(
         game_name,
         tag_line,
@@ -442,15 +448,6 @@ async def _build_stats_response(
     rank_html = _rank_card_html(rank)
     rank_hist_html = _rank_history_html(rank_hist)
     playstyle_html = _playstyle_pills_html(_playstyle_tags(stats))
-
-    # Load current-split matches for champion/role breakdowns
-    split_label, split_start_ms = _current_split()
-    split_matches = await _load_recent_matches(
-        r,
-        puuid,
-        count=_SPLIT_MATCH_LIMIT,
-        since_ms=split_start_ms,
-    )
     tilt_data = _streak_indicator(split_matches[:_TILT_RECENT_COUNT])
     tilt_html = _tilt_banner_html(tilt_data)
 

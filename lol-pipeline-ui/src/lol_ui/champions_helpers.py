@@ -7,6 +7,7 @@ from urllib.parse import quote as _url_quote
 
 import redis.asyncio as aioredis
 
+from lol_ui._helpers import _safe_int
 from lol_ui.constants import (
     _CHAMPION_ROLE_LABELS,
     _DELTA_DISPLAY_THRESHOLD,
@@ -28,8 +29,8 @@ def _patch_delta(
 
     Returns None when either patch has fewer than DELTA_MIN_GAMES games.
     """
-    cur_games = int(current_stats.get("games", 0))  # type: ignore[call-overload]
-    prev_games = int(prev_stats.get("games", 0))  # type: ignore[call-overload]
+    cur_games = _safe_int(current_stats.get("games"))  # type: ignore[arg-type]
+    prev_games = _safe_int(prev_stats.get("games"))  # type: ignore[arg-type]
     if cur_games < _DELTA_MIN_GAMES or prev_games < _DELTA_MIN_GAMES:
         return None
     cur_wr = float(current_stats.get("win_rate", 0.0))  # type: ignore[arg-type]
@@ -63,7 +64,7 @@ def _assign_tiers(rows: list[dict[str, object]]) -> None:
     """Assign PBI-based tier letters to rows in-place using percentile rank."""
     scored: list[tuple[int, float]] = []
     for i, row in enumerate(rows):
-        games = int(row.get("games", 0))  # type: ignore[call-overload]
+        games = _safe_int(row.get("games"))  # type: ignore[arg-type]
         if games < _PBI_MIN_GAMES:
             row["tier"] = ""
             row["tier_color"] = ""
@@ -116,7 +117,7 @@ def _champion_tier_table(
     for row in rows:
         name = str(row["name"])
         role = str(row["role"])
-        games = int(row["games"])  # type: ignore[call-overload]
+        games = _safe_int(row.get("games"))  # type: ignore[arg-type]
         win_rate = float(row["win_rate"])  # type: ignore[arg-type]
         pick_rate = float(row["pick_rate"])  # type: ignore[arg-type]
         kda = float(row["kda"])  # type: ignore[arg-type]
@@ -255,28 +256,28 @@ async def _build_champion_rows(
             pipe.hgetall(f"champion:stats:{name}:{patch}:{pos}")
         stats_list: list[dict[str, str]] = await pipe.execute()
     # total games for pick rate (divide by 10 participants per game)
-    total_all = sum(int(s.get("games", "0")) for s in stats_list if s) // 10
+    total_all = sum(_safe_int(s.get("games")) for s in stats_list if s) // 10
     if total_all == 0:
         total_all = 1
-    total_ban_games = int((ban_hash or {}).get("_total_games", "0"))
+    total_ban_games = _safe_int((ban_hash or {}).get("_total_games"))
     _name_to_id = name_to_id or {}
     rows: list[dict[str, object]] = []
     for (member, _score), stats in zip(members, stats_list, strict=True):
         if not stats:
             continue
         name, pos = member.rsplit(":", 1)
-        games = int(stats.get("games", "0"))
-        wins = int(stats.get("wins", "0"))
-        kills = int(stats.get("kills", "0"))
-        deaths = int(stats.get("deaths", "0"))
-        assists = int(stats.get("assists", "0"))
+        games = _safe_int(stats.get("games"))
+        wins = _safe_int(stats.get("wins"))
+        kills = _safe_int(stats.get("kills"))
+        deaths = _safe_int(stats.get("deaths"))
+        assists = _safe_int(stats.get("assists"))
         wr = (wins / games * 100) if games > 0 else 0.0
         avg_kda = (kills + assists) / max(deaths, 1) if games > 0 else 0.0
-        avg_cs = int(stats.get("cs", "0")) / max(games, 1)
+        avg_cs = _safe_int(stats.get("cs")) / max(games, 1)
         pr = (games / total_all * 100) if total_all > 0 else 0.0
         # Ban rate: look up champion numeric ID, then count from ban hash
         champ_id = _name_to_id.get(name, "")
-        bans = int((ban_hash or {}).get(champ_id, "0")) if champ_id else 0
+        bans = _safe_int((ban_hash or {}).get(champ_id)) if champ_id else 0
         br = (bans / total_ban_games * 100) if total_ban_games > 0 else 0.0
         rows.append(
             {
@@ -306,17 +307,17 @@ def _champion_detail_html(
     """Render champion detail page body."""
     safe_name = html.escape(name)
     icon = _champion_icon_html(name, version)
-    games = int(stats.get("games", "0"))
-    wins = int(stats.get("wins", "0"))
+    games = _safe_int(stats.get("games"))
+    wins = _safe_int(stats.get("wins"))
     wr = (wins / games * 100) if games > 0 else 0.0
-    kills = int(stats.get("kills", "0"))
-    deaths = int(stats.get("deaths", "0"))
-    assists = int(stats.get("assists", "0"))
+    kills = _safe_int(stats.get("kills"))
+    deaths = _safe_int(stats.get("deaths"))
+    assists = _safe_int(stats.get("assists"))
     kda = (kills + assists) / max(deaths, 1) if games > 0 else 0.0
-    gold = int(stats.get("gold", "0"))
-    cs = int(stats.get("cs", "0"))
-    damage = int(stats.get("damage", "0"))
-    vis = int(stats.get("vision", "0"))
+    gold = _safe_int(stats.get("gold"))
+    cs = _safe_int(stats.get("cs"))
+    damage = _safe_int(stats.get("damage"))
+    vis = _safe_int(stats.get("vision"))
     # Per-game averages
     g = max(games, 1)
     stat_rows = (
@@ -345,12 +346,12 @@ def _champion_detail_html(
     # Patch history table
     ph_rows = ""
     for ph_patch, ph_stats in patch_history:
-        ph_games = int(ph_stats.get("games", "0"))
-        ph_wins = int(ph_stats.get("wins", "0"))
+        ph_games = _safe_int(ph_stats.get("games"))
+        ph_wins = _safe_int(ph_stats.get("wins"))
         ph_wr = (ph_wins / ph_games * 100) if ph_games > 0 else 0.0
-        ph_k = int(ph_stats.get("kills", "0"))
-        ph_d = int(ph_stats.get("deaths", "0"))
-        ph_a = int(ph_stats.get("assists", "0"))
+        ph_k = _safe_int(ph_stats.get("kills"))
+        ph_d = _safe_int(ph_stats.get("deaths"))
+        ph_a = _safe_int(ph_stats.get("assists"))
         ph_kda = (ph_k + ph_a) / max(ph_d, 1) if ph_games > 0 else 0.0
         ph_rows += (
             f"<tr><td>{html.escape(ph_patch)}</td>"
@@ -432,8 +433,8 @@ async def _fetch_champion_matchups(
     for opp, mdata in zip(sorted_opponents, results, strict=True):
         if not mdata:
             continue
-        mg = int(mdata.get("games", "0"))
-        mw = int(mdata.get("wins", "0"))
+        mg = _safe_int(mdata.get("games"))
+        mw = _safe_int(mdata.get("wins"))
         mwr = (mw / mg * 100) if mg > 0 else 0.0
         matchups.append((opp, mg, mwr))
     matchups.sort(key=lambda x: x[1], reverse=True)

@@ -5,14 +5,11 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 
-from lol_pipeline.constants import VALID_REPLAY_STREAMS
-
 # ---------------------------------------------------------------------------
 # Stream / validation
 # ---------------------------------------------------------------------------
 
 _STREAM_PUUID = "stream:puuid"
-_VALID_REPLAY_STREAMS = VALID_REPLAY_STREAMS
 _PUUID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
 _MATCH_ID_RE = re.compile(r"^[A-Z]{2,4}\d?_\d{1,15}$")
 _CHAMPION_NAME_RE = re.compile(r"^[a-zA-Z0-9 '.&-]{1,50}$")

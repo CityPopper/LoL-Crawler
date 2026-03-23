@@ -1,4 +1,4 @@
-"""Match detail rendering — player rows and build order sections."""
+"""Match detail rendering — player rows."""
 
 from __future__ import annotations
 
@@ -72,41 +72,4 @@ def _render_detail_player(
         f'<div class="{fill_cls}" style="width:{dmg_pct}%"></div></div>'
         f'<div class="match-detail__items">{items_html}</div>'
         f"</div>"
-    )
-
-
-def _render_build_section(
-    blue_team: list[tuple[str, dict[str, str], dict[str, str], list[str]]],
-    red_team: list[tuple[str, dict[str, str], dict[str, str], list[str]]],
-    version: str | None,
-) -> str:
-    """Render build order section showing item purchase path per player."""
-    all_players = blue_team + red_team
-    # Only show if at least one player has build data
-    if not any(build for _, _, _, build in all_players):
-        return ""
-    rows = ""
-    for _puuid, part, _player, build in all_players:
-        if not build:
-            continue
-        champ = part.get("champion_name", "?")
-        icon = _champion_icon_html(champ, version)
-        items_html = ""
-        for i, item_id in enumerate(build):
-            items_html += _item_icon_html(item_id, version)
-            if i < len(build) - 1:
-                items_html += '<span class="match-detail__build-arrow">\u2192</span>'
-        rows += (
-            f'<div class="match-detail__build-row">'
-            f"{icon}"
-            f'<div class="match-detail__build-name">{html.escape(champ)}</div>'
-            f'<div class="match-detail__build-items">{items_html}</div>'
-            f"</div>"
-        )
-    if not rows:
-        return ""
-    return (
-        f'<div class="match-detail__build">'
-        f'<div class="match-detail__build-label">Build Order</div>'
-        f"{rows}</div>"
     )

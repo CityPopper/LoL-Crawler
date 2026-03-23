@@ -171,6 +171,16 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
 .table-scroll td.cell-wrap { white-space: normal; word-break: break-word;
   max-width: 300px; }
 
+/* DLQ expandable rows */
+.dlq-row { cursor: pointer; }
+.dlq-row:hover { background: color-mix(in srgb, var(--color-info) 5%, transparent); }
+.dlq-detail { display: none; }
+.dlq-detail.open { display: table-row; }
+.dlq-detail__body { padding: var(--space-sm) var(--space-md);
+  background: var(--color-surface2); }
+.dlq-detail__body pre { margin: var(--space-sm) 0; white-space: pre-wrap;
+  word-break: break-all; font-size: 0.85em; }
+
 /* Small button */
 .btn-sm { padding: var(--space-xs) var(--space-sm); font-size: var(--font-size-sm);
           min-height: 44px; }
@@ -209,8 +219,18 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
 
 /* Log viewer */
 .log-wrap { font-family: var(--font-mono); font-size: 0.82em; }
+.log-entry { border-bottom: 1px solid var(--color-border); }
 .log-line { display: flex; flex-direction: column; gap: 2px; padding: 2px 4px;
-  border-bottom: 1px solid var(--color-border); flex-wrap: nowrap; }
+  flex-wrap: nowrap; cursor: pointer; }
+.log-line:hover { background: color-mix(in srgb, var(--color-info) 5%, transparent); }
+.log-detail { display: none; padding: 4px 4px 4px 2rem;
+  background: var(--color-surface2); border-top: 1px solid var(--color-border); }
+.log-detail__pre { margin: 0; white-space: pre-wrap; word-break: break-all;
+  font-size: 0.9em; color: var(--color-muted); }
+.log-entry.open .log-detail { display: block; }
+.log-entry.open .log-expand-hint { transform: rotate(90deg); }
+.log-expand-hint { color: var(--color-muted); font-size: 0.7em; flex-shrink: 0;
+  transition: transform 0.15s; display: inline-block; }
 .log-critical { background: color-mix(in srgb, var(--color-error) 15%, transparent);
                font-weight: bold; }
 .log-error { background: color-mix(in srgb, var(--color-error) 8%, transparent); }
@@ -230,7 +250,8 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
 .log-controls { margin: 0.5rem 0; display: flex;
   gap: 0.5rem; align-items: center; flex-wrap: wrap; }
 .log-meta { color: var(--color-muted); font-size: 0.85em; margin-bottom: 0.3rem; }
-#pause-btn { padding: var(--space-sm) var(--space-lg); min-height: 44px; cursor: pointer; }
+#pause-btn, #clear-btn { padding: var(--space-sm) var(--space-lg);
+  min-height: 44px; cursor: pointer; }
 #pause-btn.paused, #streams-pause-btn.paused { background: var(--color-error); color: #fff; }
 .log-ts, .log-badge, .log-svc { font-size: 0.75em; }
 

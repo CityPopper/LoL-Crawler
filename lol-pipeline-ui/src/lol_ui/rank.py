@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 from datetime import UTC, datetime
 
+from lol_ui._helpers import _safe_int
 from lol_ui.constants import _RANK_WR_THRESHOLD
 from lol_ui.summoner_icon import _summoner_icon_html
 
@@ -16,8 +17,8 @@ def _rank_card_html(rank: dict[str, str]) -> str:
     tier = rank.get("tier", "")
     division = rank.get("division", "")
     lp = html.escape(rank.get("lp", "0"))
-    wins = int(rank.get("wins", "0"))
-    losses = int(rank.get("losses", "0"))
+    wins = _safe_int(rank.get("wins"))
+    losses = _safe_int(rank.get("losses"))
     total = wins + losses
     wr = round(wins / total * 100) if total else 0
     wr_color = "var(--color-win)" if wr >= _RANK_WR_THRESHOLD else "var(--color-loss)"

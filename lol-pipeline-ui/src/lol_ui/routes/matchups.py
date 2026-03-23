@@ -8,6 +8,7 @@ import redis.asyncio as aioredis
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
+from lol_ui._helpers import _safe_int
 from lol_ui.constants import _CHAMPION_NAME_RE, _MATCHUP_ROLES, _PATCH_RE
 from lol_ui.rendering import _empty_state, _page
 
@@ -81,8 +82,8 @@ async def show_matchups(request: Request) -> HTMLResponse:
         )
         return HTMLResponse(_page("Matchups", body, path="/matchups"))
 
-    games = int(data.get("games", "0"))
-    wins = int(data.get("wins", "0"))
+    games = _safe_int(data.get("games", "0"))
+    wins = _safe_int(data.get("wins", "0"))
     win_rate = (wins / games * 100) if games > 0 else 0.0
     safe_a = html.escape(champ_a)
     safe_b = html.escape(champ_b)
