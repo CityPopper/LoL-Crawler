@@ -267,12 +267,13 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
 
 /* Tablet (768px+) — horizontal form layout */
 @media (min-width: 768px) {
-  .form-inline { flex-direction: row; flex-wrap: nowrap; align-items: flex-end; }
-  .form-inline label { flex: 1; min-width: 0; }
-  .form-inline label:has(input) { flex: 3; }
-  .form-inline label:has(select) { flex: 1; }
-  .form-inline input, .form-inline select { width: 100%; }
-  .form-inline button { width: auto; flex-shrink: 0; }
+  .form-inline { flex-direction: row; flex-wrap: wrap;
+    align-items: flex-end; gap: var(--space-sm); }
+  .form-inline label { flex: 1 1 200px; min-width: 120px; }
+  .form-inline label:has(input) { flex: 3 1 250px; }
+  .form-inline label:has(select) { flex: 1 1 120px; }
+  .form-inline input, .form-inline select { width: 100%; box-sizing: border-box; }
+  .form-inline button { width: auto; flex-shrink: 0; align-self: flex-end; }
   body { padding: 0 1rem; }
   .log-line { flex-direction: row; gap: 0.5rem; align-items: baseline; }
   .log-ts, .log-badge, .log-svc { font-size: inherit; }
