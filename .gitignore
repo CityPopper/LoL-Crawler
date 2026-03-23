@@ -51,10 +51,17 @@ Thumbs.db
 
 # AI
 .ai.share
+.claude/*
+!.claude/agents/
+!.claude/archive/
+!.claude/memory/
+!.claude/skills/
+!.claude/settings.json
 
 # Logs
 *.log
-logs/
+logs/*
+!logs/.gitkeep
 
 # Reference screenshots (shared with AI only — not committed)
 screenshot/

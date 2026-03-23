@@ -84,7 +84,7 @@ nav a { white-space: nowrap; padding: var(--space-sm) var(--space-md);
   font-size: var(--font-size-sm); }
 nav a:hover { background: transparent; color: var(--color-text);
   border-bottom-color: var(--color-border); }
-nav a.active { color: var(--color-win); border-bottom-color: var(--color-win);
+nav a.active { color: var(--color-win);
   font-weight: 600; border-bottom: 2px solid var(--color-win); }
 :focus-visible { outline: 2px solid var(--color-info); outline-offset: 2px; }
 form { margin: 1rem 0; }
@@ -186,7 +186,7 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
           min-height: 44px; }
 .btn--refresh { background: var(--color-surface2); color: var(--color-text);
   font-size: var(--font-size-sm); padding: var(--space-xs) var(--space-md);
-  min-height: 36px; margin-bottom: var(--space-sm); }
+  min-height: 44px; margin-bottom: var(--space-sm); }
 
 /* Pagination links — accessible touch targets */
 .page-link { display: inline-flex; align-items: center; min-height: 44px;
@@ -265,6 +265,19 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
   .site-footer { padding: var(--space-md) var(--space-sm); }
   .form-inline label { font-size: var(--font-size-base); }
   td, th { padding: 0.3rem 0.4rem; }
+  /* Nav scroll affordance — sticky fade + arrow hint */
+  nav { scrollbar-width: thin; }
+  nav::after {
+    content: '\203a';
+    position: sticky; right: 0; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    min-width: 24px; padding: 0 var(--space-xs);
+    color: var(--color-muted); font-size: 1.4em;
+    background: linear-gradient(to left, var(--color-bg) 60%, transparent);
+    pointer-events: none;
+  }
+  /* Streams table: prevent column truncation */
+  .streams { min-width: 600px; }
 }
 
 /* Tablet (768px+) — horizontal form layout */
@@ -324,9 +337,9 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
 .sort-controls span { font-size: var(--font-size-sm); color: var(--color-muted); }
 
 /* Footer */
-.site-footer { text-align: center; padding: var(--space-lg); color: var(--color-muted);
-  font-size: var(--font-size-sm); border-top: 1px solid var(--color-border);
-  margin-top: var(--space-xl); }
+.site-footer { text-align: center; padding: var(--space-lg); padding-bottom: 48px;
+  color: var(--color-muted); font-size: var(--font-size-sm);
+  border-top: 1px solid var(--color-border); margin-top: var(--space-xl); }
 
 /* Loading state */
 .loading-state { display: flex; align-items: center; gap: var(--space-sm);
@@ -466,7 +479,7 @@ details[open] > summary::before { transform: rotate(90deg); }
 .tab-btn { background: none; border: none; border-bottom: 2px solid transparent;
   margin-bottom: -2px; color: var(--color-muted); font-family: var(--font-sans);
   font-size: var(--font-size-sm); font-weight: 600; padding: var(--space-sm) var(--space-md);
-  cursor: pointer; white-space: nowrap; min-height: 36px;
+  cursor: pointer; white-space: nowrap; min-height: 44px;
   transition: color 0.15s, border-color 0.15s; }
 .tab-btn:hover { color: var(--color-text); border-bottom-color: var(--color-border); }
 .tab-btn--active { color: var(--color-win); border-bottom-color: var(--color-win); }
@@ -475,7 +488,7 @@ details[open] > summary::before { transform: rotate(90deg); }
 
 /* Two-column stats layout (T2-5) */
 .stats-layout { display: grid; grid-template-columns: 1fr; gap: var(--space-md); }
-.stats-sidebar { }
+.stats-sidebar { min-width: 0; }
 .stats-main { min-width: 0; }
 @media (min-width: 768px) {
   .stats-layout { grid-template-columns: 300px 1fr; }
@@ -503,7 +516,6 @@ details[open] > summary::before { transform: rotate(90deg); }
 
 /* Build tab (T3-1) */
 .build-tab { display: flex; flex-direction: column; gap: var(--space-md); }
-.build-team { }
 .build-team--blue .build-team__label { color: var(--color-win); }
 .build-team--red .build-team__label { color: var(--color-loss); }
 .build-team__label { font-size: var(--font-size-sm); font-weight: 700;

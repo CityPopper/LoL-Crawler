@@ -11,9 +11,6 @@ import html
 
 from lol_ui.strings import t
 
-# Icon class for smaller champion icons in timeline
-_ICON_CLS = "champion-icon champion-icon--xs"
-
 
 def _format_timestamp(ms: int) -> str:
     """Format a millisecond timestamp as MM:SS."""

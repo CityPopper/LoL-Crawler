@@ -16,10 +16,13 @@ async def set_theme(request: Request) -> Response:
     theme = request.query_params.get("theme", "default")
     if theme not in SUPPORTED_THEMES:
         theme = "default"
-    referrer = request.headers.get("referer", "/")
+    # Prefer explicit ref query param (set by JS), fall back to Referer header
+    redirect_to = request.query_params.get("ref", "")
+    if not redirect_to:
+        redirect_to = request.headers.get("referer", "/")
     # Prevent open redirect: only allow relative paths (starts with "/" but not "//")
-    if not referrer.startswith("/") or referrer.startswith("//"):
-        referrer = "/"
-    response = RedirectResponse(url=referrer, status_code=303)
+    if not redirect_to.startswith("/") or redirect_to.startswith("//"):
+        redirect_to = "/"
+    response = RedirectResponse(url=redirect_to, status_code=303)
     set_theme_cookie(response, theme)
     return response

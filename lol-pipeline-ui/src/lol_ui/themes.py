@@ -22,25 +22,24 @@ _THEME_LABELS: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# Art Pop theme — design rationale
+# Art Pop theme — Roy Lichtenstein "The Oval Office" (1992) style
 #
-# Source references:
-#   - Warhol Marilyn portfolio (1967): Day-Glo fluorescent screen inks —
-#     hot pink (#FF2D9B), electric yellow (#FFE800), process cyan (#00C8FF),
-#     vivid orange (#FF4500).  Warhol described these colors as "artificial"
-#     and non-naturalistic by design.
-#   - Lichtenstein: pure CMYK primaries — process cyan, magenta, yellow,
-#     black.  Signature Lichtenstein red (#FB1D36).  Ben-Day halftone:
-#     uniformly-spaced circular dots on a grid, rendered via repeating
-#     radial-gradient.
-#   - Haring: high-contrast warm/cool juxtaposition, electric lime (#BAFF00)
-#     against black outlines; "electricity on the surface" per studio mgr.
+# Primary references:
+#   - Lichtenstein "The Oval Office" (1992): Bold CMYK primaries, thick
+#     black outlines (4-6px), large visible Ben-Day halftone dots, flat
+#     color blocks, comic-book interior with strong diagonal perspective
+#     lines.  Colors: process red (#FB1D36), primary blue (#0047AB),
+#     lemon yellow (#FFE800), black, white.
+#   - Lichtenstein "WHAAM!" (1963): Action/combat imagery, explosion
+#     starbursts, speed lines, dramatic contrast.
+#   - Lichtenstein "Drowning Girl" (1963): Ben-Day dots as large visible
+#     pattern (not subtle texture), thick outlines on everything.
 #
-# Dark background (#0d0d0d, printing ink black) maximizes the perceived
-# saturation of the accent colors — exactly how screen-print color pops
-# against dark paper.  Off-white text (#f5f0e6) mimics uncoated paper
-# stock.  Neo-brutalist buttons (hard offset shadow, zero border-radius)
-# reference the flat graphic style of Pop Art screen prints.
+# Design: BOLD and CRAZY.  Everything has thick black outlines.  Ben-Day
+# dots are large and visible.  Decorative SVG vector shapes reference
+# League of Legends combat motifs (crossed swords, shield, explosion
+# starburst) rendered in Lichtenstein's flat comic-book style with
+# primary colors and thick black strokes.
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
@@ -49,320 +48,413 @@ _THEME_LABELS: dict[str, str] = {
 
 _ARTPOP_CSS_VARS = """\
 :root {
-  /* --- Dark field: printing ink black (not pure — avoids harsh halation) --- */
-  --color-bg: #0d0d0d;
-  /* Dark magenta tint — colored paper stock */
-  --color-surface: #1a0d2e;
-  --color-surface2: #241440;
-  /* Off-white — uncoated paper stock */
-  --color-text: #f5f0e6;
-  /* WCAG AA compliant muted text */
-  --color-muted: #b0b0c8;
+  /* --- Light field: white newsprint paper (Lichtenstein comic panels) --- */
+  --color-bg: #ffffff;
+  /* Light warm grey — comic panel background */
+  --color-surface: #f0ece4;
+  --color-surface2: #e6e0d4;
+  /* Near-black ink — comic book text */
+  --color-text: #0d0d0d;
+  /* Dark grey — secondary text */
+  --color-muted: #555555;
 
-  /* --- Pop Art outlines: thick, visible, purposeful --- */
-  --color-border: #5a2d8a;
+  /* --- Pop Art outlines: thick, black, bold --- */
+  --color-border: #0d0d0d;
 
-  /* --- Accent palette: Warhol/Lichtenstein CMYK screen-print spectrum --- */
-  /* Hot pink — Warhol Marilyn "Pink" / Lichtenstein magenta ink */
-  --color-info: #ff2d9b;
-  /* Electric cyan — Warhol Marilyn "Turquoise" / Lichtenstein process cyan */
-  --color-win: #00c8ff;
-  --color-win-bg: rgba(0, 200, 255, 0.07);
-  /* Vivid yellow — Warhol "Lemon Marilyn" / Lichtenstein yellow ink */
-  --color-warning: #ffe800;
-  --color-gold: #ffe800;
-  /* Electric lime — Keith Haring warm/cool contrast signature */
-  --color-success: #baff00;
-  /* Lichtenstein red — bold primary */
+  /* --- Accent palette: Lichtenstein CMYK primaries --- */
+  /* Primary blue — Lichtenstein "The Oval Office" */
+  --color-info: #0047ab;
+  /* Primary blue — win state */
+  --color-win: #0047ab;
+  --color-win-bg: rgba(0, 71, 171, 0.08);
+  /* Primary yellow — Lichtenstein flat yellow */
+  --color-warning: #cc9900;
+  --color-gold: #cc9900;
+  /* Green on white — success */
+  --color-success: #008800;
+  /* Lichtenstein red — THE signature red */
   --color-error: #fb1d36;
-  --color-error-bg: #cc1122;
-  --color-critical: #ff0040;
-  /* Warhol Orange Marilyn for loss */
-  --color-loss: #ff4500;
-  --color-loss-bg: rgba(255, 69, 0, 0.07);
+  --color-error-bg: #fb1d36;
+  --color-critical: #cc0000;
+  /* Red — loss state */
+  --color-loss: #fb1d36;
+  --color-loss-bg: rgba(251, 29, 54, 0.08);
 
   /* --- Pop Art special tokens --- */
-  /* S-tier: Warhol gold silk-screen */
-  --color-tier-s: #ffe800;
-  /* Rank purple: screen-print purple ink (rare in Pop Art — used sparingly) */
-  --color-rank-purple: #d44dff;
-  /* Rank teal: process cyan variant */
-  --color-rank-teal: #00e8d0;
+  --color-tier-s: #cc9900;
+  --color-rank-purple: #7b2d8e;
+  --color-rank-teal: #008080;
 
-  /* --- Chart series: CMYK screen-print palette order --- */
-  --chart-b0: #00c8ff;   /* process cyan */
-  --chart-b1: #baff00;   /* electric lime */
-  --chart-b2: #ff2d9b;   /* hot pink */
-  --chart-b3: #d44dff;   /* screen purple */
-  --chart-b4: #ffe800;   /* yellow */
+  /* --- Chart series: Lichtenstein CMYK primaries on white --- */
+  --chart-b0: #0047ab;   /* primary blue */
+  --chart-b1: #008800;   /* green */
+  --chart-b2: #7b2d8e;   /* purple */
+  --chart-b3: #cc9900;   /* gold */
+  --chart-b4: #0047ab;   /* blue */
   --chart-r0: #fb1d36;   /* Lichtenstein red */
-  --chart-r1: #ff2d9b;   /* magenta */
+  --chart-r1: #cc0000;   /* dark red */
   --chart-r2: #ff4500;   /* orange */
-  --chart-r3: #ff0040;   /* crimson */
-  --chart-r4: #ffe800;   /* yellow */
+  --chart-r3: #fb1d36;   /* red */
+  --chart-r4: #cc9900;   /* gold */
 
-  /* --- Damage type colors: map to Pop Art primaries --- */
-  --color-dmg-physical: #ff4500;   /* Warhol orange — physical, kinetic */
-  --color-dmg-magic: #d44dff;      /* purple — arcane */
-  --color-dmg-true: #f5f0e6;       /* off-white — unavoidable */
+  /* --- Damage type colors --- */
+  --color-dmg-physical: #ff4500;
+  --color-dmg-magic: #7b2d8e;
+  --color-dmg-true: #0d0d0d;
 }"""
 
 # ---------------------------------------------------------------------------
-# Art Pop decorative layer
+# Art Pop decorative layer — Lichtenstein "The Oval Office" style
 #
-# Four decorative techniques from Pop Art, all CSS-only, pointer-events none:
+# Bold SVG vector shapes in Lichtenstein's comic-book style with League of
+# Legends combat motifs.  All position:fixed, pointer-events:none, z-index:0.
 #
-# 1. Ben-Day dot halftone (body background) — Lichtenstein's signature.
-#    Implemented as repeating radial-gradient on a tight 14px grid.
-#    Magenta dots at low opacity so it reads as texture, not noise.
-#
-# 2. Cyan circle top-right (body::before) — Warhol "Turquoise Marilyn"
-#    screen-print circle motif, low opacity.
-#
-# 3. Magenta circle bottom-left (body::after) — Warhol "Pink Marilyn"
-#    complement.  Warm/cool contrast as Haring used it.
-#
-# 4. Yellow diamond mid-right (main::before) — Lichtenstein flat geometric.
-#    Rotated 45 degrees (diamond orientation), very low opacity.
-#
-# 5. Diagonal stripe bottom-left (main::after) — screen-print registration
-#    stripe accent, electric lime at low opacity.
-#
-# All shapes are position:fixed so they stay put during scroll (wallpaper
-# effect, not content-relative).  z-index:0; content stacks above at z-index:1.
+# 1. Ben-Day dots: LARGE (4px), visible, classic Lichtenstein halftone
+# 2. Comic starburst: WHAAM! explosion shape — yellow with thick black outline
+# 3. Crossed swords: League combat — red/blue with black outlines
+# 4. Shield/crest: League heraldic — yellow diamond with black outline
+# 5. Bold diagonal speed lines: comic action lines across viewport
+# 6. Red circle: Lichtenstein primary, thick outline
 # ---------------------------------------------------------------------------
 
-_ARTPOP_DECORATIONS = """\
-/* Ben-Day halftone field — Lichtenstein dot grid technique */
+# SVG data URIs for vector decorative elements
+_SVG_STARBURST = (
+    "data:image/svg+xml,"
+    "%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'%3E"
+    "%3Cpolygon points='100,5 115,65 175,25 130,80 195,100 130,120 175,175"
+    " 115,135 100,195 85,135 25,175 70,120 5,100 70,80 25,25 85,65'"
+    " fill='%23ffe800' stroke='%230d0d0d' stroke-width='5' "
+    "stroke-linejoin='round'/%3E%3C/svg%3E"
+)
+
+_SVG_CROSSED_SWORDS = (
+    "data:image/svg+xml,"
+    "%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'%3E"
+    # Sword 1: red blade, bottom-left to top-right
+    "%3Cline x1='15' y1='105' x2='105' y2='15' stroke='%23fb1d36' "
+    "stroke-width='8' stroke-linecap='round'/%3E"
+    "%3Cline x1='15' y1='105' x2='105' y2='15' stroke='%230d0d0d' "
+    "stroke-width='12' stroke-linecap='round' opacity='0.3'/%3E"
+    "%3Cline x1='15' y1='105' x2='105' y2='15' stroke='%23fb1d36' "
+    "stroke-width='6' stroke-linecap='round'/%3E"
+    # Crossguard 1
+    "%3Cline x1='30' y1='78' x2='52' y2='100' stroke='%23ffe800' "
+    "stroke-width='6' stroke-linecap='round'/%3E"
+    # Sword 2: blue blade, bottom-right to top-left
+    "%3Cline x1='105' y1='105' x2='15' y2='15' stroke='%230047ab' "
+    "stroke-width='8' stroke-linecap='round'/%3E"
+    "%3Cline x1='105' y1='105' x2='15' y2='15' stroke='%230d0d0d' "
+    "stroke-width='12' stroke-linecap='round' opacity='0.3'/%3E"
+    "%3Cline x1='105' y1='105' x2='15' y2='15' stroke='%230047ab' "
+    "stroke-width='6' stroke-linecap='round'/%3E"
+    # Crossguard 2
+    "%3Cline x1='68' y1='100' x2='90' y2='78' stroke='%23ffe800' "
+    "stroke-width='6' stroke-linecap='round'/%3E"
+    "%3C/svg%3E"
+)
+
+_SVG_SHIELD = (
+    "data:image/svg+xml,"
+    "%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 120'%3E"
+    "%3Cpath d='M50,5 L95,25 L95,65 Q95,100 50,115 Q5,100 5,65 L5,25 Z' "
+    "fill='%230047ab' stroke='%230d0d0d' stroke-width='5'/%3E"
+    "%3Cpath d='M50,18 L82,33 L82,62 Q82,90 50,102 Q18,90 18,62 L18,33 Z' "
+    "fill='%23fb1d36' stroke='%230d0d0d' stroke-width='3'/%3E"
+    "%3Cpolygon points='50,35 58,55 78,55 62,68 68,88 50,75 32,88 38,68"
+    " 22,55 42,55' fill='%23ffe800' stroke='%230d0d0d' stroke-width='2'/%3E"
+    "%3C/svg%3E"
+)
+
+_ARTPOP_DECORATIONS = (
+    """\
+/* Ben-Day halftone on white — Lichtenstein signature, LARGE red dots on white paper */
 body.theme-artpop {
   position: relative;
+  background-color: #ffffff;
   background-image: radial-gradient(
     circle at center,
-    rgba(255, 45, 155, 0.18) 1.5px,
-    transparent 1.5px
+    rgba(251, 29, 54, 0.18) 3.5px,
+    transparent 3.5px
   );
-  background-size: 14px 14px;
+  background-size: 12px 12px;
   background-repeat: round;
 }
 
-/* Cyan circle top-right — Warhol "Turquoise Marilyn" screen-print crop */
+/* Comic starburst — WHAAM! explosion, top-right */
 body.theme-artpop::before {
   content: '';
-  position: fixed; top: -80px; right: -80px;
-  width: 320px; height: 320px;
-  border-radius: 50%;
-  background: radial-gradient(
-    circle at center,
-    rgba(0, 200, 255, 0.10) 0%,
-    rgba(0, 200, 255, 0.04) 55%,
-    transparent 75%
-  );
-  border: 2px solid rgba(0, 200, 255, 0.15);
+  position: fixed; top: 30px; right: 20px;
+  width: 220px; height: 220px;
+  background: url(\""""
+    + _SVG_STARBURST
+    + """\") no-repeat center/contain;
+  opacity: 0.35;
   pointer-events: none; z-index: 0;
+  filter: drop-shadow(0 0 8px rgba(255, 232, 0, 0.4));
 }
 
-/* Magenta circle bottom-left — Warhol "Pink Marilyn" complement */
+/* Crossed swords — League combat, bottom-left */
 body.theme-artpop::after {
   content: '';
-  position: fixed; bottom: -100px; left: -100px;
-  width: 380px; height: 380px;
-  border-radius: 50%;
-  background: radial-gradient(
-    circle at center,
-    rgba(255, 45, 155, 0.10) 0%,
-    rgba(255, 45, 155, 0.04) 55%,
-    transparent 75%
-  );
-  border: 2px solid rgba(255, 45, 155, 0.12);
+  position: fixed; bottom: 60px; left: 15px;
+  width: 180px; height: 180px;
+  background: url(\""""
+    + _SVG_CROSSED_SWORDS
+    + """\") no-repeat center/contain;
+  opacity: 0.30;
   pointer-events: none; z-index: 0;
+  filter: drop-shadow(0 0 6px rgba(251, 29, 54, 0.3));
 }
 
-/* Yellow diamond mid-right — Lichtenstein flat geometric */
+/* Shield crest — League heraldic, mid-right */
 body.theme-artpop main::before {
   content: '';
-  position: fixed; top: 35%; right: -120px;
-  width: 220px; height: 220px;
-  background: rgba(255, 232, 0, 0.06);
-  border: 2px solid rgba(255, 232, 0, 0.12);
-  transform: rotate(45deg);
+  position: fixed; top: 45%; right: 10px;
+  width: 140px; height: 168px;
+  background: url(\""""
+    + _SVG_SHIELD
+    + """\") no-repeat center/contain;
+  opacity: 0.25;
   pointer-events: none; z-index: 0;
+  filter: drop-shadow(0 0 6px rgba(0, 71, 171, 0.3));
 }
 
-/* Diagonal stripe — screen-print registration stripe */
+/* Bold diagonal speed lines — comic action across viewport (visible on white) */
 body.theme-artpop main::after {
   content: '';
-  position: fixed; bottom: 8%; left: -40px;
-  width: 300px; height: 6px;
-  background: rgba(186, 255, 0, 0.10);
-  transform: rotate(-25deg);
+  position: fixed; top: 0; left: 0;
+  width: 100vw; height: 100vh;
+  background: repeating-linear-gradient(
+    -35deg,
+    transparent,
+    transparent 80px,
+    rgba(251, 29, 54, 0.06) 80px,
+    rgba(251, 29, 54, 0.06) 84px,
+    transparent 84px,
+    transparent 200px,
+    rgba(0, 71, 171, 0.06) 200px,
+    rgba(0, 71, 171, 0.06) 204px,
+    transparent 204px,
+    transparent 320px,
+    rgba(255, 232, 0, 0.08) 320px,
+    rgba(255, 232, 0, 0.08) 326px
+  );
   pointer-events: none; z-index: 0;
 }
 
 /* Stack content above decorations */
 body.theme-artpop main,
 body.theme-artpop nav,
-body.theme-artpop h1,
 body.theme-artpop .form-inline,
 body.theme-artpop .site-footer,
-body.theme-artpop .theme-switcher,
-body.theme-artpop .skip-link {
+body.theme-artpop .theme-switcher {
   position: relative; z-index: 1;
 }
-body.theme-artpop .skip-link:focus { z-index: 200; }
+body.theme-artpop .skip-link:focus { position: relative; z-index: 200; }
 
-/* --- Component overrides --- */
+/* --- Component overrides — Lichtenstein bold primaries + thick outlines --- */
 
-/* Nav: hot pink active indicator — Warhol signature magenta */
+/* Header: solid Lichtenstein red bar, white text, thick black border */
+body.theme-artpop h1 {
+  background: #fb1d36;
+  color: #ffffff;
+  -webkit-background-clip: unset;
+  -webkit-text-fill-color: unset;
+  background-clip: unset;
+  padding: var(--space-sm) var(--space-md);
+  border: 4px solid #0d0d0d;
+}
+
+/* Nav: blue tint, thick black borders on white */
+body.theme-artpop nav {
+  background: rgba(0, 71, 171, 0.08);
+  border-bottom: 4px solid #0d0d0d;
+  border-top: 2px solid #0d0d0d;
+}
+body.theme-artpop nav a { color: #0d0d0d; }
 body.theme-artpop nav a.active {
-  color: #ff2d9b;
-  border-bottom-color: #ff2d9b;
+  color: #fb1d36;
+  border-bottom: 3px solid #fb1d36;
+  background: rgba(251, 29, 54, 0.08);
+  font-weight: 900;
 }
 body.theme-artpop nav a:hover {
-  border-bottom-color: rgba(255, 45, 155, 0.4);
+  color: #0047ab;
+  border-bottom-color: #0047ab;
 }
 
-/* Links: process cyan — Lichtenstein primary */
-body.theme-artpop a { color: #00c8ff; }
-body.theme-artpop a:hover { color: #ff2d9b; }
+/* Table headers: Lichtenstein blue, white text, thick black border */
+body.theme-artpop th {
+  background: #0047ab;
+  color: #ffffff;
+  font-family: Impact, "Arial Black", sans-serif;
+  border: 3px solid #0d0d0d;
+  text-transform: uppercase;
+}
 
-/* Neo-brutalist buttons — hard offset shadow, translate on hover */
+/* Links: blue on white — classic print */
+body.theme-artpop a { color: #0047ab; }
+body.theme-artpop a:hover { color: #fb1d36; }
+
+/* Buttons: red, white text, thick black outline + offset shadow */
 body.theme-artpop button,
 body.theme-artpop .btn {
-  background: linear-gradient(135deg, #ff2d9b 0%, #00c8ff 100%);
-  color: #0d0d0d;
-  font-weight: 700;
-  border: 2px solid #0d0d0d;
-  box-shadow: 3px 3px 0 #0d0d0d;
+  background: #fb1d36;
+  color: #ffffff;
+  font-weight: 900;
+  font-family: Impact, "Arial Black", sans-serif;
+  border: 4px solid #0d0d0d;
+  box-shadow: 5px 5px 0 #0d0d0d;
   border-radius: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
   transition: transform 0.1s, box-shadow 0.1s;
 }
 body.theme-artpop button:hover,
 body.theme-artpop .btn:hover {
-  transform: translate(2px, 2px);
-  box-shadow: 1px 1px 0 #0d0d0d;
-}
-
-/* Refresh button: subtle surface, not the full gradient */
-body.theme-artpop .btn--refresh {
-  background: rgba(255, 45, 155, 0.12);
-  color: #ff2d9b;
-  border: 1px solid rgba(255, 45, 155, 0.3);
+  transform: translate(3px, 3px);
   box-shadow: 2px 2px 0 #0d0d0d;
+  background: #0047ab;
+  color: #ffffff;
 }
 
-/* Headings: Impact/Arial Black, italic, uppercase */
+/* Refresh button */
+body.theme-artpop .btn--refresh {
+  background: #0047ab;
+  color: #ffffff;
+  border: 3px solid #0d0d0d;
+  box-shadow: 3px 3px 0 #0d0d0d;
+}
+
+/* Headings: Impact, italic, uppercase — comic book lettering */
 body.theme-artpop h1,
 body.theme-artpop h2 {
   font-family: Impact, "Arial Black", "Helvetica Neue", Arial, sans-serif;
   font-style: italic;
   text-transform: uppercase;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.03em;
 }
 
-/* Page title: tricolor Warhol Marilyn palette sweep */
-body.theme-artpop h1 {
-  border-bottom: 2px solid #5a2d8a;
-  background: linear-gradient(90deg, #ff2d9b 0%, #00c8ff 45%, #ffe800 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
-
-/* h2: yellow underline accent — Warhol "Lemon Marilyn" */
+/* h2: thick yellow bottom border, full-width */
 body.theme-artpop h2 {
-  border-bottom: 3px solid #ffe800;
+  border-bottom: 5px solid #ffe800;
   padding-bottom: 4px;
-  display: inline-block;
+  display: block;
+  width: fit-content;
 }
 
-/* Cards: border-radius 0, bold colored left border — Pop Art panel */
-body.theme-artpop .card {
-  background: var(--color-surface);
-  border: 1.5px solid #5a2d8a;
-  border-left: 3px solid #ff2d9b;
-  border-radius: 0;
-}
-
-/* Badges: flat Pop Art blocks — border-radius 0, thick border, Impact font */
+/* Badges: BOLD blocks — thick black outline, Impact, zero radius */
 body.theme-artpop .badge--info {
-  background: #ff2d9b;
-  color: #0d0d0d;
-  border: 2px solid #0d0d0d;
-  border-radius: 0;
-  font-family: Impact, "Arial Black", sans-serif;
+  background: #0047ab; color: #ffffff;
+  border: 3px solid #0d0d0d; border-radius: 0;
+  font-family: Impact, "Arial Black", sans-serif; text-transform: uppercase;
 }
 body.theme-artpop .badge--success {
-  background: #baff00;
-  color: #0d0d0d;
-  border: 2px solid #0d0d0d;
-  border-radius: 0;
-  font-family: Impact, "Arial Black", sans-serif;
+  background: #008800; color: #ffffff;
+  border: 3px solid #0d0d0d; border-radius: 0;
+  font-family: Impact, "Arial Black", sans-serif; text-transform: uppercase;
 }
 body.theme-artpop .badge--warning {
-  background: #ffe800;
-  color: #0d0d0d;
-  border: 2px solid #0d0d0d;
-  border-radius: 0;
-  font-family: Impact, "Arial Black", sans-serif;
+  background: #ffe800; color: #0d0d0d;
+  border: 3px solid #0d0d0d; border-radius: 0;
+  font-family: Impact, "Arial Black", sans-serif; text-transform: uppercase;
 }
 body.theme-artpop .badge--error {
-  background: #fb1d36;
-  color: #f5f0e6;
-  border: 2px solid #0d0d0d;
-  border-radius: 0;
-  font-family: Impact, "Arial Black", sans-serif;
+  background: #fb1d36; color: #ffffff;
+  border: 3px solid #0d0d0d; border-radius: 0;
+  font-family: Impact, "Arial Black", sans-serif; text-transform: uppercase;
 }
 
-/* Sort controls: active state uses process cyan */
+/* Sort controls */
+body.theme-artpop .sort-controls a {
+  border: 2px solid #0d0d0d; color: #0d0d0d;
+}
 body.theme-artpop .sort-controls a.active {
-  border-color: #00c8ff;
-  color: #00c8ff;
-  background: rgba(0, 200, 255, 0.08);
+  border: 3px solid #0d0d0d;
+  color: #ffffff; background: #0047ab;
 }
 
-/* Tab strip: active tab uses hot pink underline */
+/* Tab strip */
 body.theme-artpop .tab-btn--active {
-  color: #ff2d9b;
-  border-bottom-color: #ff2d9b;
+  color: #fb1d36; border-bottom: 3px solid #fb1d36;
 }
 
-/* Log level badges */
-body.theme-artpop .log-badge.log-info { background: #ff2d9b; color: #0d0d0d; }
-body.theme-artpop .log-badge.log-warning { background: #ffe800; color: #0d0d0d; }
-body.theme-artpop .log-badge.log-error { background: #fb1d36; color: #f5f0e6; }
-body.theme-artpop .log-badge.log-critical { background: #ff0040; color: #f5f0e6; }
-body.theme-artpop .log-svc { color: #00c8ff; }
+/* Log level badges — primary colors, white text */
+body.theme-artpop .log-badge.log-info {
+  background: #0047ab; color: #fff; border: 2px solid #0d0d0d;
+}
+body.theme-artpop .log-badge.log-warning {
+  background: #ffe800; color: #0d0d0d; border: 2px solid #0d0d0d;
+}
+body.theme-artpop .log-badge.log-error {
+  background: #fb1d36; color: #fff; border: 2px solid #0d0d0d;
+}
+body.theme-artpop .log-badge.log-critical {
+  background: #cc0000; color: #fff;
+  border: 2px solid #0d0d0d; font-weight: 900;
+}
+body.theme-artpop .log-svc { color: #0047ab; }
 
-/* Grade badges: remap to Pop Art primaries */
+/* Grade badges */
 body.theme-artpop .grade--S {
-  background: linear-gradient(135deg, #ffe800, #ff4500);
-  color: #0d0d0d;
+  background: #ffe800; color: #0d0d0d; border: 3px solid #0d0d0d;
 }
-body.theme-artpop .grade--A { background: #00c8ff; color: #0d0d0d; }
-body.theme-artpop .grade--B { background: #baff00; color: #0d0d0d; }
+body.theme-artpop .grade--A { background: #0047ab; color: #fff; border: 3px solid #0d0d0d; }
+body.theme-artpop .grade--B { background: #fb1d36; color: #fff; border: 3px solid #0d0d0d; }
 
-/* Match rows: thicker left border to echo Pop Art outlines */
+/* Match rows: thick borders, bold color — comic panels */
 body.theme-artpop .match-row {
-  border-left-width: 4px;
+  border: 2px solid #0d0d0d;
+  border-left-width: 6px;
+  margin-bottom: 2px;
 }
 body.theme-artpop .match-row--win {
-  border-left-color: #00c8ff;
-  background: rgba(0, 200, 255, 0.07);
+  border-left-color: #0047ab;
+  background: rgba(0, 71, 171, 0.06);
 }
 body.theme-artpop .match-row--loss {
-  border-left-color: #ff4500;
-  background: rgba(255, 69, 0, 0.07);
+  border-left-color: #fb1d36;
+  background: rgba(251, 29, 54, 0.06);
 }
 
-/* Banners: flat bold left border, Lichtenstein outline weight */
+/* Banners: thick black outline */
 body.theme-artpop .banner {
-  border-left-width: 4px;
+  border: 3px solid #0d0d0d; border-left-width: 6px;
 }
 
-/* Focus ring: process cyan — accessible + on-brand */
+/* Focus ring: blue — high contrast on white */
 body.theme-artpop :focus-visible {
-  outline-color: #00c8ff;
-}"""
+  outline: 3px solid #0047ab; outline-offset: 2px;
+}
+
+/* Tables: thick black borders — comic panel grid */
+body.theme-artpop table { border: 3px solid #0d0d0d; }
+body.theme-artpop table tr { border-bottom: 2px solid #0d0d0d; }
+body.theme-artpop td { color: #0d0d0d; border-right: 1px solid rgba(0,0,0,0.15); }
+body.theme-artpop td:last-child { border-right: none; }
+body.theme-artpop td a { color: #0047ab; }
+
+/* Inputs: thick black borders, white bg */
+body.theme-artpop input, body.theme-artpop select {
+  border: 3px solid #0d0d0d; border-radius: 0;
+  background: #ffffff; color: #0d0d0d;
+}
+
+/* Cards on white: visible panel with shadow */
+body.theme-artpop .card {
+  background: #f0ece4;
+  border: 4px solid #0d0d0d;
+  border-left: 6px solid #fb1d36;
+  border-radius: 0;
+  box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.3);
+}
+
+/* Footer + misc text on white */
+body.theme-artpop .site-footer { color: #555; border-top: 3px solid #0d0d0d; }
+body.theme-artpop hr { border-top: 3px solid #0d0d0d; }
+body.theme-artpop code { background: #f0ece4; color: #0d0d0d; border: 1px solid #0d0d0d; }
+body.theme-artpop pre { background: #f0ece4; border: 2px solid #0d0d0d; }"""
+)
 
 # ---------------------------------------------------------------------------
 # Theme CSS blocks
@@ -418,7 +510,9 @@ def theme_switcher_html(current_theme: str) -> str:
         'gap:4px">'
         f'<label for="theme-select" style="color:var(--color-muted)">{_t("theme_label")}</label>'
         '<select id="theme-select" '
-        "onchange=\"window.location='/set-theme?theme='+this.value\" "
+        "onchange=\"window.location='/set-theme?theme='+this.value"
+        "+'&ref='+encodeURIComponent(window.location.pathname"
+        '+window.location.search)" '
         'style="background:var(--color-surface);color:var(--color-text);'
         "border:1px solid var(--color-border);border-radius:var(--radius);"
         'padding:2px 6px;font-size:var(--font-size-sm);cursor:pointer">'

@@ -2,9 +2,9 @@ x-service-defaults: &service-defaults
   env_file: .env
   restart: unless-stopped
   security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
   stop_grace_period: 30s
   mem_limit: 512m
-  user: root  # Dev mode: seed/admin pip install at startup needs write access. Prod compose uses Dockerfile USER.
   logging:
     driver: json-file
     options:
@@ -190,6 +190,7 @@ services:
       - ./lol-pipeline-seed:/svc
     profiles: ["tools"]
     restart: "no"
+    user: root  # pip install at startup needs write access
     # entrypoint (not command) so `docker compose run seed <args>` passes args via $@
     entrypoint: ["sh", "-c", "pip install -q -e /common && pip install -q -e /svc && exec python -m lol_seed \"$@\"", "--"]
 
@@ -205,5 +206,7 @@ services:
       - ./lol-pipeline-admin:/svc
     profiles: ["tools"]
     restart: "no"
+    user: root  # pip install at startup needs write access
     # entrypoint (not command) so `docker compose run admin <args>` passes args via $@
     entrypoint: ["sh", "-c", "pip install -q -e /common && pip install -q -e /svc && exec python -m lol_admin \"$@\"", "--"]
+

@@ -12,6 +12,7 @@ from lol_ui.constants import (
     _PLAYERS_PAGE_SIZE,
     _PLAYERS_SORT_OPTIONS,
     _REGIONS,
+    _REGIONS_SET,
     _PlayerRow,
 )
 from lol_ui.player_helpers import _apply_player_sort, _render_player_rows
@@ -64,6 +65,8 @@ async def show_players(request: Request) -> HTMLResponse:
         sort = "rank"
 
     region_filter = request.query_params.get("region", "")
+    if region_filter and region_filter not in _REGIONS_SET:
+        region_filter = ""
 
     total: int = await r.zcard("players:all")
     if total == 0:

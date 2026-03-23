@@ -274,12 +274,12 @@ async def _resolve_and_cache_puuid(
             )
         )
     puuid: str = account["puuid"]
-    await r.set(cache_key, puuid, ex=CACHE_TTL_S)
     now_ts = datetime.now(tz=UTC).timestamp()
-    cache_size = int(await r.zcard(_NAME_CACHE_INDEX))
-    if cache_size >= _NAME_CACHE_MAX:
-        await r.zremrangebyrank(_NAME_CACHE_INDEX, 0, 0)
-    await r.zadd(_NAME_CACHE_INDEX, {cache_key: now_ts})
+    async with r.pipeline(transaction=False) as pipe:
+        pipe.set(cache_key, puuid, ex=CACHE_TTL_S)
+        pipe.zadd(_NAME_CACHE_INDEX, {cache_key: now_ts})
+        pipe.zremrangebyrank(_NAME_CACHE_INDEX, 0, -(_NAME_CACHE_MAX + 1))
+        await pipe.execute()
     return puuid
 
 

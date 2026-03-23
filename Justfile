@@ -1,5 +1,5 @@
-# Container runtime: podman (default) or docker. Override: RUNTIME=docker just <recipe>
-RUNTIME := env_var_or_default("RUNTIME", "podman")
+# Container runtime: podman if available, otherwise docker. Override: RUNTIME=docker just <recipe>
+RUNTIME := env_var_or_default("RUNTIME", if `command -v podman >/dev/null 2>&1 && echo found || echo missing` == "found" { "podman" } else { "docker" })
 DC      := RUNTIME + " compose"
 # Compose project name (used for network name: <project>_default)
 PROJECT := env_var_or_default("COMPOSE_PROJECT_NAME", "lol-crawler")
@@ -318,9 +318,9 @@ smoke: lint typecheck test
 # Full CI mirror — runs exactly what GitHub Actions runs (minus docker build + integration tests)
 ci: lint typecheck test contract
 
-# Build the dev container (Python 3.14 + all deps + dev tools)
+# Build the dev container (Python 3.14 + all deps + Node.js + Claude Code CLI)
 dev-build:
-    {{RUNTIME}} build -f Dockerfile.dev -t lol-crawler-dev .
+    {{RUNTIME}} build -f .devcontainer/Dockerfile -t lol-crawler-dev .
 
 # Run a command inside the dev container (e.g. just dev "just lint")
 dev *args:

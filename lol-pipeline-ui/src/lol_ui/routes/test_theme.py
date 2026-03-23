@@ -35,6 +35,24 @@ class TestSetThemeRoute:
         assert "theme=artpop" in cookie_header
 
     @pytest.mark.asyncio
+    async def test_ref_param_takes_precedence(self, client):
+        resp = await client.get(
+            "/set-theme?theme=artpop&ref=/champions",
+            headers={"referer": "/stats"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert resp.headers.get("location") == "/champions"
+
+    @pytest.mark.asyncio
+    async def test_ref_param_blocks_open_redirect(self, client):
+        resp = await client.get(
+            "/set-theme?theme=artpop&ref=//evil.example.com",
+            follow_redirects=False,
+        )
+        assert resp.headers.get("location") == "/"
+
+    @pytest.mark.asyncio
     async def test_invalid_theme_defaults_to_default(self, client):
         resp = await client.get(
             "/set-theme?theme=invalid",

@@ -21,34 +21,18 @@ from lol_ui.strings import t as _t
 from lol_ui.strings import t_raw as _t_raw
 from lol_ui.themes import get_theme_css, theme_switcher_html
 
-# Re-export constants so callers that previously imported from main.py can use rendering
-# as a single entry point if needed.
-__all__ = [
-    "_badge",
-    "_badge_html",
-    "_champion_icon_html",
-    "_depth_badge",
-    "_duration_fmt",
-    "_empty_state",
-    "_item_icon_html",
-    "_kda_ratio_html",
-    "_page",
-    "_stats_form",
-    "_time_ago",
-]
-
 
 def _depth_badge(stream_name: str, depth: int) -> str:
     """Return a status badge based on stream depth thresholds."""
     if stream_name == "stream:dlq":
         if depth > 0:
-            return _badge("error", f"{depth} errors")
-        return _badge("success", "OK")
+            return _badge("error", f"{depth} {_t_raw('errors')}")
+        return _badge("success", _t_raw("badge_ok"))
     if depth < _DEPTH_BADGE_BUSY_THRESHOLD:
-        return _badge("success", "OK")
+        return _badge("success", _t_raw("badge_ok"))
     if depth < _DEPTH_BADGE_BACKLOG_THRESHOLD:
-        return _badge("warning", "Busy")
-    return _badge("error", "Backlog")
+        return _badge("warning", _t_raw("badge_busy"))
+    return _badge("error", _t_raw("badge_backlog"))
 
 
 def _badge(variant: str, text: str) -> str:
@@ -60,18 +44,6 @@ def _badge(variant: str, text: str) -> str:
         msg = f"Invalid badge variant: {variant}"
         raise ValueError(msg)
     return f'<span class="badge badge--{variant}">{html.escape(text)}</span>'
-
-
-def _badge_html(variant: str, raw_html: str) -> str:
-    """Render a status badge with raw HTML content (for trusted HTML entities).
-
-    Use this ONLY for trusted content like ``&#10003;``. For user data, use ``_badge()``.
-    variant: success|error|warning|info|muted.
-    """
-    if variant not in _BADGE_VARIANTS:
-        msg = f"Invalid badge variant: {variant}"
-        raise ValueError(msg)
-    return f'<span class="badge badge--{variant}">{raw_html}</span>'
 
 
 def _empty_state(title: str, body_html: str) -> str:

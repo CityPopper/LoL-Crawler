@@ -1,0 +1,59 @@
+{
+  "name": "LoL Pipeline Dev",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "remoteUser": "devuser",
+  "containerUser": "devuser",
+  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+
+  "features": {
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
+      "moby": false,
+      "installDockerComposeV2": true
+    },
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+
+  "mounts": [
+    "source=${localEnv:USERPROFILE}/.claude,target=/home/devuser/.claude,type=bind",
+    "source=${localEnv:USERPROFILE}/.claude,target=/home/devuser/.config/claude,type=bind",
+    "source=uv-cache,target=/home/devuser/.cache/uv,type=volume"
+  ],
+
+  "remoteEnv": {
+    "PYTHONPATH": "/workspace/lol-pipeline-common/src"
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "anthropic.claude-code",
+        "ms-python.python",
+        "ms-python.mypy-type-checker",
+        "charliermarsh.ruff"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "python.analysis.typeCheckingMode": "basic",
+        "editor.formatOnSave": true,
+        "remote.autoForwardPorts": false,
+        "remote.restoreForwardedPorts": false,
+        "telemetry.telemetryLevel": "off",
+        "telemetry.feedback.enabled": false,
+        "github.copilot.enable": { "*": false },
+        "chat.agent.enabled": false,
+        "chat.commandCenter.enabled": false,
+        "[python]": {
+          "editor.defaultFormatter": "charliermarsh.ruff"
+        }
+      }
+    }
+  },
+
+  "postCreateCommand": "uv pip install --system -e '/workspace/lol-pipeline-common/[dev]' -e /workspace/lol-pipeline-admin -e /workspace/lol-pipeline-analyzer -e /workspace/lol-pipeline-crawler -e /workspace/lol-pipeline-delay-scheduler -e /workspace/lol-pipeline-discovery -e /workspace/lol-pipeline-fetcher -e /workspace/lol-pipeline-parser -e /workspace/lol-pipeline-recovery -e /workspace/lol-pipeline-seed -e /workspace/lol-pipeline-ui",
+  "postStartCommand": "sudo chgrp docker /var/run/docker-host.sock 2>/dev/null; sudo chmod g+rw /var/run/docker-host.sock 2>/dev/null; mkdir -p /home/devuser/.local/bin && ln -sf $(find /home/devuser/.vscode-server/extensions -name claude -path '*/native-binary/*' -type f 2>/dev/null | head -1) /home/devuser/.local/bin/claude 2>/dev/null && echo 'Dev container ready.'",
+  "postAttachCommand": "bash"
+}

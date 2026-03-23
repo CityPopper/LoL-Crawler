@@ -421,6 +421,10 @@ order, and summoner spells per participant but never aggregates or displays them
 
 ## UI/UX (open items)
 
+- Bugfix: switching language/theme should not navigate to a different page afterwards (stay on current page)
+- Audit all fallback/default values — replace with explicit errors. No silent fallbacks to magic strings/numbers.
+- Wire `lol_pipeline.i18n.label()` into all UI displays of roles, tiers, queues (currently raw English codes)
+- README: Player Stats screenshot should show an actual player with sufficient entries to showcase
 - Render skip-to-content `<a>` (`.skip-link` CSS exists but no element uses it)
 - Wire up gauge/progressbar for stream depths (CSS defined but never rendered)
 - Match detail page (click a match row for full participant data)

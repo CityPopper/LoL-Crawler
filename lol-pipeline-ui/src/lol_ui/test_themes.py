@@ -120,6 +120,7 @@ class TestThemeSwitcherHtml:
     def test_links_to_set_theme_route(self):
         html = theme_switcher_html("default")
         assert "/set-theme?theme=" in html
+        assert "encodeURIComponent" in html
 
     def test_all_themes_present(self):
         html = theme_switcher_html("default")
