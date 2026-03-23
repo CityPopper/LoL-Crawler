@@ -65,24 +65,44 @@ just ui             # prints URL and opens browser
 ```
 
 ### Dashboard
-![Dashboard](screenshots/screen_1.PNG)
+![Dashboard](screenshots/01_dashboard_en.png)
 
-System status, stream depths, player lookup. Language switcher (EN | 中文) in the top-right.
+System status, stream depths, player lookup. Language switcher (EN | 中文) + theme switcher.
 
-### Player Stats
-![Player Stats](screenshots/screen_2.PNG)
+### Player Stats (中文)
+![Player Stats](screenshots/02_stats_zh.png)
 
-Two-column layout: rank card + champion breakdown (left), match history with expandable detail tabs (right). Tabbed match detail: Overview | Build | Team Analysis | AI Score | Timeline.
+Two-column layout with localized UI. Tabbed match detail: Overview | Build | Team Analysis | AI Score | Timeline.
 
 ### Champion Tier List
-![Champions](screenshots/screen_3.PNG)
+![Champions](screenshots/03_champions_en.png)
 
-Per-patch tier list with win rate, pick rate, ban rate, and PBI tier (S/A/B/C/D). Patch-over-patch delta. Role filter.
+Per-patch tier list with win rate, pick rate, ban rate, PBI tier (S/A/B/C/D), and patch-over-patch delta.
 
-### Matchups
-![Matchups](screenshots/screen_4.PNG)
+### Matchups (中文)
+![Matchups](screenshots/04_matchups_zh.png)
 
-Head-to-head champion matchup lookup by role and patch.
+Champion matchup lookup with autocomplete datalist, localized role names.
+
+### Players
+![Players](screenshots/05_players_en.png)
+
+Player listing sorted by ranked standing. Region filter, rank column.
+
+### Streams (中文)
+![Streams](screenshots/06_streams_zh.png)
+
+Pipeline health monitor — stream depths, consumer lag, system status.
+
+### Logs (中文)
+![Logs](screenshots/08_logs_zh.png)
+
+Merged service logs with expandable entries, service filter, clear button.
+
+### Mobile
+![Mobile](screenshots/09_mobile_en.png)
+
+Responsive layout on mobile devices.
 
 ## Admin CLI
 
