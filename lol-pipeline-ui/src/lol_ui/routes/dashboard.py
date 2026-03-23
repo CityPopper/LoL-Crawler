@@ -102,12 +102,14 @@ async def index(request: Request) -> HTMLResponse:
     {t("look_up_player_desc")}
   </p>
   <form class="form-inline" method="get" action="/stats" id="dash-lookup-form">
-    <label for="dash-riot-id">{t("riot_id")}:</label>
-    <input id="dash-riot-id" name="riot_id" placeholder="GameName#TagLine" required>
-    <label for="dash-region">{t("region")}:</label>
-    <select id="dash-region" name="region">
+    <label for="dash-riot-id">{t("riot_id")}
+      <input id="dash-riot-id" name="riot_id" placeholder="GameName#TagLine" required>
+    </label>
+    <label for="dash-region">{t("region")}
+      <select id="dash-region" name="region">
         {region_options}
-    </select>
+      </select>
+    </label>
     <button type="submit">{t("look_up")}</button>
   </form>
   <script>

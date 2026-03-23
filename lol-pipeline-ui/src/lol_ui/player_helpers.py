@@ -45,7 +45,9 @@ def _apply_player_sort(
 def _format_rank_display(rank: dict[str, str]) -> str:
     """Format rank data as a short display string."""
     if not rank:
-        return '<span class="badge badge--muted">Unranked</span>'
+        from lol_ui.strings import t
+
+        return f'<span class="badge badge--muted">{t("unranked")}</span>'
     tier = html.escape(rank.get("tier", ""))
     division = html.escape(rank.get("division", ""))
     lp = html.escape(rank.get("lp", "0"))

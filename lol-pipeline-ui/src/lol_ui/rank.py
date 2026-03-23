@@ -83,7 +83,9 @@ def _profile_header_html(
     tier = rank.get("tier", "UNRANKED") if rank else "UNRANKED"
     division = rank.get("division", "") if rank else ""
     lp = rank.get("lp", "0") if rank else "0"
-    rank_text = f"{tier} {division}".strip() if tier != "UNRANKED" else "Unranked"
+    from lol_ui.strings import t
+
+    rank_text = f"{tier} {division}".strip() if tier != "UNRANKED" else t("unranked")
 
     if icon_id and version:
         avatar_html = _summoner_icon_html(icon_id, level, version)

@@ -59,6 +59,9 @@ logs/
 # Reference screenshots (shared with AI only — not committed)
 screenshot/
 
+# analyze_ui.py generated screenshots
+**/tests/regression/screenshots/
+
 # Match data — large output files don't belong in git
 lol-pipeline-fetcher/match-data/**/*.json
 lol-pipeline-fetcher/match-data/**/*.jsonl

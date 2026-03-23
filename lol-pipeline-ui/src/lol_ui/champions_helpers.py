@@ -231,10 +231,11 @@ def _champion_filter_html(
         )
     role_html = "\n  ".join(role_links)
     return f"""<form class="form-inline" method="get" action="/champions">
-  <label for="champ-patch">Patch:</label>
-  <select id="champ-patch" name="patch">
+  <label for="champ-patch">Patch:
+    <select id="champ-patch" name="patch">
       {patch_options}
-  </select>
+    </select>
+  </label>
   <input type="hidden" name="role" value="{html.escape(selected_role, quote=True)}">
   <button type="submit">Apply</button>
 </form>

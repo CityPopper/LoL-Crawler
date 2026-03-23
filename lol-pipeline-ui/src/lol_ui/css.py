@@ -212,10 +212,12 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
 /* Stats grid */
 .stats-grid { display: grid; grid-template-columns: 1fr; gap: var(--space-md); }
 
-/* Skip to content */
-.skip-link { position: absolute; top: -40px; left: 0; padding: var(--space-sm);
-             background: var(--color-info); color: #fff; z-index: 100; }
-.skip-link:focus { top: var(--space-sm); }
+/* Skip to content — hidden off-screen, visible only on keyboard focus */
+.skip-link { position: absolute; left: -9999px; top: auto; width: 1px; height: 1px;
+             overflow: hidden; padding: var(--space-sm); background: var(--color-info);
+             color: #fff; z-index: 200; text-decoration: none; font-weight: bold; }
+.skip-link:focus { left: var(--space-sm); top: var(--space-sm);
+                   width: auto; height: auto; overflow: visible; }
 
 /* Log viewer */
 .log-wrap { font-family: var(--font-mono); font-size: 0.82em; }

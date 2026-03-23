@@ -6638,3 +6638,136 @@ class TestMatchDetailValidation:
         resp = await match_detail(request)
         assert resp.status_code == 400
         assert "Invalid PUUID" in resp.body.decode()
+
+
+# ---------------------------------------------------------------------------
+# Regression — Bug fixes for form labels, skip-link, and PlayerRow
+# ---------------------------------------------------------------------------
+
+
+class TestFormLabelsWrapInputs:
+    """Regression: form labels must wrap their inputs so CSS flex-direction:column
+    places label text ABOVE the input, not beside/behind it."""
+
+    def test_stats_form__label_wraps_input(self):
+        """Stats form labels must contain their input as a child element."""
+        result = _stats_form()
+        # The label should contain the input (text then <input> inside <label>)
+        assert re.search(
+            r'<label[^>]*for="stats-riot-id"[^>]*>[^<]*<input[^>]*id="stats-riot-id"',
+            result,
+        ), "Stats form riot-id label must wrap its input element"
+
+    def test_stats_form__label_wraps_select(self):
+        """Stats form region label must contain the select as a child element."""
+        result = _stats_form()
+        assert re.search(
+            r'<label[^>]*for="stats-region"[^>]*>[^<]*<select[^>]*id="stats-region"',
+            result,
+        ), "Stats form region label must wrap its select element"
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not _LUPA_AVAILABLE, reason="lupa required for Lua scripts")
+    async def test_dashboard_form__label_wraps_input(self):
+        """Dashboard lookup form labels must contain their inputs."""
+        import fakeredis.aioredis
+
+        from lol_ui.routes.dashboard import index
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.app.state.r = r
+
+        resp = await index(request)
+        body = resp.body.decode()
+
+        # Riot ID label wraps its input
+        assert re.search(
+            r'<label[^>]*for="dash-riot-id"[^>]*>[^<]*\n?\s*<input[^>]*id="dash-riot-id"',
+            body,
+        ), "Dashboard riot-id label must wrap its input element"
+
+        # Region label wraps its select
+        assert re.search(
+            r'<label[^>]*for="dash-region"[^>]*>[^<]*\n?\s*<select[^>]*id="dash-region"',
+            body,
+        ), "Dashboard region label must wrap its select element"
+
+        await r.aclose()
+
+    def test_stats_form__no_bare_label_sibling_input_in_form(self):
+        """Labels inside form-inline must not be followed by a sibling input."""
+        result = _stats_form()
+        # Extract just the form-inline section
+        form_match = re.search(r'<form class="form-inline"[^>]*>(.*?)</form>', result, re.DOTALL)
+        assert form_match is not None
+        form_html = form_match.group(1)
+        # Should NOT have </label> then <input> as siblings
+        assert not re.search(r"</label>\s*<input", form_html), (
+            "Labels inside form must wrap inputs, not be siblings"
+        )
+
+    def test_stats_form__no_bare_label_sibling_select_in_form(self):
+        """Labels inside form-inline must not be followed by a sibling select."""
+        result = _stats_form()
+        form_match = re.search(r'<form class="form-inline"[^>]*>(.*?)</form>', result, re.DOTALL)
+        assert form_match is not None
+        form_html = form_match.group(1)
+        assert not re.search(r"</label>\s*<select", form_html), (
+            "Labels inside form must wrap selects, not be siblings"
+        )
+
+
+class TestSkipLinkAccessibility:
+    """Regression: skip-link must be hidden off-screen by default and only
+    visible on keyboard focus."""
+
+    def test_skip_link__hidden_offscreen_by_default(self):
+        """Skip-link CSS must position it off-screen with left: -9999px."""
+        assert "left: -9999px" in _CSS
+
+    def test_skip_link__visible_on_focus(self):
+        """Skip-link must become visible when focused."""
+        assert ".skip-link:focus" in _CSS
+        # The focus rule must reset left to a visible position
+        focus_match = re.search(r"\.skip-link:focus\s*\{([^}]+)\}", _CSS)
+        assert focus_match is not None, "skip-link:focus rule must exist"
+        focus_body = focus_match.group(1)
+        assert "left:" in focus_body
+        # left must NOT be -9999px on focus
+        assert "-9999px" not in focus_body
+
+    def test_skip_link__has_high_z_index(self):
+        """Skip-link must have z-index high enough to appear above all content."""
+        skip_match = re.search(r"\.skip-link\s*\{([^}]+)\}", _CSS)
+        assert skip_match is not None
+        z_match = re.search(r"z-index:\s*(\d+)", skip_match.group(1))
+        assert z_match is not None
+        assert int(z_match.group(1)) >= 200
+
+    def test_skip_link__present_in_page_html(self):
+        """Every page must include the skip-link."""
+        result = _page("Test", "<p>body</p>")
+        assert 'class="skip-link"' in result
+        assert 'href="#main-content"' in result
+
+    def test_skip_link__artpop_theme_elevates_z_index(self):
+        """Art Pop theme must include skip-link in its z-index elevation rules."""
+        from lol_ui.themes import get_theme_css
+
+        artpop_css = get_theme_css("artpop")
+        assert ".skip-link" in artpop_css, "Art Pop theme must elevate .skip-link above decorations"
+
+
+class TestFormLabelCssFlexColumn:
+    """Regression: .form-inline label must use flex-direction: column so label
+    text stacks above the input, not beside it."""
+
+    def test_form_inline_label__flex_direction_column(self):
+        """Base CSS must set flex-direction: column on .form-inline label."""
+        label_match = re.search(r"\.form-inline\s+label\s*\{([^}]+)\}", _CSS)
+        assert label_match is not None, ".form-inline label rule must exist"
+        assert "flex-direction: column" in label_match.group(1)

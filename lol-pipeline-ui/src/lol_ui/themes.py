@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import contextvars
 
+from lol_ui.strings import t as _t
+
 _DEFAULT_THEME = "default"
 _COOKIE_NAME = "theme"
 _COOKIE_MAX_AGE = 365 * 24 * 3600  # 1 year
@@ -202,9 +204,11 @@ body.theme-artpop nav,
 body.theme-artpop h1,
 body.theme-artpop .form-inline,
 body.theme-artpop .site-footer,
-body.theme-artpop .theme-switcher {
+body.theme-artpop .theme-switcher,
+body.theme-artpop .skip-link {
   position: relative; z-index: 1;
 }
+body.theme-artpop .skip-link:focus { z-index: 200; }
 
 /* --- Component overrides --- */
 
@@ -412,7 +416,7 @@ def theme_switcher_html(current_theme: str) -> str:
         '<div class="theme-switcher" style="position:fixed;bottom:12px;right:12px;'
         "z-index:200;font-size:var(--font-size-sm);display:flex;align-items:center;"
         'gap:4px">'
-        '<label for="theme-select" style="color:var(--color-muted)">Theme:</label>'
+        f'<label for="theme-select" style="color:var(--color-muted)">{_t("theme_label")}</label>'
         '<select id="theme-select" '
         "onchange=\"window.location='/set-theme?theme='+this.value\" "
         'style="background:var(--color-surface);color:var(--color-text);'

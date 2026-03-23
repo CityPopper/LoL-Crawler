@@ -63,18 +63,22 @@ async def show_matchups(request: Request) -> HTMLResponse:
         datalist_html = _champion_datalist(name_map)
         body = f"""<h2>{t("page_champion_matchups")}</h2>
 <form class="form-inline" method="get" action="/matchups">
-  <label for="matchup-a">{t("matchups_champ_a")}</label>
-  <input id="matchup-a" name="champ_a" placeholder="e.g. Jinx" required\
+  <label for="matchup-a">{t("matchups_champ_a")}
+    <input id="matchup-a" name="champ_a" placeholder="{t("matchups_placeholder_champ")}" required\
  list="champion-list">
-  <label for="matchup-b">{t("matchups_champ_b")}</label>
-  <input id="matchup-b" name="champ_b" placeholder="e.g. Caitlyn" required\
+  </label>
+  <label for="matchup-b">{t("matchups_champ_b")}
+    <input id="matchup-b" name="champ_b" placeholder="{t("matchups_placeholder_champ")}" required\
  list="champion-list">
-  <label for="matchup-role">{t("matchups_role")}</label>
-  <select id="matchup-role" name="role">
-    {_role_options(lang)}
-  </select>
-  <label for="matchup-patch">{t("matchups_patch_optional")}</label>
-  <input id="matchup-patch" name="patch" placeholder="e.g. 14.5">
+  </label>
+  <label for="matchup-role">{t("matchups_role")}
+    <select id="matchup-role" name="role">
+      {_role_options(lang)}
+    </select>
+  </label>
+  <label for="matchup-patch">{t("matchups_patch_optional")}
+    <input id="matchup-patch" name="patch" placeholder="{t("matchups_placeholder_patch")}">
+  </label>
   <button type="submit">{t("matchups_compare")}</button>
 </form>
 {datalist_html}"""

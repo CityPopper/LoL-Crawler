@@ -139,6 +139,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "stats_invalid_riot_id": "Invalid Riot ID \u2014 expected GameName#TagLine",
         "stats_for": "Stats for",
         "stats_no_api_data": "No verified API stats yet (pipeline still processing).",
+        "unranked": "Unranked",
+        "theme_label": "Theme:",
+        "matchups_placeholder_champ": "e.g. Jinx",
+        "matchups_placeholder_patch": "e.g. 14.5",
         # -- Page titles & headings --
         "page_streams": "Streams",
         "page_players": "Players",
@@ -334,9 +338,12 @@ _STRINGS: dict[str, dict[str, str]] = {
         "nav_logs": "日志",
         # -- Footer --
         "footer_disclaimer": (
-            "LoL Pipeline 未获得 Riot Games 的认可，不代表 Riot Games"
-            " 或任何官方参与制作或管理 Riot Games 资产的人员的观点或意见。"
-            "《英雄联盟》和 Riot Games 是 Riot Games, Inc. 的商标或注册商标。"
+            "LoL Pipeline \u672a\u83b7\u5f97 Riot Games \u7684\u8ba4\u53ef\uff0c"
+            "\u4e0d\u4ee3\u8868 Riot Games"
+            " \u6216\u4efb\u4f55\u6b63\u5f0f\u53c2\u4e0e\u5236\u4f5c\u6216\u7ba1\u7406"
+            " Riot Games 资产的相关人员的观点或意见。"
+            "\u300a\u82f1\u96c4\u8054\u76df\u300b\u548c Riot Games \u662f"
+            " Riot Games, Inc. \u7684\u5546\u6807\u6216\u6ce8\u518c\u5546\u6807\u3002"
         ),
         # -- Error pages --
         "error_title": "错误",
@@ -356,8 +363,12 @@ _STRINGS: dict[str, dict[str, str]] = {
         ),
         "stats_server_error": "Riot 服务器暂时不可用，请稍后再试。",
         "stats_invalid_riot_id": "Riot ID 格式无效——应为 GameName#TagLine",
-        "stats_for": "数据 -",
+        "stats_for": "\u6570\u636e\uff1a",
         "stats_no_api_data": "暂无已验证的 API 数据（流水线仍在处理中）。",
+        "unranked": "未定级",
+        "theme_label": "主题：",
+        "matchups_placeholder_champ": "如：金克丝",
+        "matchups_placeholder_patch": "如：14.5",
         # -- Page titles & headings --
         "page_streams": "流",
         "page_players": "玩家",
@@ -418,7 +429,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "matchups_no_matchup_data": "暂无对位数据",
         "matchups_no_games_for": "未找到对局记录 -",
         "matchups_vs": "vs",
-        "matchups_as": "-",
+        "matchups_as": "\u4f7f\u7528",
         "matchups_games": "场比赛",
         "matchups_win_rate": "胜率",
         "matchups_new_lookup": "重新查找对位",
@@ -432,7 +443,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "dlq_col_original_stream": "原始流",
         "dlq_col_service": "服务",
         "dlq_col_attempts": "尝试次数",
-        "dlq_col_payload": "负载",
+        "dlq_col_payload": "\u6d88\u606f\u4f53",
         "dlq_col_action": "操作",
         "dlq_replay": "重放",
         "dlq_failure_reason": "失败原因：",

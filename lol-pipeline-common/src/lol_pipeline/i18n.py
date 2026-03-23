@@ -56,7 +56,7 @@ DOMAIN_STRINGS: dict[str, dict[str, dict[str, str]]] = {
             "GRANDMASTER": "\u5b97\u5e08",
             "MASTER": "\u5927\u5e08",
             "DIAMOND": "\u94bb\u77f3",
-            "EMERALD": "\u7fe1\u7fe0",
+            "EMERALD": "\u7fe0\u7389",
             "PLATINUM": "\u94c2\u91d1",
             "GOLD": "\u9ec4\u91d1",
             "SILVER": "\u767d\u94f6",
