@@ -19,6 +19,7 @@ from lol_crawler.main import (
     _compute_activity_rate,
     _crawl_player,
     _fetch_rank,
+    _handle_crawl_error,
     main,
 )
 
@@ -1598,3 +1599,36 @@ class TestCrawlCorrelationIdPropagation:
         for _, fields in entries:
             out_env = MessageEnvelope.from_redis_fields(fields)
             assert out_env.correlation_id == "trace-crawl-abc"
+
+
+class TestHandleCrawlErrorLogMessage:
+    """E4: Riot API error log should mention DLQ routing context."""
+
+    @pytest.mark.asyncio
+    async def test_server_error__log_mentions_dlq(self, r):
+        """ServerError log message should contain 'DLQ' for operator context."""
+        from lol_pipeline.riot_api import ServerError
+
+        env = MessageEnvelope(
+            source_stream="stream:puuid",
+            type="puuid",
+            payload={"puuid": "test-puuid", "game_name": "T", "tag_line": "1", "region": "na1"},
+            max_attempts=5,
+        )
+        msg_id = await r.xadd("stream:puuid", env.to_redis_fields())
+        await r.xgroup_create("stream:puuid", "crawlers", "0", mkstream=True)
+        log = logging.getLogger("crawler")
+        exc = ServerError(500, "internal error")
+
+        # Capture log records directly since the crawler logger has propagate=False
+        captured: list[logging.LogRecord] = []
+        handler = logging.Handler()
+        handler.emit = lambda rec: captured.append(rec)  # type: ignore[method-assign]
+        handler.setLevel(logging.ERROR)
+        log.addHandler(handler)
+        try:
+            await _handle_crawl_error(r, msg_id, env, exc, "test-puuid", log)
+        finally:
+            log.removeHandler(handler)
+
+        assert any("DLQ" in rec.getMessage() for rec in captured)

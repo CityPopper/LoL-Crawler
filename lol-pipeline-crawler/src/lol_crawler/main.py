@@ -251,7 +251,10 @@ async def _handle_crawl_error(
     # RateLimitError | ServerError
     fc = "http_429" if isinstance(exc, RateLimitError) else "http_5xx"
     ram = exc.retry_after_ms if isinstance(exc, RateLimitError) else None
-    log.error("Riot API error", extra={"error": str(exc), "failure_code": fc, "puuid": puuid})
+    log.error(
+        "Riot API error \u2014 routing to DLQ for retry",
+        extra={"error": str(exc), "failure_code": fc, "puuid": puuid},
+    )
     await nack_to_dlq(
         r,
         envelope,

@@ -172,7 +172,7 @@ async def dlq_replay(request: Request, entry_id: str) -> Response:
             f"<h2>{t('page_dlq_replay_failed')}</h2>"
             f'<div class="banner banner--error">{safe_id} {t("dlq_entry_corrupt")}'
             f" {t('dlq_remove_hint')}"
-            f" <code>just admin dlq clear {safe_id}</code>.</div>"
+            f" <code>just admin dlq clear --all</code>.</div>"
             f'<p><a href="/dlq">&larr; {t("dlq_back")}</a></p>'
         )
         return HTMLResponse(_page(t("page_dlq_replay_failed"), body, path="/dlq"), status_code=422)
@@ -184,7 +184,7 @@ async def dlq_replay(request: Request, entry_id: str) -> Response:
             f'<div class="banner banner--error">{safe_id} {t("dlq_invalid_stream")}'
             f" <code>{safe_stream}</code> \u2014 {t('dlq_replay_refused')}"
             f" {t('dlq_remove_hint')}"
-            f" <code>just admin dlq clear {safe_id}</code>.</div>"
+            f" <code>just admin dlq clear --all</code>.</div>"
             f'<p><a href="/dlq">&larr; {t("dlq_back")}</a></p>'
         )
         return HTMLResponse(_page(t("page_dlq_replay_failed"), body, path="/dlq"), status_code=422)

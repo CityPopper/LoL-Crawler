@@ -129,17 +129,20 @@ def _build_parser() -> argparse.ArgumentParser:
     p_cp.add_argument("--all", action="store_true", help="clear all priority keys")
     p_cp.add_argument("--region", default="na1")
 
-    sub.add_parser(
+    p_rp2 = sub.add_parser(
         "recalc-priority",
         help="diagnostic: count player:priority:* keys (read-only)",
     )
+    p_rp2.add_argument("--json", action="store_true", default=False)
 
-    sub.add_parser(
+    p_rpl = sub.add_parser(
         "recalc-players",
         help="rebuild players:all sorted set from existing player:{puuid} hashes",
     )
+    p_rpl.add_argument("--json", action="store_true", default=False)
 
-    sub.add_parser("delayed-list", help="show entries in delayed:messages sorted set")
+    p_dl = sub.add_parser("delayed-list", help="show entries in delayed:messages sorted set")
+    p_dl.add_argument("--json", action="store_true", default=False)
 
     p_df = sub.add_parser("delayed-flush", help="remove all delayed messages")
     p_df.add_argument("--all", action="store_true", required=True)

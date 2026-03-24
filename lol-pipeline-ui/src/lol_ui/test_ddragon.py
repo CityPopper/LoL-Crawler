@@ -287,3 +287,39 @@ class TestLocalizeChampionName:
     def test_chinese_name__returns_chinese(self):
         name_map = {"Annie": "\u5b89\u59ae"}
         assert localize_champion_name(name_map, "Annie") == "\u5b89\u59ae"
+
+
+class TestDdragonFetchErrorLogging:
+    """E1: DDragon fetch errors should emit WARNING logs, not silently swallow."""
+
+    @pytest.fixture
+    async def r(self):
+        redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        yield redis
+        await redis.aclose()
+
+    @respx.mock
+    async def test_get_ddragon_json__network_error__logs_warning(self, r, caplog):
+        """_get_ddragon_json logs WARNING on fetch failure."""
+        import logging
+
+        respx.get("https://example.com/fail.json").mock(
+            side_effect=httpx.ConnectError("connection refused")
+        )
+        with caplog.at_level(logging.WARNING, logger="ui.ddragon"):
+            result = await _get_ddragon_json(r, "test:cache", "https://example.com/fail.json")
+        assert result is None
+        assert any("DDragon fetch failed" in rec.message for rec in caplog.records)
+
+    @respx.mock
+    async def test_get_ddragon_version__network_error__logs_warning(self, r, caplog):
+        """_get_ddragon_version logs WARNING on fetch failure."""
+        import logging
+
+        respx.get("https://ddragon.leagueoflegends.com/api/versions.json").mock(
+            side_effect=httpx.ConnectError("connection refused")
+        )
+        with caplog.at_level(logging.WARNING, logger="ui.ddragon"):
+            result = await _get_ddragon_version(r)
+        assert result is None
+        assert any("DDragon version fetch failed" in rec.message for rec in caplog.records)

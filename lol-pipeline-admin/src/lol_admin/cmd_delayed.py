@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from datetime import UTC, datetime
 
 import redis.asyncio as aioredis
@@ -20,6 +21,16 @@ async def cmd_delayed_list(r: aioredis.Redis, args: argparse.Namespace) -> int:
         _print_info("delayed:messages is empty")
         return 0
     now_ms = datetime.now(tz=UTC).timestamp() * 1000
+    if getattr(args, "json", False):
+        for member, score in entries:
+            truncated = member[:80] + ("..." if len(member) > 80 else "")
+            delta_ms = score - now_ms
+            print(json.dumps({
+                "member": truncated,
+                "ready_ms": score,
+                "eta_s": delta_ms / 1000,
+            }))
+        return 0
     for member, score in entries:
         truncated = member[:80] + ("..." if len(member) > 80 else "")
         ready_dt = datetime.fromtimestamp(score / 1000, tz=UTC).isoformat()
