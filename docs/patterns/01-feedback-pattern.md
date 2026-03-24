@@ -80,15 +80,11 @@ Write implementation tasks to `TODO.md` with mandatory TDD checklists:
 - [ ] **Refactor:** Clean up without breaking the test
 ```
 
-### 7. Flush the questions file
+### 7. Delete the questions file
 
-Once all decisions are locked and tasks are in `TODO.md`:
-- **Remove** `## ❓ Needs Your Input` entirely
-- **Remove** all Q&A rows — answered questions are not decisions
-- **Keep only** final locked decision bullets
-- **Delete the file** once the feature ships and decisions are no longer needed for reference
+Once **all** questions are answered and all implementation tasks are in `TODO.md`: **delete the questions file immediately.** It has served its purpose. Do not keep it around for reference — decisions live in `TODO.md` items and code comments; a stale questions file becomes misleading.
 
-If a question led to a decision already captured elsewhere, delete the row — it is redundant.
+If only some questions are answered: remove the answered rows and the `## ❓ Needs Your Input` section. Delete the file when the last question is resolved.
 
 ---
 
