@@ -68,6 +68,9 @@ def test_seed__produces_puuid__round_trips():
     assert restored.payload["tag_line"]
     assert restored.payload["region"]
     assert isinstance(restored.attempts, int)
+    assert isinstance(restored.dlq_attempts, int)
+    assert isinstance(restored.correlation_id, str)
+    assert isinstance(restored.priority, str)
 
 
 def test_seed__produced_message__matches_crawler_pact_contents():

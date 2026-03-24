@@ -47,6 +47,8 @@ def test_recovery__dlq_message__passes_required_fields(failure_code):
         "retry_after_ms",
         "original_stream",
         "original_message_id",
+        "priority",
+        "correlation_id",
     ]
     for field in required:
         assert field in message, f"Missing required DLQ field '{field}' for {failure_code}"
@@ -64,6 +66,8 @@ def test_recovery__dlq_message__deserializes_without_error(failure_code):
     assert envelope.original_stream
     assert envelope.original_message_id
     assert isinstance(envelope.dlq_attempts, int)
+    assert isinstance(envelope.correlation_id, str)
+    assert isinstance(envelope.priority, str)
 
 
 def test_recovery__http_429__has_retry_after_ms():

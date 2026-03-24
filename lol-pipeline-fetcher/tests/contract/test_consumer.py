@@ -37,6 +37,9 @@ def test_fetcher__match_id_message__deserializes_without_error():
     assert isinstance(envelope.attempts, int)
     assert isinstance(envelope.max_attempts, int)
     assert envelope.enqueued_at
+    assert isinstance(envelope.dlq_attempts, int)
+    assert isinstance(envelope.correlation_id, str)
+    assert isinstance(envelope.priority, str)
 
 
 def test_fetcher__match_id_message__only_uses_contracted_payload_fields():

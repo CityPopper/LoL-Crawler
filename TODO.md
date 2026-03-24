@@ -76,18 +76,6 @@ New module `lol-pipeline-common/src/lol_pipeline/opgg_client.py`.
 
 ---
 
-## High
-
-### Contract Drift
-
-| ID | Issue | Fix |
-|----|-------|-----|
-| D1 | `correlation_id` missing from all 6 pact files | Add `"correlation_id": ""` + type matcher to every pact |
-| D2 | `dlq_attempts` missing from all 6 MessageEnvelope pacts | Add `"dlq_attempts": 0` + integer matcher to every pact |
-| D3 | Provider contract tests validate partial documents (7/10 fields) | Use full `to_redis_fields()` round-trip in provider tests |
-
----
-
 ## Medium
 
 
