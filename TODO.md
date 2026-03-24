@@ -108,6 +108,16 @@ Fetches all PUUIDs then pipelines 2 Redis calls per player. At 50K players = 100
 
 ---
 
+### OPGG-4.5: Add `key_prefix` parameter to `RawStore`
+
+**File:** `lol-pipeline-common/src/lol_pipeline/raw_store.py`
+
+Prerequisite for OPGG-4/OPGG-5 multi-source support. Currently `RawStore` always uses `raw:match:` as the Redis key prefix. Each source needs its own prefix (`raw:opgg:match:`, `raw:ugg:match:`, etc.).
+
+- [ ] **Red:** Write failing test asserting `RawStore(r, key_prefix="raw:opgg:match:").set("mid", ...)` writes to `raw:opgg:match:mid` not `raw:match:mid`
+- [ ] **Green:** Add `key_prefix: str = "raw:match:"` constructor parameter; use it in `set()`, `get()`, `exists()`, `_redis_key()`
+- [ ] **Refactor:** Verify all existing RawStore tests still pass (default behavior unchanged)
+
 ---
 
 ## Think Cycle 5 — Medium Fixes + Test Coverage Gaps
@@ -194,6 +204,30 @@ Fetches all PUUIDs then pipelines 2 Redis calls per player. At 50K players = 100
 | E3 | Web UI | minor | DLQ corrupt entry message suggests nonexistent `dlq clear {id}` subcommand |
 | E4 | Logs | nit | Fetcher "server error" log lacks "will retry via DLQ" context |
 | E5 | Admin CLI | nit | `--json` missing from `delayed-list`, `recalc-priority`, `recalc-players` |
+
+---
+
+### RDB-4: Add 30-day safety-net TTL to `discover:players`
+
+**File:** `lol-pipeline-discovery/src/lol_discovery/main.py`
+
+ZSET has no TTL — if Discovery is disabled for 30+ days, queue is stale but persists forever.
+
+- [ ] **Red:** Write failing test asserting `discover:players` gets a 30-day TTL on creation
+- [ ] **Green:** After ZADD in Parser (`parser/main.py:512`), check TTL and set 30d if not set
+- [ ] **Refactor:** Verify parser + discovery tests pass
+
+---
+
+### RDB-5: Store envelope ID (not full JSON) as `delayed:messages` ZSET member
+
+**File:** `lol-pipeline-common/src/lol_pipeline/streams.py`
+
+Current members are ~500-byte JSON blobs. Should store the `id` field as member, envelope in a separate hash `delayed:envelope:{id}`. Memory: 500B → ~40B per entry. Also prevents duplicate entries for the same logical message.
+
+- [ ] **Red:** Write failing test asserting `delayed:messages` member is the envelope `id` string, not the full JSON; `delayed:envelope:{id}` hash holds the full envelope
+- [ ] **Green:** In `nack_to_dlq()` / delayed delivery write path: ZADD with envelope `id`; HSET `delayed:envelope:{id}` with JSON. In Delay Scheduler: ZRANGEBYSCORE returns IDs; fetch envelope from hash; HDEL after dispatch.
+- [ ] **Refactor:** Update `03-streams.md` and `04-storage.md`; verify all delay scheduler + streams tests pass
 
 ---
 
