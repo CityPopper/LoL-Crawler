@@ -137,21 +137,8 @@ independent and could be batched.
 
 ---
 
-### Architecture
-
-- Discovery / delay-scheduler use module-level `global _shutdown` — breaks multi-loop/test scenarios. Use `asyncio.Event` instead.
-- Envelope schema mismatch: `contracts/schemas/envelope.json` defines `dlq_attempts` as `type: "string"` but model stores `int`.
-
----
-
 ## Low
 
-### Adaptive rate limiter backoff (P10-ARC-4/OPT-2)
-
-Return remaining `wait_ms` from Lua script on denial; sleep until next slot instead of
-fixed 50ms polling in `wait_for_token()`.
-
----
 
 ### CLI symbols debate (P11-DD-8)
 
