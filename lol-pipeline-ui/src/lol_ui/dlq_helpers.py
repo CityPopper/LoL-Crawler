@@ -6,25 +6,13 @@ import contextlib
 import html
 
 import redis.asyncio as aioredis
-from lol_pipeline.models import DLQEnvelope, MessageEnvelope
+from lol_pipeline.models import DLQEnvelope, MessageEnvelope, make_replay_envelope
 
 from lol_ui.rendering import _badge, _time_ago
 from lol_ui.strings import t as _t
 
 
-def _make_replay_envelope(dlq: DLQEnvelope, max_attempts: int) -> MessageEnvelope:
-    """Reconstruct a MessageEnvelope from a DLQEnvelope for replay."""
-    original_type = dlq.original_stream.removeprefix("stream:")
-    return MessageEnvelope(
-        source_stream=dlq.original_stream,
-        type=original_type,
-        payload=dlq.payload,
-        max_attempts=max_attempts,
-        enqueued_at=dlq.enqueued_at,
-        dlq_attempts=dlq.dlq_attempts,
-        priority=dlq.priority,
-        correlation_id=dlq.correlation_id,
-    )
+_make_replay_envelope = make_replay_envelope
 
 
 async def _dlq_summary_html(r: aioredis.Redis) -> str:

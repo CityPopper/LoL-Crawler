@@ -18,6 +18,7 @@ from lol_pipeline._service_data import (
 from lol_pipeline._service_data import (
     _RETRY_KEY_TTL as _RETRY_KEY_TTL,
 )
+from lol_pipeline.helpers import is_system_halted
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.priority import PRIORITY_ORDER
 from lol_pipeline.streams import ack, consume, nack_to_dlq
@@ -171,7 +172,7 @@ async def run_consumer(
         if shutdown:
             log.info("shutdown flag set — exiting")
             break
-        if await r.get("system:halted"):
+        if await is_system_halted(r):
             log.critical("system halted — exiting")
             break
         try:

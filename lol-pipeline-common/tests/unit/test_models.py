@@ -368,3 +368,83 @@ class TestEnvelopeSchemaIncludesPriority:
         )
         schema = json.loads(schema_path.read_text())
         assert "priority" not in schema["required"]
+
+
+class TestMakeReplayEnvelope:
+    """DRY-1: make_replay_envelope consolidated into lol_pipeline.models."""
+
+    def test_make_replay_envelope__importable(self) -> None:
+        """make_replay_envelope is importable from lol_pipeline.models."""
+        from lol_pipeline.models import make_replay_envelope
+
+        assert callable(make_replay_envelope)
+
+    def test_make_replay_envelope__basic_reconstruction(self) -> None:
+        """Reconstructs a MessageEnvelope from a DLQEnvelope."""
+        from lol_pipeline.models import make_replay_envelope
+
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"match_id": "NA1_123", "region": "na1"},
+            attempts=2,
+            max_attempts=5,
+            failure_code="http_429",
+            failure_reason="rate limited",
+            failed_by="fetcher",
+            original_stream="stream:match_id",
+            original_message_id="1-0",
+            enqueued_at="2024-06-01T00:00:00+00:00",
+            dlq_attempts=1,
+            priority="high",
+            correlation_id="corr-abc",
+        )
+        envelope = make_replay_envelope(dlq, max_attempts=10)
+
+        assert envelope.source_stream == "stream:match_id"
+        assert envelope.type == "match_id"
+        assert envelope.payload == {"match_id": "NA1_123", "region": "na1"}
+        assert envelope.max_attempts == 10
+        assert envelope.enqueued_at == "2024-06-01T00:00:00+00:00"
+        assert envelope.dlq_attempts == 1
+        assert envelope.priority == "high"
+        assert envelope.correlation_id == "corr-abc"
+
+    def test_make_replay_envelope__type_derived_from_original_stream(self) -> None:
+        """type is original_stream with 'stream:' prefix removed."""
+        from lol_pipeline.models import make_replay_envelope
+
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={},
+            attempts=1,
+            max_attempts=5,
+            failure_code="http_5xx",
+            failure_reason="server error",
+            failed_by="parser",
+            original_stream="stream:parse",
+            original_message_id="2-0",
+        )
+        envelope = make_replay_envelope(dlq, max_attempts=5)
+        assert envelope.type == "parse"
+
+    def test_make_replay_envelope__preserves_default_priority(self) -> None:
+        """Default priority='normal' is preserved when not explicitly set."""
+        from lol_pipeline.models import make_replay_envelope
+
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="dlq",
+            payload={"puuid": "abc"},
+            attempts=1,
+            max_attempts=3,
+            failure_code="unknown",
+            failure_reason="",
+            failed_by="analyzer",
+            original_stream="stream:analyze",
+            original_message_id="3-0",
+        )
+        envelope = make_replay_envelope(dlq, max_attempts=3)
+        assert envelope.priority == "normal"
+        assert envelope.correlation_id == ""

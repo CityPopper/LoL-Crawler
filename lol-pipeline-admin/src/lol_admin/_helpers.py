@@ -9,15 +9,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 import redis.asyncio as aioredis
-from lol_pipeline.models import DLQEnvelope, MessageEnvelope
+from lol_pipeline.models import DLQEnvelope, MessageEnvelope, make_replay_envelope
 from lol_pipeline.resolve import resolve_puuid
 from lol_pipeline.riot_api import PLATFORM_TO_REGION, RiotClient
-from lol_pipeline.streams import ANALYZE_STREAM_MAXLEN, MATCH_ID_STREAM_MAXLEN
+from lol_pipeline.streams import maxlen_for_stream
 
 from lol_admin._constants import (
-    _DEFAULT_MAXLEN,
     _STREAM_DLQ,
-    _STREAM_MATCH_ID,
 )
 
 _log: Any = None
@@ -34,11 +32,7 @@ def _get_log() -> Any:
 
 def _maxlen_for_stream(stream: str) -> int | None:
     """Return the MAXLEN to use when publishing to *stream*."""
-    if stream == _STREAM_MATCH_ID:
-        return MATCH_ID_STREAM_MAXLEN
-    if stream == "stream:analyze":
-        return ANALYZE_STREAM_MAXLEN
-    return _DEFAULT_MAXLEN
+    return maxlen_for_stream(stream)
 
 
 async def _dlq_entries(r: aioredis.Redis) -> list[tuple[str, DLQEnvelope]]:
@@ -57,18 +51,7 @@ async def _dlq_entries(r: aioredis.Redis) -> list[tuple[str, DLQEnvelope]]:
     return result
 
 
-def _make_replay_envelope(dlq: DLQEnvelope, max_attempts: int) -> MessageEnvelope:
-    original_type = dlq.original_stream.removeprefix("stream:")
-    return MessageEnvelope(
-        source_stream=dlq.original_stream,
-        type=original_type,
-        payload=dlq.payload,
-        max_attempts=max_attempts,
-        enqueued_at=dlq.enqueued_at,
-        dlq_attempts=dlq.dlq_attempts,
-        priority=dlq.priority,
-        correlation_id=dlq.correlation_id,
-    )
+_make_replay_envelope = make_replay_envelope
 
 
 def _region_from_match_id(match_id: str) -> str:

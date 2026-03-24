@@ -127,3 +127,18 @@ class DLQEnvelope:
             priority=fields.get("priority", "normal"),
             correlation_id=fields.get("correlation_id", ""),
         )
+
+
+def make_replay_envelope(dlq: DLQEnvelope, max_attempts: int) -> MessageEnvelope:
+    """Reconstruct a MessageEnvelope from a DLQEnvelope for replay."""
+    original_type = dlq.original_stream.removeprefix("stream:")
+    return MessageEnvelope(
+        source_stream=dlq.original_stream,
+        type=original_type,
+        payload=dlq.payload,
+        max_attempts=max_attempts,
+        enqueued_at=dlq.enqueued_at,
+        dlq_attempts=dlq.dlq_attempts,
+        priority=dlq.priority,
+        correlation_id=dlq.correlation_id,
+    )

@@ -545,6 +545,18 @@ class TestPriorityReordering:
         assert processed_priorities == ["manual_20", "auto_20", "auto_new"]
 
 
+class TestRunConsumerUsesIsSystemHalted:
+    """DRY-5: run_consumer uses is_system_halted() instead of raw r.get."""
+
+    @pytest.mark.asyncio
+    async def test_run_consumer__calls_is_system_halted(self, r, log):
+        """run_consumer calls is_system_halted() for halt checks, not raw r.get."""
+        mock_halted = AsyncMock(return_value=True)
+        with patch("lol_pipeline.service.is_system_halted", mock_halted):
+            await run_consumer(r, _STREAM, _GROUP, "c", AsyncMock(), log)
+        mock_halted.assert_called()
+
+
 class TestDispatchBatchShutdownMidBatch:
     """R2: _dispatch_batch stops processing when shutdown_check returns True."""
 

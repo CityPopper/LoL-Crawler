@@ -255,9 +255,19 @@ async def nack_to_dlq(
     await r.xadd(STREAM_DLQ, fields, maxlen=50_000, approximate=True)  # type: ignore[arg-type]
 
 
+def maxlen_for_stream(stream: str) -> int:
+    """Return the MAXLEN to use when publishing to *stream*.
+
+    Streams with an explicit override in ``_REPLAY_MAXLEN_MAP`` (e.g.
+    ``stream:match_id`` → 500 000, ``stream:analyze`` → 50 000) get their
+    configured value; all others fall back to ``_DEFAULT_MAXLEN`` (10 000).
+    """
+    return _REPLAY_MAXLEN_MAP.get(stream, _DEFAULT_MAXLEN)
+
+
 def _maxlen_for_replay(stream: str) -> int:
     """Return the MAXLEN to use when replaying to *stream*."""
-    return _REPLAY_MAXLEN_MAP.get(stream, _DEFAULT_MAXLEN)
+    return maxlen_for_stream(stream)
 
 
 async def replay_from_dlq(

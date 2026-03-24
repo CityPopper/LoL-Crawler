@@ -160,6 +160,40 @@ class TestStreamMaxlenConstants:
         assert _DEFAULT_MAXLEN == 10_000
 
 
+class TestMaxlenForStream:
+    """DRY-2: maxlen_for_stream consolidated into lol_pipeline.streams."""
+
+    def test_maxlen_for_stream__importable(self) -> None:
+        """maxlen_for_stream is importable from lol_pipeline.streams."""
+        from lol_pipeline.streams import maxlen_for_stream
+
+        assert callable(maxlen_for_stream)
+
+    def test_maxlen_for_stream__match_id(self) -> None:
+        """stream:match_id returns 500_000."""
+        from lol_pipeline.streams import maxlen_for_stream
+
+        assert maxlen_for_stream("stream:match_id") == 500_000
+
+    def test_maxlen_for_stream__analyze(self) -> None:
+        """stream:analyze returns 50_000."""
+        from lol_pipeline.streams import maxlen_for_stream
+
+        assert maxlen_for_stream("stream:analyze") == 50_000
+
+    def test_maxlen_for_stream__unknown_returns_default(self) -> None:
+        """Unknown streams return _DEFAULT_MAXLEN (10_000)."""
+        from lol_pipeline.streams import maxlen_for_stream
+
+        assert maxlen_for_stream("stream:puuid") == 10_000
+
+    def test_maxlen_for_stream__parse_returns_default(self) -> None:
+        """stream:parse is not in the override map, returns default."""
+        from lol_pipeline.streams import maxlen_for_stream
+
+        assert maxlen_for_stream("stream:parse") == 10_000
+
+
 class TestConsume:
     @pytest.mark.asyncio
     async def test_consume_returns_empty_on_no_messages(self, r):
