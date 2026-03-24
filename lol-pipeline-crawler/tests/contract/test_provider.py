@@ -67,3 +67,6 @@ def test_crawler__produces_match_id__round_trips():
     assert restored.payload["region"]
     assert isinstance(restored.attempts, int)
     assert isinstance(restored.max_attempts, int)
+    assert isinstance(restored.dlq_attempts, int)
+    assert isinstance(restored.correlation_id, str)
+    assert isinstance(restored.priority, str)

@@ -42,6 +42,9 @@ def test_delay_scheduler__delayed_message__deserializes_without_error(msg_index)
     assert isinstance(envelope.attempts, int)
     assert isinstance(envelope.max_attempts, int)
     assert envelope.enqueued_at
+    assert isinstance(envelope.dlq_attempts, int)
+    assert isinstance(envelope.correlation_id, str)
+    assert isinstance(envelope.priority, str)
 
 
 @pytest.mark.parametrize("msg_index", [0, 1])

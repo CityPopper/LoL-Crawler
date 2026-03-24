@@ -181,11 +181,11 @@ Same 4-branch routing (404, 403, 429, 5xx) with only `failed_by` label differing
 
 ### Contract Drift
 
-| ID | Issue | Fix |
-|----|-------|-----|
-| D1 | `correlation_id` missing from all 6 pact files | Add `"correlation_id": ""` + type matcher to every pact |
-| D2 | `dlq_attempts` missing from all 6 MessageEnvelope pacts | Add `"dlq_attempts": 0` + integer matcher to every pact |
-| D3 | Provider contract tests validate partial documents (7/10 fields) | Use full `to_redis_fields()` round-trip in provider tests |
+| ID | Issue | Fix | Status |
+|----|-------|-----|--------|
+| D1 | `correlation_id` missing from all 6 pact files | Add `"correlation_id": ""` + type matcher to every pact | Done |
+| D2 | `dlq_attempts` missing from all 6 MessageEnvelope pacts | Add `"dlq_attempts": 0` + integer matcher to every pact | Done |
+| D3 | Provider contract tests validate partial documents (7/10 fields) | Use full `to_redis_fields()` round-trip in provider tests | Done |
 
 ---
 
@@ -252,7 +252,7 @@ Active players accumulate unbounded rank snapshots. High-activity player: ~1440 
 ### Architecture
 
 - Discovery / delay-scheduler use module-level `global _shutdown` — breaks multi-loop/test scenarios. Use `asyncio.Event` instead.
-- Envelope schema mismatch: `contracts/schemas/envelope.json` defines `dlq_attempts` as `type: "string"` but model stores `int`.
+- ~~Envelope schema mismatch~~: Verified — `contracts/schemas/envelope.json` correctly defines `dlq_attempts` as `type: "integer"`, matching the model.
 
 ---
 

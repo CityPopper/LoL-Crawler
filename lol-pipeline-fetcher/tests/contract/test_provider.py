@@ -64,3 +64,6 @@ def test_fetcher__produces_parse__round_trips():
     assert restored.payload["match_id"]
     assert restored.payload["region"]
     assert isinstance(restored.attempts, int)
+    assert isinstance(restored.dlq_attempts, int)
+    assert isinstance(restored.correlation_id, str)
+    assert isinstance(restored.priority, str)

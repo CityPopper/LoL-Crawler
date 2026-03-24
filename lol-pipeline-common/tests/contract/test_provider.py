@@ -68,6 +68,8 @@ def test_common__dlq_envelope__round_trips(failure_code):
     assert restored.original_stream
     assert restored.original_message_id
     assert isinstance(restored.dlq_attempts, int)
+    assert isinstance(restored.correlation_id, str)
+    assert isinstance(restored.priority, str)
 
 
 def test_common__dlq_envelope__http_429__preserves_retry_after_ms():
@@ -99,6 +101,9 @@ def test_common__delayed_message__round_trips():
     assert restored.source_stream == "stream:match_id"
     assert restored.type == "match_id"
     assert isinstance(restored.attempts, int)
+    assert isinstance(restored.dlq_attempts, int)
+    assert isinstance(restored.correlation_id, str)
+    assert isinstance(restored.priority, str)
 
 
 def test_common__delayed_message__satisfies_delay_scheduler_pact():
@@ -109,3 +114,67 @@ def test_common__delayed_message__satisfies_delay_scheduler_pact():
         validate(instance=contents, schema=schema)
         assert contents["source_stream"].startswith("stream:")
         assert contents["type"] in {"puuid", "match_id", "parse", "analyze"}
+
+
+# --- D3: Full envelope field validation via to_redis_fields() round-trip ---
+
+_ENVELOPE_REDIS_KEYS = {
+    "id",
+    "source_stream",
+    "type",
+    "payload",
+    "attempts",
+    "max_attempts",
+    "enqueued_at",
+    "dlq_attempts",
+    "priority",
+    "correlation_id",
+}
+
+_DLQ_ENVELOPE_REDIS_KEYS = _ENVELOPE_REDIS_KEYS | {
+    "failure_code",
+    "failure_reason",
+    "failed_at",
+    "failed_by",
+    "retry_after_ms",
+    "original_stream",
+    "original_message_id",
+}
+
+
+def test_common__envelope_to_redis_fields__contains_all_contracted_keys():
+    """MessageEnvelope.to_redis_fields() must produce every field the schema requires."""
+    envelope = _make_delayed_envelope()
+    fields = envelope.to_redis_fields()
+    assert set(fields.keys()) == _ENVELOPE_REDIS_KEYS
+
+
+@pytest.mark.parametrize("failure_code", _FAILURE_CODES)
+def test_common__dlq_envelope_to_redis_fields__contains_all_contracted_keys(
+    failure_code,
+):
+    """DLQEnvelope.to_redis_fields() must produce every field the DLQ schema requires."""
+    retry_ms = 61000 if failure_code == "http_429" else None
+    envelope = _make_dlq_envelope(failure_code, retry_after_ms=retry_ms)
+    fields = envelope.to_redis_fields()
+    assert set(fields.keys()) == _DLQ_ENVELOPE_REDIS_KEYS
+
+
+def test_common__dlq_envelope__round_trips_correlation_id():
+    """Non-default correlation_id must survive DLQ round-trip."""
+    envelope = _make_dlq_envelope("http_429", retry_after_ms=61000)
+    envelope.correlation_id = "test-corr-id-abc"
+    envelope.priority = "high"
+    restored = DLQEnvelope.from_redis_fields(envelope.to_redis_fields())
+    assert restored.correlation_id == "test-corr-id-abc"
+    assert restored.priority == "high"
+
+
+def test_common__delayed_message__round_trips_correlation_id():
+    """Non-default correlation_id must survive MessageEnvelope round-trip."""
+    envelope = _make_delayed_envelope()
+    envelope.correlation_id = "test-corr-id-xyz"
+    envelope.priority = "manual_20"
+    restored = MessageEnvelope.from_redis_fields(envelope.to_redis_fields())
+    assert restored.correlation_id == "test-corr-id-xyz"
+    assert restored.priority == "manual_20"

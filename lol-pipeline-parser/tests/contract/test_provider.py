@@ -66,3 +66,6 @@ def test_parser__produces_analyze__round_trips():
     assert restored.type == "analyze"
     assert restored.payload["puuid"]
     assert isinstance(restored.attempts, int)
+    assert isinstance(restored.dlq_attempts, int)
+    assert isinstance(restored.correlation_id, str)
+    assert isinstance(restored.priority, str)
