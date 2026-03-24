@@ -9,7 +9,7 @@ You are a senior Python developer specializing in async programming, Redis, and 
 
 ## Project Overview
 
-LoL Match Intelligence Pipeline — Python 3.12 monorepo, 12 services connected by Redis Streams, Docker Compose deployment.
+LoL Match Intelligence Pipeline — Python 3.14 monorepo, 12 services connected by Redis Streams, Docker Compose deployment.
 
 ### Pipeline Flow
 
@@ -192,3 +192,26 @@ lol-pipeline-{service}/
 336 unit tests + 44 contract tests. Coverage targets: common ≥90%, services ≥80%.
 
 Pending: ~90 additional tests in Tiers 2-4 (see TODO.md and CLAUDE.md for details).
+
+## Project Principles
+
+- **12-factor app**: Config via env vars, stateless processes, explicit dependencies, disposability.
+- **DRY**: Don't Repeat Yourself. Extract any logic used in 2+ places. Shared helpers in `_helpers.py` co-located with consumers; cross-package helpers in `lol_pipeline.helpers`.
+- **Service isolation**: Services know only their own input/output contracts. No cross-service imports. All shared code lives in `lol-pipeline-common`.
+- **One function per file**: Every new function goes in its own module file. Shared helpers used by 2+ modules live in `_helpers.py`. Constants/types go in `_types.py` or `_constants.py`. Route handlers grouped by feature in `routes/` subpackage.
+- **Layered composition**: Small "implementation" functions → "feature" functions → "business logic". Call existing functions rather than reimplementing. Each layer stays testable and small.
+
+## Python / Redis Gotchas
+
+- `except (X, Y):` — always parenthesize multi-exception clauses. Never `except X, Y:`.
+- `Redis` is unparameterized — never `Redis[str]`. `hmget()` requires list form: `hmget(key, [fields])`.
+- Config source of truth: `.env.example` for env vars, `pyproject.toml` for lint/type config.
+- All complexity/lint thresholds are in each service's `pyproject.toml`.
+- `Dockerfile.service` is the unified Dockerfile — parameterized by `SERVICE_NAME`/`MODULE_NAME`. No per-service Dockerfiles.
+
+## i18n Architecture
+
+- **`lol_pipeline/i18n.py`** (common) — shared domain vocabulary: roles, rank tiers, queue types, status labels, failure codes. `label("role", "TOP", "zh-CN")` → "上单". Missing translations tracked in Redis SET `i18n:missing:{lang}`.
+- **`strings.py`** (per-service) — UI text via `t()`, admin stays English.
+- **DDragon game data** — fetch per-locale at render time (`ddragon:champion_names:{lang}`), 24h TTL. English keys everywhere in data layer; translate only at HTML render.
+- **Do not translate system values**: Redis keys, consumer group names, stream names, CLI commands must display verbatim. Only translate human-facing UI labels.

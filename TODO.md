@@ -2,75 +2,77 @@
 
 ---
 
+## Feature: op.gg Dual-Source Integration
+
+See `questions.md` for locked architecture decisions.
+
+### OPGG-0: Research op.gg internal API
+
+Identify exact JSON endpoints used by their SPA for match history and match detail per region (e.g., `https://lol.op.gg/api/v1.0/...`). Map response fields to Riot match-v5 schema. Document the ETL field mapping before any code is written.
+
+**Output:** ETL mapping document (can live in `docs/architecture/` or inline in `OpggClient`).
+
+---
+
+### OPGG-1: Parameterize rate limiter stored-limit keys by prefix
+
+**File:** `lol-pipeline-common/src/lol_pipeline/rate_limiter.py` lines 48-49 and `_rate_limiter_data.py` lines 23-24
+
+- [ ] **Red:** Write failing test asserting `acquire_token(r, key_prefix="ratelimit:opgg")` reads limits from `ratelimit:opgg:limits:short` / `ratelimit:opgg:limits:long`, NOT `ratelimit:limits:short`
+- [ ] **Green:** Parameterize `KEYS[3]`/`KEYS[4]` in Lua script as `{key_prefix}:limits:short` / `{key_prefix}:limits:long`. Add `limit_long: int` parameter to `acquire_token()` and `wait_for_token()`.
+- [ ] **Refactor:** Verify existing Riot API tests still pass (no regression)
+
+---
+
+### OPGG-2: Add op.gg config vars to Config and .env.example
+
+- [ ] **Red:** Write failing test that `Config()` raises on missing required op.gg fields (or that optional fields default correctly)
+- [ ] **Green:** Add to `lol-pipeline-common/src/lol_pipeline/config.py` and `.env.example`: `OPGG_RATE_LIMIT_PER_SECOND` (default: 2), `OPGG_RATE_LIMIT_LONG` (default: 30), `OPGG_MATCH_DATA_DIR` (default: `/pipeline-data/opgg`), `OPGG_API_KEY: str | None = None`
+- [ ] **Refactor:** Verify all services that import `Config` still load correctly
+
+---
+
+### OPGG-3: Update `match_id_payload.json` PACT schema
+
+**File:** `lol-pipeline-common/contracts/schemas/payloads/match_id_payload.json`
+
+- [ ] **Red:** Write failing contract test that a `stream:match_id` message containing `"source": "opgg"` is rejected by the current schema (proves `additionalProperties: false` blocks it)
+- [ ] **Green:** Add `source` as an optional `enum: ["riot", "opgg"]` property to the schema
+- [ ] **Refactor:** Update Fetcher and Crawler pacts; verify all existing contract tests still pass
+
+---
+
+### OPGG-4: Implement `OpggClient` in lol-pipeline-common
+
+New module `lol-pipeline-common/src/lol_pipeline/opgg_client.py`.
+
+- [ ] **Red:** Write failing tests for: (1) `get_match_history(puuid, region)` returns list of match IDs, (2) `get_match(match_id, region)` returns match-v5-shaped dict with `source: "opgg"`, (3) ETL drops proprietary fields (OP Score etc.), (4) unexpected schema → raises `OpggParseError`
+- [ ] **Green:** Implement `OpggClient` — accepts injected `httpx.AsyncClient`, realistic browser headers, ETL layer normalizing to match-v5 format, schema validation, `source` + `fetched_at` on all output. Use `respx` fixtures.
+- [ ] **Refactor:** Extract ETL mapping to `_opgg_etl.py`, schema validation to `_opgg_schema.py`
+
+---
+
+### OPGG-5: Integrate source selector into Fetcher and Crawler
+
+**Files:** `lol-pipeline-fetcher/src/lol_fetcher/main.py`, `lol-pipeline-crawler/src/lol_crawler/main.py`
+
+- [ ] **Red:** Write failing tests: (1) when op.gg has budget, Fetcher calls `OpggClient` not `RiotClient`, (2) when op.gg fails with `opgg_*` code, falls through to Riot API and succeeds, (3) `system:halted` is never set on op.gg failure, (4) `raw:opgg:match:{match_id}` written for op.gg source, `raw:match:{match_id}` for Riot
+- [ ] **Green:** Add source selector logic; op.gg failure → log warning + fallthrough, never halt
+- [ ] **Refactor:** Verify all existing Fetcher and Crawler tests still pass
+
+---
+
+### OPGG-6: Add `opgg-status` admin command
+
+- [ ] **Red:** Write failing test that `cmd_opgg_status` exists and returns enabled status, disk size, fetch count
+- [ ] **Green:** Implement `just admin opgg-status` — `opgg:fetch_count` counter key, `pipeline-data/opgg/` disk usage
+- [ ] **Refactor:** Verify existing admin commands unaffected
+
+---
+
 ## Critical
 
-### CR-2: Fetcher drops priority on outbound parse envelopes
 
-**File:** `lol-pipeline-fetcher/src/lol_fetcher/main.py` lines 49-54, 131-136
-
-Fetcher creates outbound `MessageEnvelope` for `stream:parse` without propagating
-`envelope.priority` from the input message. Same class of bug as F1 (parser) which was
-already fixed. The fetcher was missed.
-
-**Fix:** Add `priority=envelope.priority` to both `MessageEnvelope(...)` calls in `_fetch_match`.
-
----
-
-### CR-3: Crawler XADD pipeline omits maxlen trimming
-
-**File:** `lol-pipeline-crawler/src/lol_crawler/main.py` line 136
-
-Crawler publishes match IDs via pipelined `pipe.xadd()` that omits `maxlen`. The standard
-`publish()` applies `MATCH_ID_STREAM_MAXLEN = 500_000` but the crawler bypasses `publish()`
-for pipeline efficiency. Stream grows unbounded if fetcher falls behind.
-
-**Fix:** Add `maxlen=MATCH_ID_STREAM_MAXLEN` and `approximate=True` to the `pipe.xadd()` call.
-
----
-
-### CR-5: Parser ban/matchup idempotency guard has TOCTOU race
-
-**File:** `lol-pipeline-parser/src/lol_parser/main.py` lines 373, 392, 401-404
-
-SISMEMBER check and SADD are not atomic. Two parser instances processing the same match_id
-concurrently can both see `already_parsed = False` and double-count bans/matchups via HINCRBY.
-
-**Fix:** Move SISMEMBER into the same MULTI/EXEC or use a Lua script for atomic check-and-set.
-
----
-
-### TTL-1: `priority:active` SET has no TTL and no cap
-
-**File:** `lol-pipeline-common/src/lol_pipeline/priority.py` lines 17, 60, 66
-
-When `player:priority:{puuid}` TTL expires naturally (without explicit `clear_priority()`),
-the PUUID remains orphaned in `priority:active` permanently. False-positive blocks Discovery
-entirely.
-
-**Fix:** Periodic cleanup in Discovery's `_promote_batch` — scan `priority:active` members
-and SREM any whose `player:priority:{puuid}` key has expired.
-
----
-
-### DRY-1: `_make_replay_envelope` duplicated in 3 locations
-
-**Files:** `admin/main.py`, `ui/main.py`, `recovery/main.py`
-
-Identical 13-line function in admin and UI; same logic inlined in recovery.
-
-**Fix:** Move `make_replay_envelope` to `lol_pipeline.models` or `lol_pipeline.streams`.
-
----
-
-### E2: Config validation crash gives pydantic traceback, not actionable hint
-
-**Surface:** All 9 services on first run
-
-Missing `RIOT_API_KEY` or `REDIS_URL` produces a raw pydantic `ValidationError` traceback.
-None of the 9 entry points catch it.
-
-**Fix:** Catch `pydantic.ValidationError` in each entry point, print actionable message
-referencing `.env.example`, exit with code 1.
 
 ---
 
@@ -96,28 +98,7 @@ independent and could be batched.
 
 **Fix:** Use `r.pipeline(transaction=False)` to batch all EVAL calls into a single round-trip.
 
----
 
-### CR-2 (Complexity Review): RawStore.set calls `_exists_in_bundles` on every new write
-
-**File:** `lol-pipeline-common/src/lol_pipeline/raw_store.py` line 144
-
-After Redis SET NX succeeds, scans ALL JSONL bundle files for the match ID. O(B * L) per
-write, worsens with data age.
-
-**Fix:** Check only the current month's bundle, or maintain an in-memory bloom filter.
-
----
-
-### CR-5 (Complexity Review): `has_priority_players` uses SCAN on every streams page refresh
-
-**File:** `lol-pipeline-common/src/lol_pipeline/priority.py` lines 66-78
-**Called from:** `lol-pipeline-ui/src/lol_ui/main.py` (every 5s per browser tab)
-
-O(N) SCAN over entire keyspace. Worsens as keyspace grows.
-
-**Fix:** Replace SCAN with `SCARD("priority:active") > 0` — O(1). Reconcile the set
-periodically against actual keys.
 
 ---
 
@@ -139,43 +120,6 @@ periodically against actual keys.
 
 **Fix:** Extract disk write into a sync helper and delegate to `asyncio.to_thread`.
 
----
-
-### DRY-2: `_maxlen_for_stream` duplicated across 3 modules
-
-**Files:** `streams.py`, `delay_scheduler/main.py`, `admin/main.py`
-
-Three implementations of the same per-stream MAXLEN policy lookup.
-
-**Fix:** Export a single `maxlen_for_stream(stream: str) -> int` from `lol_pipeline.streams`.
-
----
-
-### DRY-3: Player registration pattern duplicated across seed, discovery, UI
-
-**Files:** `seed/main.py`, `discovery/main.py`, `ui/main.py`
-
-Same 4-step HSET + EXPIRE + ZADD + ZREMRANGEBYRANK sequence in 3 services.
-
-**Fix:** Extract `register_player()` into `lol_pipeline.helpers`.
-
----
-
-### DRY-5: `is_system_halted()` helper exists but raw `r.get("system:halted")` used in ~10 locations
-
-**Files:** `service.py`, `recovery/main.py`, `discovery/main.py`, `seed/main.py`, `ui/main.py`
-
-**Fix:** Replace all raw `r.get("system:halted")` calls with `is_system_halted(r)`.
-
----
-
-### DRY-6: Riot API error handling pattern duplicated in crawler and fetcher
-
-**Files:** `crawler/main.py` (~25 lines), `fetcher/main.py` (~25 lines)
-
-Same 4-branch routing (404, 403, 429, 5xx) with only `failed_by` label differing.
-
-**Fix:** Extract `handle_riot_api_error()` into `lol_pipeline.helpers`.
 
 ---
 
@@ -190,35 +134,6 @@ Same 4-branch routing (404, 403, 429, 5xx) with only `failed_by` label differing
 ---
 
 ## Medium
-
-### TTL-2: `match:status:parsed` SET grows unbounded (TTL resets on every write)
-
-**File:** `lol-pipeline-parser/src/lol_parser/main.py` lines 433-434
-
-EXPIRE resets on every SADD. Under continuous operation the key never expires. ~1.7M members/day
-at 20 matches/s.
-
-**Fix:** Only set EXPIRE when no TTL exists (same pattern as `seen:matches` F5 fix).
-
----
-
-### TTL-3: `match:status:failed` SET has the same TTL-reset problem
-
-**File:** `lol-pipeline-recovery/src/lol_recovery/main.py` lines 63-64
-
-Same pattern as TTL-2. Low volume (~100/day) but should be consistent.
-
----
-
-### TTL-4: `player:rank:history:{puuid}` ZSET has no member cap
-
-**File:** `lol-pipeline-crawler/src/lol_crawler/main.py` lines 304-306
-
-Active players accumulate unbounded rank snapshots. High-activity player: ~1440 entries/month.
-
-**Fix:** Add `ZREMRANGEBYRANK` after ZADD to cap at ~500 entries.
-
----
 
 ### Doc Accuracy (Think Round 4)
 
@@ -416,6 +331,36 @@ order, and summoner spells per participant but never aggregates or displays them
 - Redis ACLs — per-service users with minimal permissions
 - TLS reverse proxy docs (Caddy/nginx)
 - Redis TLS (`rediss://`) for production
+
+---
+
+## UI Visual Analysis — Phase 15 Findings
+
+### High — Broken / Blocking
+
+- **UI-H1:** Art Pop mobile: decorative SVGs (shield/swords) overlap interactive content (table rows, form fields) at full desktop scale. WCAG contrast failure in overlap zones. Fix: `@media (max-width:600px)` guard to hide or scale down decorations in `themes.py`.
+- **UI-H2:** Streams mobile: STATUS/PENDING/LAG columns silently truncated — `min-width:600px` forces overflow but iOS hides scrollbars, leaving columns invisible with no affordance. Fix: add visible scroll hint or responsive column hide/show.
+- **UI-H3:** Mobile nav clips rightmost items (Matchups, Logs, DLQ) with no scroll indicator. The `›` arrow overlaps the label it hints past. Fix: proper `overflow-x: auto` + scroll-fade mask on nav.
+- **UI-H4 (zh-CN):** Consumer group names (`crawlers`, `fetchers`, etc.) display as raw English in the Streams table despite the header being translated. Blocking for Chinese-only users.
+- **UI-H5 (zh-CN):** Redis stream key names (`stream:puuid`, `stream:match_id`, etc.) exposed raw with no Chinese labels or tooltips. Chinese-only users can't know what each stream does.
+
+### Medium — Confusing / Degraded UX
+
+- **UI-M1:** Theme picker (fixed bottom-right) overlaps footer disclaimer text on all mobile pages — no `padding-bottom` clearance on footer. Fix: add `~50px` bottom padding to footer/main.
+- **UI-M2:** Dashboard mobile: stream STATUS badge column (green squares) not visible — absent from mobile stream depths table.
+- **UI-M3:** Art Pop theme breaks sticky form — `themes.py` sets `position:relative` overriding `position:sticky` from `css.py`. Form no longer pins on scroll in Art Pop.
+- **UI-M4:** Art Pop mobile: header band takes ~25% of 375px viewport, pushing nav and content below fold.
+- **UI-M5 (zh-CN):** Players empty state broken grammar — "运行 `just seed GameName#Tag` 开始追踪。" splits into 3 disconnected fragments. Fix: rewrite as single sentence.
+- **UI-M6 (zh-CN):** "死信" (DLQ) navigation label is unintuitive. "失败队列" or keeping "DLQ" would be clearer.
+- **UI-M7:** Logs mobile: service badge text (~40px wide) unreadable. No contrast or sizing adjustment at mobile viewport.
+
+### Low — Polish
+
+- **UI-L1:** DLQ mobile stats: "n/a oldest message" wraps to its own row (2+1 layout) instead of uniform 3-column grid.
+- **UI-L2:** Art Pop h1 not full-bleed on mobile — 2rem body margin creates white gaps in the red header bar.
+- **UI-L3:** Stats page has no onboarding text — no hint it's a lookup-by-tracked-player form.
+- **UI-L4 (zh-CN):** "优先玩家处理中：否" is awkward machine-translation. Should be "玩家优先模式：关闭".
+- **UI-L5 (zh-CN):** Dashboard shows "–" vs "0" inconsistently for empty lag/pending values. Meaning is unclear.
 
 ---
 

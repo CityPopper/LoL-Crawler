@@ -1,6 +1,6 @@
 ---
 name: think
-description: Run a full orchestrate-think cycle — plan in TODO.md, launch ALL agents for consensus review, implement with TDD, doc-agent bookend. Use for any non-trivial cross-cutting work.
+description: Run a full orchestrate-think cycle — questions.md for design decisions, plan in TODO.md, launch ALL agents for consensus review, implement with TDD, doc-agent bookend. Use for any non-trivial cross-cutting work.
 user_invocable: true
 ---
 
@@ -28,15 +28,35 @@ Read these files to understand context:
 - `.claude/archive/REJECTED.md` — Rejected ideas (do not re-propose)
 - Any files relevant to the user's specific request
 
-## Step 2: Write Plan in TODO.md
+## Step 2: Questions Phase (non-trivial features only)
 
-Write a checklist of proposed changes in `TODO.md` under a new section for this cycle. Each item should be specific and actionable.
+For any new feature or significant design decision, use `questions.md` before writing any plan:
 
-## Step 3: Doc-Agent Bookend (BEFORE)
+1. **Generate questions** — Launch 3 specialist agents in parallel (architect, developer, security) to generate all questions that must be answered before implementation. Organize by category.
+2. **Human input** — Surface a `## ❓ Needs Your Input` table at the top with questions only a human can answer (product decisions, risk tolerance, priorities). Ask the user one at a time.
+3. **Agent proposals** — Once human answers are in, re-launch agents in parallel to propose answers to all remaining technical questions. One decisive answer per question.
+4. **Vote & consolidate** — Re-launch agents to review all proposed answers. REQUEST CHANGES → fix and re-vote. APPROVE → condense `questions.md` to decisions-only and move tasks to `TODO.md`.
+5. **Clean up** — `questions.md` becomes a compact decisions record. All implementation tasks live in `TODO.md`.
+
+Skip this step for small bug fixes or changes with obvious answers.
+
+## Step 3: Write Plan in TODO.md
+
+Write a checklist of proposed changes in `TODO.md` under a new section for this cycle. Each item should be specific and actionable. Link back to `questions.md` for context if a questions phase was run.
+
+**Every implementation task MUST include explicit TDD steps as the first checklist items:**
+```
+- [ ] **Red:** Write failing test that proves the bug or missing behaviour
+- [ ] **Green:** Implement the minimum change to make it pass
+- [ ] **Refactor:** Clean up without breaking the test
+```
+A task without these three steps is incomplete and must not be executed.
+
+## Step 4: Doc-Agent Bookend (BEFORE)
 
 Launch `doc-keeper` agent **sequentially** to verify docs are current before making changes.
 
-## Step 4: Launch ALL Agents in Parallel
+## Step 5: Launch ALL Agents in Parallel
 
 Spawn every available agent simultaneously. Each reviews the plan from their specialty:
 
@@ -69,7 +89,7 @@ Each agent must respond with:
 - Specific findings with file:line references
 - Confidence level (1-10)
 
-## Step 5: Consensus Protocol
+## Step 6: Consensus Protocol
 
 - **Round 1**: Gather initial feedback from all agents
 - **Round 2**: Incorporate feedback, re-review with agents that had concerns
@@ -77,7 +97,7 @@ Each agent must respond with:
 - **Max 3 rounds**: If consensus not reached, escalate to user with disagreement summary
 - **Approved** = ALL consulted agents return APPROVE
 
-## Step 6: Implement Changes
+## Step 7: Implement Changes
 
 Apply changes based on consensus. For each change:
 - Write failing test first (TDD)
@@ -85,15 +105,15 @@ Apply changes based on consensus. For each change:
 - Verify test passes
 - Ensure measurable before/after metric exists
 
-## Step 7: Update TODO.md
+## Step 8: Update TODO.md
 
 Mark completed items. Remove done sections. Add any new items discovered during implementation.
 
-## Step 8: Doc-Agent Bookend (AFTER)
+## Step 9: Doc-Agent Bookend (AFTER)
 
 Launch `doc-keeper` agent **sequentially** to update docs with changes made.
 
-## Step 9: Report to User
+## Step 10: Report to User
 
 1. **Agent roster**: Which agents were consulted
 2. **Consensus status**: Per-agent APPROVE/REQUEST CHANGES with confidence

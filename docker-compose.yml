@@ -86,7 +86,7 @@ services:
     volumes:
       - ./lol-pipeline-common:/common
       - ./lol-pipeline-fetcher:/svc
-      - ./lol-pipeline-fetcher/match-data:/match-data
+      - ./pipeline-data:/pipeline-data
       - ./logs:/logs
     command: ["python", "-m", "lol_fetcher"]
 
@@ -100,7 +100,7 @@ services:
     volumes:
       - ./lol-pipeline-common:/common
       - ./lol-pipeline-parser:/svc
-      - ./lol-pipeline-fetcher/match-data:/match-data:ro
+      - ./pipeline-data:/pipeline-data:ro
       - ./logs:/logs
     command: ["python", "-m", "lol_parser"]
 

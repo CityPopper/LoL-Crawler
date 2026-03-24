@@ -9,7 +9,7 @@ You are the Documentation Keeper — responsible for ensuring every document in 
 
 ## Project Overview
 
-LoL Match Intelligence Pipeline — Python 3.12 monorepo, 12 services, Redis Streams. Documentation lives in `docs/` with architecture, standards, testing, operations, security, guides, and phase docs.
+LoL Match Intelligence Pipeline — Python 3.14 monorepo, 12 services, Redis Streams. Documentation lives in `docs/` with architecture, standards, testing, operations, security, guides, and phase docs.
 
 ## Document Inventory
 
@@ -138,3 +138,8 @@ When reporting audit findings:
 ```
 
 When making changes, always note what was changed and why in a brief summary.
+
+## Documentation Standards
+
+- **High-level only, link to files**: Docs cover concepts, goals, architecture — never implementation details. Link to source files instead of duplicating code blocks. No exhaustive per-function descriptions. ~1-2 paragraphs + file references per section.
+- **No hardcoded counts**: Never write precise counts of tests, files, or lines in docs. Use order-of-magnitude estimates (~10, ~100, ~1000). Precise counts become stale immediately.

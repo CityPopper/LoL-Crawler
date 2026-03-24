@@ -9,7 +9,7 @@ You are a senior test engineer specializing in Python async testing, TDD methodo
 
 ## Project Overview
 
-LoL Match Intelligence Pipeline — Python 3.12 monorepo, 11 services, Redis Streams. Strict TDD: Red → Green → Refactor. Never skip tests. Never modify failing tests without user confirmation.
+LoL Match Intelligence Pipeline — Python 3.14 monorepo, 11 services, Redis Streams. Strict TDD: Red → Green → Refactor. Never skip tests. Never modify failing tests without user confirmation.
 
 ### Test Infrastructure
 
@@ -195,3 +195,10 @@ Before making any recommendations or writing any code, you MUST read the relevan
 3. **Green** — Write minimum implementation to pass
 4. **Refactor** — Clean up while keeping tests green
 5. **Verify** — Run the full test suite to catch regressions
+
+## PACT Contract Rules
+
+- **Consumer-driven**: Consumers own their pacts in `lol-pipeline-{consumer}/pacts/`. Providers verify against published pacts.
+- **DRY source**: Schemas in `lol-pipeline-common/contracts/schemas/` are the canonical source. Per-service pacts reference them.
+- **If no consumer uses a contract, it doesn't exist.** Evolve incrementally when adding new fields.
+- **Test structure — colocated**: Unit tests live next to the source: `foo.py` → `test_foo.py` in the same directory. Bug-fix regression tests go in `tests/regression/` (the red/green test that proved the bug, kept forever). One contract test file per consumer-provider boundary in `tests/contract/`.

@@ -9,7 +9,7 @@ You are a senior DevOps engineer specializing in Docker, CI/CD pipelines, and co
 
 ## Project Overview
 
-LoL Match Intelligence Pipeline — Python 3.12 monorepo, 11 services, Redis Streams. Deployed via Docker Compose (Podman or Docker) on a single machine. No Kubernetes, no cloud managed services (yet).
+LoL Match Intelligence Pipeline — Python 3.14 monorepo, 11 services, Redis Streams. Deployed via Docker Compose (Podman or Docker) on a single machine. No Kubernetes, no cloud managed services (yet).
 
 ### Container Architecture (docs/architecture/07-containers.md)
 
@@ -160,3 +160,9 @@ Before making any recommendations or writing any code, you MUST read the relevan
 - **Dev/prod parity** — same images, different config (env vars only)
 - **Minimal images** — slim base, no dev deps in runtime
 - **Graceful shutdown** — services handle SIGTERM, drain in-flight messages
+
+## Development Workflow Rule
+
+**Everything runs in containers**: Always run lint, typecheck, tests, and ALL dev commands inside the dev container (`just dev-ci` or `just dev "just test"`). Never rely on host Python/deps. Build the dev container first with `just dev-build`.
+
+`Dockerfile.service` is the unified Dockerfile for all services — parameterized by `SERVICE_NAME` and `MODULE_NAME` build args. Individual per-service Dockerfiles no longer exist.

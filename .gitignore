@@ -69,9 +69,11 @@ screenshot/
 # analyze_ui.py generated screenshots
 **/tests/regression/screenshots/
 
-# Match data — large output files don't belong in git
-lol-pipeline-fetcher/match-data/**/*.json
-lol-pipeline-fetcher/match-data/**/*.jsonl
-!lol-pipeline-fetcher/match-data/**/.gitkeep.hypothesis/
+# Pipeline data — large output files don't belong in git
+pipeline-data/**/*.json
+pipeline-data/**/*.jsonl
+pipeline-data/**/*.jsonl.zst
+!pipeline-data/**/.gitkeep
 */.hypothesis/
 .hypothesis/
+prompts.md
