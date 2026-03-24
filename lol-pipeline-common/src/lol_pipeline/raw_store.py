@@ -21,6 +21,13 @@ _TTL_SECONDS: int = int(os.getenv("RAW_STORE_TTL_SECONDS", "86400"))
 _log = logging.getLogger("raw_store")
 
 
+def _write_to_disk(path: Path, data: str) -> None:
+    """Synchronous disk write helper — called via asyncio.to_thread."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as f:
+        f.write(data)
+
+
 class RawStore:
     """Write-through store for raw Riot API match JSON.
 
@@ -159,9 +166,7 @@ class RawStore:
         if not was_set or await asyncio.to_thread(self._exists_in_current_bundle, match_id):
             return
         try:
-            bp.parent.mkdir(parents=True, exist_ok=True)
-            with bp.open("a") as f:
-                f.write(f"{match_id}\t{data}\n")
+            await asyncio.to_thread(_write_to_disk, bp, f"{match_id}\t{data}\n")
         except OSError as exc:
             # Remove Redis key so next attempt can retry both Redis + disk
             await self._r.delete(f"{_KEY_PREFIX}{match_id}")

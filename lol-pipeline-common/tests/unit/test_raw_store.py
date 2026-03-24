@@ -499,3 +499,33 @@ class TestRawStoreSetScopedDedup:
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         store = RawStore(r)
         assert store._exists_in_current_bundle("NA1_MISS") is False
+
+
+class TestRawStoreDiskWriteOffEventLoop:
+    """ASYNC-2: Disk write in set() must be delegated to asyncio.to_thread."""
+
+    @pytest.mark.asyncio
+    async def test_set__uses_to_thread_for_disk_write(self, r, tmp_path):
+        """ASYNC-2: Disk write must be delegated to asyncio.to_thread, not run on event loop."""
+        store = RawStore(r, data_dir=str(tmp_path))
+
+        calls = []
+        original_to_thread = __import__("asyncio").to_thread
+
+        async def tracking_to_thread(fn, *args, **kwargs):
+            calls.append(fn.__name__ if hasattr(fn, "__name__") else str(fn))
+            return await original_to_thread(fn, *args, **kwargs)
+
+        with patch("lol_pipeline.raw_store.asyncio.to_thread", side_effect=tracking_to_thread):
+            await store.set("NA1_ASYNC2", '{"info": {"gameDuration": 100}}')
+
+        # Must call _write_to_disk via to_thread (in addition to _exists_in_current_bundle)
+        assert "_write_to_disk" in calls, (
+            f"Expected _write_to_disk in to_thread calls, got: {calls}"
+        )
+
+        # Verify the file was actually written
+        jsonl_files = list((tmp_path / "NA1").glob("*.jsonl"))
+        assert len(jsonl_files) == 1
+        content = jsonl_files[0].read_text()
+        assert "NA1_ASYNC2" in content
