@@ -1713,3 +1713,92 @@ class TestLockRefreshBeforeChampionStats:
         assert await r.hget(f"player:stats:{puuid}", "total_games") == "1"
         # Champion stats should NOT be written (lock refresh failed)
         assert not await r.exists("champion:stats:Annie:14.5:MID")
+
+
+class TestUpdateChampionStatsPipeline:
+    """CR-1: All EVAL calls must be batched into a single pipeline, not one per match."""
+
+    @pytest.mark.asyncio
+    async def test__update_champion_stats__uses_single_pipeline(self, monkeypatch):
+        """CR-1: All EVAL calls must be batched into a single pipeline, not one per match."""
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        # Track how many times pipeline() is entered
+        pipeline_enter_count = 0
+        original_pipeline = r.pipeline
+
+        def counting_pipeline(*args, **kwargs):
+            nonlocal pipeline_enter_count
+            pipeline_enter_count += 1
+            return original_pipeline(*args, **kwargs)
+
+        monkeypatch.setattr(r, "pipeline", counting_pipeline)
+
+        # Build 3 ranked matches with full participant data
+        new_matches = [
+            ("NA1_A", 1000.0),
+            ("NA1_B", 2000.0),
+            ("NA1_C", 3000.0),
+        ]
+        participant_data = [
+            {
+                "champion_name": "Annie",
+                "team_position": "MID",
+                "win": "1",
+                "kills": "5",
+                "deaths": "2",
+                "assists": "8",
+                "gold_earned": "12000",
+                "total_minions_killed": "180",
+                "total_damage_dealt_to_champions": "20000",
+                "vision_score": "30",
+                "double_kills": "1",
+                "triple_kills": "0",
+                "quadra_kills": "0",
+                "penta_kills": "0",
+            },
+            {
+                "champion_name": "Annie",
+                "team_position": "MID",
+                "win": "0",
+                "kills": "3",
+                "deaths": "5",
+                "assists": "4",
+                "gold_earned": "9000",
+                "total_minions_killed": "140",
+                "total_damage_dealt_to_champions": "15000",
+                "vision_score": "20",
+                "double_kills": "0",
+                "triple_kills": "0",
+                "quadra_kills": "0",
+                "penta_kills": "0",
+            },
+            {
+                "champion_name": "Lux",
+                "team_position": "SUPPORT",
+                "win": "1",
+                "kills": "2",
+                "deaths": "3",
+                "assists": "15",
+                "gold_earned": "8000",
+                "total_minions_killed": "30",
+                "total_damage_dealt_to_champions": "12000",
+                "vision_score": "50",
+                "double_kills": "0",
+                "triple_kills": "0",
+                "quadra_kills": "0",
+                "penta_kills": "0",
+            },
+        ]
+        match_metadata = [
+            {"queue_id": "420", "patch": "14.5"},
+            {"queue_id": "420", "patch": "14.5"},
+            {"queue_id": "420", "patch": "14.5"},
+        ]
+
+        await _update_champion_stats(r, new_matches, participant_data, match_metadata)
+
+        # Should be exactly 1 pipeline call for all matches, not 3
+        assert pipeline_enter_count == 1
+
+        await r.aclose()
