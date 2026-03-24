@@ -2415,6 +2415,7 @@ class TestRelativeAge:
         assert result == "1h ago"
 
 
+
 class TestConfigValidationError:
     """E2: Missing env vars give actionable message, not raw pydantic traceback."""
 
@@ -2439,3 +2440,37 @@ class TestConfigValidationError:
         assert exc_info.value.code == 1
         captured = capsys.readouterr()
         assert ".env.example" in captured.err or ".env.example" in captured.out
+
+
+class TestDlqEntriesPagination:
+    """CR-9: _dlq_entries must use COUNT-limited XRANGE, not unbounded."""
+
+    @pytest.mark.asyncio
+    async def test__dlq_entries__does_not_load_entire_stream(self, monkeypatch):
+        """CR-9: _dlq_entries must use COUNT-limited XRANGE, not unbounded."""
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        # Track XRANGE calls and their count arg
+        xrange_calls: list[int | None] = []
+        original_xrange = r.xrange
+
+        async def tracking_xrange(name, min="-", max="+", count=None):
+            xrange_calls.append(count)
+            return await original_xrange(name, min=min, max=max, count=count)
+
+        monkeypatch.setattr(r, "xrange", tracking_xrange)
+
+        # Add 5 entries to the DLQ stream
+        for i in range(5):
+            dlq = _make_dlq(match_id=f"NA1_pag_{i}")
+            await r.xadd(_DLQ_STREAM, dlq.to_redis_fields())
+
+        entries = await _dlq_entries(r, limit=3)
+
+        # Must pass count=3 to XRANGE, not None (unbounded)
+        assert any(
+            c is not None and c <= 3 for c in xrange_calls
+        ), f"Expected bounded XRANGE call, got counts: {xrange_calls}"
+        assert len(entries) <= 3
+
+        await r.aclose()

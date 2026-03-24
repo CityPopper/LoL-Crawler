@@ -35,13 +35,16 @@ def _maxlen_for_stream(stream: str) -> int | None:
     return maxlen_for_stream(stream)
 
 
-async def _dlq_entries(r: aioredis.Redis) -> list[tuple[str, DLQEnvelope]]:
+async def _dlq_entries(
+    r: aioredis.Redis, *, limit: int = 100
+) -> list[tuple[str, DLQEnvelope]]:
     """Return (stream_entry_id, DLQEnvelope) pairs from stream:dlq.
 
+    Uses COUNT-limited XRANGE to avoid loading the entire stream into memory.
     Corrupt entries are logged and skipped instead of crashing the caller.
     """
     log = _get_log()
-    raw: list[Any] = await r.xrange(_STREAM_DLQ, "-", "+")
+    raw: list[Any] = await r.xrange(_STREAM_DLQ, "-", "+", count=limit)
     result: list[tuple[str, DLQEnvelope]] = []
     for entry_id, fields in raw:
         try:
