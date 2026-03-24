@@ -78,41 +78,6 @@ New module `lol-pipeline-common/src/lol_pipeline/opgg_client.py`.
 
 ## High
 
-
-### CR-1 (Complexity Review): Analyzer `_update_champion_stats` sequential EVAL per match
-
-**File:** `lol-pipeline-analyzer/src/lol_analyzer/main.py` lines 208-253
-
-O(M) Redis round-trips where M = new matches. Each `r.eval(_UPDATE_CHAMPION_LUA, ...)` is
-independent and could be batched.
-
-**Fix:** Use `r.pipeline(transaction=False)` to batch all EVAL calls into a single round-trip.
-
-
-
----
-
-### CR-9 (Complexity Review): Admin `_dlq_entries` loads entire DLQ into memory
-
-**File:** `lol-pipeline-admin/src/lol_admin/main.py` line 60
-
-`r.xrange(_STREAM_DLQ, "-", "+")` with no count limit. DLQ max is 50K entries.
-
-**Fix:** Paginate with cursor-based XRANGE for `cmd_dlq_list`; use `XTRIM MAXLEN 0` for clear.
-
----
-
-### ASYNC-2: Blocking disk write on the event loop in `RawStore.set()`
-
-**File:** `lol-pipeline-common/src/lol_pipeline/raw_store.py` lines 161-164
-
-`mkdir()`, `open()`, and `write()` are synchronous OS operations blocking the event loop.
-
-**Fix:** Extract disk write into a sync helper and delegate to `asyncio.to_thread`.
-
-
----
-
 ### Contract Drift
 
 | ID | Issue | Fix |
