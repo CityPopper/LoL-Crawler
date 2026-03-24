@@ -79,6 +79,7 @@ See [docs/phases/README.md](docs/phases/README.md) for the phased delivery plan 
 | 17 | RESOLUTION — Delay scheduler starvation, DLQ whitelist, docs, perf (v1.9.0) |
 | 18 | INTEGRITY — Atomic DLQ replay, constants DRY, tests, docs (v2.0.0) |
 | 19 | FINALIZE — Replay tests, admin whitelist tests, doc fixes (v2.1.0) |
+| 20 | CONSOLIDATE — DRY helpers, ValidationError UX, TTL guards, agent files (v2.2.0) |
 
 ---
 

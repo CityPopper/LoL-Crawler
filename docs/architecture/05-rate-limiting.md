@@ -13,7 +13,7 @@ Enforces Riot dev-key limits, with a configurable per-second cap:
 Set `API_RATE_LIMIT_PER_SECOND` in `.env` to throttle below Riot's limit (e.g., when sharing
 an API key across multiple deployments, or for conservative backfill).
 
-Both windows are checked **atomically** in a single Lua script with two KEYS. This prevents
+Both windows are checked **atomically** in a single Lua script with four KEYS. This prevents
 a race condition where two workers each pass one window check but together exceed the limit.
 
 Any service that calls the Riot API must call `acquire_token()` before each request.
@@ -25,16 +25,19 @@ Workers that cannot acquire a token calculate the required sleep time and retry;
 ## Lua Script
 
 ```lua
--- KEYS[1] = "ratelimit:short"   (1-second sliding window ZSET)
--- KEYS[2] = "ratelimit:long"    (2-minute sliding window ZSET)
--- ARGV[1] = now_ms              (current epoch in milliseconds)
--- ARGV[2] = short_limit_fallback (20)
--- ARGV[3] = long_limit_fallback  (100)
--- ARGV[4] = short_window_ms     (1000)
--- ARGV[5] = long_window_ms      (120000)
--- ARGV[6] = uid                 (UUID — unique per call)
+-- KEYS[1] = "ratelimit:short"        (1-second sliding window ZSET)
+-- KEYS[2] = "ratelimit:long"         (2-minute sliding window ZSET)
+-- KEYS[3] = "ratelimit:limits:short" (dynamic short limit — written by RiotClient)
+-- KEYS[4] = "ratelimit:limits:long"  (dynamic long limit — written by RiotClient)
+-- ARGV[1] = now_ms                   (current epoch in milliseconds)
+-- ARGV[2] = short_limit_fallback     (20)
+-- ARGV[3] = long_limit_fallback      (100)
+-- ARGV[4] = short_window_ms          (1000)
+-- ARGV[5] = long_window_ms           (120000)
+-- ARGV[6] = uid                      (UUID — unique per call)
 --
--- Returns: 1 (token granted) or 0 (denied)
+-- Returns: 1 (token granted) or negative int whose absolute value is
+-- estimated wait ms until next slot opens (denial)
 --
 -- Dynamic limits: reads ratelimit:limits:short / ratelimit:limits:long
 -- (written by RiotClient after each API response). Falls back to ARGV
@@ -74,49 +77,24 @@ return 1
 ## Python Usage
 
 `acquire_token(r, key_prefix, limit_per_second)` is **non-blocking**: it calls the Lua
-script once via `EVAL` and returns `True` (granted) or `False` (denied). The Lua script
-returns `1` or `0`; the Python wrapper converts to `bool`.
+script once via `EVAL` and returns an `int` — `1` on success, or a negative int whose
+absolute value is the estimated wait time in milliseconds until the next slot opens.
 
-`wait_for_token(r, key_prefix, limit_per_second)` wraps `acquire_token()` in a polling
-loop with a fixed **50ms** sleep between attempts. It blocks until a token is acquired.
+`wait_for_token(r, key_prefix, limit_per_second)` wraps `acquire_token()` and uses the
+**adaptive** wait hint from the Lua script to sleep precisely until the next slot opens,
+plus jitter (10-50% of wait time) to prevent thundering herd. It blocks until a token is
+acquired, or raises `TimeoutError` after `max_wait_s` (default: 60s).
 
 Both functions accept:
 - `r` — async Redis connection
 - `key_prefix` — default `"ratelimit"` (keys become `{prefix}:short` and `{prefix}:long`)
 - `limit_per_second` — overrides the 1-second window cap (default: 20)
 
+See `lol-pipeline-common/src/lol_pipeline/rate_limiter.py` for the current implementation.
+Key signatures:
 ```python
-async def acquire_token(
-    r: aioredis.Redis,
-    key_prefix: str = "ratelimit",
-    limit_per_second: int = 20,
-) -> bool:
-    """Return True and record a token if within both rate windows; False otherwise."""
-    now_ms = int(time.time() * 1000)
-    uid = str(uuid.uuid4())
-    result = await r.eval(
-        _LUA_RATE_LIMIT_SCRIPT,
-        2,
-        f"{key_prefix}:short",
-        f"{key_prefix}:long",
-        now_ms,
-        limit_per_second,  # ARGV[2]: short limit fallback
-        100,               # ARGV[3]: long limit fallback
-        1000,              # ARGV[4]: short window ms
-        120000,            # ARGV[5]: long window ms
-        uid,               # ARGV[6]: unique member ID
-    )
-    return int(result) == 1
-
-
-async def wait_for_token(
-    r: aioredis.Redis,
-    key_prefix: str = "ratelimit",
-    limit_per_second: int = 20,
-) -> None:
-    """Block until a rate limit token is acquired, polling every 50ms."""
-    while not await acquire_token(r, key_prefix, limit_per_second):
-        await asyncio.sleep(0.05)
+async def acquire_token(r, key_prefix="ratelimit", limit_per_second=20) -> int
+async def wait_for_token(r, key_prefix="ratelimit", limit_per_second=20, max_wait_s=60.0) -> None
 ```
 
 **Caller pattern** (e.g., inside `riot_api.py` before each HTTP call):

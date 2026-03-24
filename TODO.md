@@ -78,16 +78,6 @@ New module `lol-pipeline-common/src/lol_pipeline/opgg_client.py`.
 
 ## High
 
-### CR-4: Analyzer champion stats lost on lock expiry mid-processing
-
-**File:** `lol-pipeline-analyzer/src/lol_analyzer/main.py` lines 304-318
-
-If lock expires between `_process_matches` and `_update_champion_stats`, cursor advances
-past matches whose champion stats are never written. Permanent data loss for aggregate stats.
-
-**Fix:** Increase `analyzer_lock_ttl_seconds` and add lock refresh between the two phases.
-
----
 
 ### CR-1 (Complexity Review): Analyzer `_update_champion_stats` sequential EVAL per match
 
@@ -135,23 +125,6 @@ independent and could be batched.
 
 ## Medium
 
-### Doc Accuracy (Think Round 4)
-
-| # | Doc | Issue |
-|---|-----|-------|
-| 1 | `03-streams.md` | `correlation_id` and `dlq_attempts` missing from envelope table |
-| 2 | `03-streams.md` | No maxlen values in stream registry table |
-| 3 | `04-storage.md` | `priority:active` key absent from schema table |
-| 4 | `04-storage.md` | `player:rank:history:{puuid}` key absent |
-| 5 | `05-rate-limiting.md` | `acquire_token()` return type documented as bool, actually int |
-| 6 | `05-rate-limiting.md` | `wait_for_token()` described as fixed 50ms polling; actually adaptive |
-| 7 | `05-rate-limiting.md` | Lua script section outdated (2 KEYS vs actual 4 KEYS) |
-| 8 | `06-failure-resilience.md` | XADD+ZREM row outdated — now atomic via `_DISPATCH_LUA` |
-| 9 | `07-containers.md` | References nonexistent `base.Dockerfile` |
-| 10 | `07-containers.md` | `docker-compose.yml` section shows old per-service pattern |
-| 11 | `ARCHITECTURE.md` | Phase 20 missing from implementation phases table |
-
----
 
 ### Error Messages
 

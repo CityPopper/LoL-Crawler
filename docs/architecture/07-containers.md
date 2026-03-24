@@ -8,21 +8,6 @@ Every service runs as a container (Podman by default; Docker available via `RUNT
 
 ## Image Design
 
-### Base Image
-
-All service images use a common base:
-
-```dockerfile
-# base.Dockerfile  (built once; used by all services)
-FROM python:3.14-slim AS base
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
-    && rm -rf /var/lib/apt/lists/*
-WORKDIR /app
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
-```
-
 ### Service Image Pattern (multi-stage)
 
 All services share a single `Dockerfile.service` at the repo root, parameterized by build args:
@@ -94,133 +79,23 @@ The project uses Podman Compose by default. Run with Docker via `RUNTIME=docker 
 
 ## docker-compose.yml (Local Dev)
 
+All services use the shared `Dockerfile.service` at the repo root, parameterized via `SERVICE_NAME` and `MODULE_NAME` build args:
+
 ```yaml
-version: "3.9"
+x-service-build: &service-build
+  context: .
+  dockerfile: Dockerfile.service
 
-x-service-defaults: &service-defaults
-  env_file: .env
-  restart: unless-stopped
-  depends_on:
-    redis:
-      condition: service_healthy
-
-services:
-
-  redis:
-    image: redis:7-alpine
-    command: >
-      redis-server
-      --appendonly yes
-      --appendfsync everysec
-      --save 900 1
-      --save 300 10
-      --save 60 10000
-    ports:
-      - "6379:6379"
-    volumes:
-      - ${REDIS_DATA_DIR:-./redis-data}:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
-  crawler:
-    <<: *service-defaults
-    build:
-      context: lol-pipeline-crawler
-      args:
-        COMMON_VERSION: local
-    volumes:
-      - ./lol-pipeline-common:/common
-    command: >
-      sh -c "pip install -q -e /common && python -m lol_crawler"
-
-  fetcher:
-    <<: *service-defaults
-    build:
-      context: lol-pipeline-fetcher
-      args:
-        COMMON_VERSION: local
-    volumes:
-      - ./lol-pipeline-common:/common
-    command: >
-      sh -c "pip install -q -e /common && python -m lol_fetcher"
-
-  parser:
-    <<: *service-defaults
-    build:
-      context: lol-pipeline-parser
-      args:
-        COMMON_VERSION: local
-    volumes:
-      - ./lol-pipeline-common:/common
-    command: >
-      sh -c "pip install -q -e /common && python -m lol_parser"
-
-  analyzer:
-    <<: *service-defaults
-    build:
-      context: lol-pipeline-analyzer
-      args:
-        COMMON_VERSION: local
-    volumes:
-      - ./lol-pipeline-common:/common
-    command: >
-      sh -c "pip install -q -e /common && python -m lol_analyzer"
-
-  recovery:
-    <<: *service-defaults
-    build:
-      context: lol-pipeline-recovery
-      args:
-        COMMON_VERSION: local
-    volumes:
-      - ./lol-pipeline-common:/common
-    command: >
-      sh -c "pip install -q -e /common && python -m lol_recovery"
-
-  delay-scheduler:
-    <<: *service-defaults
-    build:
-      context: lol-pipeline-delay-scheduler
-      args:
-        COMMON_VERSION: local
-    volumes:
-      - ./lol-pipeline-common:/common
-    command: >
-      sh -c "pip install -q -e /common && python -m lol_delay_scheduler"
-
-  # One-shot tools — not started by default; use `docker compose run`
-  seed:
-    <<: *service-defaults
-    build:
-      context: lol-pipeline-seed
-      args:
-        COMMON_VERSION: local
-    volumes:
-      - ./lol-pipeline-common:/common
-    profiles: ["tools"]
-    restart: "no"
-    command: >
-      sh -c "pip install -q -e /common && python -m lol_seed"
-
-  admin:
-    <<: *service-defaults
-    build:
-      context: lol-pipeline-admin
-      args:
-        COMMON_VERSION: local
-    volumes:
-      - ./lol-pipeline-common:/common
-    profiles: ["tools"]
-    restart: "no"
-    command: ["python", "-m", "lol_admin"]
-
+# Example service entry:
+crawler:
+  build:
+    <<: *service-build
+    args:
+      SERVICE_NAME: crawler
+      MODULE_NAME: lol_crawler
 ```
 
-> **Note:** The example above is illustrative. See `docker-compose.yml` at the repo root
-> for the authoritative configuration including all services (ui, discovery, seed, admin).
+See `docker-compose.yml` at the repo root for the authoritative configuration of all services.
 
 ---
 

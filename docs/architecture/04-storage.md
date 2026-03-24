@@ -35,6 +35,7 @@ All application state lives in Redis. No other database.
 | `ratelimit:limits:short`             | String     | 1h (hardcoded)            | Dynamic 1s window limit from Riot API `X-App-Rate-Limit` header |
 | `ratelimit:limits:long`              | String     | 1h (hardcoded)            | Dynamic 2min window limit from Riot API `X-App-Rate-Limit` header |
 | `player:priority:{puuid}`            | String     | 24h (`PRIORITY_KEY_TTL`)  | Priority marker; set by `set_priority()` (Seed/UI auto-seed) |
+| `priority:active`                    | Set        | 25h (`PRIORITY_ACTIVE_TTL`) | PUUIDs currently holding a priority key; drives `has_priority_players()` check in Discovery |
 
 ---
 

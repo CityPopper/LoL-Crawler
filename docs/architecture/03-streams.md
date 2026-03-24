@@ -4,14 +4,14 @@
 
 All inter-service communication uses Redis Streams with consumer groups.
 
-| Stream               | Producer                          | Consumer(s)          | Purpose                              |
-|----------------------|-----------------------------------|----------------------|--------------------------------------|
-| `stream:puuid`       | Seed, Discovery, Web UI (auto-seed) | Crawler            | PUUIDs to crawl for match history    |
-| `stream:match_id`    | Crawler             | Fetcher              | Match IDs to fetch from Riot API     |
-| `stream:parse`       | Fetcher             | Parser               | Match IDs with raw blob ready        |
-| `stream:analyze`     | Parser              | Analyzer             | PUUIDs whose stats need updating     |
-| `stream:dlq`         | Any service         | Recovery             | Failed messages with failure context |
-| `stream:dlq:archive` | Recovery            | (manual only)        | Exhausted messages for inspection    |
+| Stream               | Producer                          | Consumer(s)          | MAXLEN   | Purpose                              |
+|----------------------|-----------------------------------|----------------------|----------|--------------------------------------|
+| `stream:puuid`       | Seed, Discovery, Web UI (auto-seed) | Crawler            | ~10 000  | PUUIDs to crawl for match history    |
+| `stream:match_id`    | Crawler             | Fetcher              | ~500 000 | Match IDs to fetch from Riot API     |
+| `stream:parse`       | Fetcher             | Parser               | ~10 000  | Match IDs with raw blob ready        |
+| `stream:analyze`     | Parser              | Analyzer             | ~50 000  | PUUIDs whose stats need updating     |
+| `stream:dlq`         | Any service         | Recovery             | ~50 000  | Failed messages with failure context |
+| `stream:dlq:archive` | Recovery            | (manual only)        | ~50 000  | Exhausted messages for inspection    |
 
 Additionally, the **Delay Scheduler** consumes the `delayed:messages` Sorted Set (not a
 stream) and produces into the appropriate stream when a message's delay expires.
@@ -22,16 +22,18 @@ stream) and produces into the appropriate stream when a message's delay expires.
 
 Every message on every stream is a flat Redis Stream entry. Fields:
 
-| Field           | Type     | Description                                      |
-|-----------------|----------|--------------------------------------------------|
-| `id`            | string   | UUID; unique message identity                    |
-| `source_stream` | string   | Stream this message originated from              |
-| `type`          | string   | `puuid \| match_id \| parse \| analyze \| dlq`   |
-| `payload`       | string   | JSON-encoded payload (see per-stream schemas below) |
-| `attempts`      | integer  | Delivery attempt count (starts at 0)             |
-| `max_attempts`  | integer  | Max before DLQ (from `MAX_ATTEMPTS` env)         |
-| `enqueued_at`   | string   | ISO 8601 timestamp when first published          |
-| `priority`      | string   | Message priority level (`"normal"` or `"high"`)  |
+| Field            | Type     | Description                                      |
+|------------------|----------|--------------------------------------------------|
+| `id`             | string   | UUID; unique message identity                    |
+| `source_stream`  | string   | Stream this message originated from              |
+| `type`           | string   | `puuid \| match_id \| parse \| analyze \| dlq`   |
+| `payload`        | string   | JSON-encoded payload (see per-stream schemas below) |
+| `attempts`       | integer  | Delivery attempt count (starts at 0)             |
+| `max_attempts`   | integer  | Max before DLQ (from `MAX_ATTEMPTS` env)         |
+| `enqueued_at`    | string   | ISO 8601 timestamp when first published          |
+| `priority`       | string   | Message priority level (`"normal"` or `"high"`)  |
+| `dlq_attempts`   | integer  | DLQ recovery attempts (starts at 0; default `0`) |
+| `correlation_id` | string   | Trace ID propagated across all hops (default `""`) |
 
 Redis Streams store entries as flat string maps; `payload` is JSON-serialized within the entry.
 

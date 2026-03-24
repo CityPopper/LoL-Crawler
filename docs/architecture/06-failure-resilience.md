@@ -44,7 +44,7 @@ Docker's restart backoff.
 | DLQ `dlq_attempts` exhausted       | Recovery archives to `stream:dlq:archive`; ACK from active DLQ      |
 | Analyzer lock contention           | Non-lock-holder ACKs and discards; lock-holder processes all pending |
 | Delay Scheduler crash              | Messages stay safely in `delayed:messages`; re-delivered on restart  |
-| XADD succeeds, ZREM fails (Scheduler) | Duplicate delivered to target stream; handled idempotently        |
+| XADD succeeds, ZREM fails (Scheduler) | Handled atomically via `_DISPATCH_LUA` (single XADD+ZREM call); on failure, duplicate is delivered to target stream and handled idempotently |
 
 ---
 
