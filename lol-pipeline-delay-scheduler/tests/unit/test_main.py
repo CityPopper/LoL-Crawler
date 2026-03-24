@@ -993,3 +993,29 @@ class TestCircuitResetClearsFailures:
         _record_failure(member, log)
         assert member not in _circuit_open
         assert _member_failures[member] == 1
+
+
+class TestConfigValidationError:
+    """E2: Missing env vars give actionable message, not raw pydantic traceback."""
+
+    @pytest.mark.asyncio
+    async def test_main__missing_config__exits_with_hint(self, monkeypatch, capsys):
+        """Config() raises ValidationError → sys.exit(1) with .env.example hint."""
+        monkeypatch.delenv("RIOT_API_KEY", raising=False)
+        monkeypatch.delenv("REDIS_URL", raising=False)
+        from pydantic import ValidationError
+
+        with (
+            patch(
+                "lol_delay_scheduler.main.Config",
+                side_effect=ValidationError.from_exception_data(
+                    title="Config",
+                    line_errors=[],
+                ),
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            await main()
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert ".env.example" in captured.err or ".env.example" in captured.out

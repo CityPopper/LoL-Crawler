@@ -1050,6 +1050,55 @@ class TestBackoffJitter:
             assert int(base * 0.5) <= val <= int(base * 1.5)
 
 
+class TestRecoveryUsesIsSystemHalted:
+    """DRY-5: Recovery uses is_system_halted() instead of raw r.get."""
+
+    @pytest.mark.asyncio
+    async def test_process__calls_is_system_halted(self, r, cfg, log):
+        """_process uses is_system_halted() for halt check, not raw r.get."""
+        await r.set("system:halted", "1")
+        dlq = _make_dlq(failure_code="http_5xx")
+        msg_id = await _setup_dlq_msg(r, dlq)
+
+        mock_halted = AsyncMock(return_value=True)
+        with patch("lol_recovery.main.is_system_halted", mock_halted):
+            result = await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+        mock_halted.assert_called_once()
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_main_loop__calls_is_system_halted(self, monkeypatch):
+        """main() loop uses is_system_halted() for halt-sleep check."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        mock_r = AsyncMock()
+        call_count = 0
+
+        async def fake_consume_dlq(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count > 1:
+                raise KeyboardInterrupt
+            return []
+
+        mock_halted = AsyncMock(return_value=True)
+        mock_loop = MagicMock()
+        mock_loop.add_signal_handler.return_value = None
+
+        with (
+            patch("lol_recovery.main.Config") as mock_cfg,
+            patch("lol_recovery.main.get_redis", return_value=mock_r),
+            patch("lol_recovery.main._consume_dlq", side_effect=fake_consume_dlq),
+            patch("lol_recovery.main.asyncio.sleep", new_callable=AsyncMock),
+            patch("lol_recovery.main.asyncio.get_running_loop", return_value=mock_loop),
+            patch("lol_recovery.main.is_system_halted", mock_halted),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            with pytest.raises(KeyboardInterrupt):
+                await main()
+        mock_halted.assert_called()
+
+
 class TestCorrelationIdPropagation:
     """Requeued envelopes must preserve correlation_id from DLQ entry."""
 
@@ -1080,3 +1129,29 @@ class TestCorrelationIdPropagation:
         fields = json.loads(members[0])
         env = MessageEnvelope.from_redis_fields(fields)
         assert env.correlation_id == "trace-recovery-xyz"
+
+
+class TestConfigValidationError:
+    """E2: Missing env vars give actionable message, not raw pydantic traceback."""
+
+    @pytest.mark.asyncio
+    async def test_main__missing_config__exits_with_hint(self, monkeypatch, capsys):
+        """Config() raises ValidationError → sys.exit(1) with .env.example hint."""
+        monkeypatch.delenv("RIOT_API_KEY", raising=False)
+        monkeypatch.delenv("REDIS_URL", raising=False)
+        from pydantic import ValidationError
+
+        with (
+            patch(
+                "lol_recovery.main.Config",
+                side_effect=ValidationError.from_exception_data(
+                    title="Config",
+                    line_errors=[],
+                ),
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            await main()
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert ".env.example" in captured.err or ".env.example" in captured.out

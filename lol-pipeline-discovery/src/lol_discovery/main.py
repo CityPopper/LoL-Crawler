@@ -6,14 +6,17 @@ import asyncio
 import contextlib
 import logging
 import signal
+import sys
 import time
 import uuid
-from datetime import UTC, datetime
 from typing import Any
 
 import redis.asyncio as aioredis
+from pydantic import ValidationError
+
 from lol_pipeline.config import Config
 from lol_pipeline.constants import PLAYER_DATA_TTL_SECONDS
+from lol_pipeline.helpers import is_system_halted, register_player
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.priority import PRIORITY_AUTO_20, has_priority_players
@@ -177,26 +180,16 @@ async def _publish_and_commit(
         correlation_id=str(uuid.uuid4()),
     )
     await publish(r, _STREAM_PUUID, envelope)
-    now_iso = datetime.now(tz=UTC).isoformat()
-    async with r.pipeline(transaction=True) as pipe:
-        await pipe.hset(  # type: ignore[misc]
-            f"player:{puuid}",
-            mapping={
-                "game_name": game_name,
-                "tag_line": tag_line,
-                "region": region,
-                "seeded_at": now_iso,
-            },
-        )
-        await pipe.expire(f"player:{puuid}", PLAYER_DATA_TTL_SECONDS)
-        await pipe.zadd("players:all", {puuid: time.time()})
-        await pipe.zremrangebyrank(
-            "players:all",
-            0,
-            -(cfg.players_all_max + 1),
-        )
-        await pipe.zrem(_DISCOVER_KEY, member)
-        await pipe.execute()
+    await register_player(
+        r,
+        puuid=puuid,
+        region=region,
+        game_name=game_name,
+        tag_line=tag_line,
+        players_all_max=cfg.players_all_max,
+        transaction=True,
+        extra_ops=lambda pipe: pipe.zrem(_DISCOVER_KEY, member),
+    )
 
 
 async def _fetch_member_state(
@@ -265,7 +258,7 @@ async def _promote_batch(
     riot: RiotClient,
 ) -> int:
     """Promote discovered players from discover:players to stream:puuid."""
-    if await r.get("system:halted"):
+    if await is_system_halted(r):
         return 0
     cutoff = time.time() - PLAYER_DATA_TTL_SECONDS
     removed = await r.zremrangebyscore("players:all", "-inf", cutoff)
@@ -309,7 +302,14 @@ async def main() -> None:
     shutdown_event = asyncio.Event()
 
     log = get_logger("discovery")
-    cfg = Config()
+    try:
+        cfg = Config()
+    except ValidationError as exc:
+        print(
+            f"Configuration error: {exc}\nCheck .env.example for required variables.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     r = get_redis(cfg.redis_url)
     riot = RiotClient(cfg.riot_api_key, r=r)
 
@@ -330,7 +330,7 @@ async def main() -> None:
     try:
         while not shutdown_event.is_set():
             try:
-                if await r.get("system:halted"):
+                if await is_system_halted(r):
                     log.critical("system halted — exiting")
                     break
                 idle = await _is_idle(r)

@@ -7,15 +7,18 @@ import contextlib
 import json
 import logging
 import signal
+import sys
 import time
 from typing import Any
 
 import redis.asyncio as aioredis
+from pydantic import ValidationError
+
 from lol_pipeline.config import Config
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.redis_client import get_redis
-from lol_pipeline.streams import _DEFAULT_MAXLEN
+from lol_pipeline.streams import maxlen_for_stream
 from redis.exceptions import RedisError
 
 from lol_delay_scheduler._data import (
@@ -23,7 +26,6 @@ from lol_delay_scheduler._data import (
     _CIRCUIT_OPEN_TTL_S,
     _DELAYED_KEY,
     _MAX_MEMBER_FAILURES,
-    _STREAM_MAXLEN,
 )
 from lol_delay_scheduler._data import (
     _DISPATCH_LUA as _DISPATCH_LUA,
@@ -37,7 +39,7 @@ _circuit_open: dict[str, float] = {}
 
 def _maxlen_for_stream(stream: str) -> int | None:
     """Return the maxlen policy for *stream* (None = no trimming)."""
-    return _STREAM_MAXLEN.get(stream, _DEFAULT_MAXLEN)
+    return maxlen_for_stream(stream)
 
 
 def _is_circuit_open(member: str) -> bool:
@@ -145,7 +147,14 @@ async def main() -> None:
     shutdown_event = asyncio.Event()
 
     log = get_logger("delay-scheduler")
-    cfg = Config()
+    try:
+        cfg = Config()
+    except ValidationError as exc:
+        print(
+            f"Configuration error: {exc}\nCheck .env.example for required variables.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     r = get_redis(cfg.redis_url)
 
     loop = asyncio.get_running_loop()

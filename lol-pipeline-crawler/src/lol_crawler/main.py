@@ -5,13 +5,16 @@ from __future__ import annotations
 import logging
 import os
 import socket
+import sys
 import time
 from datetime import UTC, datetime, timedelta
 
 import redis.asyncio as aioredis
+from pydantic import ValidationError
+
 from lol_pipeline.config import Config
 from lol_pipeline.constants import PLAYER_DATA_TTL_SECONDS
-from lol_pipeline.helpers import is_system_halted
+from lol_pipeline.helpers import handle_riot_api_error, is_system_halted
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.priority import PRIORITY_DOWNGRADE_THRESHOLD, clear_priority, downgrade_priority
@@ -25,7 +28,7 @@ from lol_pipeline.riot_api import (
     ServerError,
 )
 from lol_pipeline.service import run_consumer
-from lol_pipeline.streams import MATCH_ID_STREAM_MAXLEN, ack, nack_to_dlq
+from lol_pipeline.streams import MATCH_ID_STREAM_MAXLEN, ack
 
 from lol_crawler._data import (
     _COOLDOWN_HIGH_HOURS,
@@ -240,27 +243,16 @@ async def _handle_crawl_error(
     if isinstance(exc, NotFoundError):
         log.info("player not found (404) — discarding", extra={"puuid": puuid})
         await clear_priority(r, puuid)
-        await ack(r, _IN_STREAM, _GROUP, msg_id)
-        return
-
-    if isinstance(exc, AuthError):
-        await r.set("system:halted", "1")
-        log.critical("Riot API key rejected (403) — system halted", extra={"puuid": puuid})
-        return  # do NOT ack — leave in PEL
-
-    # RateLimitError | ServerError
-    fc = "http_429" if isinstance(exc, RateLimitError) else "http_5xx"
-    ram = exc.retry_after_ms if isinstance(exc, RateLimitError) else None
-    log.error("Riot API error", extra={"error": str(exc), "failure_code": fc, "puuid": puuid})
-    await nack_to_dlq(
+    await handle_riot_api_error(
         r,
-        envelope,
-        failure_code=fc,
+        exc=exc,
+        envelope=envelope,
+        msg_id=msg_id,
         failed_by="crawler",
-        original_message_id=msg_id,
-        retry_after_ms=ram,
+        in_stream=_IN_STREAM,
+        group=_GROUP,
+        log=log,
     )
-    await ack(r, _IN_STREAM, _GROUP, msg_id)
 
 
 async def _fetch_rank(
@@ -467,7 +459,14 @@ async def _crawl_player(
 async def main() -> None:
     """Crawler worker loop."""
     log = get_logger("crawler")
-    cfg = Config()
+    try:
+        cfg = Config()
+    except ValidationError as exc:
+        print(
+            f"Configuration error: {exc}\nCheck .env.example for required variables.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     r = get_redis(cfg.redis_url)
     riot = RiotClient(cfg.riot_api_key, r=r)
     consumer = f"{socket.gethostname()}-{os.getpid()}"

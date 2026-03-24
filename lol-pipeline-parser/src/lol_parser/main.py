@@ -7,9 +7,12 @@ import json
 import logging
 import os
 import socket
+import sys
 from typing import Any
 
 import redis.asyncio as aioredis
+from pydantic import ValidationError
+
 from lol_pipeline.config import Config
 from lol_pipeline.constants import CHAMPION_STATS_TTL_SECONDS, PLAYER_DATA_TTL_SECONDS
 from lol_pipeline.helpers import is_system_halted
@@ -568,12 +571,16 @@ async def _parse_match(
     # (first writer wins) or 0 if it already existed (another worker parsed
     # this match first). This eliminates the TOCTOU race where two workers
     # could both see SISMEMBER=False and double-count HINCRBY in bans/matchups.
-    # EXPIRE is idempotent — always refresh TTL (avoids extra TTL check RTT).
+    # TTL-2: Only set EXPIRE when no TTL exists (ttl < 0) to avoid resetting
+    # expiry on every write — same guard as seen:matches in fetcher.
     async with r.pipeline(transaction=False) as idem_pipe:
         idem_pipe.sadd("match:status:parsed", match_id)
-        idem_pipe.expire("match:status:parsed", _STATUS_TTL)
+        idem_pipe.ttl("match:status:parsed")
         idem_results = await idem_pipe.execute()
     first_parse: int = idem_results[0]
+    parsed_ttl: int = idem_results[1]
+    if parsed_ttl < 0:
+        await r.expire("match:status:parsed", _STATUS_TTL)
 
     match_key = f"match:{match_id}"
     match_fields: dict[str, str] = {
@@ -645,7 +652,14 @@ async def _parse_match(
 async def main() -> None:
     """Parser worker loop."""
     log = get_logger("parser")
-    cfg = Config()
+    try:
+        cfg = Config()
+    except ValidationError as exc:
+        print(
+            f"Configuration error: {exc}\nCheck .env.example for required variables.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     r = get_redis(cfg.redis_url)
     raw_store = RawStore(r, data_dir=cfg.match_data_dir)
     consumer = f"{socket.gethostname()}-{os.getpid()}"

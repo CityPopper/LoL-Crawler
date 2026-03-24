@@ -5,9 +5,12 @@ from __future__ import annotations
 import logging
 import os
 import socket
+import sys
 import uuid
 
 import redis.asyncio as aioredis
+from pydantic import ValidationError
+
 from lol_pipeline.config import Config
 from lol_pipeline.constants import CHAMPION_STATS_TTL_SECONDS, PLAYER_DATA_TTL_SECONDS
 from lol_pipeline.helpers import is_system_halted
@@ -288,7 +291,14 @@ async def _analyze_player(
 async def main() -> None:
     """Analyzer worker loop."""
     log = get_logger("analyzer")
-    cfg = Config()
+    try:
+        cfg = Config()
+    except ValidationError as exc:
+        print(
+            f"Configuration error: {exc}\nCheck .env.example for required variables.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     r = get_redis(cfg.redis_url)
     worker_id = f"{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
 

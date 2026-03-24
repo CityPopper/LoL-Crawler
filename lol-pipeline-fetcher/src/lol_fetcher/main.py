@@ -6,11 +6,14 @@ import json
 import logging
 import os
 import socket
+import sys
 from typing import Any
 
 import redis.asyncio as aioredis
+from pydantic import ValidationError
+
 from lol_pipeline.config import Config
-from lol_pipeline.helpers import is_system_halted
+from lol_pipeline.helpers import handle_riot_api_error, is_system_halted
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.rate_limiter import wait_for_token
@@ -18,7 +21,7 @@ from lol_pipeline.raw_store import RawStore
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.riot_api import AuthError, NotFoundError, RateLimitError, RiotClient, ServerError
 from lol_pipeline.service import run_consumer
-from lol_pipeline.streams import ack, nack_to_dlq, publish
+from lol_pipeline.streams import ack, publish
 
 _IN_STREAM = "stream:match_id"
 _OUT_STREAM = "stream:parse"
@@ -153,31 +156,17 @@ async def _fetch_match(
         await ack(r, _IN_STREAM, _GROUP, msg_id)
         log.info("match not found — discarding", extra={"match_id": match_id})
         return
-    except AuthError:
-        await r.set("system:halted", "1")
-        log.critical("Riot API key rejected (403) — system halted", extra={"match_id": match_id})
-        return  # do NOT ack
-    except RateLimitError as exc:
-        await nack_to_dlq(
+    except (AuthError, RateLimitError, ServerError) as exc:
+        await handle_riot_api_error(
             r,
-            envelope,
-            failure_code="http_429",
+            exc=exc,
+            envelope=envelope,
+            msg_id=msg_id,
             failed_by="fetcher",
-            original_message_id=msg_id,
-            retry_after_ms=exc.retry_after_ms,
+            in_stream=_IN_STREAM,
+            group=_GROUP,
+            log=log,
         )
-        await ack(r, _IN_STREAM, _GROUP, msg_id)
-        return
-    except ServerError as exc:
-        log.error("server error", extra={"error": str(exc), "match_id": match_id})
-        await nack_to_dlq(
-            r,
-            envelope,
-            failure_code="http_5xx",
-            failed_by="fetcher",
-            original_message_id=msg_id,
-        )
-        await ack(r, _IN_STREAM, _GROUP, msg_id)
         return
 
     await _store_and_publish(r, riot, raw_store, cfg, msg_id, envelope, data)
@@ -186,7 +175,14 @@ async def _fetch_match(
 async def main() -> None:
     """Fetcher worker loop."""
     log = get_logger("fetcher")
-    cfg = Config()
+    try:
+        cfg = Config()
+    except ValidationError as exc:
+        print(
+            f"Configuration error: {exc}\nCheck .env.example for required variables.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     r = get_redis(cfg.redis_url)
     riot = RiotClient(cfg.riot_api_key, r=r)
     raw_store = RawStore(r, data_dir=cfg.match_data_dir)

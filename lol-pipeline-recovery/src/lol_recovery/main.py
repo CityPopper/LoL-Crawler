@@ -10,10 +10,14 @@ import os
 import random
 import signal
 import socket
+import sys
 import time
 
 import redis.asyncio as aioredis
+from pydantic import ValidationError
+
 from lol_pipeline.config import Config
+from lol_pipeline.helpers import is_system_halted
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import DLQEnvelope, MessageEnvelope
 from lol_pipeline.redis_client import get_redis
@@ -209,7 +213,7 @@ async def _process(
         await r.xack(_IN_STREAM, _GROUP, msg_id)
         return True
 
-    if await r.get("system:halted"):
+    if await is_system_halted(r):
         log.info(
             "system halted — leaving DLQ entry in PEL",
             extra={"id": dlq.id, "failure_code": fc},
@@ -237,7 +241,14 @@ async def main() -> None:
     shutdown_event = asyncio.Event()
 
     log = get_logger("recovery")
-    cfg = Config()
+    try:
+        cfg = Config()
+    except ValidationError as exc:
+        print(
+            f"Configuration error: {exc}\nCheck .env.example for required variables.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     r = get_redis(cfg.redis_url)
     consumer = f"{socket.gethostname()}-{os.getpid()}"
 
@@ -253,7 +264,7 @@ async def main() -> None:
                 for msg_id, dlq in await _consume_dlq(r, consumer):
                     handled = await _process(r, cfg, consumer, msg_id, dlq, log)
                     any_handled = any_handled or handled
-                if not any_handled and await r.get("system:halted"):
+                if not any_handled and await is_system_halted(r):
                     await asyncio.sleep(_HALT_SLEEP_S)
             except (RedisError, OSError):
                 log.exception("consume error — retrying in 1s")

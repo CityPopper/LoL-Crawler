@@ -5,13 +5,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
-import time
 import uuid
 from datetime import UTC, datetime
 
 import redis.asyncio as aioredis
+from pydantic import ValidationError
+
 from lol_pipeline.config import Config
-from lol_pipeline.constants import PLAYER_DATA_TTL_SECONDS
+from lol_pipeline.helpers import is_system_halted, register_player
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.priority import PRIORITY_MANUAL_20, set_priority
@@ -79,7 +80,7 @@ async def seed(
 ) -> int:
     """Core seed logic. Returns exit code (0 = success, 1 = error)."""
     region = region.lower()
-    if await r.get("system:halted"):
+    if await is_system_halted(r):
         log.critical("system halted — refusing to seed")
         return 1
 
@@ -112,22 +113,14 @@ async def seed(
     await set_priority(r, puuid)
     entry_id = await publish(r, _STREAM, envelope)
 
-    now_iso = datetime.now(tz=UTC).isoformat()
-    player_key = f"player:{puuid}"
-    async with r.pipeline(transaction=False) as seed_pipe:
-        seed_pipe.hset(
-            player_key,
-            mapping={
-                "game_name": game_name,
-                "tag_line": tag_line,
-                "region": region,
-                "seeded_at": now_iso,
-            },
-        )
-        seed_pipe.expire(player_key, PLAYER_DATA_TTL_SECONDS)  # 30 days
-        seed_pipe.zadd("players:all", {puuid: time.time()})
-        seed_pipe.zremrangebyrank("players:all", 0, -(cfg.players_all_max + 1))
-        await seed_pipe.execute()
+    await register_player(
+        r,
+        puuid=puuid,
+        region=region,
+        game_name=game_name,
+        tag_line=tag_line,
+        players_all_max=cfg.players_all_max,
+    )
 
     log.info(
         "player seeded",
@@ -162,7 +155,14 @@ async def main(argv: list[str]) -> int:
 
     game_name, tag_line = riot_id.split("#", 1)
 
-    cfg = Config()
+    try:
+        cfg = Config()
+    except ValidationError as exc:
+        print(
+            f"Configuration error: {exc}\nCheck .env.example for required variables.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     r = get_redis(cfg.redis_url)
     riot = RiotClient(cfg.riot_api_key, r=r)
 

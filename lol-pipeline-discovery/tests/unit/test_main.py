@@ -1588,3 +1588,66 @@ class TestRecrawlAfterScheduling:
 
         assert promoted == 0
         assert await r.zcard("discover:players") == 0
+
+
+class TestDiscoveryUsesIsSystemHalted:
+    """DRY-5: Discovery uses is_system_halted() instead of raw r.get."""
+
+    @pytest.mark.asyncio
+    async def test_promote_batch__calls_is_system_halted(self, r, cfg, log):
+        """_promote_batch uses is_system_halted() for halt check."""
+        mock_halted = AsyncMock(return_value=True)
+        with patch("lol_discovery.main.is_system_halted", mock_halted):
+            result = await _promote_batch(r, cfg, log, RiotClient("RGAPI-test"))
+        mock_halted.assert_called_once()
+        assert result == 0
+
+    @pytest.mark.asyncio
+    async def test_main_loop__calls_is_system_halted(self, monkeypatch):
+        """main() loop uses is_system_halted() for halt check."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+
+        mock_halted = AsyncMock(return_value=True)
+        mock_r = AsyncMock()
+        mock_riot = AsyncMock()
+
+        mock_loop = MagicMock()
+        mock_loop.add_signal_handler.return_value = None
+
+        with (
+            patch("lol_discovery.main.Config") as mock_cfg,
+            patch("lol_discovery.main.get_redis", return_value=mock_r),
+            patch("lol_discovery.main.RiotClient", return_value=mock_riot),
+            patch("lol_discovery.main.asyncio.get_running_loop", return_value=mock_loop),
+            patch("lol_discovery.main.is_system_halted", mock_halted),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            await main()
+        mock_halted.assert_called()
+
+
+class TestConfigValidationError:
+    """E2: Missing env vars give actionable message, not raw pydantic traceback."""
+
+    @pytest.mark.asyncio
+    async def test_main__missing_config__exits_with_hint(self, monkeypatch, capsys):
+        """Config() raises ValidationError → sys.exit(1) with .env.example hint."""
+        monkeypatch.delenv("RIOT_API_KEY", raising=False)
+        monkeypatch.delenv("REDIS_URL", raising=False)
+        from pydantic import ValidationError
+
+        with (
+            patch(
+                "lol_discovery.main.Config",
+                side_effect=ValidationError.from_exception_data(
+                    title="Config",
+                    line_errors=[],
+                ),
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            await main()
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert ".env.example" in captured.err or ".env.example" in captured.out

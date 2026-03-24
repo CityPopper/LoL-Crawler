@@ -528,6 +528,19 @@ class TestSeedPriorityBeforePublish:
         assert call_order == ["set_priority", "publish"]
 
 
+class TestSeedUsesIsSystemHalted:
+    """DRY-5: seed() uses is_system_halted() instead of raw r.get."""
+
+    @pytest.mark.asyncio
+    async def test_seed__calls_is_system_halted(self, r, cfg, log):
+        """seed() uses is_system_halted() for halt check, not raw r.get."""
+        mock_halted = AsyncMock(return_value=True)
+        with patch("lol_seed.main.is_system_halted", mock_halted):
+            result = await seed(r, RiotClient("RGAPI-test"), cfg, "Faker", "KR1", "kr", log)
+        mock_halted.assert_called_once()
+        assert result == 1
+
+
 class TestSeedPlayersAll:
     """Seed adds the player to the players:all sorted set."""
 
@@ -569,3 +582,29 @@ class TestSeedPlayersAll:
 
         assert result == 0
         assert await r.zscore("players:all", puuid) is None
+
+
+class TestConfigValidationError:
+    """E2: Missing env vars give actionable message, not raw pydantic traceback."""
+
+    @pytest.mark.asyncio
+    async def test_main__missing_config__exits_with_hint(self, monkeypatch, capsys):
+        """Config() raises ValidationError → sys.exit(1) with .env.example hint."""
+        monkeypatch.delenv("RIOT_API_KEY", raising=False)
+        monkeypatch.delenv("REDIS_URL", raising=False)
+        from pydantic import ValidationError
+
+        with (
+            patch(
+                "lol_seed.main.Config",
+                side_effect=ValidationError.from_exception_data(
+                    title="Config",
+                    line_errors=[],
+                ),
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            await main(["seed", "Faker#KR1", "kr"])
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert ".env.example" in captured.err or ".env.example" in captured.out

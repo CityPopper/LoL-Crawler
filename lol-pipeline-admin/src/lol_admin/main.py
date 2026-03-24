@@ -11,6 +11,8 @@ import asyncio
 import sys
 
 import redis.asyncio as aioredis
+from pydantic import ValidationError
+
 from lol_pipeline.config import Config
 
 # Re-export get_redis so mocks in tests still patch "lol_admin.main.get_redis"
@@ -223,7 +225,14 @@ async def main(argv: list[str]) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv[1:])
 
-    cfg = Config()
+    try:
+        cfg = Config()
+    except ValidationError as exc:
+        print(
+            f"Configuration error: {exc}\nCheck .env.example for required variables.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     try:
         r = get_redis(cfg.redis_url)
         riot = RiotClient(cfg.riot_api_key)
