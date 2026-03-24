@@ -25,7 +25,7 @@ Skipping or reordering these steps is **never allowed**, regardless of task size
 - **Doc-agent bookend**: Run the doc-keeper agent SEQUENTIALLY — once BEFORE (verify docs are current) and once AFTER (update docs). Never in parallel with implementation agents.
 - **Confidence threshold**: Only propose changes when >=80% confident they improve things. No feedback is fine if nothing substantial is found.
 - **Quantifiable improvements only**: Every proposed improvement needs a measurable before/after metric. Lateral moves are rejected. Tests must validate; if tests fail, roll back and add to `REJECTED.md`.
-- **Plan-first workflow**: Before executing non-trivial tasks, write a plan in `TODO.md` (checklist format), spawn relevant review agents in parallel for consensus, then proceed. Mark items done when complete.
+- **Plan-first workflow**: Before executing non-trivial tasks, follow the **Feedback Pattern** (`docs/patterns/01-feedback-pattern.md`): write questions to `questions-{topic}.md`, consult specialist agents in parallel, lock decisions, then write a plan with TDD checklists in `TODO.md`. Multiple unrelated topics run concurrently in separate files. For simple tasks, skip directly to writing the plan.
 - **Parallel execution**: Spawn 3-5 agents in parallel for multi-service tasks. Use `run_in_background: true` when results aren't immediately needed. Only go sequential when a later step genuinely depends on an earlier one.
 - **Replies**: Direct, fewest words.
 

@@ -30,15 +30,15 @@ Read these files to understand context:
 
 ## Step 2: Questions Phase (non-trivial features only)
 
-For any new feature or significant design decision, use `questions.md` before writing any plan:
+Follow the **Feedback Pattern** (`docs/patterns/01-feedback-pattern.md`) for any new feature or significant design decision. Summary:
 
-1. **Generate questions** — Launch 3 specialist agents in parallel (architect, developer, security) to generate all questions that must be answered before implementation. Organize by category.
-2. **Human input** — Surface a `## ❓ Needs Your Input` table at the top with questions only a human can answer (product decisions, risk tolerance, priorities). Ask the user one at a time.
-3. **Agent proposals** — Once human answers are in, re-launch agents in parallel to propose answers to all remaining technical questions. One decisive answer per question.
-4. **Vote & consolidate** — Re-launch agents to review all proposed answers. REQUEST CHANGES → fix and re-vote. APPROVE → condense `questions.md` to decisions-only and move tasks to `TODO.md`.
-5. **Clean up** — `questions.md` becomes a compact decisions record. All implementation tasks live in `TODO.md`.
+1. Create `questions-{topic}.md` per unrelated topic (concurrent topics → separate files)
+2. Surface human-only questions as `## ❓ Needs Your Input` — ask one at a time
+3. Once human answers in: launch all specialist agents **in parallel** per topic
+4. Vote & consolidate (max 3 rounds); lock decisions; move tasks to `TODO.md`
+5. Flush: remove all Q&A rows, keep only locked decision bullets, delete file when feature ships
 
-Skip this step for small bug fixes or changes with obvious answers.
+Skip for small bug fixes or changes with obvious answers.
 
 ## Step 3: Write Plan in TODO.md
 
