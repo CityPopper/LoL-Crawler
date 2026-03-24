@@ -33,10 +33,11 @@ Read these files to understand context:
 Follow the **Feedback Pattern** (`docs/patterns/01-feedback-pattern.md`) for any new feature or significant design decision. Summary:
 
 1. Create `questions-{topic}.md` per unrelated topic (concurrent topics → separate files)
-2. Surface human-only questions as `## ❓ Needs Your Input` — ask one at a time
-3. Once human answers in: launch all specialist agents **in parallel** per topic
-4. Vote & consolidate (max 3 rounds); lock decisions; move tasks to `TODO.md`
-5. Flush: remove all Q&A rows, keep only locked decision bullets, delete file when feature ships
+2. Classify questions: `[H]` human-required (product/scope/risk) vs `[A]` agent-resolvable (technical)
+3. Launch agents on `[A]` questions immediately — no waiting for human
+4. Surface `[H]` questions to user one at a time; if unavailable, use lowest-risk default + flag assumption
+5. Vote & consolidate (max 3 rounds); lock decisions; move tasks to `TODO.md`
+6. Flush: remove all Q&A rows, keep only locked decision bullets, delete file when feature ships
 
 Skip for small bug fixes or changes with obvious answers.
 

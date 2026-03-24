@@ -72,12 +72,119 @@ New module `lol-pipeline-common/src/lol_pipeline/opgg_client.py`.
 
 ## Critical
 
+### RDB-1: Bucket `seen:matches` into daily sets (unbounded memory)
 
+**File:** `lol-pipeline-fetcher/src/lol_fetcher/main.py` lines 56-72, `lol-pipeline-crawler/src/lol_crawler/main.py` lines 83-87
+
+Single global SET grows ~500 MB over 7 days at 20 req/s. A TODO comment in the code already acknowledges this.
+
+- [ ] **Red:** Write failing test asserting `seen:matches:{YYYY-MM-DD}` is written instead of `seen:matches`; crawler dedup checks today's + yesterday's buckets
+- [ ] **Green:** In Fetcher, change `r.sadd("seen:matches", match_id)` to `r.sadd(f"seen:matches:{today}", match_id)`; set 8-day TTL on first write. In Crawler, check today's + yesterday's bucket in pipeline. Update `_constants.py` and `config.py` key references.
+- [ ] **Refactor:** Update `04-storage.md` key schema; remove `seen_matches_ttl_seconds` from single-key logic
+
+---
+
+### RDB-2: Replace `match:status:parsed` SET with per-match `HSETNX`
+
+**File:** `lol-pipeline-parser/src/lol_parser/main.py` lines 576-583
+
+Unbounded global SET with same growth problem as `seen:matches`. `HSETNX match:{match_id} status parsed` gives identical first-writer-wins semantics using the already-existing per-match hash (with its own 7-day TTL).
+
+- [ ] **Red:** Write failing test that the parser no longer writes to a `match:status:parsed` SET; idempotency is enforced via `match:{match_id}.status` field
+- [ ] **Green:** Replace `SADD match:status:parsed` + conditional EXPIRE with `HSETNX match:{match_id} status parsed` (returns 1 on first write). Update admin commands that do `SMEMBERS match:status:parsed` to use `SCAN match:*` + `HGET`.
+- [ ] **Refactor:** Update `04-storage.md`; verify all parser tests pass
+
+---
+
+### RDB-3: Paginate `players:all` reads in UI (N+1 amplification)
+
+**File:** `lol-pipeline-ui/src/lol_ui/routes/players.py` line 85
+
+Fetches all PUUIDs then pipelines 2 Redis calls per player. At 50K players = 100K commands per page load.
+
+- [ ] **Red:** Write failing test asserting `/players` calls `ZREVRANGE` with `start`/`stop` bounds, not `0 -1`
+- [ ] **Green:** Add `page` + `per_page` parameters; use `ZREVRANGE players:all (page*per_page) ((page+1)*per_page - 1)`; pipeline only those N players
+- [ ] **Refactor:** Verify players route tests pass; update UI to render pagination controls
+
+---
+
+---
+
+## Think Cycle 5 — Medium Fixes + Test Coverage Gaps
+
+### E1: Log DDragon fetch errors instead of silently swallowing
+
+**File:** `lol-pipeline-ui/src/lol_ui/ddragon.py` lines 61, 87
+
+- [ ] **Red:** Write failing test asserting that a DDragon HTTP failure emits a `logging.WARNING` record (currently: silent `return None`)
+- [ ] **Green:** Add `_log = logging.getLogger("ui.ddragon")` to `ddragon.py`; in `_get_ddragon_json` `except Exception` block add `_log.warning("DDragon fetch failed", extra={"url": url}, exc_info=True)` before `return None`; same in `_get_ddragon_version`
+- [ ] **Refactor:** Verify all existing DDragon tests still pass
+
+---
+
+### E3: Fix DLQ corrupt entry error message — references nonexistent `dlq clear {id}` command
+
+**File:** `lol-pipeline-ui/src/lol_ui/routes/dlq.py` lines 176, 188
+
+`cmd_dlq_clear` only accepts `--all`. The per-ID syntax `just admin dlq clear {id}` does not exist.
+
+- [ ] **Red:** Write failing test that asserts `just admin dlq clear {id}` text does NOT appear in corrupt-entry HTML
+- [ ] **Green:** Change both occurrences to suggest `just admin dlq clear --all` (remove per-ID hint)
+- [ ] **Refactor:** Verify DLQ route tests still pass
+
+---
+
+### E4: Add "routing to DLQ for retry" context to Riot API error log
+
+**File:** `lol-pipeline-common/src/lol_pipeline/helpers.py` line 147
+
+- [ ] **Red:** Write failing test asserting log message contains "DLQ" for a `ServerError` path in `handle_riot_api_error`
+- [ ] **Green:** Change `"Riot API error"` to `"Riot API error — routing to DLQ for retry"`
+- [ ] **Refactor:** Verify all callers' tests pass
+
+---
+
+### E5: Add `--json` flag to `delayed-list`, `recalc-priority`, `recalc-players`
+
+**File:** `lol-pipeline-admin/src/lol_admin/main.py`, `cmd_delayed.py`, `cmd_player.py`
+
+- [ ] **Red:** Write failing tests asserting each command accepts `--json` and outputs valid JSON lines
+- [ ] **Green:** Add `--json` flag to each parser; add JSON output branch to each handler
+- [ ] **Refactor:** Verify all existing admin tests pass
+
+---
+
+### TCG-1: Test `_dispatch_batch` shutdown mid-batch
+
+**File:** `lol-pipeline-common/src/lol_pipeline/service.py`
+
+- [ ] **Red:** Write failing test that cancels the asyncio task mid-batch and asserts no messages are double-acked
+- [ ] **Green:** Existing code should handle this — test validates it
+- [ ] **Refactor:** N/A if test passes green
+
+---
+
+### TCG-3: Test `seen:matches` conditional TTL false-branch (F5)
+
+**File:** `lol-pipeline-fetcher/src/lol_fetcher/main.py` line 71
+
+- [ ] **Red:** Write failing test for the path where `seen_ttl >= 0` (TTL already set) — assert that `r.expire("seen:matches", ...)` is NOT called
+- [ ] **Green:** Existing code should handle this — test validates it
+- [ ] **Refactor:** N/A if test passes green
+
+---
+
+### TCG-4: Test crawler activity rate low/medium tiers
+
+**File:** `lol-pipeline-crawler/src/lol_crawler/main.py`
+
+- [ ] **Red:** Write 2 failing tests for low-tier and medium-tier activity rate paths that currently have no coverage
+- [ ] **Green:** Existing code should handle these — tests validate behavior
+- [ ] **Refactor:** N/A if tests pass green
 
 ---
 
 ## Medium
-
 
 ### Error Messages
 

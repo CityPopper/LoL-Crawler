@@ -40,20 +40,24 @@ Naming: `questions-{kebab-topic}.md` in the repo root. The generic `questions.md
 
 ### 1. Create a questions file
 
-Create `questions-{topic}.md` (or `questions.md` for a single active topic). Add all open questions organized by category:
-- **Human decisions** — scope, risk tolerance, priority (user must answer)
-- **Architecture** — system design, data flow, contracts, service boundaries
-- **Implementation** — code patterns, library choices, testing strategy
-- **Security** — threat model, secrets, input validation
-- **Performance** — scale projections, Redis memory, hot paths
+Create `questions-{topic}.md`. Add all open questions and classify each:
 
-### 2. Surface human questions first
+- **`[H]` Human-required** — product scope, risk tolerance, budget, legal, priority. Only a human can answer. Blocks the questions that depend on it. Ask the user — one at a time.
+- **`[A]` Agent-resolvable** — technical choices where best practice or the existing codebase constraints determine the answer. Agents proceed immediately without human input.
 
-Mark human-only questions as `## ❓ Needs Your Input` at the top. Ask the user — one at a time. Record answers in the file immediately.
+Organize questions by category: Architecture, Implementation, Security, Performance.
 
-### 3. Launch specialist agents in parallel
+### 2. Proceed on agent-resolvable questions immediately
 
-Once human answers are in, launch all relevant specialist agents simultaneously. Each proposes answers to the remaining technical questions. Give each agent the questions file, `TODO.md`, `REJECTED.md`, and the relevant source files.
+Do not wait for human answers to unblock technical work. Launch specialist agents on all `[A]` questions in parallel as soon as the file is created. `[H]` questions that have no pending `[A]` dependencies can be surfaced to the user concurrently.
+
+### 3. Surface human questions
+
+Ask `[H]` questions one at a time. Record answers in the file. If a human is unavailable, agents should choose the most conservative or lowest-risk default and flag the assumption clearly in the decisions record.
+
+### 4. Launch specialist agents in parallel
+
+For any question not yet answered, launch all relevant specialist agents simultaneously. Give each the questions file, `TODO.md`, `REJECTED.md`, and relevant source files.
 
 Relevant agents: `architect`, `developer`, `tester`, `code-reviewer`, `debugger`, `security`, `database`, `optimizer`, `formal-verifier`, `devops`, `product-manager`.
 
