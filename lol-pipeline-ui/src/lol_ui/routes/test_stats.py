@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
 from lol_ui.routes.stats import (
     _CACHE_TTL_S,
     _CACHE_VERSION,
     _has_timeline_data,
+    stats_matches,
 )
 
 # ---------------------------------------------------------------------------
@@ -98,3 +101,19 @@ class TestFragmentCaching:
         # Real timeline data should be cacheable
         real_html = '<div class="gold-chart"><svg viewBox="0 0 600 300">...</svg></div>'
         assert _has_timeline_data(real_html)
+
+
+class TestStatsUsesIsSystemHalted:
+    """DRY-5: Stats route uses is_system_halted() instead of raw r.get."""
+
+    @pytest.mark.asyncio
+    async def test_stats_matches__calls_is_system_halted(self, r) -> None:
+        """stats_matches uses is_system_halted() for halt check."""
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {"puuid": "a" * 78, "region": "na1", "riot_id": "Test#NA1"}
+
+        mock_halted = AsyncMock(return_value=False)
+        with patch("lol_ui.routes.stats.is_system_halted", mock_halted):
+            await stats_matches(request)
+        mock_halted.assert_called_once()

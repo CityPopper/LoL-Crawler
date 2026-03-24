@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
+from lol_pipeline.helpers import is_system_halted
 
 from lol_ui.constants import (
     _HALT_BANNER,
@@ -52,7 +53,7 @@ async def _build_player_rows(
 async def show_players(request: Request) -> HTMLResponse:
     """Show paginated player list with rank sort and region filter."""
     r = request.app.state.r
-    halted = await r.get("system:halted")
+    halted = await is_system_halted(r)
     halt_html = _HALT_BANNER if halted else ""
     try:
         page = int(request.query_params.get("page", "0"))

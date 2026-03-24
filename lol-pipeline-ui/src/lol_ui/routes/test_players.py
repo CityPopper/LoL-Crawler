@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import fakeredis.aioredis
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from lol_ui.main import app
+from lol_ui.routes.players import show_players
 
 
 @pytest.fixture
@@ -109,3 +112,21 @@ class TestPlayersRegionFilter:
         body = bytes(resp.content).decode()
         assert "region" in body.lower()
         assert "<select" in body
+
+
+class TestPlayersUsesIsSystemHalted:
+    """DRY-5: Players route uses is_system_halted() instead of raw r.get."""
+
+    @pytest.mark.asyncio
+    async def test_show_players__calls_is_system_halted(self) -> None:
+        """show_players uses is_system_halted() for halt check."""
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {}
+
+        mock_halted = AsyncMock(return_value=False)
+        with patch("lol_ui.routes.players.is_system_halted", mock_halted):
+            await show_players(request)
+        mock_halted.assert_called_once()
+        await r.aclose()

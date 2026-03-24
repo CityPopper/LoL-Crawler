@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 from lol_pipeline.models import DLQEnvelope
 
@@ -98,3 +100,19 @@ class TestDlqExpandableEntries:
         body = bytes(resp.body).decode()
 
         assert 'colspan="7"' in body
+
+
+class TestDlqUsesIsSystemHalted:
+    """DRY-5: DLQ route uses is_system_halted() instead of raw r.get."""
+
+    @pytest.mark.asyncio
+    async def test_show_dlq__calls_is_system_halted(self, r):
+        """show_dlq uses is_system_halted() for halt check."""
+        mock_halted = AsyncMock(return_value=False)
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {}
+
+        with patch("lol_ui.routes.dlq.is_system_halted", mock_halted):
+            await show_dlq(request)
+        mock_halted.assert_called_once()

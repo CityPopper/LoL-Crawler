@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import fakeredis.aioredis
 import pytest
@@ -166,4 +166,30 @@ class TestShowLogsServiceFilterDropdown:
         # JS should pass service param in fetch URL
         assert "service=" in body
         assert "svcSelect.value" in body
+        await r.aclose()
+
+
+class TestLogsUsesIsSystemHalted:
+    """DRY-5: Logs route uses is_system_halted() instead of raw r.get."""
+
+    @pytest.mark.asyncio
+    async def test_show_logs__calls_is_system_halted(self, tmp_path):
+        """show_logs uses is_system_halted() for halt check."""
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        log_file = tmp_path / "svc.log"
+        log_file.write_text(
+            json.dumps({"timestamp": "2026-01-01T00:00:00", "message": "test"}) + "\n"
+        )
+
+        mock_cfg = MagicMock()
+        mock_cfg.log_dir = str(tmp_path)
+        request = MagicMock()
+        request.app.state.r = r
+        request.app.state.cfg = mock_cfg
+        request.query_params = {}
+
+        mock_halted = AsyncMock(return_value=False)
+        with patch("lol_ui.routes.logs.is_system_halted", mock_halted):
+            await show_logs(request)
+        mock_halted.assert_called_once()
         await r.aclose()

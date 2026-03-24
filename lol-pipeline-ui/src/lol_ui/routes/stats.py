@@ -15,7 +15,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 from lol_pipeline.config import Config
 from lol_pipeline.constants import PLAYER_DATA_TTL_SECONDS
-from lol_pipeline.helpers import name_cache_key
+from lol_pipeline.helpers import is_system_halted, name_cache_key
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.priority import PRIORITY_MANUAL_20, set_priority
@@ -571,7 +571,7 @@ async def stats_matches(request: Request) -> HTMLResponse:
         return HTMLResponse("<p class='error'>Invalid PUUID format</p>", status_code=400)
 
     r = request.app.state.r
-    halted = await r.get("system:halted")
+    halted = await is_system_halted(r)
     halt_html = _HALT_BANNER if halted else ""
     start = page * _MATCH_PAGE_SIZE
     stop = start + _MATCH_PAGE_SIZE  # fetch one extra to detect more pages

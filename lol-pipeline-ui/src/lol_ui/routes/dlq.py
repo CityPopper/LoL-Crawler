@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from lol_pipeline.config import Config
 from lol_pipeline.constants import VALID_REPLAY_STREAMS
+from lol_pipeline.helpers import is_system_halted
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import DLQEnvelope
 from lol_pipeline.streams import replay_from_dlq
@@ -34,7 +35,7 @@ router = APIRouter()
 async def show_dlq(request: Request) -> HTMLResponse:
     """Display dead-letter queue entries with cursor-based pagination."""
     r = request.app.state.r
-    halted = await r.get("system:halted")
+    halted = await is_system_halted(r)
     halt_html = _HALT_BANNER if halted else ""
     summary_html = await _dlq_summary_html(r)
     try:

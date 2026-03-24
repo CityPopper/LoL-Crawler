@@ -10,6 +10,7 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 from lol_pipeline.config import Config
+from lol_pipeline.helpers import is_system_halted
 
 from lol_ui.constants import _HALT_BANNER, _LOG_LINES
 from lol_ui.log_helpers import _merged_log_lines, _render_log_lines
@@ -62,7 +63,7 @@ async def logs_fragment(request: Request) -> HTMLResponse:
 @router.get("/logs", response_class=HTMLResponse)
 async def show_logs(request: Request) -> HTMLResponse:
     r = request.app.state.r
-    halted = await r.get("system:halted")
+    halted = await is_system_halted(r)
     halt_html = _HALT_BANNER if halted else ""
 
     cfg: Config = request.app.state.cfg
