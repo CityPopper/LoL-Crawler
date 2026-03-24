@@ -6,7 +6,7 @@ All application state lives in Redis. No other database.
 
 | Key Pattern                          | Type       | TTL                       | Contents                                                    |
 |--------------------------------------|------------|---------------------------|-------------------------------------------------------------|
-| `system:halted`                      | String     | none                      | Set to `"1"` by Recovery on HTTP 403; cleared manually     |
+| `system:halted`                      | String     | none                      | Set to `"1"` by any service on HTTP 403 (via `handle_riot_api_error()`) or by Recovery on `http_403` DLQ entry; cleared manually |
 | `player:{puuid}`                     | Hash       | 30d (`PLAYER_DATA_TTL_SECONDS`) | `game_name`, `tag_line`, `region`, `seeded_at` (ISO 8601 string), `last_crawled_at` (ISO 8601 string); TTL refreshed on each crawl/seed |
 | `player:matches:{puuid}`             | Sorted Set | 30d (`PLAYER_DATA_TTL_SECONDS`) | member=`match_id`, score=`game_start` epoch ms; capped at `PLAYER_MATCHES_MAX` entries |
 | `player:stats:{puuid}`               | Hash       | 30d (`PLAYER_DATA_TTL_SECONDS`) | Raw totals: `total_games`, `total_wins`, `total_kills`, `total_deaths`, `total_assists`; Derived: `win_rate`, `avg_kills`, `avg_deaths`, `avg_assists`, `kda` |
@@ -55,7 +55,7 @@ All application state lives in Redis. No other database.
 | `patch:list` | Sorted Set | 90d (`CHAMPION_STATS_TTL_SECONDS`) | Known game patches; member=patch string, score=earliest game_start epoch |
 | `build:{match_id}:{puuid}` | String | 7d (`MATCH_DATA_TTL_SECONDS`) | Item build order from match timeline (when `FETCH_TIMELINE=true`) |
 | `skills:{match_id}:{puuid}` | String | 7d (`MATCH_DATA_TTL_SECONDS`) | Skill order from match timeline (when `FETCH_TIMELINE=true`) |
-| `ratelimit:throttle` | String | 2s (hardcoded) | Near-capacity throttle hint; set when sliding window is >80% full |
+| `ratelimit:throttle` | String | 2s (hardcoded) | Near-capacity throttle hint; set when sliding window is >95% full (remaining capacity < 5%) |
 
 ---
 

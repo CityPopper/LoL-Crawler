@@ -84,8 +84,10 @@ DLQ messages include all standard envelope fields plus:
 | `http_5xx`    | Riot API server error                                     |
 | `http_404`    | Match or player not found (permanent)                     |
 | `http_403`    | API key invalid or expired (critical — halts all services)|
-| `parse_error` | Raw blob exists but parsing failed                        |
-| `unknown`     | Uncategorized error                                       |
+| `parse_error`     | Raw blob exists but parsing failed                                   |
+| `handler_crash`   | Service handler threw an unhandled exception (service.py)            |
+| `corrupt_message` | Stream entry could not be deserialized to MessageEnvelope (streams.py) |
+| `unknown`         | Uncategorized error                                                  |
 
 ---
 

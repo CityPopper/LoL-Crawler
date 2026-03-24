@@ -5,7 +5,7 @@
 **Key:** `system:halted` (Redis String)
 
 Set to `"1"` by:
-- Fetcher on HTTP 403
+- Any service encountering HTTP 403 (via `handle_riot_api_error()` — called by Fetcher and Crawler)
 - Recovery on processing an `http_403` DLQ entry
 
 **Effect:**
@@ -35,7 +35,7 @@ Docker's restart backoff.
 | API 429                            | `nack_to_dlq`; Recovery requeueues via `delayed:messages` with `Retry-After` delay |
 | API 5xx                            | `nack_to_dlq`; Recovery requeues via `delayed:messages` with exponential backoff |
 | API 404 (match)                    | Fetcher sets `match.status = not_found`; ACK and discard            |
-| API 403 (bad key)                  | Service sets `system:halted = 1`; exits; all services stop          |
+| API 403 (bad key)                  | Service sets `system:halted = 1`; does not ACK; exits on next loop iteration; all services stop |
 | `RawStore.set` failure             | Fetcher does not publish to `stream:parse`; `nack_to_dlq`           |
 | `RawStore.get` returns None        | Parser sends to DLQ with `parse_error`; raw blob preserved          |
 | JSON parse failure                 | Parser sends to DLQ with `parse_error`; raw blob preserved          |
