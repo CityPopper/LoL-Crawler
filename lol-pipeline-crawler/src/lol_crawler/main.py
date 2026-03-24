@@ -243,6 +243,8 @@ async def _handle_crawl_error(
     if isinstance(exc, NotFoundError):
         log.info("player not found (404) — discarding", extra={"puuid": puuid})
         await clear_priority(r, puuid)
+        await ack(r, _IN_STREAM, _GROUP, msg_id)
+        return
     await handle_riot_api_error(
         r,
         exc=exc,

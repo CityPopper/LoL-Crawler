@@ -1957,6 +1957,68 @@ class TestDelayedList:
         assert "member2" in output
 
 
+class TestDelayedListJson:
+    """E5: delayed-list --json outputs one JSON object per entry."""
+
+    @pytest.mark.asyncio
+    async def test_delayed_list__json_output(self, r, capsys):
+        """delayed-list with --json outputs valid JSON objects."""
+        now_ms = 1700000000000.0
+        await r.zadd("delayed:messages", {"member1": now_ms, "member2": now_ms + 60000})
+        args = argparse.Namespace(json=True)
+        result = await cmd_delayed_list(r, args)
+        assert result == 0
+        output = capsys.readouterr().out
+        lines = [ln for ln in output.strip().splitlines() if ln.strip()]
+        assert len(lines) >= 2
+        for line in lines:
+            obj = json.loads(line)
+            assert "member" in obj
+            assert "ready_ms" in obj
+            assert "eta_s" in obj
+
+
+class TestRecalcPriorityJson:
+    """E5: recalc-priority --json outputs JSON."""
+
+    @pytest.mark.asyncio
+    async def test_recalc_priority__json_output(self, r, capsys):
+        """recalc-priority with --json outputs valid JSON."""
+        await r.set("player:priority:puuid-1", "1")
+        await r.set("player:priority:puuid-2", "1")
+        args = argparse.Namespace(json=True)
+        result = await cmd_recalc_priority(r, args)
+        assert result == 0
+        output = capsys.readouterr().out
+        obj = json.loads(output.strip())
+        assert "player_priority_key_count" in obj
+        assert obj["player_priority_key_count"] == 2
+
+
+class TestRecalcPlayersJson:
+    """E5: recalc-players --json outputs JSON."""
+
+    @pytest.mark.asyncio
+    async def test_recalc_players__json_output(self, r, capsys):
+        """recalc-players with --json outputs valid JSON."""
+        await r.hset(
+            "player:puuid-one",
+            mapping={
+                "game_name": "PlayerOne",
+                "tag_line": "001",
+                "region": "na1",
+                "seeded_at": "2026-03-19T12:00:00+00:00",
+            },
+        )
+        args = argparse.Namespace(json=True)
+        result = await cmd_recalc_players(r, args)
+        assert result == 0
+        output = capsys.readouterr().out
+        obj = json.loads(output.strip())
+        assert "players_indexed" in obj
+        assert obj["players_indexed"] == 1
+
+
 class TestDelayedFlush:
     """OPS-16-07: admin delayed-flush removes all delayed messages."""
 

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
 import httpx
 import redis.asyncio as aioredis
 from lol_pipeline.i18n import DDRAGON_LOCALE_MAP
+
+_log = logging.getLogger("ui.ddragon")
 
 _DDRAGON_VERSION_KEY = "ddragon:version"
 _DDRAGON_CHAMPION_IDS_KEY = "ddragon:champion_ids"
@@ -59,6 +62,7 @@ async def _get_ddragon_json(
             await r.set(cache_key, json.dumps(data), ex=ttl)
             return data
     except Exception:
+        _log.warning("DDragon fetch failed", extra={"url": url}, exc_info=True)
         return None
 
 
@@ -85,6 +89,7 @@ async def _get_ddragon_version(r: aioredis.Redis) -> str | None:
             await r.set(_DDRAGON_VERSION_KEY, version, ex=_DDRAGON_TTL_S)
             return version
     except Exception:
+        _log.warning("DDragon version fetch failed", exc_info=True)
         return None
 
 

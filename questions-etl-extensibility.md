@@ -4,15 +4,11 @@ Locked decisions from architect agent review. Implementation tasks in `TODO.md`.
 
 ---
 
-## ❓ Needs Your Input
-
-| # | Question | Answer |
-|---|----------|--------|
-| A1 `[H]` | Beyond op.gg and Riot API, what other sources are you considering? (u.gg, Blitz.gg, community APIs) | |
-
----
-
 ## Locked Decisions
+
+- **Sources in scope:** op.gg (in progress), u.gg, and Blitz.gg. Architecture must not assume a fixed set — adding a 4th source later should follow the same 3-new-files, 4-trivial-edits pattern.
+
+
 
 - **No ABC.** Each source is a standalone client module (`riot_api.py`, `opgg_client.py`, `ugg_client.py`, ...) with convergent method signatures: `get_match_ids(puuid, region, ...) -> list[str]` and `get_match(match_id, region) -> dict`. Extract a `Protocol` only when a 3rd source exists — not speculatively.
 - **Conflict resolution: first-write-wins** (already in `questions-opgg.md`). `match:{match_id}` hash `source` field uses NX semantics to record provenance.
