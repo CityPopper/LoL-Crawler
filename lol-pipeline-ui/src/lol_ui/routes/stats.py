@@ -457,6 +457,9 @@ async def player_refresh(request: Request) -> JSONResponse:
     riot_id: str = body.get("riot_id", "")
     region: str = body.get("region", "na1")
 
+    if region not in _REGIONS_SET:
+        return JSONResponse({"error": "invalid region"}, status_code=422)
+
     if "#" not in riot_id:
         return JSONResponse({"error": "invalid riot_id"}, status_code=400)
 

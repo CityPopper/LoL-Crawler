@@ -77,14 +77,14 @@ class RawStore:
         if pdir is None or not pdir.exists():
             return None
 
-        # Search uncompressed bundles
-        for bundle in pdir.glob("*.jsonl"):
+        # Search uncompressed bundles (newest first — filenames are YYYY-MM.jsonl)
+        for bundle in sorted(pdir.glob("*.jsonl"), reverse=True):
             result = self._search_bundle_file(bundle, match_id)
             if result is not None:
                 return result
 
-        # Search compressed bundles
-        for bundle in pdir.glob("*.jsonl.zst"):
+        # Search compressed bundles (newest first — filenames are YYYY-MM.jsonl.zst)
+        for bundle in sorted(pdir.glob("*.jsonl.zst"), reverse=True):
             result = self._search_compressed_bundle(bundle, match_id)
             if result is not None:
                 return result
