@@ -143,3 +143,58 @@ When making changes, always note what was changed and why in a brief summary.
 
 - **High-level only, link to files**: Docs cover concepts, goals, architecture — never implementation details. Link to source files instead of duplicating code blocks. No exhaustive per-function descriptions. ~1-2 paragraphs + file references per section.
 - **No hardcoded counts**: Never write precise counts of tests, files, or lines in docs. Use order-of-magnitude estimates (~10, ~100, ~1000). Precise counts become stale immediately.
+
+## QA Review
+
+When doing a cross-surface accuracy review, check surfaces that unit testing misses:
+
+### Review Surfaces
+
+| Surface | What to Check |
+|---------|--------------|
+| Web UI (`lol_ui/main.py`) | Seed form works; stats display correctly; verified/unverified indicators present |
+| Admin CLI (`lol_admin/main.py`) | `--help` matches actual commands; error messages tell users what to do |
+| Documentation | README examples work copy-pasted; `just` commands match Justfile |
+| Logs (all services) | Messages actionable (not just "error occurred"); log levels appropriate |
+
+### Cross-Reference Sources of Truth
+
+| Check | Source of Truth | Compare Against |
+|-------|----------------|-----------------|
+| Env var defaults | `config.py` `Field(default=...)` | `.env.example`, README, overview doc |
+| CLI commands | `lol_admin/main.py` `add_parser` | README, Justfile, guides |
+| Stream names | Service `main.py` constants | `docs/architecture/03-streams.md` |
+| Redis key schema | Service source code | `docs/architecture/04-storage.md` |
+
+### QA Checklist
+
+**Accuracy**: Documented behavior matches actual code; error messages describe actual failures; defaults in docs match `config.py`.
+
+**Consistency**: Same feature described same way across docs, UI, CLI, and logs; terminology uniform (don't use "seed", "enqueue", "publish" for the same action).
+
+**Completeness**: All user-facing error paths have actionable messages; all CLI commands have help text; all env vars documented with defaults.
+
+## Content Standards
+
+### Error Message Quality
+
+Every user-facing error message must answer:
+1. **What happened?** — "API key rejected (HTTP 403)"
+2. **Why it matters** — "All services will halt"
+3. **What to do** — "Rotate key, run `just admin system-resume`"
+
+### Text Principles
+
+- **One term, one meaning** — don't use "seed", "enqueue", "publish" for the same action
+- **Active voice** — "System halted" not "The system has been halted"
+- **Progressive detail** — summary first, detail on demand
+- **No jargon without context** — define DLQ, PEL, PUUID on first use in user-facing text
+
+### Status Indicators (cross-surface)
+
+| Concept | Web UI | Terminal | Docs |
+|---------|--------|---------|------|
+| Healthy | `<span class="success">✓</span>` | `✓` (green ANSI) | `✓` |
+| Error | `<span class="error">✗</span>` | `✗` (red ANSI) | `✗` |
+| Warning | `<span class="warning">⚠</span>` | `⚠` (yellow ANSI) | `⚠` |
+| System halted | Red banner + fix instructions | `✗ System halted — run: just admin system-resume` | `system:halted = 1` |

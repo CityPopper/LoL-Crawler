@@ -141,9 +141,9 @@ class TestLuaKeysArray:
 
     @pytest.mark.asyncio
     async def test_custom_prefix_stored_limits(self, r: fakeredis.aioredis.FakeRedis) -> None:
-        """Custom key_prefix still reads from the standard stored limit keys."""
-        await r.set("ratelimit:limits:short", "2")
-        await r.set("ratelimit:limits:long", "100")
+        """Custom key_prefix reads stored limits from {key_prefix}:limits:*."""
+        await r.set("custom_limiter:limits:short", "2")
+        await r.set("custom_limiter:limits:long", "100")
 
         results = [
             await acquire_token(r, key_prefix="custom_limiter", limit_per_second=20)
@@ -151,6 +151,23 @@ class TestLuaKeysArray:
         ]
         assert results[:2] == [1, 1]
         assert results[2] < 1
+
+    @pytest.mark.asyncio
+    async def test_custom_prefix_reads_from_custom_limit_keys(
+        self, r: fakeredis.aioredis.FakeRedis
+    ) -> None:
+        """acquire_token with custom key_prefix reads stored limits from {key_prefix}:limits:*."""
+        # Set opgg-specific limits (low)
+        await r.set("ratelimit:opgg:limits:short", "2")
+        # Default limits (high) — must NOT interfere
+        await r.set("ratelimit:limits:short", "20")
+
+        results = [
+            await acquire_token(r, key_prefix="ratelimit:opgg", limit_per_second=20)
+            for _ in range(3)
+        ]
+        assert results[:2] == [1, 1]
+        assert results[2] < 1  # limited by opgg-specific limit of 2
 
 
 class TestLuaFloorGuard:
@@ -312,8 +329,8 @@ class TestWaitForTokenWithRegion:
     @pytest.mark.asyncio
     async def test_region_sets_key_prefix(self, r):
         """When region is set, acquire_token uses ratelimit:{region} as key prefix."""
-        # Set a very low limit on the region-specific key
-        await r.set("ratelimit:limits:short", "2")
+        # Set a low limit on the region-specific stored limit key
+        await r.set("ratelimit:na1:limits:short", "2")
 
         # Acquire with region="na1" — tokens go to ratelimit:na1:short/long
         results = []
@@ -334,9 +351,9 @@ class TestWaitForTokenWithRegion:
         call_args_list = []
         original_acquire = acquire_token
 
-        async def capturing_acquire(r, key_prefix="ratelimit", limit_per_second=20):
+        async def capturing_acquire(r, key_prefix="ratelimit", limit_per_second=20, limit_long=100):
             call_args_list.append(key_prefix)
-            return await original_acquire(r, key_prefix, limit_per_second)
+            return await original_acquire(r, key_prefix, limit_per_second, limit_long)
 
         with patch("lol_pipeline.rate_limiter.acquire_token", side_effect=capturing_acquire):
             await wait_for_token(r, region="na1", limit_per_second=20)
@@ -364,3 +381,116 @@ class TestThrottleHintSlowsDown:
             await wait_for_token(r, limit_per_second=20)
 
         mock_sleep.assert_not_called()
+
+
+class TestLuaAtomicity:
+    """TCG-12: All 4 KEYS (KEYS[1..4]) are passed to a single Lua eval call."""
+
+    @pytest.mark.asyncio
+    async def test_all_four_keys_in_single_eval(self, r: fakeredis.aioredis.FakeRedis) -> None:
+        """acquire_token passes KEYS[1..4] in one eval — no split calls."""
+        from lol_pipeline.rate_limiter import _LUA_RATE_LIMIT_SCRIPT
+
+        eval_calls: list[tuple[int, list[str]]] = []
+        original_eval = r.eval
+
+        async def spy_eval(script: str, numkeys: int, *args: str) -> object:
+            # Capture numkeys and the key arguments for this call
+            eval_calls.append((numkeys, list(args[:numkeys])))
+            return await original_eval(script, numkeys, *args)
+
+        r.eval = spy_eval  # type: ignore[assignment]
+
+        await r.set("ratelimit:limits:short", "5")
+        await r.set("ratelimit:limits:long", "50")
+        await acquire_token(r, limit_per_second=20)
+
+        r.eval = original_eval  # type: ignore[assignment]
+
+        assert len(eval_calls) == 1, "Expected exactly one eval call"
+        numkeys, keys = eval_calls[0]
+        assert numkeys == 4, f"Expected 4 KEYS, got {numkeys}"
+        assert "ratelimit:short" in keys, "KEYS[1] (short window) not passed"
+        assert "ratelimit:long" in keys, "KEYS[2] (long window) not passed"
+        assert "ratelimit:limits:short" in keys, "KEYS[3] (stored short limit) not passed"
+        assert "ratelimit:limits:long" in keys, "KEYS[4] (stored long limit) not passed"
+
+    @pytest.mark.asyncio
+    async def test_short_and_long_windows_both_written_after_grant(
+        self, r: fakeredis.aioredis.FakeRedis
+    ) -> None:
+        """After a successful acquire, both KEYS[1] and KEYS[2] have entries."""
+        await acquire_token(r, limit_per_second=20)
+
+        short_count = await r.zcard("ratelimit:short")
+        long_count = await r.zcard("ratelimit:long")
+        assert short_count == 1, "Short window ZSET must have 1 entry after grant"
+        assert long_count == 1, "Long window ZSET must have 1 entry after grant"
+
+
+class TestThrottleKeyIsolation:
+    """OPGG-4.9: throttle_key param isolates per-source throttle signals."""
+
+    @pytest.mark.asyncio
+    async def test_custom_throttle_key_used_when_set(self, r):
+        """wait_for_token reads from custom throttle_key, not ratelimit:throttle."""
+        # Set the op.gg-scoped throttle key
+        await r.set("ratelimit:opgg:throttle", "1", ex=5)
+        # Do NOT set the default throttle key
+        # (ratelimit:throttle is absent)
+
+        sleep_calls: list[float] = []
+
+        async def capture_sleep(duration: float) -> None:
+            sleep_calls.append(duration)
+
+        with patch("lol_pipeline.rate_limiter.asyncio.sleep", side_effect=capture_sleep):
+            await wait_for_token(
+                r,
+                key_prefix="ratelimit:opgg:games",
+                throttle_key="ratelimit:opgg:throttle",
+                limit_per_second=20,
+            )
+
+        # Should have slept 0.2s for the custom throttle key
+        assert 0.2 in sleep_calls, f"Expected 0.2s throttle sleep, got: {sleep_calls}"
+
+    @pytest.mark.asyncio
+    async def test_default_throttle_key_backward_compat(self, r):
+        """Default throttle_key='ratelimit:throttle' preserves existing behavior."""
+        await r.set("ratelimit:throttle", "1", ex=5)
+
+        sleep_calls: list[float] = []
+
+        async def capture_sleep(duration: float) -> None:
+            sleep_calls.append(duration)
+
+        with patch("lol_pipeline.rate_limiter.asyncio.sleep", side_effect=capture_sleep):
+            await wait_for_token(r, limit_per_second=20)
+
+        assert 0.2 in sleep_calls
+
+    @pytest.mark.asyncio
+    async def test_riot_throttle_does_not_affect_opgg_calls(self, r):
+        """Riot throttle key (ratelimit:throttle) does NOT slow op.gg calls."""
+        # Set the RIOT throttle key
+        await r.set("ratelimit:throttle", "1", ex=5)
+        # op.gg throttle key is absent
+
+        sleep_calls: list[float] = []
+
+        async def capture_sleep(duration: float) -> None:
+            sleep_calls.append(duration)
+
+        with patch("lol_pipeline.rate_limiter.asyncio.sleep", side_effect=capture_sleep):
+            await wait_for_token(
+                r,
+                key_prefix="ratelimit:opgg:games",
+                throttle_key="ratelimit:opgg:throttle",  # scoped to op.gg
+                limit_per_second=20,
+            )
+
+        # Should NOT have slept 0.2s — the Riot throttle key must be ignored
+        assert 0.2 not in sleep_calls, (
+            "Riot throttle key should not slow op.gg calls when throttle_key is scoped"
+        )

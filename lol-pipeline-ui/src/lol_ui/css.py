@@ -262,22 +262,39 @@ code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--
 /* Mobile overrides */
 @media (max-width: 767px) {
   body { margin: 1rem auto; }
-  .site-footer { padding: var(--space-md) var(--space-sm); }
+  /* UI-M1: ensure fixed theme picker does not overlap footer text */
+  .site-footer { padding: var(--space-md) var(--space-sm); padding-bottom: 64px; }
   .form-inline label { font-size: var(--font-size-base); }
   td, th { padding: 0.3rem 0.4rem; }
-  /* Nav scroll affordance — sticky fade + arrow hint */
-  nav { scrollbar-width: thin; }
+  /* UI-H3: Nav scroll affordance — overflow-x scroll + fade mask + arrow hint */
+  nav { scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  nav::-webkit-scrollbar { display: none; }
   nav::after {
     content: '\203a';
     position: sticky; right: 0; flex-shrink: 0;
     display: flex; align-items: center; justify-content: center;
-    min-width: 24px; padding: 0 var(--space-xs);
-    color: var(--color-muted); font-size: 1.4em;
-    background: linear-gradient(to left, var(--color-bg) 60%, transparent);
+    min-width: 28px; padding: 0 var(--space-xs);
+    color: var(--color-muted); font-size: 1.6em;
+    background: linear-gradient(to left, var(--color-bg) 50%, transparent);
     pointer-events: none;
   }
-  /* Streams table: prevent column truncation */
-  .streams { min-width: 600px; }
+  /* UI-H2/UI-M2: Full streams page table — keep all 6 columns via horizontal scroll.
+     Dashboard .streams (3 cols) is NOT given min-width so STATUS badge stays visible. */
+  .streams--full { min-width: 600px; }
+  /* UI-H2: scroll hint caption for streams table on mobile */
+  .table-scroll { position: relative; }
+  .table-scroll::after {
+    content: '\2192 scroll';
+    display: block;
+    font-size: 11px;
+    color: var(--color-muted);
+    text-align: right;
+    padding: 2px var(--space-xs) 0;
+    pointer-events: none;
+  }
+  /* UI-M7: log service badge — enforce readable min-width on mobile */
+  .log-svc { min-width: 52px; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; display: inline-block; }
 }
 
 /* Tablet (768px+) — horizontal form layout */

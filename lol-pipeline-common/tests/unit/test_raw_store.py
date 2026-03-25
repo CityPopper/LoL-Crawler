@@ -501,6 +501,40 @@ class TestRawStoreSetScopedDedup:
         assert store._exists_in_current_bundle("NA1_MISS") is False
 
 
+class TestRawStoreKeyPrefix:
+    @pytest.mark.asyncio
+    async def test_custom_key_prefix_writes_to_custom_key(self, r):
+        """RawStore with custom key_prefix writes to that prefix, not raw:match:."""
+        store = RawStore(r, key_prefix="raw:opgg:match:")
+        await store.set("mid123", "data")
+        assert await r.exists("raw:opgg:match:mid123") == 1
+        assert await r.exists("raw:match:mid123") == 0
+
+    @pytest.mark.asyncio
+    async def test_default_key_prefix_unchanged(self, r):
+        """Default key_prefix behavior is backward-compatible."""
+        store = RawStore(r)
+        await store.set("NA1_456", "data")
+        assert await r.exists("raw:match:NA1_456") == 1
+
+    @pytest.mark.asyncio
+    async def test_exists_uses_custom_prefix(self, r):
+        """exists() uses the custom key_prefix."""
+        store = RawStore(r, key_prefix="raw:opgg:match:")
+        await store.set("mid999", "data")
+        assert await store.exists("mid999") is True
+        store_default = RawStore(r)
+        assert await store_default.exists("mid999") is False
+
+    @pytest.mark.asyncio
+    async def test_get_uses_custom_prefix(self, r):
+        """get() uses the custom key_prefix."""
+        store = RawStore(r, key_prefix="raw:opgg:match:")
+        await store.set("mid888", '{"src": "opgg"}')
+        result = await store.get("mid888")
+        assert result == '{"src": "opgg"}'
+
+
 class TestRawStoreDiskWriteOffEventLoop:
     """ASYNC-2: Disk write in set() must be delegated to asyncio.to_thread."""
 

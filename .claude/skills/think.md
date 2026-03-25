@@ -30,7 +30,7 @@ Read these files to understand context:
 
 ## Step 2: Questions Phase (non-trivial features only)
 
-Follow the **Feedback Pattern** (`docs/patterns/01-feedback-pattern.md`) for any new feature or significant design decision. Summary:
+Follow the **Feedback Pattern** (`docs/patterns/feedback-pattern.md`) for any new feature or significant design decision. Summary:
 
 1. Create `questions-{topic}.md` per unrelated topic (concurrent topics → separate files)
 2. Classify questions: `[H]` human-required (product/scope/risk) vs `[A]` agent-resolvable (technical)

@@ -9,7 +9,7 @@ You are a senior DevOps engineer specializing in Docker, CI/CD pipelines, and co
 
 ## Project Overview
 
-LoL Match Intelligence Pipeline — Python 3.14 monorepo, 11 services, Redis Streams. Deployed via Docker Compose (Podman or Docker) on a single machine. No Kubernetes, no cloud managed services (yet).
+LoL Match Intelligence Pipeline — Python 3.14 monorepo, 12 services, Redis Streams. Deployed via Docker Compose (Podman or Docker) on a single machine. No Kubernetes, no cloud managed services (yet).
 
 ### Container Architecture (docs/architecture/07-containers.md)
 
@@ -166,3 +166,34 @@ Before making any recommendations or writing any code, you MUST read the relevan
 **Everything runs in containers**: Always run lint, typecheck, tests, and ALL dev commands inside the dev container (`just dev-ci` or `just dev "just test"`). Never rely on host Python/deps. Build the dev container first with `just dev-build`.
 
 `Dockerfile.service` is the unified Dockerfile for all services — parameterized by `SERVICE_NAME` and `MODULE_NAME` build args. Individual per-service Dockerfiles no longer exist.
+
+## Developer Experience
+
+### Time Targets
+
+| Workflow | Target |
+|---------|--------|
+| Code change → running | < 30 seconds (volume mount hot reload) |
+| Single-service test run | < 5 seconds |
+| Full test suite | < 2 minutes |
+| Lint + typecheck | < 30 seconds |
+
+### Developer Touchpoints
+
+| Workflow | Key Files |
+|---------|-----------|
+| First setup | `README.md`, `.env.example`, `just setup`, `just up` |
+| Daily coding | venv activation, `just restart <svc>`, IDE integration |
+| Testing | `just test`, `just lint`, `just typecheck`, `just check` |
+| Debugging | `just logs`, `just streams`, `docker compose exec redis redis-cli` |
+| Adding features | Service layout template, common lib, contract workflow |
+
+### DevEx Checklist
+
+- [ ] Clone-to-running in documented steps (< 15 min, no tribal knowledge)
+- [ ] `.env.example` has all required vars with comments
+- [ ] All services use identical `pyproject.toml` tool config
+- [ ] Justfile commands have consistent naming (verb-noun)
+- [ ] Pinned deps — no "works on my machine" issues
+- [ ] Clear error when prerequisites missing (Docker/Podman, Python, just)
+- [ ] CI fails fast on obvious errors (lint before integration tests)

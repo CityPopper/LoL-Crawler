@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import collections.abc
 import logging
+import os
 import re
+import socket
 import time
 from datetime import UTC, datetime
 
@@ -67,6 +69,17 @@ async def is_system_halted(r: aioredis.Redis) -> bool:
     Used by crawler, fetcher, parser, analyzer handlers as a pre-check.
     """
     return bool(await r.get("system:halted"))
+
+
+def consumer_id() -> str:
+    """Return a unique consumer identifier for stream consumer groups.
+
+    Format: ``hostname-pid``.  Stable within a process lifetime but
+    unique across hosts and restarts — sufficient for all consumer
+    services except the analyzer, which appends a UUID for lock
+    deduplication.
+    """
+    return f"{socket.gethostname()}-{os.getpid()}"
 
 
 async def register_player(  # noqa: PLR0913

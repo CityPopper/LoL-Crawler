@@ -16,13 +16,13 @@ All application state lives in Redis. No other database.
 | `player:roles:{puuid}`               | Sorted Set | 30d (`PLAYER_DATA_TTL_SECONDS`) | member=`role`, score=games played in that role              |
 | `match:{match_id}`                   | Hash       | 7d (`MATCH_DATA_TTL_SECONDS`)   | `queue_id`, `game_mode`, `game_type`, `game_version`, `patch`, `game_duration`, `game_start`, `platform_id`, `region`, `status` |
 | `match:participants:{match_id}`      | Set        | 7d (`MATCH_DATA_TTL_SECONDS`)   | PUUIDs of all participants in the match; written by Parser alongside participant hashes |
-| `match:status:parsed`                | Set        | 7d (`_STATUS_TTL`)        | Secondary index: match IDs with status=parsed (written by Parser) |
 | `match:status:failed`                | Set        | 7d (`_STATUS_TTL`)        | Secondary index: match IDs with status=failed (written by Recovery) |
 | `participant:{match_id}:{puuid}`     | Hash       | 7d (`MATCH_DATA_TTL_SECONDS`)   | Core: `champion_id`, `champion_name`, `team_id`, `team_position`, `role`, `win`, `kills`, `deaths`, `assists`, `gold_earned`, `gold_spent`, `total_damage_dealt_to_champions`, `total_minions_killed`, `vision_score`, `items`, `champion_level`, `time_played`; Damage breakdown: `physical_damage`, `magic_damage`, `true_damage`, `damage_taken`, `damage_mitigated`, `healing_done`; Vision: `wards_placed`, `wards_killed`, `detector_wards`; Jungle: `neutral_minions`, `turret_kills`; Multikills: `double_kills`, `triple_kills`, `quadra_kills`, `penta_kills`; Runes: `perk_keystone`, `perk_primary_style`, `perk_sub_style`; Summoners: `summoner1_id`, `summoner2_id`. Full field list: see `_queue_participant()` in `lol-pipeline-parser/src/lol_parser/main.py` |
 | `raw:match:{match_id}`               | String     | 24h (`RAW_STORE_TTL_SECONDS`)   | Raw match JSON blob; also persisted to disk when `MATCH_DATA_DIR` is set |
 | `raw:timeline:{match_id}`           | String     | 7d (`MATCH_DATA_TTL_SECONDS`)   | Raw timeline JSON blob; written by Fetcher when `FETCH_TIMELINE=true`, read by Parser |
-| `discover:players`                   | Sorted Set | none                      | member=`{puuid}:{region}`, score=most-recent `game_start` epoch ms; GT update semantics; capped at `MAX_DISCOVER_PLAYERS` |
-| `delayed:messages`                   | Sorted Set | none                      | member=serialized envelope, score=ready epoch ms            |
+| `discover:players`                   | Sorted Set | 30d (`PLAYER_DATA_TTL_SECONDS`), only when no TTL exists | member=`{puuid}:{region}`, score=most-recent `game_start` epoch ms; GT update semantics; capped at `MAX_DISCOVER_PLAYERS` |
+| `delayed:messages`                   | Sorted Set | none                      | member=envelope `id` (UUID, ~36 bytes); score=ready epoch ms; full envelope JSON stored in `delayed:envelope:{id}` |
+| `delayed:envelope:{id}`              | Hash       | none (deleted after dispatch) | field `data` = JSON-serialized envelope fields; written by Recovery alongside `ZADD delayed:messages`; deleted by Delay Scheduler after successful dispatch |
 | `player:name:{game_name}#{tag_line}` | String     | 86400s (24h)              | PUUID cache; maps lowercased Riot ID to PUUID               |
 | `players:all`                        | Sorted Set | none                      | member=`puuid`, score=seed epoch; capped at 50K; used by UI for player listing |
 | `consumer:retry:{stream}:{msg_id}`   | String     | 7d (hardcoded)            | Crash-restart-safe retry counter for poison message detection |
@@ -72,9 +72,9 @@ Values written by services:
          ▼
       fetched
          │
-         │  Parser: structured data written to Redis
+         │  Parser: HSETNX match:{match_id} status parsed
          ▼
-      parsed  ──► SADD match:status:parsed  (secondary index)
+      parsed
 ```
 
 **Terminal error states** (no further processing):
@@ -84,10 +84,12 @@ Values written by services:
 | `not_found` | Fetcher         | Riot API returned HTTP 404                       |
 | `failed`    | Recovery        | `dlq_attempts` exhausted; archived to dlq:archive|
 
-**Secondary index:** The Parser writes `match_id` to `match:status:parsed` (Set) after
-successful parse. Recovery writes `match_id` to `match:status:failed` (Set) when archiving.
-This allows admin commands to enumerate matches by status without key scanning. The general
-pattern key is `match:status:{status}`.
+**Secondary index:** The `status` field lives directly in `match:{match_id}` (Hash).
+Parser uses `HSETNX` to set `status=parsed` atomically on first write; a return value of
+`1` means first-parse, `0` means already parsed (idempotent duplicate). Recovery sets
+`status=failed` via `HSET` when archiving, and also writes `match_id` to the
+`match:status:failed` Set for enumeration. Admin commands that enumerate failed matches
+use `SCAN match:*` + `HGET match:{id} status` rather than a global parsed-status Set.
 
 ---
 
@@ -154,3 +156,23 @@ save 60 10000
 
 In production, use a managed Redis instance (Redis Cloud, ElastiCache) with automatic
 failover. The `REDIS_URL` env var is the only change needed between environments.
+
+---
+
+## Redis Cluster Compatibility Notes
+
+### TCG-14: `_requeue_delayed` MULTI/EXEC — single-node only
+
+`recovery/main.py::_requeue_delayed` wraps a `ZADD delayed:messages` + `XACK stream:dlq`
+in a `MULTI/EXEC` pipeline.  These two keys live on different hash slots, which makes
+this transaction **incompatible with Redis Cluster** (Cluster requires all keys in a
+MULTI/EXEC block to share the same hash slot).
+
+**Current status:** Safe on single-node Redis (current deployment).
+
+**Before any Redis Cluster migration:** Rewrite `_requeue_delayed` to either:
+- Use a Lua script (Lua scripts are single-shard in Cluster — both keys must be on the
+  same node, which requires hash tags: `{recovery}:delayed:messages` and
+  `{recovery}:stream:dlq`), or
+- Accept the non-atomic path (ZADD then XACK separately) with at-least-once delivery
+  semantics (a crash between them re-delivers on next Recovery tick — acceptable).

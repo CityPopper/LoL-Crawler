@@ -114,14 +114,25 @@ Before making any recommendations or writing any code, you MUST read the relevan
 
 ## TDD Methodology
 
-**Always Red → Green → Refactor**:
-1. Write a failing test first
-2. Write minimum code to make it pass
-3. Refactor while keeping tests green
+**The `tester` agent writes tests. You write implementation.**
 
-- Never skip tests. Never change contracts to match broken output.
-- Never modify failing tests without user confirmation — tests are the spec.
+### Standard Mode (Sequential TDD)
+
+The tester writes failing tests first (Red). You receive the test files, then write the minimum code to make them pass (Green). You refactor (Refactor).
+
+- Never modify failing tests without user confirmation — the test is the spec
+- Never change contracts to match broken output
 - Test infrastructure: pytest + pytest-asyncio (auto mode), fakeredis, respx, freezegun
+
+### Parallel Mode
+
+When spawned with an interface spec file (`_spec_{task}.py`) — used in the Parallel TDD Pattern (`docs/patterns/parallel-tdd-pattern.md`):
+
+1. **Read the spec only** — Read the `Protocol` class, behavioral docstring, and stub. Do NOT read test files.
+2. **Implement** — Replace the `NotImplementedError` stub with a real implementation in the target module. Satisfy the Protocol signature and all behavioral requirements in the docstring.
+3. **Do not write tests** — The tester is writing tests simultaneously. You implement only.
+4. **Run mypy** — `mypy src/` must pass before returning. Type mismatches with the Protocol are your bug to fix.
+5. **Return** — Implementation file(s). Reconciliation runs tests against your output.
 
 ## Development Workflow
 
@@ -215,3 +226,68 @@ Pending: ~90 additional tests in Tiers 2-4 (see TODO.md and CLAUDE.md for detail
 - **`strings.py`** (per-service) — UI text via `t()`, admin stays English.
 - **DDragon game data** — fetch per-locale at render time (`ddragon:champion_names:{lang}`), 24h TTL. English keys everywhere in data layer; translate only at HTML render.
 - **Do not translate system values**: Redis keys, consumer group names, stream names, CLI commands must display verbatim. Only translate human-facing UI labels.
+
+## Code Review
+
+When reviewing code (your own or delegated), apply this checklist:
+
+**Correctness**
+- [ ] Logic matches intent — no off-by-one, wrong operator, missing case
+- [ ] No swallowed exceptions; async code has no missing `await`
+- [ ] Redis: unparameterized `Redis`, list-form `hmget(key, [fields])`
+- [ ] MessageEnvelope/DLQEnvelope fields correct; `priority` and `correlation_id` propagated
+
+**Security**
+- [ ] No secrets in code — env vars only (`RIOT_API_KEY` from `os.environ`)
+- [ ] Input validation at system boundaries; all HTTP via `RiotClient`
+- [ ] No command injection, SQL injection, or XSS vectors
+
+**Standards**
+- [ ] ruff clean, mypy strict, complexity ≤10, branches ≤12, functions ≤40 lines
+- [ ] Service isolation — no cross-service imports; shared logic in `lol-pipeline-common`
+- [ ] Naming: `snake_case` functions, `PascalCase` classes, `SCREAMING_SNAKE` constants
+
+**Tests**
+- [ ] New/changed code has tests (TDD: red → green → refactor)
+- [ ] Contract tests updated if message schemas changed
+- [ ] Tests isolated (fakeredis, respx) and deterministic
+
+For each finding: `file:line — severity (critical/warning/nit) — issue — fix`
+Verdict: `APPROVE` | `REQUEST CHANGES` | `NEEDS DISCUSSION`
+
+## Debugging
+
+### Failure Mode Reference
+
+| Symptom | Likely Cause | Where to Look |
+|---------|-------------|---------------|
+| Pipeline stuck, no progress | `system:halted=1` | `redis-cli GET system:halted` |
+| Messages not processing | Consumer group not created | `XINFO GROUPS stream:name` |
+| Messages redelivering endlessly | Handler crashing before ACK | Service logs + `XPENDING` |
+| Stats not updating | Analyzer lock contention | `GET player:stats:lock:{puuid}` |
+| DLQ growing | 429/5xx upstream errors | `XLEN stream:dlq`, Recovery logs |
+| Delayed messages stuck | Delay Scheduler not running | `ZCARD delayed:messages` |
+| 403 everywhere | API key expired/revoked | `system:halted`, Riot Developer Portal |
+
+### Redis Diagnostic Commands
+
+```bash
+redis-cli GET system:halted
+redis-cli XINFO GROUPS stream:match_id
+redis-cli XPENDING stream:parse parsers - + 10   # pending messages
+redis-cli XLEN stream:dlq
+redis-cli ZCARD delayed:messages
+redis-cli GET player:stats:lock:{puuid}
+redis-cli TTL player:stats:lock:{puuid}
+redis-cli GET player:stats:cursor:{puuid}
+redis-cli ZREVRANGE player:matches:{puuid} 0 0 WITHSCORES
+```
+
+### Debug Process
+
+1. **Reproduce** — Confirm the failure; get exact error/traceback
+2. **Isolate** — Which service? Which message? Which Redis key?
+3. **Trace** — Follow the message through the pipeline
+4. **Diagnose** — Root cause: code bug? Data issue? Race condition?
+5. **Fix** — Minimal change that addresses root cause (not symptoms)
+6. **Verify** — Run tests, check Redis state, confirm message flows correctly

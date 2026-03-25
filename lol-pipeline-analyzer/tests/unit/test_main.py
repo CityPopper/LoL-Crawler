@@ -601,6 +601,18 @@ class TestAnalyzerSystemHalted:
 
         assert await r.hget("player:stats:test-puuid-0001", "total_games") is None
 
+    @pytest.mark.asyncio
+    async def test_system_halted_preserves_pel(self, r, cfg, log):
+        """TCG-11: system:halted path must NOT ack — message stays in PEL."""
+        await r.set("system:halted", "1")
+        env = _analyze_envelope()
+        msg_id = await _setup_message(r, env)
+
+        await _analyze_player(r, cfg, "w1", msg_id, env, log)
+
+        pending = await r.xpending(_IN_STREAM, _GROUP)
+        assert pending["pending"] == 1
+
 
 class TestMainEntryPoint:
     """Tests for main() bootstrap and teardown."""
@@ -1756,3 +1768,57 @@ class TestLockRefreshBeforeChampionStats:
         assert await r.hget(f"player:stats:{puuid}", "total_games") == "1"
         # Champion stats should NOT be written (lock refresh failed)
         assert not await r.exists("champion:stats:Annie:14.5:MID")
+
+
+class TestCursorMonotonicity:
+    """TCG-10: caller always passes ascending-score matches to _process_matches."""
+
+    @pytest.mark.asyncio
+    async def test_cursor_ends_at_max_score(self, r, cfg, log):
+        """TCG-10: zrangebyscore returns ascending order; cursor ends at highest score.
+
+        The Lua script unconditionally sets cursor to ARGV[7] (the score of each
+        match).  The caller guarantees ascending order via zrangebyscore(..., '+inf').
+        If order were violated, the cursor would end at a non-maximum value.
+        """
+        puuid = "test-puuid-tcg10"
+        scores = [1000.0, 2000.0, 3000.0]
+        for i, score in enumerate(scores):
+            await _add_participant(r, f"NA1_TCG10_{i}", puuid, score)
+        env = _analyze_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        await _analyze_player(r, cfg, "my-worker", msg_id, env, log)
+
+        # Cursor must land at the highest score (ascending order preserved).
+        cursor = await r.get(f"player:stats:cursor:{puuid}")
+        assert float(cursor) == 3000.0
+        # All 3 matches processed — no skips or ordering failures.
+        assert await r.hget(f"player:stats:{puuid}", "total_games") == "3"
+
+    @pytest.mark.asyncio
+    async def test_cursor_advance_on_second_batch(self, r, cfg, log):
+        """TCG-10: second batch starts above previous cursor; ascending order maintained."""
+        puuid = "test-puuid-tcg10b"
+        await _add_participant(r, "NA1_B1", puuid, 1000.0)
+        await _add_participant(r, "NA1_B2", puuid, 2000.0)
+
+        # First analysis sets cursor to 2000
+        env1 = _analyze_envelope(puuid)
+        msg_id1 = await _setup_message(r, env1)
+        await _analyze_player(r, cfg, "w1", msg_id1, env1, log)
+        assert float(await r.get(f"player:stats:cursor:{puuid}")) == 2000.0
+
+        # Add new matches with higher scores
+        await _add_participant(r, "NA1_B3", puuid, 3000.0)
+        await _add_participant(r, "NA1_B4", puuid, 4000.0)
+
+        # Second analysis only processes scores > 2000
+        env2 = _analyze_envelope(puuid)
+        msg_id2 = await _setup_message(r, env2)
+        await _analyze_player(r, cfg, "w2", msg_id2, env2, log)
+
+        # Cursor must be at the new maximum (4000), not regressed
+        cursor = await r.get(f"player:stats:cursor:{puuid}")
+        assert float(cursor) == 4000.0
+        assert await r.hget(f"player:stats:{puuid}", "total_games") == "4"

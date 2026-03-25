@@ -245,12 +245,21 @@ body.theme-artpop main::after {
 /* Stack content above decorations */
 body.theme-artpop main,
 body.theme-artpop nav,
-body.theme-artpop .form-inline,
 body.theme-artpop .site-footer,
 body.theme-artpop .theme-switcher {
   position: relative; z-index: 1;
 }
+/* UI-M3: do NOT set position:relative on .form-inline — it overrides position:sticky from base CSS */
 body.theme-artpop .skip-link:focus { position: relative; z-index: 200; }
+
+/* UI-H1: hide decorative SVGs on mobile so they don't overlap interactive content */
+@media (max-width: 600px) {
+  body.theme-artpop::before,
+  body.theme-artpop::after,
+  body.theme-artpop main::before {
+    display: none;
+  }
+}
 
 /* --- Component overrides — Lichtenstein bold primaries + thick outlines --- */
 
@@ -453,7 +462,22 @@ body.theme-artpop .card {
 body.theme-artpop .site-footer { color: #555; border-top: 3px solid #0d0d0d; }
 body.theme-artpop hr { border-top: 3px solid #0d0d0d; }
 body.theme-artpop code { background: #f0ece4; color: #0d0d0d; border: 1px solid #0d0d0d; }
-body.theme-artpop pre { background: #f0ece4; border: 2px solid #0d0d0d; }"""
+body.theme-artpop pre { background: #f0ece4; border: 2px solid #0d0d0d; }
+
+/* UI-M4: Art Pop header — limit height on mobile so it doesn't consume 25% of viewport */
+@media (max-width: 600px) {
+  body.theme-artpop h1 {
+    max-height: 60px; padding: 8px var(--space-md);
+    overflow: hidden; font-size: 1.2rem;
+  }
+}
+
+/* UI-L2: Art Pop h1 full-bleed on mobile — offset body margin so red bar spans full width */
+@media (max-width: 767px) {
+  body.theme-artpop h1 {
+    margin-left: -1rem; margin-right: -1rem; padding-left: 1rem; padding-right: 1rem;
+  }
+}"""
 )
 
 # ---------------------------------------------------------------------------

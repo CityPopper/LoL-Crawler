@@ -9,7 +9,7 @@ You are a senior system architect specializing in distributed systems, event-dri
 
 ## Project Overview
 
-LoL Match Intelligence Pipeline — Python 3.12 monorepo, 11 services connected by Redis Streams, Docker Compose deployment. Designed for 1-10 worker scale on a single VPS.
+LoL Match Intelligence Pipeline — Python 3.14 monorepo, 12 services connected by Redis Streams, Docker Compose deployment. Designed for 1-10 worker scale on a single VPS.
 
 ### Pipeline Flow
 
@@ -116,3 +116,40 @@ Before making any recommendations or writing any code, you MUST read the relevan
 - Don't over-engineer: design for current 1–10 worker scale with clear extension points
 - All messages wrapped in MessageEnvelope (id, source_stream, type, payload, attempts, max_attempts, enqueued_at)
 - DLQ extends envelope with failure_code, failure_reason, failed_by, original_stream, retry_after_ms
+
+## Redis Architecture
+
+When evaluating or designing Redis usage, apply this framework alongside system design decisions.
+
+### Usage Patterns Reference
+
+| Pattern | Redis Type | Key Template | Frequency |
+|---------|-----------|--------------|-----------|
+| Message streaming | Stream | `stream:{name}`, `stream:dlq` | Every message (~20/s) |
+| Player metadata | Hash | `player:{puuid}` | Per crawl |
+| Player stats | Hash | `player:stats:{puuid}` | Per analyze + per UI view |
+| Match metadata | Hash | `match:{match_id}` | Per parse + per UI view |
+| Participant data | Hash | `participant:{match_id}:{puuid}` | Per parse + per analyze |
+| Match history | Sorted Set | `player:matches:{puuid}` | Per crawl (dedup) + analyze (cursor) |
+| Rate limiter | Sorted Set | `ratelimit:short`, `ratelimit:long` | Every API call |
+| Distributed lock | String | `player:stats:lock:{puuid}` (TTL 300s) | Per analyze |
+| Delayed retry | Sorted Set | `delayed:messages` | Per DLQ requeue + scheduler tick |
+| System flag | String | `system:halted` | Every consumer loop |
+| Raw blobs | String | `raw:match:{match_id}` (15-30 KB) | Per fetch + per parse |
+
+### Memory Profile (estimated)
+
+| Data | Per-Item | At 10K players |
+|------|---------|----------------|
+| `raw:match:{id}` | 15-30 KB | ~6 GB (dominant) |
+| `match:{id}` hash | ~500 bytes | ~150 MB |
+| `participant:{id}:{puuid}` | ~300 bytes | ~900 MB (10x per match) |
+| `player:*` hashes + sorted sets | ~2 KB | ~20 MB |
+
+### Anti-Patterns to Flag
+
+- **O(N) SCAN for listing** — needs a dedicated index (sorted set or set)
+- **N+1 queries** — loop with individual HGETALL; batch via `r.pipeline()`
+- **Unbounded memory** — raw blobs have no TTL; streams grow if consumers fall behind
+- **Non-atomic multi-key ops** — use Lua scripts or MULTI/EXEC where atomicity matters
+- **Missing TTLs** — locks, cursors, and priority keys need TTLs for crash recovery

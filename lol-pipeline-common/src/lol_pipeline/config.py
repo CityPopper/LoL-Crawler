@@ -41,3 +41,9 @@ class Config(BaseSettings):
     # Activity-rate discovery
     # Weight for activity rate in discovery scoring
     activity_rate_weight: float = Field(default=1.0, ge=0.0)
+    # op.gg integration
+    opgg_enabled: bool = False  # try op.gg first, fall back to Riot on failure
+    opgg_rate_limit_per_second: int = Field(default=2, ge=1)
+    opgg_rate_limit_long: int = Field(default=30, ge=1)
+    opgg_match_data_dir: str = ""
+    opgg_api_key: str | None = None

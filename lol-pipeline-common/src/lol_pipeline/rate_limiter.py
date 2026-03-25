@@ -29,6 +29,7 @@ async def acquire_token(
     r: aioredis.Redis,
     key_prefix: str = "ratelimit",
     limit_per_second: int = _SHORT_LIMIT,
+    limit_long: int = _LONG_LIMIT,
 ) -> int:
     """Try to acquire a rate limit token.
 
@@ -36,7 +37,7 @@ async def acquire_token(
     value is the estimated wait time in milliseconds until a slot opens.
 
     ``limit_per_second`` controls the 1-second sliding window cap (default: 20).
-    The 2-minute window cap is fixed at Riot's hard limit of 100 req/2 min.
+    ``limit_long`` controls the 2-minute sliding window cap (default: 100).
     """
     now_ms = int(time.time() * 1000)
     uid = str(uuid.uuid4())
@@ -45,11 +46,11 @@ async def acquire_token(
         4,
         f"{key_prefix}:short",
         f"{key_prefix}:long",
-        "ratelimit:limits:short",
-        "ratelimit:limits:long",
+        f"{key_prefix}:limits:short",
+        f"{key_prefix}:limits:long",
         now_ms,
         limit_per_second,
-        _LONG_LIMIT,
+        limit_long,
         _SHORT_WINDOW_MS,
         _LONG_WINDOW_MS,
         uid,
@@ -61,8 +62,10 @@ async def wait_for_token(
     r: aioredis.Redis,
     key_prefix: str = "ratelimit",
     limit_per_second: int = _SHORT_LIMIT,
+    limit_long: int = _LONG_LIMIT,
     max_wait_s: float = 60.0,
     region: str = "",  # kept for API compat, not used
+    throttle_key: str = "ratelimit:throttle",
 ) -> None:
     """Block until a rate limit token is acquired.
 
@@ -74,20 +77,22 @@ async def wait_for_token(
     parameter is accepted for API compatibility but ignored.  All callers
     share a single ``ratelimit`` sliding window.
 
-    When a ``ratelimit:throttle`` key exists (set by RiotClient when API
-    capacity drops below 5%), adds a 200ms sleep to proactively slow down.
+    When the *throttle_key* Redis key exists (default ``ratelimit:throttle``,
+    set by RiotClient when API capacity drops below 5%), adds a 200ms sleep
+    to proactively slow down.  Pass a scoped *throttle_key* (e.g.
+    ``ratelimit:opgg:throttle``) to isolate throttle signals per source.
 
     Raises ``TimeoutError`` if *max_wait_s* seconds elapse without acquiring a token.
     """
     import random
 
     # Proactive throttle: slow down when RiotClient signals near-capacity
-    throttled: str | None = await r.get("ratelimit:throttle")
+    throttled: str | None = await r.get(throttle_key)
     if throttled:
         await asyncio.sleep(0.2)
     deadline = time.monotonic() + max_wait_s
     while True:
-        result = await acquire_token(r, key_prefix, limit_per_second)
+        result = await acquire_token(r, key_prefix, limit_per_second, limit_long)
         if result == 1:
             return
         if time.monotonic() >= deadline:

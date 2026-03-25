@@ -88,6 +88,21 @@ class TestConfig:
         cfg = Config(_env_file=None)  # type: ignore[call-arg]
         assert cfg.riot_api_key == "test"
 
+class TestOpggConfig:
+    def test_opgg_config_defaults(self, monkeypatch):
+        """op.gg config fields have correct defaults."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost:6379")
+        from lol_pipeline.config import Config
+
+        cfg = Config(_env_file=None)  # type: ignore[call-arg]
+        assert cfg.opgg_rate_limit_per_second == 2
+        assert cfg.opgg_rate_limit_long == 30
+        assert cfg.opgg_match_data_dir == ""
+        assert cfg.opgg_api_key is None
+
+
+class TestConfigNumericValidation:
     @pytest.mark.parametrize(
         "field_name",
         [

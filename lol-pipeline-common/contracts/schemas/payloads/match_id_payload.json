@@ -21,6 +21,11 @@
       "type": "string",
       "minLength": 2,
       "description": "Platform routing region (e.g. na1, kr, euw1)"
+    },
+    "source": {
+      "type": "string",
+      "enum": ["riot", "opgg"],
+      "description": "Data source that produced this match ID (optional; defaults to riot)"
     }
   }
 }

@@ -743,6 +743,53 @@ class TestXautoclaimCorruptHandlerNotCalled:
         mock_r.xack.assert_any_call("stream:test", "g", "corrupt-2")
 
 
+class TestConsumeTypedThreePhaseOrdering:
+    """TCG-13: Three-phase ordering (own PEL → XAUTOCLAIM → new) in consume_typed."""
+
+    @pytest.mark.asyncio
+    async def test_pel_nonempty_skips_xautoclaim(self) -> None:
+        """TCG-13a: When own PEL is non-empty, XAUTOCLAIM is NOT called."""
+        mock_r = AsyncMock()
+        valid_env = _env()
+        valid_fields = valid_env.to_redis_fields()
+
+        # Phase 1: PEL drain returns one message (non-empty)
+        mock_r.xreadgroup.return_value = [["stream:test", [("pel-1", valid_fields)]]]
+
+        msgs = await consume(
+            mock_r, "stream:test", "g", "c", block=0, autoclaim_min_idle_ms=5000
+        )
+
+        # PEL message returned
+        assert len(msgs) == 1
+        assert msgs[0][0] == "pel-1"
+        # Phase 2 never reached — XAUTOCLAIM must not be called
+        mock_r.xautoclaim.assert_not_called()
+        # Phase 3 never reached either
+        mock_r.xreadgroup.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_pel_empty_runs_xautoclaim(self) -> None:
+        """TCG-13b: When own PEL is empty and autoclaim_min_idle_ms is set, XAUTOCLAIM runs."""
+        mock_r = AsyncMock()
+        valid_env = _env()
+        valid_fields = valid_env.to_redis_fields()
+
+        # Phase 1: PEL drain returns empty
+        mock_r.xreadgroup.return_value = [["stream:test", []]]
+        # Phase 2: XAUTOCLAIM returns a claimed message
+        mock_r.xautoclaim.return_value = ["0-0", [("autoclaimed-1", valid_fields)]]
+
+        msgs = await consume(
+            mock_r, "stream:test", "g", "c", block=0, autoclaim_min_idle_ms=5000
+        )
+
+        # XAUTOCLAIM was invoked (phase 2 reached because PEL was empty)
+        mock_r.xautoclaim.assert_called_once()
+        assert len(msgs) == 1
+        assert msgs[0][0] == "autoclaimed-1"
+
+
 class TestEnsureGroupWeakKeyIsolation:
     """_ensure_group WeakKeyDictionary keeps separate caches per Redis client."""
 

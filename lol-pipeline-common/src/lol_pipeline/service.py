@@ -13,12 +13,12 @@ from redis.exceptions import RedisError
 
 from lol_pipeline._service_data import (
     _MAX_HANDLER_RETRIES,
+    _MAX_NACK_ATTEMPTS,
     _RETRY_KEY_PREFIX,
 )
 from lol_pipeline._service_data import (
     _RETRY_KEY_TTL as _RETRY_KEY_TTL,
 )
-from lol_pipeline.helpers import is_system_halted
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.priority import PRIORITY_ORDER
 from lol_pipeline.streams import ack, consume, nack_to_dlq
@@ -75,6 +75,15 @@ async def _handle_with_retry(  # noqa: PLR0913
     except Exception as exc:
         count = await _incr_retry(r, stream, msg_id)
         if count >= max_retries:
+            nack_failures = count - max_retries
+            if nack_failures >= _MAX_NACK_ATTEMPTS:
+                log.error(
+                    "nack_to_dlq failed %d times — abandoning message",
+                    nack_failures,
+                    extra={"msg_id": msg_id, "stream": stream},
+                )
+                await _clear_retry(r, stream, msg_id)
+                return
             log.error(
                 "handler crashed %d times — sending to DLQ",
                 count,
@@ -172,7 +181,7 @@ async def run_consumer(
         if shutdown:
             log.info("shutdown flag set — exiting")
             break
-        if await is_system_halted(r):
+        if await r.get("system:halted"):
             log.critical("system halted — exiting")
             break
         try:

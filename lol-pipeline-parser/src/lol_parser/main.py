@@ -5,14 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
-import socket
 from typing import Any
 
 import redis.asyncio as aioredis
 from lol_pipeline.config import Config
 from lol_pipeline.constants import CHAMPION_STATS_TTL_SECONDS, PLAYER_DATA_TTL_SECONDS
-from lol_pipeline.helpers import is_system_halted
+from lol_pipeline.helpers import consumer_id, is_system_halted
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.raw_store import RawStore
@@ -646,7 +644,7 @@ async def main() -> None:
     cfg = Config()
     r = get_redis(cfg.redis_url)
     raw_store = RawStore(r, data_dir=cfg.match_data_dir)
-    consumer = f"{socket.gethostname()}-{os.getpid()}"
+    consumer = consumer_id()
 
     async def _handler(msg_id: str, envelope: MessageEnvelope) -> None:
         await _parse_match(r, raw_store, cfg, msg_id, envelope, log)

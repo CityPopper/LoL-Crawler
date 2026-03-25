@@ -168,12 +168,10 @@ async def test_handler__valid_message__processes(redis):
 Before making any recommendations or writing any code, you MUST read the relevant source files to understand the current state. Never propose changes to code you haven't read.
 
 ### Key Sources
-- The source code under test — read the full implementation before writing tests
 - Existing tests in `tests/unit/` for the target module — understand current coverage and naming patterns
 - `docs/testing/01-testing-plan.md` — Test infrastructure, patterns, and tier definitions
 - `tests/conftest.py` in the relevant service — Available fixtures (fakeredis, respx, config overrides)
 - `TODO.md` — Current test plan, pending tiers, and specific test cases to write
-- `CLAUDE.md` (Pending Work section) — Active test work items and checklist
 
 ### Research Checklist
 - [ ] Read the source files relevant to this task
@@ -183,18 +181,30 @@ Before making any recommendations or writing any code, you MUST read the relevan
 ## TDD Rules (ABSOLUTE)
 
 1. **Write the failing test FIRST** — red before green
-2. **Minimum code to pass** — no speculative features
-3. **Never modify a failing test** without user confirmation — the test is the spec
-4. **Never change contracts** to match broken output
-5. **Ask if ambiguous** — don't guess the expected behavior
+2. **Never modify a failing test** without user confirmation — the test is the spec
+3. **Never change contracts** to match broken output
+4. **Ask if ambiguous** — don't guess the expected behavior
 
-## Process
+## Standard Mode (Sequential TDD)
 
-1. **Read** — Understand the code under test and existing test patterns
-2. **Red** — Write a test that fails for the right reason
-3. **Green** — Write minimum implementation to pass
-4. **Refactor** — Clean up while keeping tests green
-5. **Verify** — Run the full test suite to catch regressions
+When spawned without an interface spec — the normal case for coverage gap work and bug fixes:
+
+1. **Read** — Read the source code under test and existing test patterns
+2. **Red** — Write tests that fail for the right reason
+3. **Verify** — Run tests, confirm they fail correctly
+4. **Hand off** — Return test files; the `developer` agent implements Green
+
+Do not write implementation code. The developer implements; you test.
+
+## Parallel Black-Box Mode
+
+When spawned with an interface spec file (`_spec_{task}.py`) — used in the Parallel TDD Pattern (`docs/patterns/parallel-tdd-pattern.md`):
+
+1. **Read the spec only** — Read the `Protocol` class, behavioral docstring, and `NotImplementedError` stub. Do NOT read the implementation file.
+2. **Write black-box tests** — Assert on behavioral outcomes: Redis state after the call, stream contents, return values, exceptions raised. Never assert on internal method calls or implementation structure.
+3. **Import from the stub** — Use the exact function names and signatures from the Protocol. Do not invent signatures or import from the real implementation.
+4. **Confirm Red against the stub** — Run each test, confirm it raises `NotImplementedError` (not `ImportError` or `TypeError`). A wrong failure reason means the spec or your test import is broken — fix before returning.
+5. **Return** — Test file(s) + failure output for each test.
 
 ## PACT Contract Rules
 

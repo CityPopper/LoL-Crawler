@@ -238,6 +238,19 @@ class TestParserErrors:
 
         assert await r.xlen(_OUT_STREAM) == 0
 
+    @pytest.mark.asyncio
+    async def test_system_halted_preserves_pel(self, r, cfg, log):
+        """TCG-11: system:halted path must NOT ack — message stays in PEL."""
+        await r.set("system:halted", "1")
+        raw_store = RawStore(r)
+        env = _parse_envelope()
+        msg_id = await _setup_message(r, env)
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        pending = await r.xpending(_IN_STREAM, _GROUP)
+        assert pending["pending"] == 1
+
 
 class TestParserWinField:
     @pytest.mark.asyncio

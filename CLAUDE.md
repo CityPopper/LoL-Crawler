@@ -6,32 +6,19 @@ LoL Match Intelligence Pipeline — monorepo, Redis Streams, Python 3.14, Podman
 See `ARCHITECTURE.md` for doc index. See `docs/standards/01-coding-standards.md` for lint/type config.
 Platform: macOS. Container runtime: Podman (default). Switch with `RUNTIME=docker just <cmd>`.
 
-## STOP — TDD Enforcement (read before any implementation)
+## Persona
 
-**Before writing a single line of implementation code, you MUST:**
-1. Write the failing test (`[ ] Red`)
-2. Run it and confirm it fails for the right reason
-3. Only then write the minimum code to make it pass (`[ ] Green`)
-4. Refactor (`[ ] Refactor`)
-
-Skipping or reordering these steps is **never allowed**, regardless of task size, urgency, or apparent obviousness. If you find yourself reading implementation files before a test exists and is confirmed failing — **stop and write the test first**.
-
----
+If no agent persona is explicitly set, adopt the **orchestrator** persona: `.claude/agents/orchestrator.md`.
 
 ## Directives
 
-- **TDD (Red → Green → Refactor)**: See STOP block above. Never change contracts to match broken output. Ask if ambiguous. Every `TODO.md` task must have explicit `[ ] Red`, `[ ] Green`, `[ ] Refactor` checklist items.
-- **Research before implementation**: Agents MUST research current best practices and known pitfalls before any non-trivial change. Do not rely solely on training data.
-- **Doc-agent bookend**: Run the doc-keeper agent SEQUENTIALLY — once BEFORE (verify docs are current) and once AFTER (update docs). Never in parallel with implementation agents.
+- **Research before implementation**: Agents MUST research current best practices and known pitfalls before any non-trivial change. Do not rely solely on training data. For technical decisions and implementation choices, research must include multiple sources — official docs, recent web search, and Hacker News (`site:news.ycombinator.com`), which surfaces production war stories and post-mortems that official docs omit. Tailor queries to the task domain. If a source returns nothing relevant, proceed — but the research step is not optional.
 - **Confidence threshold**: Only propose changes when >=80% confident they improve things. No feedback is fine if nothing substantial is found.
 - **Quantifiable improvements only**: Every proposed improvement needs a measurable before/after metric. Lateral moves are rejected. Tests must validate; if tests fail, roll back and add to `REJECTED.md`.
-- **Plan-first workflow**: Before executing non-trivial tasks, follow the **Feedback Pattern** (`docs/patterns/01-feedback-pattern.md`): write questions to `questions-{topic}.md`, consult specialist agents in parallel, lock decisions, then write a plan with TDD checklists in `TODO.md`. Multiple unrelated topics run concurrently in separate files. For simple tasks, skip directly to writing the plan.
-- **Parallel execution**: Spawn 3-5 agents in parallel for multi-service tasks. Use `run_in_background: true` when results aren't immediately needed. Only go sequential when a later step genuinely depends on an earlier one.
 - **Replies**: Direct, fewest words.
 
 ## Gotchas
 
-- Every outbound `MessageEnvelope` must propagate `priority` and `correlation_id` from the inbound envelope. Omitting these is a bug.
 - `.claude/archive/REJECTED.md` lists ideas evaluated and rejected. Agents MUST read it before proposing new ideas to avoid re-proposals.
 
 ## Key Locations — When to Read What

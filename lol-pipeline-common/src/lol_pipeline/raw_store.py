@@ -43,9 +43,12 @@ class RawStore:
     All writes are no-ops if the key/file already exists (write-once semantics).
     """
 
-    def __init__(self, r: aioredis.Redis, data_dir: str = "") -> None:
+    def __init__(
+        self, r: aioredis.Redis, data_dir: str = "", key_prefix: str = "raw:match:"
+    ) -> None:
         self._r = r
         self._data_dir: Path | None = Path(data_dir) if data_dir else None
+        self._key_prefix = key_prefix
 
     def _platform_dir(self, match_id: str) -> Path | None:
         """Return the platform directory for match_id, or None if disk storage is disabled."""
@@ -137,25 +140,25 @@ class RawStore:
 
     async def exists(self, match_id: str) -> bool:
         """Return True if the raw blob is stored in Redis or on disk."""
-        if bool(await self._r.exists(f"{_KEY_PREFIX}{match_id}")):
+        if bool(await self._r.exists(f"{self._key_prefix}{match_id}")):
             return True
         return await asyncio.to_thread(self._exists_in_bundles, match_id)
 
     async def get(self, match_id: str) -> str | None:
         """Return raw JSON string; tries Redis first, then disk (repopulates Redis on hit)."""
-        data: str | None = await self._r.get(f"{_KEY_PREFIX}{match_id}")
+        data: str | None = await self._r.get(f"{self._key_prefix}{match_id}")
         if data is not None:
             return data
         data = await asyncio.to_thread(self._search_bundles, match_id)
         if data is not None:
             # Write-back: repopulate Redis so subsequent reads are fast
-            await self._r.set(f"{_KEY_PREFIX}{match_id}", data, nx=True, ex=_TTL_SECONDS)
+            await self._r.set(f"{self._key_prefix}{match_id}", data, nx=True, ex=_TTL_SECONDS)
             return data
         return None
 
     async def set(self, match_id: str, data: str) -> None:
         """Write raw JSON blob to Redis and disk. No-op if already stored."""
-        was_set = await self._r.set(f"{_KEY_PREFIX}{match_id}", data, nx=True, ex=_TTL_SECONDS)
+        was_set = await self._r.set(f"{self._key_prefix}{match_id}", data, nx=True, ex=_TTL_SECONDS)
         bp = self._bundle_path(match_id)
         if bp is None:
             return
@@ -169,7 +172,7 @@ class RawStore:
             await asyncio.to_thread(_write_to_disk, bp, f"{match_id}\t{data}\n")
         except OSError as exc:
             # Remove Redis key so next attempt can retry both Redis + disk
-            await self._r.delete(f"{_KEY_PREFIX}{match_id}")
+            await self._r.delete(f"{self._key_prefix}{match_id}")
             _log.warning(
                 "disk write failed — removed Redis key for retry",
                 extra={"match_id": match_id, "error": str(exc)},

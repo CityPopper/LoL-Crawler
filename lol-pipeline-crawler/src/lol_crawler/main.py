@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
-import socket
 import sys
 import time
 from datetime import UTC, datetime, timedelta
@@ -14,7 +12,7 @@ from pydantic import ValidationError
 
 from lol_pipeline.config import Config
 from lol_pipeline.constants import PLAYER_DATA_TTL_SECONDS
-from lol_pipeline.helpers import handle_riot_api_error, is_system_halted
+from lol_pipeline.helpers import consumer_id, handle_riot_api_error, is_system_halted
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.priority import PRIORITY_DOWNGRADE_THRESHOLD, clear_priority, downgrade_priority
@@ -76,15 +74,29 @@ async def _dedup_ids(
     ids: list[str],
     known: set[str],
 ) -> list[str]:
-    """Filter out IDs that are locally known or globally seen."""
+    """Filter out IDs that are locally known or globally seen.
+
+    RDB-1: Checks both today's and yesterday's daily-bucketed seen:matches sets.
+    """
     new_ids = [mid for mid in ids if mid not in known]
     if not new_ids:
         return new_ids
+    today = datetime.now(tz=UTC).strftime("%Y-%m-%d")
+    yesterday = (datetime.now(tz=UTC) - timedelta(days=1)).strftime("%Y-%m-%d")
     async with r.pipeline(transaction=False) as check_pipe:
         for mid in new_ids:
-            check_pipe.sismember("seen:matches", mid)
-        seen_results = await check_pipe.execute()
-    return [mid for mid, seen in zip(new_ids, seen_results, strict=True) if not seen]
+            check_pipe.sismember(f"seen:matches:{today}", mid)
+        for mid in new_ids:
+            check_pipe.sismember(f"seen:matches:{yesterday}", mid)
+        results = await check_pipe.execute()
+    n = len(new_ids)
+    today_results = results[:n]
+    yesterday_results = results[n:]
+    return [
+        mid
+        for mid, t, y in zip(new_ids, today_results, yesterday_results, strict=True)
+        if not t and not y
+    ]
 
 
 async def _publish_batch(  # noqa: PLR0913
@@ -471,7 +483,7 @@ async def main() -> None:
         sys.exit(1)
     r = get_redis(cfg.redis_url)
     riot = RiotClient(cfg.riot_api_key, r=r)
-    consumer = f"{socket.gethostname()}-{os.getpid()}"
+    consumer = consumer_id()
 
     async def _handler(msg_id: str, envelope: MessageEnvelope) -> None:
         await _crawl_player(r, riot, cfg, msg_id, envelope, log)

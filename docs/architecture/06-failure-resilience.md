@@ -106,6 +106,18 @@ This loop is part of `streams.py` and is started automatically by every service 
 
 ---
 
+## DLQ Replay Idempotency
+
+`replay_from_dlq()` (in `streams.py`) is crash-safe and idempotent. Internally it runs a
+Lua script that checks `XRANGE stream:dlq entry_id entry_id` before issuing `XADD`. If the
+entry is already gone (a prior replay completed XADD+XDEL), the Lua script returns `0` and
+skips the XADD. This prevents duplicate delivery when the admin process crashes between the
+XADD and XDEL steps.
+
+Return values: `1` = replayed successfully, `0` = entry already gone (no-op).
+
+---
+
 ## Admin: Incident Recovery
 
 | Scenario                         | Steps                                                          |

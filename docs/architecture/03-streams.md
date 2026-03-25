@@ -123,9 +123,11 @@ Service calls nack_to_dlq()
 Recovery processes stream:dlq
    │
    ├── Recoverable (http_429, http_5xx) and dlq_attempts < DLQ_MAX_ATTEMPTS:
-   │     ZADD delayed:messages score={ready_epoch_ms} member={serialized_MessageEnvelope}
+   │     MULTI/EXEC:
+   │       ZADD delayed:messages score={ready_epoch_ms} member={envelope.id}
+   │       HSET delayed:envelope:{id} data {serialized_MessageEnvelope}
+   │       XACK stream:dlq
    │     (source_stream = original_stream, type = original type)
-   │     ACK from stream:dlq
    │
    └── Exhausted or permanent:
          XADD stream:dlq:archive
@@ -137,19 +139,25 @@ The **Delay Scheduler** polls `delayed:messages` on a fixed interval:
 ```
 loop every DELAY_SCHEDULER_INTERVAL_MS:
     ready = ZRANGEBYSCORE delayed:messages 0 now_ms
-    for each ready message:
-        XADD → target stream (source_stream field)
-        ZREM delayed:messages member
+    for each ready member (envelope ID):
+        fetch JSON from delayed:envelope:{id}
+        Lua: XADD → target stream (source_stream field) + ZREM delayed:messages member
+        DEL delayed:envelope:{id}
 ```
 
-### Key: `delayed:messages`
+### Keys: `delayed:messages` and `delayed:envelope:{id}`
 
-- **Type:** Sorted Set
-- **Member:** JSON-serialized envelope string
-- **Score:** Unix epoch ms at which the message becomes ready
-- **Persistence:** Survives Redis restart (AOF + RDB)
-- **Safety:** If XADD succeeds but ZREM fails, the message is re-delivered; the target
-  service handles the duplicate idempotently.
+- **`delayed:messages`** — Sorted Set; member=envelope `id` (UUID string, ~36 bytes);
+  score=Unix epoch ms at which the message becomes ready.
+- **`delayed:envelope:{id}`** — Hash; field `data` = full JSON-serialized envelope;
+  written atomically with the ZADD in a MULTI/EXEC block by Recovery; deleted by the
+  Delay Scheduler after successful dispatch.
+- **Persistence:** Both keys survive Redis restart (AOF + RDB).
+- **Safety:** The Delay Scheduler uses an atomic Lua script (XADD + ZREM in one call).
+  If the script succeeds but `DEL delayed:envelope:{id}` fails, the envelope hash is an
+  orphan but harmless — the ZSET member is already gone so it will never be re-dispatched.
+  Legacy members (full JSON blob in ZSET) are still handled transparently for backward
+  compatibility with any pre-RDB-5 entries still in the queue.
 
 ### Backoff Schedule
 

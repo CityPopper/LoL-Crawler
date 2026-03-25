@@ -10,6 +10,7 @@ import pytest
 from lol_pipeline.helpers import (
     _MAX_GAME_NAME_LEN,
     _MAX_TAG_LINE_LEN,
+    consumer_id,
     is_system_halted,
     name_cache_key,
     validate_name_lengths,
@@ -439,3 +440,34 @@ class TestHandleRiotApiError:
             mock_error.assert_called_once()
             logged_msg = mock_error.call_args[0][0]
             assert "DLQ" in logged_msg
+
+
+class TestConsumerId:
+    """consumer_id() returns a unique hostname-pid string for stream consumers."""
+
+    def test_returns_string(self):
+        """consumer_id() returns a str."""
+        result = consumer_id()
+        assert isinstance(result, str)
+
+    def test_contains_hostname(self):
+        """Result contains the machine's hostname."""
+        import socket
+
+        hostname = socket.gethostname()
+        result = consumer_id()
+        assert hostname in result
+
+    def test_contains_pid(self):
+        """Result contains the current process ID."""
+        import os
+
+        pid = str(os.getpid())
+        result = consumer_id()
+        assert pid in result
+
+    def test_format_hostname_dash_pid(self):
+        """With mocked hostname and pid, result is exactly 'hostname-pid'."""
+        with patch("lol_pipeline.helpers.socket.gethostname", return_value="myhost"), \
+             patch("lol_pipeline.helpers.os.getpid", return_value=12345):
+            assert consumer_id() == "myhost-12345"

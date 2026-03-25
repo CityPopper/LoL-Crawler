@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import html as _html
+
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
 from lol_ui.constants import _HALT_BANNER, _REGIONS, _STREAM_KEYS
 from lol_ui.rendering import _badge, _depth_badge, _page
+from lol_ui.streams_helpers import _translate_stream_key
 from lol_ui.strings import t
 
 router = APIRouter()
@@ -42,13 +45,15 @@ async def index(request: Request) -> HTMLResponse:
 
     stream_rows = ""
     for s, length in zip(_STREAM_KEYS, stream_lengths, strict=True):
+        key_label = _html.escape(_translate_stream_key(s))
         stream_rows += (
-            f"<tr><td>{s}</td>"
+            f"<tr><td>{key_label}</td>"
             f"<td class='text-right'>{length}</td>"
             f"<td>{_depth_badge(s, length)}</td></tr>"
         )
+    delayed_label = _html.escape(_translate_stream_key("delayed:messages"))
     stream_rows += (
-        f"<tr><td>delayed:messages</td>"
+        f"<tr><td>{delayed_label}</td>"
         f"<td class='text-right'>{delayed}</td>"
         f"<td>{_depth_badge('delayed:messages', delayed)}</td></tr>"
     )
