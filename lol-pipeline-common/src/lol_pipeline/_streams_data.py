@@ -19,10 +19,18 @@ ANALYZE_STREAM_MAXLEN: int = 50_000  # 10x amplification from parser
 # ARGV[2] = maxlen for the target stream ("0" means no trimming)
 # Remaining ARGV pairs (3..N) = field, value, field, value, ... for XADD
 _REPLAY_LUA = """
-local stream  = KEYS[1]
-local dlq     = KEYS[2]
+local stream   = KEYS[1]
+local dlq      = KEYS[2]
 local entry_id = ARGV[1]
-local maxlen  = tonumber(ARGV[2])
+local maxlen   = tonumber(ARGV[2])
+
+-- Guard: entry must still exist in the DLQ stream.
+-- If a prior replay already completed XADD+XDEL, the entry is gone.
+-- Skip the XADD to prevent duplicate delivery on crash-restart.
+local exists = redis.call("XRANGE", dlq, entry_id, entry_id)
+if #exists == 0 then
+    return 0
+end
 
 local n = #ARGV
 local fields = {}

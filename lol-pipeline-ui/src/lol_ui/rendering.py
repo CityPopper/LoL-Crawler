@@ -46,6 +46,18 @@ def _badge(variant: str, text: str) -> str:
     return f'<span class="badge badge--{variant}">{html.escape(text)}</span>'
 
 
+def _badge_html(variant: str, text: str) -> str:
+    """Render a status badge preserving raw HTML in *text* (no escaping).
+
+    Use only when *text* is trusted/pre-escaped HTML.  For user-supplied
+    strings use :func:`_badge` which auto-escapes via ``html.escape``.
+    """
+    if variant not in _BADGE_VARIANTS:
+        msg = f"Invalid badge variant: {variant}"
+        raise ValueError(msg)
+    return f'<span class="badge badge--{variant}">{text}</span>'
+
+
 def _empty_state(title: str, body_html: str) -> str:
     """Render an empty-state message. Both params are raw HTML -- callers MUST
     pre-escape any dynamic content with html.escape().
@@ -207,11 +219,18 @@ def _stats_form(
   });
 })();
 </script>"""
+    onboarding_html = (
+        '<p style="color:var(--color-muted);margin-bottom:var(--space-sm)">'
+        "Enter a tracked player&#x2019;s Riot ID and region to view their match statistics."
+        "</p>"
+        if not msg and not stats_html
+        else ""
+    )
     return _page(
         _t("stats_form_title"),
         f"""
 <h2>{_t("stats_form_title")}</h2>
-{msg_html}
+{onboarding_html}{msg_html}
 <form class="form-inline" method="get" action="/stats">
   <label for="stats-riot-id">{_t("stats_form_riot_id_label")}
     <input id="stats-riot-id" name="riot_id"

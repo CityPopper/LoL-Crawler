@@ -55,14 +55,18 @@ class TestDlqAttemptsIncrement:
         self, r: fakeredis.aioredis.FakeRedis
     ) -> None:
         # Input: DLQEnvelope with dlq_attempts=1
-        # After _requeue_delayed: the MessageEnvelope in delayed:messages should have dlq_attempts=2
+        # After _requeue_delayed: the MessageEnvelope in delayed:envelope:{id} has dlq_attempts=2
         dlq = _make_dlq(dlq_attempts=1)
         msg_id = await _setup_dlq_msg(r, dlq)
         await _requeue_delayed(r, dlq, delay_ms=5000, msg_id=msg_id)
 
+        # RDB-5: member is the envelope ID, data is in the hash
         members = await r.zrange(_DELAYED_KEY, 0, -1)
         assert len(members) == 1
-        fields = json.loads(members[0])
+        envelope_id = members[0]
+        data = await r.hget(f"delayed:envelope:{envelope_id}", "data")
+        assert data is not None
+        fields = json.loads(data)
         env = MessageEnvelope.from_redis_fields(fields)
         assert env.dlq_attempts == 2
 
@@ -76,7 +80,10 @@ class TestDlqAttemptsIncrement:
         msg_id = await _setup_dlq_msg(r, dlq)
         await _requeue_delayed(r, dlq, delay_ms=5000, msg_id=msg_id)
 
+        # RDB-5: member is the envelope ID, data is in the hash
         members = await r.zrange(_DELAYED_KEY, 0, -1)
-        fields = json.loads(members[0])
+        envelope_id = members[0]
+        data = await r.hget(f"delayed:envelope:{envelope_id}", "data")
+        fields = json.loads(data)
         env = MessageEnvelope.from_redis_fields(fields)
         assert env.dlq_attempts == 1

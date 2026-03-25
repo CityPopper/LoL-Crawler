@@ -1,0 +1,178 @@
+"""op.gg internal API client.
+
+Uses the op.gg SPA internal endpoints to fetch match history and normalize
+to match-v5-shaped dicts via the ETL layer in _opgg_etl.py.
+
+Note: op.gg responses do NOT contain Riot matchIds. The normalized match_id
+uses the format ``OPGG_{PLATFORM}_{opgg_internal_id}`` and cannot be
+directly cross-referenced with Riot API without a separate lookup.
+"""
+from __future__ import annotations
+
+import logging
+
+import httpx
+import redis.asyncio as aioredis
+
+from lol_pipeline._opgg_etl import normalize_game
+from lol_pipeline._rate_limiter_data import _LONG_LIMIT, _SHORT_LIMIT
+from lol_pipeline.rate_limiter import wait_for_token
+
+_log = logging.getLogger("opgg_client")
+
+_BASE_URL = "https://lol-api-summoner.op.gg/api"
+_DEFAULT_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Origin": "https://www.op.gg",
+    "Referer": "https://www.op.gg/",
+}
+
+# Per-endpoint rate limit key prefixes.  Each endpoint gets its own sliding
+# window so a burst on summoner lookups does not starve match history fetches.
+_RL_SUMMONER = "ratelimit:opgg:summoner"
+_RL_GAMES = "ratelimit:opgg:games"
+
+
+class OpggParseError(Exception):
+    """Raised when the op.gg response cannot be parsed."""
+
+
+class OpggRateLimitError(Exception):
+    """Raised when op.gg returns HTTP 429 (rate limited)."""
+
+    def __init__(self, retry_ms: int = 5000) -> None:
+        self.retry_ms = retry_ms
+        super().__init__(f"op.gg rate limit — retry after {retry_ms}ms")
+
+
+class OpggClient:
+    """Thin HTTP client for op.gg internal API.
+
+    Rate limiting:
+        Pass ``r`` (a Redis client) to enable distributed rate limiting via the
+        shared ``wait_for_token`` infrastructure.  Each endpoint (summoner lookup,
+        match history) uses its own sliding-window key prefix so bursts on one
+        endpoint do not starve the other.  When ``r`` is None, rate limiting is
+        skipped (useful in unit tests with respx mocks).
+
+    Inject a custom ``httpx.AsyncClient`` for testing.
+    """
+
+    def __init__(
+        self,
+        client: httpx.AsyncClient | None = None,
+        r: aioredis.Redis | None = None,
+        rate_limit_per_second: int = 2,
+        rate_limit_long: int = 30,
+    ) -> None:
+        self._client = client or httpx.AsyncClient(
+            headers=_DEFAULT_HEADERS,
+            timeout=httpx.Timeout(10.0),
+            follow_redirects=True,
+        )
+        self._r = r
+        self._rate_limit_per_second = rate_limit_per_second
+        self._rate_limit_long = rate_limit_long
+
+    @staticmethod
+    def _check_status(resp: httpx.Response) -> None:
+        """Raise typed errors before delegating to raise_for_status."""
+        if resp.status_code == 429:
+            retry_after = resp.headers.get("Retry-After", "")
+            try:
+                retry_ms = int(float(retry_after)) * 1000
+            except (ValueError, TypeError):
+                retry_ms = 5000
+            raise OpggRateLimitError(retry_ms)
+        resp.raise_for_status()
+
+    async def _acquire(self, key_prefix: str) -> None:
+        """Acquire a rate limit token for the given endpoint key prefix.
+
+        No-op when no Redis client is configured.
+        """
+        if self._r is None:
+            return
+        await wait_for_token(
+            self._r,
+            key_prefix=key_prefix,
+            limit_per_second=self._rate_limit_per_second,
+            limit_long=self._rate_limit_long,
+            throttle_key="ratelimit:opgg:throttle",
+        )
+
+    async def get_summoner_id(self, game_name: str, tag_line: str, region: str) -> str:
+        """Resolve a Riot ID (game_name#tag_line) to an op.gg summoner_id.
+
+        Raises ``OpggParseError`` if the summoner is not found or on parse failure.
+        """
+        await self._acquire(_RL_SUMMONER)
+        riot_id = f"{game_name}#{tag_line}"
+        url = f"{_BASE_URL}/v3/{region}/summoners"
+        params = {"riot_id": riot_id, "hl": "en_US"}
+        resp = await self._client.get(url, params=params)
+        if resp.status_code == 404:
+            raise OpggParseError(f"summoner not found: {riot_id}")
+        self._check_status(resp)
+        try:
+            data = resp.json()
+            return str(data["data"]["summoner_id"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise OpggParseError(
+                f"unexpected response from summoner lookup: {exc}"
+            ) from exc
+
+    async def get_match_history(
+        self,
+        summoner_id: str,
+        region: str,
+        limit: int = 20,
+        game_type: str = "total",
+        ended_at: str = "",
+    ) -> list[dict]:
+        """Fetch match history for a summoner_id.
+
+        Returns a list of match-v5-shaped dicts (normalized via ETL layer).
+        Raises ``OpggParseError`` on unexpected response structure.
+        """
+        await self._acquire(_RL_GAMES)
+        url = f"{_BASE_URL}/{region}/summoners/{summoner_id}/games"
+        params: dict[str, str | int] = {
+            "limit": limit,
+            "game_type": game_type,
+            "hl": "en_US",
+        }
+        if ended_at:
+            params["ended_at"] = ended_at
+        resp = await self._client.get(url, params=params)
+        self._check_status(resp)
+        try:
+            body = resp.json()
+            games: list[dict] | None = body.get("data")
+            if games is None:
+                raise OpggParseError(
+                    f"unexpected response: missing 'data' key in {list(body)}"
+                )
+        except (TypeError, ValueError) as exc:
+            raise OpggParseError(f"unexpected response: {exc}") from exc
+
+        results: list[dict] = []
+        for raw_game in games:
+            try:
+                results.append(normalize_game(raw_game, region))
+            except (KeyError, TypeError) as exc:
+                _log.warning(
+                    "skipping malformed op.gg game",
+                    extra={"game_id": raw_game.get("id", "?"), "error": str(exc)},
+                )
+        return results
+
+    async def close(self) -> None:
+        """Close the underlying HTTP client."""
+        await self._client.aclose()

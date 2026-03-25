@@ -370,3 +370,39 @@ class TestHasPriorityPlayersOrphanCleanup:
         result = await has_priority_players(r)
         assert result is True
         assert await r.sismember(PRIORITY_ACTIVE_SET, "live-puuid")
+
+    @pytest.mark.asyncio
+    async def test_multiple_orphans__all_cleaned_within_n_calls(self, r):
+        """TCG-8: Multiple orphaned members in priority:active are cleaned up.
+
+        has_priority_players() removes one orphan per call (spot-check samples
+        one random member). With 3 orphans and no live keys, calling it up to
+        10 times must eventually return False (all orphans removed).
+
+        This documents the O(n) cleanup bound where n = number of orphans.
+        """
+        # Add 3 orphaned members (SET entries without corresponding priority keys)
+        await r.sadd(PRIORITY_ACTIVE_SET, "puuid1", "puuid2", "puuid3")
+        # Do NOT create player:priority:{puuid} keys — all are orphans
+
+        assert await r.scard(PRIORITY_ACTIVE_SET) == 3
+
+        # Call has_priority_players up to 10 times — should converge to False
+        result = True
+        calls = 0
+        for _ in range(10):
+            calls += 1
+            result = await has_priority_players(r)
+            if not result:
+                break
+
+        assert result is False, (
+            f"has_priority_players still returns True after {calls} calls "
+            f"with {await r.scard(PRIORITY_ACTIVE_SET)} orphans remaining"
+        )
+        # All orphans should have been removed
+        assert await r.scard(PRIORITY_ACTIVE_SET) == 0
+        # Should converge within n+1 calls (3 orphans -> at most 4 calls)
+        assert calls <= 4, (
+            f"Expected cleanup within 4 calls (3 orphans + 1 final check), took {calls}"
+        )

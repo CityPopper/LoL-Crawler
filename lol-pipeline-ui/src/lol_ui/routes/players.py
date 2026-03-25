@@ -81,20 +81,20 @@ async def show_players(request: Request) -> HTMLResponse:
         )
         return HTMLResponse(_page(t("page_players"), body, path="/players"))
 
-    # Fetch all PUUIDs with metadata+rank, then sort+filter in Python.
-    all_puuids: list[str] = await r.zrevrange("players:all", 0, -1)
-    player_rows = await _build_player_rows(r, all_puuids)
+    # Paginate at Redis level: fetch only the current page of PUUIDs.
+    start = page * _PLAYERS_PAGE_SIZE
+    stop = start + _PLAYERS_PAGE_SIZE - 1
+    page_puuids: list[str] = await r.zrevrange("players:all", start, stop)
+    player_rows = await _build_player_rows(r, page_puuids)
 
     if region_filter:
         player_rows = [row for row in player_rows if row[2] == region_filter]
 
     _apply_player_sort(player_rows, sort)
-    display_total = len(player_rows)
-    start = page * _PLAYERS_PAGE_SIZE
-    player_rows = player_rows[start : start + _PLAYERS_PAGE_SIZE]
-    has_prev = page > 0
-    has_next = start + _PLAYERS_PAGE_SIZE < display_total
+    display_total = total
     total_pages = max(1, (display_total + _PLAYERS_PAGE_SIZE - 1) // _PLAYERS_PAGE_SIZE)
+    has_prev = page > 0
+    has_next = stop < total - 1
 
     rows = _render_player_rows(player_rows)
 

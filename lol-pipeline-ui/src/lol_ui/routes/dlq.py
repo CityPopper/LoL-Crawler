@@ -37,7 +37,7 @@ async def show_dlq(request: Request) -> HTMLResponse:
     r = request.app.state.r
     halted = await is_system_halted(r)
     halt_html = _HALT_BANNER if halted else ""
-    summary_html = await _dlq_summary_html(r)
+    summary_html, total_count = await _dlq_summary_html(r)
     try:
         per_page = min(
             int(request.query_params.get("per_page", str(_DLQ_DEFAULT_PER_PAGE))), _DLQ_MAX_PER_PAGE
@@ -49,8 +49,6 @@ async def show_dlq(request: Request) -> HTMLResponse:
     cursor = request.query_params.get("cursor", "-")
     if cursor != "-" and not _STREAM_ENTRY_ID_RE.match(cursor):
         cursor = "-"
-
-    total_count: int = await r.xlen("stream:dlq")
 
     entries: list[tuple[str, dict[str, str]]] = await r.xrange(
         "stream:dlq", min=cursor, max="+", count=per_page + 1

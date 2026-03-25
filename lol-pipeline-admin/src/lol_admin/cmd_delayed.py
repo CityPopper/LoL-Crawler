@@ -23,22 +23,25 @@ async def cmd_delayed_list(r: aioredis.Redis, args: argparse.Namespace) -> int:
     now_ms = datetime.now(tz=UTC).timestamp() * 1000
     if getattr(args, "json", False):
         for member, score in entries:
-            truncated = member[:80] + ("..." if len(member) > 80 else "")
+            ready_dt = datetime.fromtimestamp(score / 1000, tz=UTC).isoformat()
             delta_ms = score - now_ms
-            print(json.dumps({
-                "member": truncated,
-                "ready_ms": score,
-                "eta_s": delta_ms / 1000,
-            }))
-        return 0
-    for member, score in entries:
-        truncated = member[:80] + ("..." if len(member) > 80 else "")
-        ready_dt = datetime.fromtimestamp(score / 1000, tz=UTC).isoformat()
-        delta_ms = score - now_ms
-        eta = "ready now" if delta_ms <= 0 else f"in {delta_ms / 1000:.0f}s"
-        _print_info(f"{truncated}  ready={ready_dt}  ({eta})")
-    total: int = await r.zcard(_DELAYED_MESSAGES)
-    _print_ok(f"showing {len(entries)} of {total} delayed messages")
+            eta = "ready now" if delta_ms <= 0 else f"in {delta_ms / 1000:.0f}s"
+            record = {
+                "member": member,
+                "score": score,
+                "ready_at": ready_dt,
+                "eta": eta,
+            }
+            print(json.dumps(record))
+    else:
+        for member, score in entries:
+            truncated = member[:80] + ("..." if len(member) > 80 else "")
+            ready_dt = datetime.fromtimestamp(score / 1000, tz=UTC).isoformat()
+            delta_ms = score - now_ms
+            eta = "ready now" if delta_ms <= 0 else f"in {delta_ms / 1000:.0f}s"
+            _print_info(f"{truncated}  ready={ready_dt}  ({eta})")
+        total: int = await r.zcard(_DELAYED_MESSAGES)
+        _print_ok(f"showing {len(entries)} of {total} delayed messages")
     return 0
 
 

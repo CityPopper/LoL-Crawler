@@ -7,18 +7,15 @@ import contextlib
 import json
 import logging
 import signal
-import sys
 import time
 from typing import Any
 
 import redis.asyncio as aioredis
-from pydantic import ValidationError
-
 from lol_pipeline.config import Config
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.redis_client import get_redis
-from lol_pipeline.streams import maxlen_for_stream
+from lol_pipeline.streams import _DEFAULT_MAXLEN
 from redis.exceptions import RedisError
 
 from lol_delay_scheduler._data import (
@@ -26,6 +23,7 @@ from lol_delay_scheduler._data import (
     _CIRCUIT_OPEN_TTL_S,
     _DELAYED_KEY,
     _MAX_MEMBER_FAILURES,
+    _STREAM_MAXLEN,
 )
 from lol_delay_scheduler._data import (
     _DISPATCH_LUA as _DISPATCH_LUA,
@@ -39,7 +37,7 @@ _circuit_open: dict[str, float] = {}
 
 def _maxlen_for_stream(stream: str) -> int | None:
     """Return the maxlen policy for *stream* (None = no trimming)."""
-    return maxlen_for_stream(stream)
+    return _STREAM_MAXLEN.get(stream, _DEFAULT_MAXLEN)
 
 
 def _is_circuit_open(member: str) -> bool:
@@ -75,6 +73,59 @@ def _record_success(member: str) -> None:
     _circuit_open.pop(member, None)
 
 
+def _is_envelope_id(member: str) -> bool:
+    """Return True if *member* looks like a UUID envelope ID (not a JSON blob)."""
+    # UUID v4: 36 chars, no braces/brackets.  JSON blobs start with '{'.
+    return len(member) <= 40 and not member.startswith("{")
+
+
+async def _resolve_member(
+    r: aioredis.Redis,
+    member: str,
+    log: logging.Logger,
+) -> MessageEnvelope | None:
+    """Deserialize a ZSET member into a MessageEnvelope.
+
+    RDB-5: members can be either an envelope ID (new format) or a full JSON
+    blob (legacy format).  For ID members the envelope data is fetched from
+    ``delayed:envelope:{id}``.
+
+    Returns ``None`` when the member is corrupt and has been removed.
+    """
+    if _is_envelope_id(member):
+        data: str | None = await r.hget(f"delayed:envelope:{member}", "data")
+        if data is None:
+            log.error(
+                "delayed envelope hash missing for ID member — removing",
+                extra={"member": member},
+            )
+            await r.zrem(_DELAYED_KEY, member)
+            _record_success(member)
+            return None
+        try:
+            fields: dict[str, str] = json.loads(data)
+            return MessageEnvelope.from_redis_fields(fields)
+        except (json.JSONDecodeError, KeyError, ValueError) as exc:
+            log.error(
+                "corrupt delayed envelope hash — removing",
+                extra={"error": str(exc), "member": member},
+            )
+            await r.zrem(_DELAYED_KEY, member)
+            await r.delete(f"delayed:envelope:{member}")
+            _record_success(member)
+            return None
+    else:
+        # Legacy format: full JSON blob as member
+        try:
+            fields = json.loads(member)
+            return MessageEnvelope.from_redis_fields(fields)
+        except (json.JSONDecodeError, KeyError, ValueError) as exc:
+            log.error("corrupt delayed member — removing", extra={"error": str(exc)})
+            await r.zrem(_DELAYED_KEY, member)
+            _record_success(member)
+            return None
+
+
 async def _tick(r: aioredis.Redis, log: logging.Logger) -> None:
     now_ms = int(time.time() * 1000)
     while True:
@@ -96,13 +147,8 @@ async def _tick(r: aioredis.Redis, log: logging.Logger) -> None:
                 await r.zadd(_DELAYED_KEY, {member: future_ms}, xx=True)
                 dispatched += 1
                 continue
-            try:
-                fields: dict[str, str] = json.loads(member)
-                env = MessageEnvelope.from_redis_fields(fields)
-            except (json.JSONDecodeError, KeyError, ValueError) as exc:
-                log.error("corrupt delayed member — removing", extra={"error": str(exc)})
-                await r.zrem(_DELAYED_KEY, member)
-                _record_success(member)
+            env = await _resolve_member(r, member, log)
+            if env is None:
                 dispatched += 1
                 continue
             try:
@@ -122,6 +168,9 @@ async def _tick(r: aioredis.Redis, log: logging.Logger) -> None:
                 )
                 _record_success(member)
                 dispatched += 1
+                # Clean up envelope hash for ID-based members (RDB-5)
+                if _is_envelope_id(member):
+                    await r.delete(f"delayed:envelope:{member}")
                 if result == 0:
                     log.info(
                         "skipped duplicate dispatch — member already removed",
@@ -147,14 +196,7 @@ async def main() -> None:
     shutdown_event = asyncio.Event()
 
     log = get_logger("delay-scheduler")
-    try:
-        cfg = Config()
-    except ValidationError as exc:
-        print(
-            f"Configuration error: {exc}\nCheck .env.example for required variables.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    cfg = Config()
     r = get_redis(cfg.redis_url)
 
     loop = asyncio.get_running_loop()

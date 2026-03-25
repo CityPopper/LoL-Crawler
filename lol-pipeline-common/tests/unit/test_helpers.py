@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import fakeredis.aioredis
 import pytest
 
@@ -385,3 +387,55 @@ class TestHandleRiotApiError:
         )
         entries = await r.xrange("stream:dlq")
         assert entries[0][1]["retry_after_ms"] == "null"
+
+    @pytest.mark.asyncio
+    async def test_server_error__log_mentions_dlq(self, r):
+        """E4: ServerError log message should mention DLQ for operator context."""
+        import logging
+
+        from lol_pipeline.helpers import handle_riot_api_error
+        from lol_pipeline.riot_api import ServerError
+        from lol_pipeline.streams import consume, publish
+
+        env = self._make_envelope()
+        await publish(r, "stream:test", env)
+        msgs = await consume(r, "stream:test", "test-group", "c1", block=0)
+        msg_id = msgs[0][0]
+
+        log = logging.getLogger("test.e4")
+        exc = ServerError("internal error", status_code=500)
+        with patch.object(log, "error") as mock_error:
+            await handle_riot_api_error(
+                r, exc=exc, envelope=env, msg_id=msg_id,
+                failed_by="test-svc", in_stream="stream:test", group="test-group",
+                log=log,
+            )
+            mock_error.assert_called_once()
+            logged_msg = mock_error.call_args[0][0]
+            assert "DLQ" in logged_msg
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_error__log_mentions_dlq(self, r):
+        """E4: RateLimitError log message should also mention DLQ."""
+        import logging
+
+        from lol_pipeline.helpers import handle_riot_api_error
+        from lol_pipeline.riot_api import RateLimitError
+        from lol_pipeline.streams import consume, publish
+
+        env = self._make_envelope()
+        await publish(r, "stream:test", env)
+        msgs = await consume(r, "stream:test", "test-group", "c1", block=0)
+        msg_id = msgs[0][0]
+
+        log = logging.getLogger("test.e4.ratelimit")
+        exc = RateLimitError(retry_after_ms=5000)
+        with patch.object(log, "error") as mock_error:
+            await handle_riot_api_error(
+                r, exc=exc, envelope=env, msg_id=msg_id,
+                failed_by="test-svc", in_stream="stream:test", group="test-group",
+                log=log,
+            )
+            mock_error.assert_called_once()
+            logged_msg = mock_error.call_args[0][0]
+            assert "DLQ" in logged_msg

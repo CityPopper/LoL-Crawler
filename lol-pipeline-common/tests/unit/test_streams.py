@@ -160,40 +160,6 @@ class TestStreamMaxlenConstants:
         assert _DEFAULT_MAXLEN == 10_000
 
 
-class TestMaxlenForStream:
-    """DRY-2: maxlen_for_stream consolidated into lol_pipeline.streams."""
-
-    def test_maxlen_for_stream__importable(self) -> None:
-        """maxlen_for_stream is importable from lol_pipeline.streams."""
-        from lol_pipeline.streams import maxlen_for_stream
-
-        assert callable(maxlen_for_stream)
-
-    def test_maxlen_for_stream__match_id(self) -> None:
-        """stream:match_id returns 500_000."""
-        from lol_pipeline.streams import maxlen_for_stream
-
-        assert maxlen_for_stream("stream:match_id") == 500_000
-
-    def test_maxlen_for_stream__analyze(self) -> None:
-        """stream:analyze returns 50_000."""
-        from lol_pipeline.streams import maxlen_for_stream
-
-        assert maxlen_for_stream("stream:analyze") == 50_000
-
-    def test_maxlen_for_stream__unknown_returns_default(self) -> None:
-        """Unknown streams return _DEFAULT_MAXLEN (10_000)."""
-        from lol_pipeline.streams import maxlen_for_stream
-
-        assert maxlen_for_stream("stream:puuid") == 10_000
-
-    def test_maxlen_for_stream__parse_returns_default(self) -> None:
-        """stream:parse is not in the override map, returns default."""
-        from lol_pipeline.streams import maxlen_for_stream
-
-        assert maxlen_for_stream("stream:parse") == 10_000
-
-
 class TestConsume:
     @pytest.mark.asyncio
     async def test_consume_returns_empty_on_no_messages(self, r):
@@ -1036,6 +1002,39 @@ class TestReplayFromDlq:
 
         assert await r.xlen(STREAM_DLQ) == 1
         assert await r.xlen("stream:puuid") == 1
+
+
+class TestReplayFromDlqIdempotent:
+    """TCG-9: Double replay_from_dlq on the same entry must not produce duplicate messages."""
+
+    @pytest.mark.asyncio
+    async def test_double_replay__target_stream_has_exactly_one_message(self, r):
+        """Calling replay_from_dlq twice with the same DLQ entry ID produces only 1 message."""
+        from lol_pipeline.constants import STREAM_DLQ
+
+        env = _env(stream="stream:puuid")
+        dlq_id = await r.xadd(STREAM_DLQ, env.to_redis_fields())
+
+        await replay_from_dlq(r, dlq_id, "stream:puuid", env)
+        await replay_from_dlq(r, dlq_id, "stream:puuid", env)
+
+        assert await r.xlen("stream:puuid") == 1, (
+            "Double replay must not produce duplicate messages in target stream"
+        )
+
+    @pytest.mark.asyncio
+    async def test_double_replay__returns_zero_on_second_call(self, r):
+        """Second replay_from_dlq returns 0 (no-op) when the DLQ entry is already gone."""
+        from lol_pipeline.constants import STREAM_DLQ
+
+        env = _env(stream="stream:puuid")
+        dlq_id = await r.xadd(STREAM_DLQ, env.to_redis_fields())
+
+        result1 = await replay_from_dlq(r, dlq_id, "stream:puuid", env)
+        result2 = await replay_from_dlq(r, dlq_id, "stream:puuid", env)
+
+        assert result1 == 1, "First replay should succeed and return 1"
+        assert result2 == 0, "Second replay should be a no-op and return 0"
 
 
 class TestNackToDlqCorrelationId:

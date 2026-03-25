@@ -1393,7 +1393,8 @@ class TestNameCacheTTLInUI:
         # Verify set was called with cache TTL
         from lol_pipeline.resolve import CACHE_TTL_S
 
-        mock_r.set.assert_any_call("player:name:test#na1", "test-puuid-ttl", ex=CACHE_TTL_S)
+        # The stats route caches the PUUID via pipeline, not a direct r.set call
+        mock_pipe.set.assert_any_call("player:name:test#na1", "test-puuid-ttl", ex=CACHE_TTL_S)
 
 
 class TestRegionPreservation:
@@ -4606,10 +4607,11 @@ class TestDlqSummary:
         for i in range(3):
             await r.xadd("stream:dlq:archive", {"data": f"archived-{i}"})
 
-        result = await _dlq_summary_html(r)
+        result, depth = await _dlq_summary_html(r)
 
         assert ">2<" in result  # pending count
         assert ">3<" in result  # archived count
+        assert depth == 2
         await r.aclose()
 
     @pytest.mark.asyncio
@@ -4638,7 +4640,7 @@ class TestDlqSummary:
             )
             await r.xadd("stream:dlq", dlq.to_redis_fields())
 
-        result = await _dlq_summary_html(r)
+        result, _depth = await _dlq_summary_html(r)
 
         assert "Failure Codes" in result
         assert "http_429" in result
@@ -4670,7 +4672,7 @@ class TestDlqSummary:
             )
             await r.xadd("stream:dlq", dlq.to_redis_fields())
 
-        result = await _dlq_summary_html(r)
+        result, _depth = await _dlq_summary_html(r)
 
         assert "Source Streams" in result
         assert "stream:match_id" in result
@@ -4701,7 +4703,7 @@ class TestDlqSummary:
         )
         await r.xadd("stream:dlq", dlq.to_redis_fields())
 
-        result = await _dlq_summary_html(r)
+        result, _depth = await _dlq_summary_html(r)
 
         # Should show an age string, not "n/a"
         assert "n/a" not in result
@@ -4732,7 +4734,7 @@ class TestDlqSummary:
         )
         await r.xadd("stream:dlq", dlq.to_redis_fields())
 
-        result = await _dlq_summary_html(r)
+        result, _depth = await _dlq_summary_html(r)
 
         assert "<script>" not in result
         assert "&lt;script&gt;" in result

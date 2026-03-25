@@ -11,8 +11,6 @@ import asyncio
 import sys
 
 import redis.asyncio as aioredis
-from pydantic import ValidationError
-
 from lol_pipeline.config import Config
 
 # Re-export get_redis so mocks in tests still patch "lol_admin.main.get_redis"
@@ -51,6 +49,7 @@ from lol_admin.cmd_dlq import (
     cmd_dlq_list,
     cmd_dlq_replay,
 )
+from lol_admin.cmd_opgg import cmd_opgg_status
 from lol_admin.cmd_player import (
     cmd_clear_priority,
     cmd_recalc_players,
@@ -131,20 +130,17 @@ def _build_parser() -> argparse.ArgumentParser:
     p_cp.add_argument("--all", action="store_true", help="clear all priority keys")
     p_cp.add_argument("--region", default="na1")
 
-    p_rp2 = sub.add_parser(
+    sub.add_parser(
         "recalc-priority",
         help="diagnostic: count player:priority:* keys (read-only)",
     )
-    p_rp2.add_argument("--json", action="store_true", default=False)
 
-    p_rpl = sub.add_parser(
+    sub.add_parser(
         "recalc-players",
         help="rebuild players:all sorted set from existing player:{puuid} hashes",
     )
-    p_rpl.add_argument("--json", action="store_true", default=False)
 
-    p_dl = sub.add_parser("delayed-list", help="show entries in delayed:messages sorted set")
-    p_dl.add_argument("--json", action="store_true", default=False)
+    sub.add_parser("delayed-list", help="show entries in delayed:messages sorted set")
 
     p_df = sub.add_parser("delayed-flush", help="remove all delayed messages")
     p_df.add_argument("--all", action="store_true", required=True)
@@ -152,6 +148,11 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "backfill-champions",
         help="reprocess parsed matches to populate champion stats",
+    )
+
+    sub.add_parser(
+        "opgg-status",
+        help="show OP.GG integration status (enabled, fetch count, data dir size)",
     )
 
     return parser
@@ -189,6 +190,7 @@ _CMD_DISPATCH = {
     "delayed-list": lambda r, riot, cfg, args: cmd_delayed_list(r, args),
     "delayed-flush": lambda r, riot, cfg, args: cmd_delayed_flush(r, args),
     "backfill-champions": lambda r, riot, cfg, args: cmd_backfill_champions(r, cfg, args),
+    "opgg-status": lambda r, riot, cfg, args: cmd_opgg_status(r, cfg, args),
 }
 
 
@@ -228,14 +230,7 @@ async def main(argv: list[str]) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv[1:])
 
-    try:
-        cfg = Config()
-    except ValidationError as exc:
-        print(
-            f"Configuration error: {exc}\nCheck .env.example for required variables.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    cfg = Config()
     try:
         r = get_redis(cfg.redis_url)
         riot = RiotClient(cfg.riot_api_key)

@@ -255,19 +255,15 @@ async def nack_to_dlq(
     await r.xadd(STREAM_DLQ, fields, maxlen=50_000, approximate=True)  # type: ignore[arg-type]
 
 
-def maxlen_for_stream(stream: str) -> int:
-    """Return the MAXLEN to use when publishing to *stream*.
-
-    Streams with an explicit override in ``_REPLAY_MAXLEN_MAP`` (e.g.
-    ``stream:match_id`` → 500 000, ``stream:analyze`` → 50 000) get their
-    configured value; all others fall back to ``_DEFAULT_MAXLEN`` (10 000).
-    """
+def _maxlen_for_replay(stream: str) -> int:
+    """Return the MAXLEN to use when replaying to *stream*."""
     return _REPLAY_MAXLEN_MAP.get(stream, _DEFAULT_MAXLEN)
 
 
-def _maxlen_for_replay(stream: str) -> int:
-    """Return the MAXLEN to use when replaying to *stream*."""
-    return maxlen_for_stream(stream)
+def maxlen_for_stream(stream: str) -> int | None:
+    """Return the configured MAXLEN for *stream*, or ``None`` if unknown."""
+    result = _REPLAY_MAXLEN_MAP.get(stream)
+    return result
 
 
 async def replay_from_dlq(
@@ -275,12 +271,12 @@ async def replay_from_dlq(
     dlq_entry_id: str,
     target_stream: str,
     envelope: MessageEnvelope,
-) -> None:
+) -> int:
     """Atomically XADD *envelope* to *target_stream* and XDEL *dlq_entry_id* from
     stream:dlq in a single Lua script call.
 
-    This prevents duplicate replay when the process crashes between the two
-    operations — the standard two-step `publish` + `xdel` pattern is not atomic.
+    Returns ``1`` when the replay succeeds, ``0`` when the DLQ entry no longer
+    exists (already replayed — idempotent guard against crash-restart duplicates).
     """
     redis_fields = envelope.to_redis_fields()
     ml = _maxlen_for_replay(target_stream)
@@ -288,10 +284,11 @@ async def replay_from_dlq(
     for k, v in redis_fields.items():
         flat_args.append(str(k))
         flat_args.append(str(v))
-    await r.eval(  # type: ignore[misc]
+    result: int = await r.eval(  # type: ignore[misc]
         _REPLAY_LUA,
         2,
         target_stream,
         STREAM_DLQ,
         *flat_args,
     )
+    return result

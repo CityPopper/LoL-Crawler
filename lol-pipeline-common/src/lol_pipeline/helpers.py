@@ -144,7 +144,10 @@ async def handle_riot_api_error(
     fc = "http_429" if isinstance(exc, RateLimitError) else "http_5xx"
     ram = exc.retry_after_ms if isinstance(exc, RateLimitError) else None
     if log:
-        log.error("Riot API error", extra={"error": str(exc), "failure_code": fc})
+        log.error(
+            "Riot API error \u2014 routing to DLQ for retry",
+            extra={"error": str(exc), "failure_code": fc},
+        )
     await nack_to_dlq(
         r,
         envelope,

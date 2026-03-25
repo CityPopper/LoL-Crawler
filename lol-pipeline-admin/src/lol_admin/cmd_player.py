@@ -119,9 +119,11 @@ async def cmd_recalc_priority(r: aioredis.Redis, args: argparse.Namespace) -> in
     async for _key in r.scan_iter(match="player:priority:*", count=100):
         count += 1
     if getattr(args, "json", False):
-        print(json.dumps({"player_priority_key_count": count}))
-        return 0
-    _print_ok(f"player:priority:* keys found: {count}  (read-only diagnostic — no changes made)")
+        print(json.dumps({"count": count}))
+    else:
+        _print_ok(
+            f"player:priority:* keys found: {count}  (read-only diagnostic — no changes made)"
+        )
     return 0
 
 
@@ -142,7 +144,7 @@ async def cmd_recalc_players(r: aioredis.Redis, args: argparse.Namespace) -> int
         await r.zadd("players:all", {puuid: score})
         count += 1
     if getattr(args, "json", False):
-        print(json.dumps({"players_indexed": count}))
-        return 0
-    _print_ok(f"players:all rebuilt — {count} players indexed")
+        print(json.dumps({"count": count}))
+    else:
+        _print_ok(f"players:all rebuilt — {count} players indexed")
     return 0

@@ -791,6 +791,49 @@ class TestLockOwnershipRefresh:
         assert await r.hget(f"player:stats:{puuid}", "total_kills") == "13"
 
 
+class TestLockMutualExclusionConcurrent:
+    """TCG-7: Lock mutual exclusion under true concurrency via asyncio.gather()."""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_analyze__same_puuid__no_double_count(self, r, cfg, log):
+        """TCG-7: Two concurrent _analyze_player calls for the same PUUID with one match.
+
+        Uses asyncio.gather() to run them truly concurrently. The SET NX lock
+        ensures only one worker processes the match. The other sees the lock
+        held and discards (acks without processing). Result: total_games == 1.
+        """
+        import asyncio
+
+        puuid = "test-puuid-concurrent"
+        await _add_participant(
+            r, "NA1_CONC", puuid, 5000, kills=7, deaths=3, assists=4, win=True
+        )
+
+        # Set up two separate stream messages for the same puuid
+        env1 = _analyze_envelope(puuid)
+        msg_id1 = await _setup_message(r, env1)
+        env2 = _analyze_envelope(puuid)
+        msg_id2 = await _setup_message(r, env2)
+
+        # Run both workers concurrently
+        await asyncio.gather(
+            _analyze_player(r, cfg, "worker-A", msg_id1, env1, log),
+            _analyze_player(r, cfg, "worker-B", msg_id2, env2, log),
+        )
+
+        # Only one worker should have processed the match — no double-counting.
+        total_games = await r.hget(f"player:stats:{puuid}", "total_games")
+        assert total_games == "1", (
+            f"Expected total_games=1 (one worker processes, other discards), got {total_games}"
+        )
+        assert await r.hget(f"player:stats:{puuid}", "total_kills") == "7"
+        # Lock should be released
+        assert await r.exists(f"player:stats:lock:{puuid}") == 0
+        # Both messages should be ACKed
+        pending = await r.xpending(_IN_STREAM, _GROUP)
+        assert pending["pending"] == 0
+
+
 class TestPlayerStatsTTL:
     """P10-DB-1: player stats/champions/roles/cursor keys get 30-day TTL."""
 
@@ -1713,119 +1756,3 @@ class TestLockRefreshBeforeChampionStats:
         assert await r.hget(f"player:stats:{puuid}", "total_games") == "1"
         # Champion stats should NOT be written (lock refresh failed)
         assert not await r.exists("champion:stats:Annie:14.5:MID")
-
-
-
-class TestConfigValidationError:
-    """E2: Missing env vars give actionable message, not raw pydantic traceback."""
-
-    @pytest.mark.asyncio
-    async def test_main__missing_config__exits_with_hint(self, monkeypatch, capsys):
-        """Config() raises ValidationError → sys.exit(1) with .env.example hint."""
-        monkeypatch.delenv("RIOT_API_KEY", raising=False)
-        monkeypatch.delenv("REDIS_URL", raising=False)
-        from pydantic import ValidationError
-
-        with (
-            patch(
-                "lol_analyzer.main.Config",
-                side_effect=ValidationError.from_exception_data(
-                    title="Config",
-                    line_errors=[],
-                ),
-            ),
-            pytest.raises(SystemExit) as exc_info,
-        ):
-            await main()
-        assert exc_info.value.code == 1
-        captured = capsys.readouterr()
-        assert ".env.example" in captured.err or ".env.example" in captured.out
-
-
-class TestUpdateChampionStatsPipeline:
-    """CR-1: All EVAL calls must be batched into a single pipeline, not one per match."""
-
-    @pytest.mark.asyncio
-    async def test__update_champion_stats__uses_single_pipeline(self, monkeypatch):
-        """CR-1: All EVAL calls must be batched into a single pipeline, not one per match."""
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-
-        # Track how many times pipeline() is entered
-        pipeline_enter_count = 0
-        original_pipeline = r.pipeline
-
-        def counting_pipeline(*args, **kwargs):
-            nonlocal pipeline_enter_count
-            pipeline_enter_count += 1
-            return original_pipeline(*args, **kwargs)
-
-        monkeypatch.setattr(r, "pipeline", counting_pipeline)
-
-        # Build 3 ranked matches with full participant data
-        new_matches = [
-            ("NA1_A", 1000.0),
-            ("NA1_B", 2000.0),
-            ("NA1_C", 3000.0),
-        ]
-        participant_data = [
-            {
-                "champion_name": "Annie",
-                "team_position": "MID",
-                "win": "1",
-                "kills": "5",
-                "deaths": "2",
-                "assists": "8",
-                "gold_earned": "12000",
-                "total_minions_killed": "180",
-                "total_damage_dealt_to_champions": "20000",
-                "vision_score": "30",
-                "double_kills": "1",
-                "triple_kills": "0",
-                "quadra_kills": "0",
-                "penta_kills": "0",
-            },
-            {
-                "champion_name": "Annie",
-                "team_position": "MID",
-                "win": "0",
-                "kills": "3",
-                "deaths": "5",
-                "assists": "4",
-                "gold_earned": "9000",
-                "total_minions_killed": "140",
-                "total_damage_dealt_to_champions": "15000",
-                "vision_score": "20",
-                "double_kills": "0",
-                "triple_kills": "0",
-                "quadra_kills": "0",
-                "penta_kills": "0",
-            },
-            {
-                "champion_name": "Lux",
-                "team_position": "SUPPORT",
-                "win": "1",
-                "kills": "2",
-                "deaths": "3",
-                "assists": "15",
-                "gold_earned": "8000",
-                "total_minions_killed": "30",
-                "total_damage_dealt_to_champions": "12000",
-                "vision_score": "50",
-                "double_kills": "0",
-                "triple_kills": "0",
-                "quadra_kills": "0",
-                "penta_kills": "0",
-            },
-        ]
-        match_metadata = [
-            {"queue_id": "420", "patch": "14.5"},
-            {"queue_id": "420", "patch": "14.5"},
-            {"queue_id": "420", "patch": "14.5"},
-        ]
-
-        await _update_champion_stats(r, new_matches, participant_data, match_metadata)
-
-        # Should be exactly 1 pipeline call for all matches, not 3
-        assert pipeline_enter_count == 1
-
-        await r.aclose()

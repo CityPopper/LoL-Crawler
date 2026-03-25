@@ -54,10 +54,24 @@ return 1
 """
 
 
+async def _scan_parsed_matches(r: aioredis.Redis) -> set[str]:
+    """Collect match IDs whose per-match hash has status=parsed (RDB-2)."""
+    result: set[str] = set()
+    async for key in r.scan_iter(match="match:*", count=200):
+        key_str: str = key
+        # Skip non-match keys (match:participants:*, match:status:*)
+        if key_str.count(":") != 1:
+            continue
+        status = await r.hget(key_str, "status")
+        if status == "parsed":
+            result.add(key_str.removeprefix("match:"))
+    return result
+
+
 async def cmd_backfill_champions(r: aioredis.Redis, cfg: Config, args: argparse.Namespace) -> int:
     """Reprocess all parsed ranked matches to populate champion stats."""
     done_key = "champion:backfill:done"
-    parsed: set[str] = await r.smembers("match:status:parsed")  # type: ignore[misc]
+    parsed = await _scan_parsed_matches(r)
     already_done: set[str] = await r.smembers(done_key)  # type: ignore[misc]
     todo = parsed - already_done
     if not todo:

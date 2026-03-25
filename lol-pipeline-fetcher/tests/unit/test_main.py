@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import fakeredis.aioredis
@@ -11,6 +13,7 @@ import pytest
 import respx
 from lol_pipeline.config import Config
 from lol_pipeline.models import MessageEnvelope
+from lol_pipeline.opgg_client import OpggClient
 from lol_pipeline.raw_store import RawStore
 from lol_pipeline.riot_api import RiotClient
 from lol_pipeline.streams import consume, publish
@@ -498,11 +501,13 @@ class TestTimelineFetch:
 
 
 class TestSeenMatches:
-    """Global dedup: fetcher adds match_id to seen:matches SET."""
+    """Global dedup: fetcher adds match_id to daily-bucketed seen:matches:{today} SET."""
 
     @pytest.mark.asyncio
     async def test_fetcher_adds_to_seen_set(self, r, cfg, log):
-        """After successful fetch, match_id is added to seen:matches."""
+        """After successful fetch, match_id is added to seen:matches:{today}."""
+        from datetime import UTC, datetime
+
         raw_store = RawStore(r)
         env = _match_envelope()
         msg_id = await _setup_message(r, env)
@@ -515,14 +520,17 @@ class TestSeenMatches:
             await _fetch_match(r, riot, raw_store, cfg, msg_id, env, log)
             await riot.close()
 
-        assert await r.sismember("seen:matches", "NA1_123")
-        # TTL refreshed on set
-        ttl = await r.ttl("seen:matches")
+        today = datetime.now(tz=UTC).strftime("%Y-%m-%d")
+        seen_key = f"seen:matches:{today}"
+        assert await r.sismember(seen_key, "NA1_123")
+        ttl = await r.ttl(seen_key)
         assert ttl > 0
 
     @pytest.mark.asyncio
     async def test_seen_set_not_written_on_error(self, r, cfg, log):
-        """When fetch fails (404), match_id is NOT added to seen:matches."""
+        """When fetch fails (404), match_id is NOT added to seen:matches:{today}."""
+        from datetime import UTC, datetime
+
         raw_store = RawStore(r)
         env = _match_envelope()
         msg_id = await _setup_message(r, env)
@@ -533,7 +541,9 @@ class TestSeenMatches:
             await _fetch_match(r, riot, raw_store, cfg, msg_id, env, log)
             await riot.close()
 
-        assert not await r.sismember("seen:matches", "NA1_123")
+        today = datetime.now(tz=UTC).strftime("%Y-%m-%d")
+        seen_key = f"seen:matches:{today}"
+        assert not await r.sismember(seen_key, "NA1_123")
 
 
 class TestCorrelationIdPropagation:
@@ -593,10 +603,12 @@ class TestSeenMatchesTTLNotReset:
 
     @pytest.mark.asyncio
     async def test_seen_matches_ttl__not_reset_on_second_fetch(self, r, cfg, log):
-        """When seen:matches already has a TTL, a second fetch does not reset it."""
+        """When seen:matches:{today} already has a TTL, a second fetch does not reset it."""
         raw_store = RawStore(r)
+        today = datetime.now(tz=UTC).strftime("%Y-%m-%d")
+        seen_key = f"seen:matches:{today}"
 
-        # First fetch — sets TTL on seen:matches
+        # First fetch — sets TTL on seen:matches:{today}
         env1 = _match_envelope(match_id="NA1_FIRST")
         msg_id1 = await _setup_message(r, env1)
         with respx.mock:
@@ -607,12 +619,12 @@ class TestSeenMatchesTTLNotReset:
             await _fetch_match(r, riot, raw_store, cfg, msg_id1, env1, log)
             await riot.close()
 
-        ttl_after_first = await r.ttl("seen:matches")
+        ttl_after_first = await r.ttl(seen_key)
         assert ttl_after_first > 0
 
         # Simulate time passing by manually lowering TTL
-        await r.expire("seen:matches", 1000)
-        ttl_lowered = await r.ttl("seen:matches")
+        await r.expire(seen_key, 1000)
+        ttl_lowered = await r.ttl(seen_key)
         assert ttl_lowered <= 1000
 
         # Second fetch — should NOT reset TTL (guard: ttl < 0 only)
@@ -626,32 +638,196 @@ class TestSeenMatchesTTLNotReset:
             await _fetch_match(r, riot, raw_store, cfg, msg_id2, env2, log)
             await riot.close()
 
-        ttl_after_second = await r.ttl("seen:matches")
+        ttl_after_second = await r.ttl(seen_key)
         # TTL should NOT have been reset to the full value
         assert ttl_after_second <= 1000
 
+    @pytest.mark.asyncio
+    async def test_seen_matches_ttl__expire_not_called_when_ttl_exists(self, r, cfg, log):
+        """TCG-3: When seen:matches:{today} already has a TTL (>= 0), r.expire() is NOT called again.
 
-class TestConfigValidationError:
-    """E2: Missing env vars give actionable message, not raw pydantic traceback."""
+        The fetcher checks `ttl < 0` before calling expire. When a TTL already
+        exists (ttl >= 0), the false-branch skips the expire call entirely.
+        This test instruments r.expire to verify the call is not made for
+        seen:matches:{today} on the second fetch.
+        """
+        raw_store = RawStore(r)
+        today = datetime.now(tz=UTC).strftime("%Y-%m-%d")
+        seen_key = f"seen:matches:{today}"
+
+        # First fetch — sets TTL on seen:matches:{today} (no TTL exists yet, ttl == -1)
+        env1 = _match_envelope(match_id="NA1_TTL_A")
+        msg_id1 = await _setup_message(r, env1)
+        with respx.mock:
+            respx.get(_match_url("NA1_TTL_A")).mock(
+                return_value=httpx.Response(200, json={"info": {"gameDuration": 900}})
+            )
+            riot = RiotClient("RGAPI-test")
+            await _fetch_match(r, riot, raw_store, cfg, msg_id1, env1, log)
+            await riot.close()
+
+        assert await r.ttl(seen_key) > 0  # TTL is now set
+
+        # Instrument r.expire to track calls for the daily seen:matches key
+        seen_expire_calls: list[str] = []
+        original_expire = r.expire
+
+        async def tracking_expire(name, *args, **kwargs):
+            if name == seen_key:
+                seen_expire_calls.append(name)
+            return await original_expire(name, *args, **kwargs)
+
+        r.expire = tracking_expire
+
+        # Second fetch — TTL already exists (>= 0), so expire should NOT be called
+        env2 = _match_envelope(match_id="NA1_TTL_B")
+        msg_id2 = await _setup_message(r, env2)
+        with respx.mock:
+            respx.get(_match_url("NA1_TTL_B")).mock(
+                return_value=httpx.Response(200, json={"info": {"gameDuration": 1200}})
+            )
+            riot = RiotClient("RGAPI-test")
+            await _fetch_match(r, riot, raw_store, cfg, msg_id2, env2, log)
+            await riot.close()
+
+        # expire("seen:matches", ...) must NOT have been called
+        assert len(seen_expire_calls) == 0, (
+            f"Expected 0 expire calls for seen:matches when TTL exists, got {len(seen_expire_calls)}"
+        )
+
+class TestOpggIntegration:
+    """OPGG-5: When opgg_enabled, fetcher tries OpggClient first, falls back to Riot."""
+
+    @pytest.fixture
+    def opgg_cfg(self, monkeypatch):
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        monkeypatch.setenv("OPGG_ENABLED", "true")
+        return Config(_env_file=None)  # type: ignore[call-arg]
 
     @pytest.mark.asyncio
-    async def test_main__missing_config__exits_with_hint(self, monkeypatch, capsys):
-        """Config() raises ValidationError → sys.exit(1) with .env.example hint."""
-        monkeypatch.delenv("RIOT_API_KEY", raising=False)
-        monkeypatch.delenv("REDIS_URL", raising=False)
-        from pydantic import ValidationError
+    async def test_opgg_enabled__uses_opgg_client(self, r, opgg_cfg, log):
+        """When opgg_enabled=True and source=opgg in payload, fetcher uses OpggClient."""
+        raw_store = RawStore(r)
+        env = MessageEnvelope(
+            source_stream=_STREAM_IN,
+            type="match_id",
+            payload={
+                "match_id": "OPGG_NA1_12345",
+                "region": "na1",
+                "puuid": "test-puuid-0001",
+                "source": "opgg",
+            },
+            max_attempts=5,
+        )
+        msg_id = await _setup_message(r, env)
 
-        with (
-            patch(
-                "lol_fetcher.main.Config",
-                side_effect=ValidationError.from_exception_data(
-                    title="Config",
-                    line_errors=[],
-                ),
-            ),
-            pytest.raises(SystemExit) as exc_info,
-        ):
-            await main()
-        assert exc_info.value.code == 1
-        captured = capsys.readouterr()
-        assert ".env.example" in captured.err or ".env.example" in captured.out
+        opgg_data = {
+            "metadata": {"match_id": "OPGG_NA1_12345"},
+            "info": {"gameDuration": 1800, "source": "opgg"},
+        }
+        opgg_store = RawStore(r, key_prefix="raw:opgg:match:")
+        await opgg_store.set("OPGG_NA1_12345", json.dumps(opgg_data))
+
+        mock_opgg = AsyncMock(spec=OpggClient)
+
+        with respx.mock:
+            riot = RiotClient("RGAPI-test")
+            await _fetch_match(r, riot, raw_store, opgg_cfg, msg_id, env, log, opgg=mock_opgg)
+            await riot.close()
+
+        assert await r.exists("raw:opgg:match:OPGG_NA1_12345")
+        assert await r.xlen(_STREAM_OUT) == 1
+
+    @pytest.mark.asyncio
+    async def test_opgg_fails__falls_through_to_riot(self, r, opgg_cfg, log):
+        """When op.gg data not found, fetcher falls through to Riot API."""
+        raw_store = RawStore(r)
+        env = MessageEnvelope(
+            source_stream=_STREAM_IN,
+            type="match_id",
+            payload={
+                "match_id": "NA1_RIOT_FALLBACK",
+                "region": "na1",
+                "puuid": "test-puuid-0001",
+                "source": "opgg",
+            },
+            max_attempts=5,
+        )
+        msg_id = await _setup_message(r, env)
+
+        mock_opgg = AsyncMock(spec=OpggClient)
+
+        with respx.mock:
+            respx.get(_match_url("NA1_RIOT_FALLBACK")).mock(
+                return_value=httpx.Response(200, json={"info": {"gameDuration": 1800}})
+            )
+            riot = RiotClient("RGAPI-test")
+            await _fetch_match(r, riot, raw_store, opgg_cfg, msg_id, env, log, opgg=mock_opgg)
+            await riot.close()
+
+        assert await raw_store.exists("NA1_RIOT_FALLBACK") is True
+        assert await r.xlen(_STREAM_OUT) == 1
+
+    @pytest.mark.asyncio
+    async def test_opgg_failure__never_sets_system_halted(self, r, opgg_cfg, log):
+        """Op.gg failure NEVER sets system:halted (only Riot 403 does)."""
+        raw_store = RawStore(r)
+        env = MessageEnvelope(
+            source_stream=_STREAM_IN,
+            type="match_id",
+            payload={
+                "match_id": "NA1_HALT_TEST",
+                "region": "na1",
+                "puuid": "test-puuid-0001",
+                "source": "opgg",
+            },
+            max_attempts=5,
+        )
+        msg_id = await _setup_message(r, env)
+
+        mock_opgg = AsyncMock(spec=OpggClient)
+
+        with respx.mock:
+            respx.get(_match_url("NA1_HALT_TEST")).mock(
+                return_value=httpx.Response(200, json={"info": {"gameDuration": 900}})
+            )
+            riot = RiotClient("RGAPI-test")
+            await _fetch_match(r, riot, raw_store, opgg_cfg, msg_id, env, log, opgg=mock_opgg)
+            await riot.close()
+
+        assert await r.get("system:halted") is None
+
+    @pytest.mark.asyncio
+    async def test_opgg_data__stored_with_opgg_key_prefix(self, r, opgg_cfg, log):
+        """Op.gg match data uses raw:opgg:match: prefix, Riot uses raw:match:."""
+        raw_store = RawStore(r)
+        env = MessageEnvelope(
+            source_stream=_STREAM_IN,
+            type="match_id",
+            payload={
+                "match_id": "OPGG_NA1_99999",
+                "region": "na1",
+                "puuid": "test-puuid-0001",
+                "source": "opgg",
+            },
+            max_attempts=5,
+        )
+        msg_id = await _setup_message(r, env)
+
+        opgg_data = {
+            "metadata": {"match_id": "OPGG_NA1_99999"},
+            "info": {"gameDuration": 1800, "source": "opgg"},
+        }
+        opgg_store = RawStore(r, key_prefix="raw:opgg:match:")
+        await opgg_store.set("OPGG_NA1_99999", json.dumps(opgg_data))
+
+        mock_opgg = AsyncMock(spec=OpggClient)
+
+        with respx.mock:
+            riot = RiotClient("RGAPI-test")
+            await _fetch_match(r, riot, raw_store, opgg_cfg, msg_id, env, log, opgg=mock_opgg)
+            await riot.close()
+
+        assert await r.exists("raw:opgg:match:OPGG_NA1_99999")
+        assert not await r.exists("raw:match:OPGG_NA1_99999")

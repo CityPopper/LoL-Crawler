@@ -90,7 +90,6 @@ class TestParserNormal:
         await _parse_match(r, raw_store, cfg, msg_id, env, log)
 
         assert await r.hget(f"match:{match_id}", "status") == "parsed"
-        assert await r.sismember("match:status:parsed", match_id)
         assert await r.xlen(_OUT_STREAM) == 10
 
     @pytest.mark.asyncio
@@ -757,11 +756,11 @@ class TestMatchDataTTL:
 
 
 class TestAtomicMatchWrite:
-    """I2-H11: match HSET + EXPIRE atomic; SADD is the atomic idempotency guard."""
+    """RDB-2: match HSET + EXPIRE atomic; HSETNX is the atomic idempotency guard."""
 
     @pytest.mark.asyncio
-    async def test_match_hset_and_sadd_both_written(self, r, cfg, log):
-        """Both match:{id} hash and match:status:parsed set are written."""
+    async def test_match_hash_status_written(self, r, cfg, log):
+        """match:{id} hash has status=parsed and a TTL after parsing."""
         raw_store = RawStore(r)
         match_id = "NA1_1234567890"
         env = _parse_envelope(match_id)
@@ -770,9 +769,7 @@ class TestAtomicMatchWrite:
 
         await _parse_match(r, raw_store, cfg, msg_id, env, log)
 
-        # Both must exist (atomic write ensures consistency)
         assert await r.hget(f"match:{match_id}", "status") == "parsed"
-        assert await r.sismember("match:status:parsed", match_id)
         ttl = await r.ttl(f"match:{match_id}")
         assert ttl > 0
 
@@ -1612,11 +1609,11 @@ class TestParseTimeline:
 
 
 class TestParsedSetTTL:
-    """R2: match:status:parsed TTL is always refreshed (EXPIRE is idempotent)."""
+    """RDB-2: per-match hash status field replaces global match:status:parsed SET."""
 
     @pytest.mark.asyncio
-    async def test_parsed_set__ttl_set_on_first_parse(self, r, cfg, log):
-        """First parse sets TTL on match:status:parsed."""
+    async def test_match_hash_status_set_on_first_parse(self, r, cfg, log):
+        """First parse sets status=parsed in match:{id} hash via HSETNX."""
         raw_store = RawStore(r)
         match_id = "NA1_TTL_FIRST"
         env = _parse_envelope(match_id)
@@ -1625,39 +1622,23 @@ class TestParsedSetTTL:
 
         await _parse_match(r, raw_store, cfg, msg_id, env, log)
 
-        ttl = await r.ttl("match:status:parsed")
-        assert ttl > 0  # TTL was set
+        assert await r.hget(f"match:{match_id}", "status") == "parsed"
+        # Per-match hash has a TTL from the match_data_ttl_seconds config
+        ttl = await r.ttl(f"match:{match_id}")
+        assert ttl > 0
 
     @pytest.mark.asyncio
-    async def test_parsed_set__ttl_refreshed_on_subsequent_parse(self, r, cfg, log):
-        """Subsequent parses refresh the TTL (EXPIRE is idempotent, saves 1 RTT)."""
+    async def test_global_parsed_set_not_used(self, r, cfg, log):
+        """match:status:parsed global SET must not be written to."""
         raw_store = RawStore(r)
+        match_id = "NA1_TTL_B"
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, _load_fixture("match_normal.json"))
 
-        # First parse — sets TTL
-        match_id_1 = "NA1_TTL_A"
-        env1 = _parse_envelope(match_id_1)
-        msg_id_1 = await _setup_message(r, env1)
-        await raw_store.set(match_id_1, _load_fixture("match_normal.json"))
-        await _parse_match(r, raw_store, cfg, msg_id_1, env1, log)
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
 
-        original_ttl = await r.ttl("match:status:parsed")
-        assert original_ttl > 0
-
-        # Artificially lower the TTL to simulate time passing
-        await r.expire("match:status:parsed", 1000)
-        lowered_ttl = await r.ttl("match:status:parsed")
-        assert lowered_ttl <= 1000
-
-        # Second parse — EXPIRE is idempotent, refreshes TTL back to full value
-        match_id_2 = "NA1_TTL_B"
-        env2 = _parse_envelope(match_id_2)
-        msg_id_2 = await _setup_message(r, env2)
-        await raw_store.set(match_id_2, _load_fixture("match_normal.json"))
-        await _parse_match(r, raw_store, cfg, msg_id_2, env2, log)
-
-        after_ttl = await r.ttl("match:status:parsed")
-        # TTL should NOT have been reset to the full value
-        assert after_ttl <= 1000
+        assert not await r.exists("match:status:parsed")
 
 
 def _make_timeline_with_gold(participants_map, frames_data):
@@ -2370,6 +2351,139 @@ class TestFullPerksStoredAsJson:
         assert len(shards) == 3
 
 
+class TestRDB4_DiscoverPlayersTTL:
+    """RDB-4: discover:players ZSET must get a 30-day safety-net TTL."""
+
+    @pytest.mark.asyncio
+    async def test_discover_players_has_ttl_after_parse(self, r, cfg, log):
+        """After parsing a match, discover:players must have a TTL > 0."""
+        raw_store = RawStore(r)
+        match_id = "NA1_1234567890"
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, _load_fixture("match_normal.json"))
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        # discover:players must exist (10 co-players discovered)
+        assert await r.zcard("discover:players") == 10
+        # Must have a TTL (30 days = 2592000 seconds)
+        ttl = await r.ttl("discover:players")
+        assert ttl > 0, "discover:players must have a safety-net TTL"
+        assert ttl <= 30 * 24 * 3600  # at most 30 days
+
+    @pytest.mark.asyncio
+    async def test_discover_players_ttl_not_reset_on_subsequent_parse(self, r, cfg, log):
+        """TTL must not be reset on subsequent parses (only set when no TTL)."""
+        raw_store = RawStore(r)
+
+        # First parse — sets TTL
+        match_id_1 = "NA1_DISC_TTL_A"
+        env1 = _parse_envelope(match_id_1)
+        msg_id_1 = await _setup_message(r, env1)
+        await raw_store.set(match_id_1, _load_fixture("match_normal.json"))
+        await _parse_match(r, raw_store, cfg, msg_id_1, env1, log)
+
+        # Artificially lower the TTL to simulate time passing
+        await r.expire("discover:players", 1000)
+
+        # Second parse — should NOT reset TTL (already has one)
+        match_id_2 = "NA1_DISC_TTL_B"
+        env2 = _parse_envelope(match_id_2)
+        msg_id_2 = await _setup_message(r, env2)
+        await raw_store.set(match_id_2, _load_fixture("match_normal.json"))
+        await _parse_match(r, raw_store, cfg, msg_id_2, env2, log)
+
+        ttl = await r.ttl("discover:players")
+        assert ttl <= 1000, "TTL must not be reset when it already exists"
+
+
+class TestRDB2_NoGlobalParsedSet:
+    """RDB-2: Parser must NOT use global match:status:parsed SET.
+
+    Idempotency is enforced via the per-match hash field `match:{id}.status`
+    (set by HSETNX), not by an unbounded global SET.
+    """
+
+    @pytest.mark.asyncio
+    async def test_parsed_set_not_written(self, r, cfg, log):
+        """After parsing, match:status:parsed SET must NOT contain the match_id."""
+        raw_store = RawStore(r)
+        match_id = "NA1_RDB2_SET"
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, _load_fixture("match_normal.json"))
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        assert not await r.sismember("match:status:parsed", match_id), (
+            "Parser must not write to global match:status:parsed SET (RDB-2)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_status_in_per_match_hash(self, r, cfg, log):
+        """After parsing, match:{id} hash must have status=parsed."""
+        raw_store = RawStore(r)
+        match_id = "NA1_RDB2_HASH"
+        env = _parse_envelope(match_id)
+        msg_id = await _setup_message(r, env)
+        await raw_store.set(match_id, _load_fixture("match_normal.json"))
+
+        await _parse_match(r, raw_store, cfg, msg_id, env, log)
+
+        assert await r.hget(f"match:{match_id}", "status") == "parsed"
+
+    @pytest.mark.asyncio
+    async def test_idempotency_via_hsetnx(self, r, cfg, log):
+        """Second parse must NOT re-run bans/matchups (HSETNX returns 0)."""
+        raw_store = RawStore(r)
+        match_id = "NA1_RDB2_IDEM"
+        participants = [
+            _make_participant(
+                "puuid-rdb2-a",
+                teamId=100,
+                teamPosition="TOP",
+                championName="Garen",
+                win=True,
+            ),
+            _make_participant(
+                "puuid-rdb2-b",
+                teamId=200,
+                teamPosition="TOP",
+                championName="Renekton",
+                win=False,
+            ),
+        ]
+        data = _make_match_data(
+            match_id,
+            participants,
+            queueId=420,
+            teams=[
+                {"teamId": 100, "bans": [{"championId": 238, "pickTurn": 1}]},
+                {"teamId": 200, "bans": [{"championId": 67, "pickTurn": 2}]},
+            ],
+        )
+        await raw_store.set(match_id, json.dumps(data))
+
+        # First parse
+        env1 = _parse_envelope(match_id)
+        msg_id1 = await _setup_message(r, env1)
+        await _parse_match(r, raw_store, cfg, msg_id1, env1, log)
+
+        # Second parse
+        env2 = _parse_envelope(match_id)
+        msg_id2 = await _setup_message(r, env2)
+        await _parse_match(r, raw_store, cfg, msg_id2, env2, log)
+
+        # Bans counted once, not twice
+        patch = "14.1"
+        assert await r.hget(f"champion:bans:{patch}", "238") == "1"
+        assert await r.hget(f"champion:bans:{patch}", "_total_games") == "1"
+
+        # No global set
+        assert not await r.exists("match:status:parsed")
+
+
 class TestCorrelationIdPropagation:
     """Outbound analyze envelopes must propagate correlation_id from inbound."""
 
@@ -2396,29 +2510,3 @@ class TestCorrelationIdPropagation:
         for _entry_id, fields in out_entries:
             restored = MessageEnvelope.from_redis_fields(fields)
             assert restored.correlation_id == "trace-parser-001"
-
-
-class TestConfigValidationError:
-    """E2: Missing env vars give actionable message, not raw pydantic traceback."""
-
-    @pytest.mark.asyncio
-    async def test_main__missing_config__exits_with_hint(self, monkeypatch, capsys):
-        """Config() raises ValidationError → sys.exit(1) with .env.example hint."""
-        monkeypatch.delenv("RIOT_API_KEY", raising=False)
-        monkeypatch.delenv("REDIS_URL", raising=False)
-        from pydantic import ValidationError
-
-        with (
-            patch(
-                "lol_parser.main.Config",
-                side_effect=ValidationError.from_exception_data(
-                    title="Config",
-                    line_errors=[],
-                ),
-            ),
-            pytest.raises(SystemExit) as exc_info,
-        ):
-            await main()
-        assert exc_info.value.code == 1
-        captured = capsys.readouterr()
-        assert ".env.example" in captured.err or ".env.example" in captured.out

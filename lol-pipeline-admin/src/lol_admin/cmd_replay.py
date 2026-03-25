@@ -23,15 +23,29 @@ from lol_admin._helpers import (
 )
 
 
+async def _scan_parsed_matches(r: aioredis.Redis) -> set[str]:
+    """Collect match IDs whose per-match hash has status=parsed (RDB-2)."""
+    result: set[str] = set()
+    async for key in r.scan_iter(match="match:*", count=200):
+        key_str: str = key
+        # Skip non-match keys (match:participants:*, match:status:*)
+        if key_str.count(":") != 1:
+            continue
+        status = await r.hget(key_str, "status")
+        if status == "parsed":
+            result.add(key_str.removeprefix("match:"))
+    return result
+
+
 async def cmd_replay_parse(r: aioredis.Redis, cfg: Config, args: argparse.Namespace) -> int:
     if not args.all:
         from lol_admin._helpers import _print_error
 
         _print_error("--all is required")
         return 1
-    match_ids: set[str] = await r.smembers("match:status:parsed")  # type: ignore[misc]
+    match_ids = await _scan_parsed_matches(r)
     if not match_ids:
-        _print_info("No parsed matches in match:status:parsed")
+        _print_info("No parsed matches found")
         return 0
     for match_id in match_ids:
         region = _region_from_match_id(match_id)

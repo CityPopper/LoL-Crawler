@@ -338,6 +338,54 @@ class TestDelaySchedulerEdgeCases:
         assert restored.dlq_attempts == 2
 
 
+class TestDelaySchedulerEnvelopeStorage:
+    """RDB-5: delayed:messages stores envelope ID; full data in delayed:envelope:{id}."""
+
+    @pytest.mark.asyncio
+    async def test_id_member__dispatches_correctly(self, r, log):
+        """When ZSET member is an envelope ID with data in hash, _tick dispatches it."""
+        env = _delayed_envelope()
+        past_ms = int(time.time() * 1000) - 1
+        # Write in the new RDB-5 format: ID as member, data in hash
+        await r.zadd(_DELAYED_KEY, {env.id: past_ms})
+        await r.hset(f"delayed:envelope:{env.id}", "data", json.dumps(env.to_redis_fields()))
+
+        await _tick(r, log)
+
+        assert await r.zcard(_DELAYED_KEY) == 0
+        assert await r.xlen("stream:match_id") == 1
+        # Envelope hash should be cleaned up after dispatch
+        assert await r.exists(f"delayed:envelope:{env.id}") == 0
+
+    @pytest.mark.asyncio
+    async def test_id_member__envelope_hash_deleted_after_dispatch(self, r, log):
+        """After successful dispatch, delayed:envelope:{id} hash key is deleted."""
+        env = _delayed_envelope()
+        past_ms = int(time.time() * 1000) - 1
+        await r.zadd(_DELAYED_KEY, {env.id: past_ms})
+        await r.hset(f"delayed:envelope:{env.id}", "data", json.dumps(env.to_redis_fields()))
+
+        await _tick(r, log)
+
+        assert await r.exists(f"delayed:envelope:{env.id}") == 0
+
+    @pytest.mark.asyncio
+    async def test_id_member__dispatched_fields_correct(self, r, log):
+        """Dispatched envelope from ID-based storage has correct fields."""
+        env = _delayed_envelope()
+        past_ms = int(time.time() * 1000) - 1
+        await r.zadd(_DELAYED_KEY, {env.id: past_ms})
+        await r.hset(f"delayed:envelope:{env.id}", "data", json.dumps(env.to_redis_fields()))
+
+        await _tick(r, log)
+
+        entries = await r.xrange("stream:match_id")
+        assert len(entries) == 1
+        restored = MessageEnvelope.from_redis_fields(entries[0][1])
+        assert restored.payload["match_id"] == "NA1_123"
+        assert restored.source_stream == "stream:match_id"
+
+
 class TestDelaySchedulerRedisErrors:
     @pytest.mark.asyncio
     async def test_xadd_fails__does_not_remove_from_sorted_set(self, r, log):
@@ -993,29 +1041,3 @@ class TestCircuitResetClearsFailures:
         _record_failure(member, log)
         assert member not in _circuit_open
         assert _member_failures[member] == 1
-
-
-class TestConfigValidationError:
-    """E2: Missing env vars give actionable message, not raw pydantic traceback."""
-
-    @pytest.mark.asyncio
-    async def test_main__missing_config__exits_with_hint(self, monkeypatch, capsys):
-        """Config() raises ValidationError → sys.exit(1) with .env.example hint."""
-        monkeypatch.delenv("RIOT_API_KEY", raising=False)
-        monkeypatch.delenv("REDIS_URL", raising=False)
-        from pydantic import ValidationError
-
-        with (
-            patch(
-                "lol_delay_scheduler.main.Config",
-                side_effect=ValidationError.from_exception_data(
-                    title="Config",
-                    line_errors=[],
-                ),
-            ),
-            pytest.raises(SystemExit) as exc_info,
-        ):
-            await main()
-        assert exc_info.value.code == 1
-        captured = capsys.readouterr()
-        assert ".env.example" in captured.err or ".env.example" in captured.out

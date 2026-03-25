@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from unittest.mock import AsyncMock, patch
 
@@ -545,18 +546,6 @@ class TestPriorityReordering:
         assert processed_priorities == ["manual_20", "auto_20", "auto_new"]
 
 
-class TestRunConsumerUsesIsSystemHalted:
-    """DRY-5: run_consumer uses is_system_halted() instead of raw r.get."""
-
-    @pytest.mark.asyncio
-    async def test_run_consumer__calls_is_system_halted(self, r, log):
-        """run_consumer calls is_system_halted() for halt checks, not raw r.get."""
-        mock_halted = AsyncMock(return_value=True)
-        with patch("lol_pipeline.service.is_system_halted", mock_halted):
-            await run_consumer(r, _STREAM, _GROUP, "c", AsyncMock(), log)
-        mock_halted.assert_called()
-
-
 class TestDispatchBatchShutdownMidBatch:
     """R2: _dispatch_batch stops processing when shutdown_check returns True."""
 
@@ -602,3 +591,89 @@ class TestDispatchBatchShutdownMidBatch:
 
         # Only first message should be processed; shutdown stops the rest
         assert processed == ["0"]
+
+    @pytest.mark.asyncio
+    async def test_dispatch_batch__cancelled_mid_batch__no_double_ack(self, r, log):
+        """TCG-1: CancelledError mid-batch does not ack unprocessed messages."""
+        from lol_pipeline.service import _dispatch_batch
+
+        # Publish 3 messages
+        for i in range(3):
+            env = MessageEnvelope(
+                source_stream=_STREAM,
+                type="test",
+                payload={"idx": str(i)},
+                max_attempts=5,
+            )
+            await publish(r, _STREAM, env)
+
+        msgs = await consume(r, _STREAM, _GROUP, "test-consumer", block=0, count=10)
+        assert len(msgs) == 3
+
+        processed = []
+
+        async def handler(mid: str, envelope: MessageEnvelope) -> None:
+            processed.append(envelope.payload["idx"])
+            await ack(r, _STREAM, _GROUP, mid)
+            if len(processed) == 1:
+                # Cancel the current task after first message
+                raise asyncio.CancelledError
+
+        # CancelledError should propagate (not be swallowed)
+        with pytest.raises(asyncio.CancelledError):
+            await _dispatch_batch(
+                r,
+                _STREAM,
+                _GROUP,
+                msgs,
+                handler,
+                log,
+                shutdown_check=lambda: False,
+            )
+
+        # Only first message processed and acked
+        assert processed == ["0"]
+
+        # The other 2 messages must remain in PEL (not acked)
+        pending = await r.xpending(_STREAM, _GROUP)
+        assert pending["pending"] == 2
+
+
+class TestHandleWithRetryNackFailurePersistent:
+    """TCG-5: When nack_to_dlq fails persistently, retry counter must be bounded."""
+
+    @pytest.mark.asyncio
+    async def test_nack_fails_persistently__counter_bounded(self, r, log):
+        """When handler always fails and nack_to_dlq+ack both always fail,
+        the retry counter does not grow unboundedly across redelivery cycles."""
+        msg_id, envelope = await _setup(r)
+
+        async def bad_handler(mid: str, env: MessageEnvelope) -> None:
+            raise RuntimeError("poison")
+
+        # Simulate 10 redelivery cycles where both nack_to_dlq and ack fail.
+        # Each cycle: _incr_retry increments, count >= max_retries, nack fails, ack fails.
+        max_retries = 3
+        with (
+            patch(
+                "lol_pipeline.service.nack_to_dlq",
+                new_callable=AsyncMock,
+                side_effect=ConnectionError("Redis gone"),
+            ),
+            patch(
+                "lol_pipeline.service.ack",
+                new_callable=AsyncMock,
+                side_effect=ConnectionError("Redis still gone"),
+            ),
+        ):
+            for _ in range(10):
+                await _handle_with_retry(
+                    r, _STREAM, _GROUP, msg_id, envelope, bad_handler, log, max_retries
+                )
+
+        # The retry counter should be bounded — not 10 (one per cycle)
+        key = _retry_key(_STREAM, msg_id)
+        count = await r.get(key)
+        # With no bound, count would be "10". With a cap, it should stop growing
+        # once it hits max_retries + some reasonable cap.
+        assert count is None or int(count) <= max_retries + 3

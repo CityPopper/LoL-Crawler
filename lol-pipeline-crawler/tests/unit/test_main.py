@@ -19,7 +19,6 @@ from lol_crawler.main import (
     _compute_activity_rate,
     _crawl_player,
     _fetch_rank,
-    _handle_crawl_error,
     main,
 )
 
@@ -1352,14 +1351,17 @@ class TestFetchRank:
 
 
 class TestGlobalDedup:
-    """Global match dedup via seen:matches SET in crawler."""
+    """Global match dedup via daily-bucketed seen:matches:{today} SET in crawler."""
 
     @pytest.mark.asyncio
     async def test_global_dedup__filters_seen_matches(self, r, cfg, log):
-        """Matches in seen:matches are filtered out during crawl."""
+        """Matches in seen:matches:{today} are filtered out during crawl."""
+        from datetime import UTC, datetime
+
         puuid = "test-puuid-0001"
-        # Mark NA1_SEEN as already globally seen
-        await r.sadd("seen:matches", "NA1_SEEN")
+        today = datetime.now(tz=UTC).strftime("%Y-%m-%d")
+        # Mark NA1_SEEN as already globally seen in today's bucket
+        await r.sadd(f"seen:matches:{today}", "NA1_SEEN")
 
         env = _puuid_envelope(puuid=puuid)
         msg_id = await _setup_message(r, env)
@@ -1475,6 +1477,93 @@ class TestActivityRate:
 
         assert await r.hget(f"player:{puuid}", "activity_rate") is None
         assert await r.hget(f"player:{puuid}", "recrawl_after") is None
+
+
+class TestActivityRateTiersFromCrawl:
+    """TCG-4: Activity rate low/medium tiers exercised through _crawl_player.
+
+    The existing TestActivityRate tests call _compute_activity_rate directly.
+    These tests verify the tiers are triggered correctly through the full
+    _crawl_player flow (which only calls _compute_activity_rate when
+    published > 0).
+    """
+
+    @pytest.mark.asyncio
+    async def test_crawl__low_activity_rate__24h_cooldown(self, r, cfg, log):
+        """TCG-4: Player with <1 game/day gets 24h recrawl cooldown via _crawl_player."""
+        import time
+
+        puuid = "test-puuid-low-rate"
+        # Pre-populate sparse match history: 2 matches over 10 days (0.2 games/day)
+        now_ms = time.time() * 1000
+        for i in range(2):
+            score = now_ms - ((i + 1) * 5 * 86400 * 1000)
+            await r.zadd(f"player:matches:{puuid}", {f"NA1_OLD_LOW_{i}": score})
+
+        env = _puuid_envelope(puuid=puuid)
+        msg_id = await _setup_message(r, env)
+
+        with respx.mock:
+            # Return 1 new match to trigger published > 0
+            respx.get(_match_ids_url(puuid=puuid)).mock(
+                return_value=httpx.Response(200, json=["NA1_NEW_LOW_1"])
+            )
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        # New match published
+        assert await r.xlen(_STREAM_OUT) == 1
+        # Activity rate was computed (published > 0)
+        rate_str = await r.hget(f"player:{puuid}", "activity_rate")
+        assert rate_str is not None
+        rate = float(rate_str)
+        assert rate < 1.0, f"Expected low activity rate (<1), got {rate}"
+        # 24h cooldown
+        recrawl = float(await r.hget(f"player:{puuid}", "recrawl_after"))
+        expected = time.time() + 86400
+        assert abs(recrawl - expected) < 120, (
+            f"Expected ~24h cooldown, got {recrawl - time.time():.0f}s"
+        )
+
+    @pytest.mark.asyncio
+    async def test_crawl__medium_activity_rate__6h_cooldown(self, r, cfg, log):
+        """TCG-4: Player with 1-5 games/day gets 6h recrawl cooldown via _crawl_player."""
+        import time
+
+        puuid = "test-puuid-mid-rate"
+        # Pre-populate moderate match history: 3 matches in 1 day (~3 games/day)
+        now_ms = time.time() * 1000
+        one_day_ago_ms = now_ms - 86400 * 1000
+        for i in range(3):
+            score = one_day_ago_ms + (i * 28800 * 1000)
+            await r.zadd(f"player:matches:{puuid}", {f"NA1_OLD_MID_{i}": score})
+
+        env = _puuid_envelope(puuid=puuid)
+        msg_id = await _setup_message(r, env)
+
+        with respx.mock:
+            # Return 1 new match to trigger published > 0
+            respx.get(_match_ids_url(puuid=puuid)).mock(
+                return_value=httpx.Response(200, json=["NA1_NEW_MID_1"])
+            )
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        # New match published
+        assert await r.xlen(_STREAM_OUT) == 1
+        # Activity rate was computed (published > 0)
+        rate_str = await r.hget(f"player:{puuid}", "activity_rate")
+        assert rate_str is not None
+        rate = float(rate_str)
+        assert 1.0 < rate <= 5.0, f"Expected medium activity rate (1-5), got {rate}"
+        # 6h cooldown
+        recrawl = float(await r.hget(f"player:{puuid}", "recrawl_after"))
+        expected = time.time() + 21600
+        assert abs(recrawl - expected) < 120, (
+            f"Expected ~6h cooldown, got {recrawl - time.time():.0f}s"
+        )
 
 
 class TestRankHistoryCap:
@@ -1601,61 +1690,139 @@ class TestCrawlCorrelationIdPropagation:
             assert out_env.correlation_id == "trace-crawl-abc"
 
 
-
-class TestConfigValidationError:
-    """E2: Missing env vars give actionable message, not raw pydantic traceback."""
-
-    @pytest.mark.asyncio
-    async def test_main__missing_config__exits_with_hint(self, monkeypatch, capsys):
-        """Config() raises ValidationError → sys.exit(1) with .env.example hint."""
-        monkeypatch.delenv("RIOT_API_KEY", raising=False)
-        monkeypatch.delenv("REDIS_URL", raising=False)
-        from pydantic import ValidationError
-
-        with (
-            patch(
-                "lol_crawler.main.Config",
-                side_effect=ValidationError.from_exception_data(
-                    title="Config",
-                    line_errors=[],
-                ),
-            ),
-            pytest.raises(SystemExit) as exc_info,
-        ):
-            await main()
-        assert exc_info.value.code == 1
-        captured = capsys.readouterr()
-        assert ".env.example" in captured.err or ".env.example" in captured.out
-
-
-class TestHandleCrawlErrorLogMessage:
-    """E4: Riot API error log should mention DLQ routing context."""
+class TestOpggSourceSkip:
+    """OPGG-5: Crawler publishes match IDs with source=opgg; source routing is fetcher's job."""
 
     @pytest.mark.asyncio
-    async def test_server_error__log_mentions_dlq(self, r):
-        """ServerError log message should contain 'DLQ' for operator context."""
-        from lol_pipeline.riot_api import ServerError
+    async def test_crawl__opgg_source__skips_riot_api(self, r, cfg, log):
+        """Crawler publishes match_id with source=opgg; downstream should skip Riot crawl."""
+        env = _puuid_envelope()
+        msg_id = await _setup_message(r, env)
+        opgg_ids = ["OPGG_NA1_111", "OPGG_NA1_222"]
 
-        env = MessageEnvelope(
-            source_stream="stream:puuid",
-            type="puuid",
-            payload={"puuid": "test-puuid", "game_name": "T", "tag_line": "1", "region": "na1"},
-            max_attempts=5,
+        with respx.mock:
+            respx.get(_match_ids_url(start=0)).mock(
+                return_value=httpx.Response(200, json=opgg_ids)
+            )
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        entries = await r.xrange(_STREAM_OUT)
+        assert len(entries) == 2
+        match_ids = [
+            MessageEnvelope.from_redis_fields(fields).payload["match_id"]
+            for _, fields in entries
+        ]
+        assert "OPGG_NA1_111" in match_ids
+        assert "OPGG_NA1_222" in match_ids
+
+
+class TestActivityRatePipeline:
+    """CR-6: ZRANGE + ZCARD are pipelined together in _compute_activity_rate."""
+
+    @pytest.mark.asyncio
+    async def test_activity_rate__zrange_and_zcard_pipelined(self, r, cfg, log):
+        """ZRANGE and ZCARD are called within a single pipeline, not as separate calls."""
+        import time
+
+        puuid = "test-puuid-pipe"
+        now_ms = time.time() * 1000
+        for i in range(5):
+            await r.zadd(
+                f"player:matches:{puuid}",
+                {f"NA1_PIPE_{i}": now_ms - (i * 86400 * 1000)},
+            )
+
+        separate_zrange_calls = 0
+        separate_zcard_calls = 0
+        original_zrange = r.zrange
+        original_zcard = r.zcard
+
+        async def track_zrange(*args, **kwargs):
+            nonlocal separate_zrange_calls
+            separate_zrange_calls += 1
+            return await original_zrange(*args, **kwargs)
+
+        async def track_zcard(*args, **kwargs):
+            nonlocal separate_zcard_calls
+            separate_zcard_calls += 1
+            return await original_zcard(*args, **kwargs)
+
+        r.zrange = track_zrange
+        r.zcard = track_zcard
+
+        await _compute_activity_rate(r, puuid, log)
+
+        assert separate_zrange_calls == 0, (
+            f"ZRANGE called {separate_zrange_calls} times outside pipeline"
         )
-        msg_id = await r.xadd("stream:puuid", env.to_redis_fields())
-        await r.xgroup_create("stream:puuid", "crawlers", "0", mkstream=True)
-        log = logging.getLogger("crawler")
-        exc = ServerError(500, "internal error")
+        assert separate_zcard_calls == 0, (
+            f"ZCARD called {separate_zcard_calls} times outside pipeline"
+        )
 
-        # Capture log records directly since the crawler logger has propagate=False
-        captured: list[logging.LogRecord] = []
-        handler = logging.Handler()
-        handler.emit = lambda rec: captured.append(rec)  # type: ignore[method-assign]
-        handler.setLevel(logging.ERROR)
-        log.addHandler(handler)
-        try:
-            await _handle_crawl_error(r, msg_id, env, exc, "test-puuid", log)
-        finally:
-            log.removeHandler(handler)
+        rate_str = await r.hget(f"player:{puuid}", "activity_rate")
+        assert rate_str is not None
+        assert float(rate_str) > 0
 
-        assert any("DLQ" in rec.getMessage() for rec in captured)
+
+class TestRankStoragePipeline:
+    """CR-7: Rank storage HSET + EXPIRE are pipelined in a single round-trip."""
+
+    def _summoner_url(self, puuid="test-puuid-0001", region="na1"):
+        return f"https://{region}.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/{puuid}"
+
+    def _league_url(self, summoner_id="summ-id-1", region="na1"):
+        return f"https://{region}.api.riotgames.com/lol/league/v4/entries/by-summoner/{summoner_id}"
+
+    @pytest.mark.asyncio
+    async def test_rank_storage__hset_expire_pipelined(self, r, cfg, log):
+        """HSET and EXPIRE for rank data are batched in a single pipeline."""
+        puuid = "test-puuid-rank-pipe"
+
+        pipeline_execute_count = 0
+        original_pipeline = r.pipeline
+
+        def counting_pipeline(*args, **kwargs):
+            pipe = original_pipeline(*args, **kwargs)
+            original_execute = pipe.execute
+
+            async def counting_execute(*a, **kw):
+                nonlocal pipeline_execute_count
+                pipeline_execute_count += 1
+                return await original_execute(*a, **kw)
+
+            pipe.execute = counting_execute
+            return pipe
+
+        r.pipeline = counting_pipeline
+
+        with respx.mock:
+            respx.get(self._summoner_url(puuid)).mock(
+                return_value=httpx.Response(200, json={"id": "summ-id-1", "summonerLevel": 100})
+            )
+            respx.get(self._league_url("summ-id-1")).mock(
+                return_value=httpx.Response(
+                    200,
+                    json=[
+                        {
+                            "queueType": "RANKED_SOLO_5x5",
+                            "tier": "GOLD",
+                            "rank": "II",
+                            "leaguePoints": 50,
+                            "wins": 100,
+                            "losses": 80,
+                        }
+                    ],
+                )
+            )
+            riot = RiotClient("RGAPI-test")
+            await _fetch_rank(r, riot, cfg, puuid, "na1", log)
+            await riot.close()
+
+        assert pipeline_execute_count >= 1
+        rank = await r.hgetall(f"player:rank:{puuid}")
+        assert rank["tier"] == "GOLD"
+        assert rank["division"] == "II"
+        ttl = await r.ttl(f"player:rank:{puuid}")
+        assert ttl > 0

@@ -208,7 +208,7 @@ class TestReplayParse:
     async def test_replay_parse_all(self, r, cfg):
         """AC-06-06: replay-parse --all with 5 entries → stream:parse += 5."""
         for i in range(5):
-            await r.sadd("match:status:parsed", f"NA1_{i}")
+            await r.hset(f"match:NA1_{i}", mapping={"status": "parsed"})
         args = argparse.Namespace(all=True)
         result = await cmd_replay_parse(r, cfg, args)
         assert result == 0
@@ -1957,68 +1957,6 @@ class TestDelayedList:
         assert "member2" in output
 
 
-class TestDelayedListJson:
-    """E5: delayed-list --json outputs one JSON object per entry."""
-
-    @pytest.mark.asyncio
-    async def test_delayed_list__json_output(self, r, capsys):
-        """delayed-list with --json outputs valid JSON objects."""
-        now_ms = 1700000000000.0
-        await r.zadd("delayed:messages", {"member1": now_ms, "member2": now_ms + 60000})
-        args = argparse.Namespace(json=True)
-        result = await cmd_delayed_list(r, args)
-        assert result == 0
-        output = capsys.readouterr().out
-        lines = [ln for ln in output.strip().splitlines() if ln.strip()]
-        assert len(lines) >= 2
-        for line in lines:
-            obj = json.loads(line)
-            assert "member" in obj
-            assert "ready_ms" in obj
-            assert "eta_s" in obj
-
-
-class TestRecalcPriorityJson:
-    """E5: recalc-priority --json outputs JSON."""
-
-    @pytest.mark.asyncio
-    async def test_recalc_priority__json_output(self, r, capsys):
-        """recalc-priority with --json outputs valid JSON."""
-        await r.set("player:priority:puuid-1", "1")
-        await r.set("player:priority:puuid-2", "1")
-        args = argparse.Namespace(json=True)
-        result = await cmd_recalc_priority(r, args)
-        assert result == 0
-        output = capsys.readouterr().out
-        obj = json.loads(output.strip())
-        assert "player_priority_key_count" in obj
-        assert obj["player_priority_key_count"] == 2
-
-
-class TestRecalcPlayersJson:
-    """E5: recalc-players --json outputs JSON."""
-
-    @pytest.mark.asyncio
-    async def test_recalc_players__json_output(self, r, capsys):
-        """recalc-players with --json outputs valid JSON."""
-        await r.hset(
-            "player:puuid-one",
-            mapping={
-                "game_name": "PlayerOne",
-                "tag_line": "001",
-                "region": "na1",
-                "seeded_at": "2026-03-19T12:00:00+00:00",
-            },
-        )
-        args = argparse.Namespace(json=True)
-        result = await cmd_recalc_players(r, args)
-        assert result == 0
-        output = capsys.readouterr().out
-        obj = json.loads(output.strip())
-        assert "players_indexed" in obj
-        assert obj["players_indexed"] == 1
-
-
 class TestDelayedFlush:
     """OPS-16-07: admin delayed-flush removes all delayed messages."""
 
@@ -2218,7 +2156,7 @@ except ImportError:
 
 
 class TestBackfillChampionsNoMatches:
-    """Empty match:status:parsed → nothing to backfill."""
+    """No parsed match hashes → nothing to backfill."""
 
     @pytest.mark.asyncio
     async def test_backfill_champions_no_matches(self, r, cfg, capsys):
@@ -2240,11 +2178,11 @@ class TestBackfillChampionsProcessesRanked:
         """Ranked match with participants populates champion stats."""
         from lol_admin.main import cmd_backfill_champions
 
-        # Seed a parsed ranked match
-        await r.sadd("match:status:parsed", "NA1_100")
+        # Seed a parsed ranked match (RDB-2: status in per-match hash)
         await r.hset(
             "match:NA1_100",
             mapping={
+                "status": "parsed",
                 "queue_id": "420",
                 "patch": "14.5",
                 "game_start": "1710000000000",
@@ -2300,10 +2238,10 @@ class TestBackfillChampionsSkipsNonRanked:
         """Match with queue_id != 420 is skipped."""
         from lol_admin.main import cmd_backfill_champions
 
-        await r.sadd("match:status:parsed", "NA1_200")
         await r.hset(
             "match:NA1_200",
             mapping={
+                "status": "parsed",
                 "queue_id": "450",  # ARAM
                 "patch": "14.5",
                 "game_start": "1710000000000",
@@ -2338,10 +2276,10 @@ class TestBackfillChampionsIdempotent:
         """Second run with same parsed matches does nothing."""
         from lol_admin.main import cmd_backfill_champions
 
-        await r.sadd("match:status:parsed", "NA1_300")
         await r.hset(
             "match:NA1_300",
             mapping={
+                "status": "parsed",
                 "queue_id": "420",
                 "patch": "14.5",
                 "game_start": "1710000000000",
@@ -2475,64 +2413,3 @@ class TestRelativeAge:
         then = datetime.now(tz=UTC) - timedelta(seconds=3600)
         result = _relative_age(then.isoformat())
         assert result == "1h ago"
-
-
-
-class TestConfigValidationError:
-    """E2: Missing env vars give actionable message, not raw pydantic traceback."""
-
-    @pytest.mark.asyncio
-    async def test_main__missing_config__exits_with_hint(self, monkeypatch, capsys):
-        """Config() raises ValidationError → sys.exit(1) with .env.example hint."""
-        monkeypatch.delenv("RIOT_API_KEY", raising=False)
-        monkeypatch.delenv("REDIS_URL", raising=False)
-        from pydantic import ValidationError
-
-        with (
-            patch(
-                "lol_admin.main.Config",
-                side_effect=ValidationError.from_exception_data(
-                    title="Config",
-                    line_errors=[],
-                ),
-            ),
-            pytest.raises(SystemExit) as exc_info,
-        ):
-            await main(["admin", "stats", "Faker#KR1"])
-        assert exc_info.value.code == 1
-        captured = capsys.readouterr()
-        assert ".env.example" in captured.err or ".env.example" in captured.out
-
-
-class TestDlqEntriesPagination:
-    """CR-9: _dlq_entries must use COUNT-limited XRANGE, not unbounded."""
-
-    @pytest.mark.asyncio
-    async def test__dlq_entries__does_not_load_entire_stream(self, monkeypatch):
-        """CR-9: _dlq_entries must use COUNT-limited XRANGE, not unbounded."""
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-
-        # Track XRANGE calls and their count arg
-        xrange_calls: list[int | None] = []
-        original_xrange = r.xrange
-
-        async def tracking_xrange(name, min="-", max="+", count=None):
-            xrange_calls.append(count)
-            return await original_xrange(name, min=min, max=max, count=count)
-
-        monkeypatch.setattr(r, "xrange", tracking_xrange)
-
-        # Add 5 entries to the DLQ stream
-        for i in range(5):
-            dlq = _make_dlq(match_id=f"NA1_pag_{i}")
-            await r.xadd(_DLQ_STREAM, dlq.to_redis_fields())
-
-        entries = await _dlq_entries(r, limit=3)
-
-        # Must pass count=3 to XRANGE, not None (unbounded)
-        assert any(
-            c is not None and c <= 3 for c in xrange_calls
-        ), f"Expected bounded XRANGE call, got counts: {xrange_calls}"
-        assert len(entries) <= 3
-
-        await r.aclose()

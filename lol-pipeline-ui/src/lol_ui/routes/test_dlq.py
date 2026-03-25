@@ -116,3 +116,44 @@ class TestDlqUsesIsSystemHalted:
         with patch("lol_ui.routes.dlq.is_system_halted", mock_halted):
             await show_dlq(request)
         mock_halted.assert_called_once()
+
+
+class TestDlqXlenNotCalledTwice:
+    """CR-8: XLEN on stream:dlq should be called at most once per page load."""
+
+    @pytest.mark.asyncio
+    async def test_show_dlq__xlen_called_once(self, r):
+        """show_dlq should not call XLEN('stream:dlq') twice."""
+        dlq = DLQEnvelope(
+            source_stream="stream:dlq",
+            type="match_id",
+            payload={"match_id": "NA1_1", "puuid": "p1", "region": "na1"},
+            attempts=1,
+            max_attempts=3,
+            failure_code="http_5xx",
+            failure_reason="error",
+            failed_by="fetcher",
+            original_stream="stream:match_id",
+            original_message_id="1-0",
+        )
+        await r.xadd("stream:dlq", dlq.to_redis_fields())
+
+        request = MagicMock()
+        request.app.state.r = r
+        request.query_params = {}
+
+        # Spy on the real xlen method to count calls
+        original_xlen = r.xlen
+        xlen_calls: list[str] = []
+
+        async def tracking_xlen(key: str) -> int:
+            xlen_calls.append(key)
+            return await original_xlen(key)
+
+        with patch.object(r, "xlen", side_effect=tracking_xlen):
+            await show_dlq(request)
+
+        dlq_xlen_count = sum(1 for k in xlen_calls if k == "stream:dlq")
+        assert dlq_xlen_count <= 1, (
+            f"XLEN('stream:dlq') called {dlq_xlen_count} times, expected at most 1"
+        )

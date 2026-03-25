@@ -46,18 +46,18 @@ def _pbi_tier(
     win_rate: float,
     pick_rate: float,
     ban_rate: float,
-) -> float:
-    """Compute raw PBI score.
+) -> tuple[float, str, str]:
+    """Compute raw PBI score and return ``(pbi, tier, color)``.
 
     PBI = (win_rate - 50) * pick_rate / (100 - ban_rate).
-    Tier assignment requires ranking across all champions; use
-    _assign_tiers() for percentile-based tier letters.
+    ``tier`` and ``color`` are empty strings here; populate them by calling
+    :func:`_assign_tiers` after ranking all champions by PBI.
     """
     denominator = 100.0 - ban_rate
     if denominator <= 0:
         denominator = 0.01
     pbi = (win_rate - 50.0) * pick_rate / denominator
-    return pbi
+    return pbi, "", ""
 
 
 def _assign_tiers(rows: list[dict[str, object]]) -> None:
@@ -72,7 +72,7 @@ def _assign_tiers(rows: list[dict[str, object]]) -> None:
         wr = float(row.get("win_rate", 0.0))  # type: ignore[arg-type]
         pr = float(row.get("pick_rate", 0.0))  # type: ignore[arg-type]
         br = float(row.get("ban_rate", 0.0))  # type: ignore[arg-type]
-        pbi = _pbi_tier(wr, pr, br)
+        pbi, _, _ = _pbi_tier(wr, pr, br)
         row["pbi"] = pbi
         scored.append((i, pbi))
 

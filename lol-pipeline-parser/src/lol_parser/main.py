@@ -7,12 +7,9 @@ import json
 import logging
 import os
 import socket
-import sys
 from typing import Any
 
 import redis.asyncio as aioredis
-from pydantic import ValidationError
-
 from lol_pipeline.config import Config
 from lol_pipeline.constants import CHAMPION_STATS_TTL_SECONDS, PLAYER_DATA_TTL_SECONDS
 from lol_pipeline.helpers import is_system_halted
@@ -32,7 +29,6 @@ from lol_parser._data import (
     _KILL_EVENTS_MAX,
     _OUT_STREAM,
     _RANKED_QUEUE_ID,
-    _STATUS_TTL,
 )
 
 
@@ -515,6 +511,10 @@ async def _discover_co_players(
             0,
             -(cfg.max_discover_players + 1),
         )
+        # RDB-4: Safety-net TTL — only set when no TTL exists (-1).
+        # Prevents stale data if Discovery is disabled for 30+ days.
+        if await r.ttl(_DISCOVER_KEY) == -1:
+            await r.expire(_DISCOVER_KEY, PLAYER_DATA_TTL_SECONDS)
         log.debug(
             "queued for discovery",
             extra={"count": len(discover_scores)},
@@ -567,22 +567,13 @@ async def _parse_match(
 
     game_start: int = info["gameStartTimestamp"]
 
-    # Atomic idempotency guard: SADD returns 1 if the member was newly added
-    # (first writer wins) or 0 if it already existed (another worker parsed
-    # this match first). This eliminates the TOCTOU race where two workers
-    # could both see SISMEMBER=False and double-count HINCRBY in bans/matchups.
-    # TTL-2: Only set EXPIRE when no TTL exists (ttl < 0) to avoid resetting
-    # expiry on every write — same guard as seen:matches in fetcher.
-    async with r.pipeline(transaction=False) as idem_pipe:
-        idem_pipe.sadd("match:status:parsed", match_id)
-        idem_pipe.ttl("match:status:parsed")
-        idem_results = await idem_pipe.execute()
-    first_parse: int = idem_results[0]
-    parsed_ttl: int = idem_results[1]
-    if parsed_ttl < 0:
-        await r.expire("match:status:parsed", _STATUS_TTL)
-
     match_key = f"match:{match_id}"
+
+    # RDB-2: Atomic idempotency guard via per-match hash field.
+    # HSETNX returns 1 if the field was newly set (first writer wins) or 0
+    # if it already existed (another worker parsed this match first).
+    # This replaces the unbounded global `match:status:parsed` SET.
+    first_parse: int = await r.hsetnx(match_key, "status", "parsed")
     match_fields: dict[str, str] = {
         "queue_id": str(info.get("queueId", "")),
         "game_mode": info.get("gameMode", ""),
@@ -652,14 +643,7 @@ async def _parse_match(
 async def main() -> None:
     """Parser worker loop."""
     log = get_logger("parser")
-    try:
-        cfg = Config()
-    except ValidationError as exc:
-        print(
-            f"Configuration error: {exc}\nCheck .env.example for required variables.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    cfg = Config()
     r = get_redis(cfg.redis_url)
     raw_store = RawStore(r, data_dir=cfg.match_data_dir)
     consumer = f"{socket.gethostname()}-{os.getpid()}"

@@ -15,9 +15,13 @@ from lol_ui.strings import t as _t
 _make_replay_envelope = make_replay_envelope
 
 
-async def _dlq_summary_html(r: aioredis.Redis) -> str:
-    """Build an analytics summary card for the DLQ page."""
-    dlq_depth = await r.xlen("stream:dlq")
+async def _dlq_summary_html(r: aioredis.Redis) -> tuple[str, int]:
+    """Build an analytics summary card for the DLQ page.
+
+    Returns a tuple of ``(html_string, dlq_depth)`` so callers can
+    reuse the depth without a redundant ``XLEN`` call.
+    """
+    dlq_depth: int = await r.xlen("stream:dlq")
     archive_depth = await r.xlen("stream:dlq:archive")
 
     # Read up to 500 entries for breakdown aggregation
@@ -82,7 +86,7 @@ async def _dlq_summary_html(r: aioredis.Redis) -> str:
             f"</tr></thead><tbody>{stream_rows}</tbody></table></div>"
         )
 
-    return f"""<div class="card">
+    summary = f"""<div class="card">
   <h3 class="card__title">{_t("dlq_analytics_title")}</h3>
   <div style="display:flex;gap:var(--space-xl);flex-wrap:wrap;margin-bottom:var(--space-md)">
     <div class="stat">
@@ -103,3 +107,4 @@ async def _dlq_summary_html(r: aioredis.Redis) -> str:
   </div>
 </div>
 """
+    return summary, dlq_depth
