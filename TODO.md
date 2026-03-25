@@ -2,6 +2,92 @@
 
 ---
 
+## LFS-1 — Git LFS: `.gitignore` + `.gitattributes` wiring
+**Decisions**: D-5 (only `*.jsonl.zst` in LFS), D-6 (all files, no rotation), D-7 (exclude AOF)
+**Fix**:
+1. Remove from `.gitignore`: lines matching `pipeline-data/**/*.jsonl` (line 73), `pipeline-data/**/*.jsonl.zst` (line 74), `lol-pipeline-fetcher/match-data/**/*.jsonl.zst` (line 82); replace `redis-data/` (line 38) with `redis-data/appendonlydir/` + `redis-data/*.rdb` + `redis-data/*.rdb.tmp`
+2. Add to `.gitattributes`: `pipeline-data/**/*.jsonl.zst filter=lfs diff=lfs merge=lfs -text`
+3. Run `git lfs track "pipeline-data/**/*.jsonl.zst"` (idempotent)
+- [ ] **Red:** Test that `git check-attr filter pipeline-data/riot-api/NA1/2026-02.jsonl.zst` returns `lfs`
+- [ ] **Green:** Apply `.gitignore` + `.gitattributes` changes
+- [ ] **Refactor:** Verify no other `.jsonl.zst` patterns conflict
+
+---
+
+## LFS-2 — Delete orphaned `lol-pipeline-fetcher/match-data/`
+**Decisions**: D-4 (pipeline-data is canonical; match-data is orphaned duplicate)
+**Fix**: Delete `lol-pipeline-fetcher/match-data/` directory. Update `.gitignore` line 82 (already covered in LFS-1). Check for any hardcoded references to `match-data/` in code/docs/Justfile.
+- [ ] **Red:** Grep for `match-data` in all non-.gitignore files; confirm no live references
+- [ ] **Green:** `rm -rf lol-pipeline-fetcher/match-data/`; update any stale references
+- [ ] **Refactor:** Confirm `cfg.match_data_dir` in fetcher still points to `pipeline-data/riot-api` via env var
+
+---
+
+## LFS-3 — Initial LFS commit of all existing `.zst` files
+**Decisions**: D-5, D-6
+**Fix**: After LFS-1 `.gitattributes` is committed, stage all existing `pipeline-data/riot-api/NA1/*.jsonl.zst` files and commit. Git will detect LFS attribute and upload as LFS objects.
+Note: requires `git-lfs` installed locally (`brew install git-lfs && git lfs install`).
+- [ ] **Red:** `git lfs ls-files` shows no pipeline-data files before this task
+- [ ] **Green:** `git add pipeline-data/riot-api/NA1/*.jsonl.zst && git commit`; verify `git lfs ls-files` shows them
+- [ ] **Refactor:** `git lfs ls-files --size` confirms sizes match expected
+
+---
+
+## LFS-4 — `just compact-data` recipe (compress all `.jsonl` → `.zst` before pushing)
+**Decisions**: D-5, D-8, D-9 (compress active month too, not just completed months)
+**Fix**: Add Justfile recipe that:
+1. Finds ALL `pipeline-data/riot-api/NA1/*.jsonl` files (including current active month)
+2. Compresses each with `zstd -19 --rm` (removes original after compression succeeds)
+3. Stages the new `.zst` files for LFS (`git add pipeline-data/`)
+4. Prints: "Compacted N files. Stage and commit when ready."
+Does NOT auto-commit (user reviews and commits manually).
+Use-case: run before `git push` when sharing data updates.
+- [ ] **Red:** Test: given a `.jsonl` file, `compact-data` produces a `.zst`, removes the `.jsonl`, and `zstd -d` can round-trip it
+- [ ] **Green:** Implement recipe
+- [ ] **Refactor:** Confirm active-month `.zst` can be decompressed back by `just up`
+
+---
+
+## LFS-5 — Internal seed-from-disk script (called by `just up`, not exposed)
+**Decisions**: D-1, D-2, D-3, D-10 (internal, not top-level recipe)
+**Fix**: New script `scripts/seed_from_disk.py` that:
+1. Connects to Redis; checks if empty (`DBSIZE == 0`)
+2. If not empty, exits immediately (no-op)
+3. Reads `pipeline-data/riot-api/NA1/` files: `.jsonl.zst` sorted reverse-chronological (newest first), then active `*.jsonl` if present
+4. For each file, streaming-decompresses and reads match IDs (tab-delimited field 0 per line)
+5. Publishes each `match_id` to `stream:parse` as `MessageEnvelope(type="match", payload={"match_id": match_id})` with low priority
+6. Logs: "Seeding N matches from disk (newest first)..."
+NOT exposed as a top-level `just` recipe — called only from `just up`.
+- [ ] **Red:** Unit test: empty Redis → publishes newest-first; non-empty → no-ops; streaming decompression doesn't OOM
+- [ ] **Green:** Implement; test against real Redis container
+- [ ] **Refactor:** Streaming decompression (pyzstd or subprocess `zstd -d -c`)
+
+---
+
+## LFS-6 — Extend `just up` with LFS pull + decompress + auto-seed
+**Decisions**: D-9, D-10 (bake everything into `just up`; minimize top-level commands)
+**Fix**: Extend the existing `just up` recipe in `Justfile` to:
+1. Run `git lfs pull` if `.git` exists (no-op outside a git repo)
+2. Decompress current month's `.zst` → `.jsonl` if `.jsonl` doesn't exist: `zstd -d pipeline-data/riot-api/NA1/$(date +%Y-%m).jsonl.zst 2>/dev/null || true`
+3. Start services normally (`{{DC}} up -d`)
+4. Wait for Redis ready; if Redis DBSIZE==0, run `python scripts/seed_from_disk.py` in background
+New user UX: `git clone ... && just up` — everything works automatically.
+- [ ] **Red:** Test: fresh clone simulation (no `.jsonl`, `.zst` present) → `just up` produces working `.jsonl` and queues seed
+- [ ] **Green:** Implement; test end-to-end
+- [ ] **Refactor:** Ensure `git lfs pull` failure (no LFS installed) degrades gracefully with a clear warning
+
+---
+
+## LFS-7 — Fix `/player/refresh` missing region validation
+**Service**: lol-pipeline-ui
+**Security**: MINOR-3 from R2 security review
+**Fix**: In `lol-pipeline-ui/src/lol_ui/routes/stats.py`, add region validation to the `player_refresh` endpoint — same `_REGIONS_SET` check that `show_stats` uses at line 415.
+- [ ] **Red:** Test that `POST /player/refresh` with `region="invalid"` returns 422
+- [ ] **Green:** Add `if region not in _REGIONS_SET: return JSONResponse({"error": "invalid region"}, status_code=422)`
+- [ ] **Refactor:** Confirm existing tests still pass (`just test-svc ui`)
+
+---
+
 ## PRIN-CMN-01 — common: direct `os.environ.get()` bypasses Config in runtime-only modules
 **Service**: lol-pipeline-common
 **Principle**: 12-factor app
