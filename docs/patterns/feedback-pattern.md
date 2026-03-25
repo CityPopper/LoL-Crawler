@@ -94,7 +94,7 @@ If only some questions are answered: remove the answered rows and the `## ❓ Ne
 |------|------|
 | `questions-{topic}.md` | Active consultation — open questions → locked decisions |
 | `TODO.md` | Implementation tasks with TDD checklists, derived from locked decisions |
-| `.claude/archive/REJECTED.md` | Project-wide record of rejected ideas with rationale |
+| `workspace/rejected.md` | Project-wide record of rejected ideas with rationale |
 
 `REJECTED.md` is project-wide and permanent. Questions files are per-feature and temporary.
 
@@ -102,4 +102,4 @@ If only some questions are answered: remove the answered rows and the `## ❓ Ne
 
 ## Reference
 
-Used in: `CLAUDE.md` (Plan-first workflow), `.claude/skills/think.md` (Step 2: Questions Phase).
+Used in: `CLAUDE.md` (Plan-first workflow).

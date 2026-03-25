@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 from fastapi import APIRouter, Request
 from starlette.responses import RedirectResponse, Response
 
@@ -17,10 +19,18 @@ async def set_lang(request: Request) -> Response:
     lang = request.query_params.get("lang", "en")
     if lang not in SUPPORTED_LANGUAGES:
         lang = "en"
-    referrer = request.headers.get("referer", "/")
+    # Prefer explicit ref query param (set by language_switcher_html), fall back to Referer header
+    redirect_to = request.query_params.get("ref", "")
+    if not redirect_to:
+        referrer = request.headers.get("referer", "/")
+        # Referer header may be an absolute URL — extract path+query only
+        if referrer.startswith("http"):
+            parsed = urlparse(referrer)
+            referrer = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+        redirect_to = referrer
     # Prevent open redirect: only allow relative paths (starts with "/" but not "//")
-    if not referrer.startswith("/") or referrer.startswith("//"):
-        referrer = "/"
-    response = RedirectResponse(url=referrer, status_code=303)
+    if not redirect_to.startswith("/") or redirect_to.startswith("//"):
+        redirect_to = "/"
+    response = RedirectResponse(url=redirect_to, status_code=303)
     set_lang_cookie(response, lang)
     return response

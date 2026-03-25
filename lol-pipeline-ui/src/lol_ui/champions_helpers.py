@@ -312,6 +312,7 @@ def _champion_detail_html(  # noqa: PLR0913
     version: str | None,
     matchups_html: str = "",
     name_map: dict[str, str] | None = None,
+    builds_html: str = "",
 ) -> str:
     """Render champion detail page body.
 
@@ -393,6 +394,7 @@ def _champion_detail_html(  # noqa: PLR0913
 </table>
 </div>
 {patch_table}
+{builds_html}
 {matchups_html}
 <p><a href="/champions">&larr; Back to Champions</a></p>"""
 
@@ -423,6 +425,102 @@ def _matchup_table_html(
         "</tr></thead>"
         f"<tbody>{trs}</tbody></table></div>"
     )
+
+
+async def _fetch_champion_builds(
+    r: aioredis.Redis,
+    name: str,
+    patch: str,
+    role: str,
+) -> tuple[
+    list[tuple[str, float]],
+    list[tuple[str, float]],
+    list[tuple[str, float]],
+]:
+    """Fetch top build, rune, and spell data for a champion/patch/role.
+
+    Returns (top_builds, top_keystones, top_spells) each as (member, score) lists.
+    """
+    async with r.pipeline(transaction=False) as pipe:
+        pipe.zrevrange(f"champion:builds:{name}:{patch}:{role}", 0, 2, withscores=True)
+        pipe.zrevrange(f"champion:runes:{name}:{patch}:{role}", 0, 2, withscores=True)
+        pipe.zrevrange(f"champion:spells:{name}:{patch}:{role}", 0, 2, withscores=True)
+        results = await pipe.execute()
+    return results[0], results[1], results[2]
+
+
+def _champion_builds_html(
+    top_builds: list[tuple[str, float]],
+    top_keystones: list[tuple[str, float]],
+    top_spells: list[tuple[str, float]],
+    version: str | None,
+) -> str:
+    """Render champion build recommendations section with DDragon icons.
+
+    Returns empty string when all three datasets are empty.
+    """
+    if not top_builds and not top_keystones and not top_spells:
+        return ""
+
+    parts: list[str] = ['<h3>Most Common Builds</h3>']
+
+    # Item builds
+    if top_builds:
+        parts.append('<div class="build-recommendations">')
+        for item_str, count in top_builds:
+            item_ids = item_str.split(",") if item_str else []
+            icons = "".join(
+                f'<img src="https://ddragon.leagueoflegends.com/cdn/{html.escape(version)}'
+                f'/img/item/{html.escape(iid)}.png"'
+                f' alt="item {html.escape(iid)}" class="match-item"'
+                f' loading="lazy" onerror="this.style.display=\'none\'">'
+                if version and iid
+                else '<span class="match-item match-item--empty"></span>'
+                for iid in item_ids
+            )
+            parts.append(
+                f'<div class="build-rec-row">'
+                f'<div class="build-rec-items">{icons}</div>'
+                f'<span class="build-rec-count">{int(count)}x</span>'
+                f'</div>'
+            )
+        parts.append('</div>')
+
+    # Keystone runes
+    if top_keystones:
+        parts.append('<h3>Most Common Keystone</h3>')
+        parts.append('<div class="build-recommendations">')
+        for keystone_id, count in top_keystones:
+            if version and keystone_id and keystone_id != "0":
+                # DDragon rune icons use the data-dragon CDN with perk images path
+                # We show the keystone ID and count since the icon path requires runesReforged lookup
+                parts.append(
+                    f'<div class="build-rec-row">'
+                    f'<span class="build-rec-label">Keystone {html.escape(keystone_id)}</span>'
+                    f'<span class="build-rec-count">{int(count)}x</span>'
+                    f'</div>'
+                )
+        parts.append('</div>')
+
+    # Summoner spells
+    if top_spells:
+        parts.append('<h3>Most Common Summoner Spells</h3>')
+        parts.append('<div class="build-recommendations">')
+        for combo, count in top_spells:
+            spell_ids = combo.split("+") if combo else []
+            icons = "".join(
+                f'<span class="spell-id">{html.escape(sid)}</span>'
+                for sid in spell_ids
+            )
+            parts.append(
+                f'<div class="build-rec-row">'
+                f'<div class="build-rec-spells">{icons}</div>'
+                f'<span class="build-rec-count">{int(count)}x</span>'
+                f'</div>'
+            )
+        parts.append('</div>')
+
+    return "\n".join(parts)
 
 
 async def _fetch_champion_matchups(

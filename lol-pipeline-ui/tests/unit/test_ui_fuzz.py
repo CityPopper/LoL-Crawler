@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import html as html_mod
+import json
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from lol_ui.constants import _BADGE_VARIANTS
+from lol_ui.log_helpers import _parse_log_line
 from lol_ui.rendering import _badge
 from lol_ui.stats_helpers import _format_stat_value
 
@@ -169,3 +171,143 @@ class TestBadgeFuzz:
         result = _badge("success", text)
         assert isinstance(result, str)
         assert html_mod.escape(text) in result
+
+
+# ---------------------------------------------------------------------------
+# _parse_log_line fuzz tests
+# ---------------------------------------------------------------------------
+
+_log_line_inputs = st.one_of(
+    st.text(max_size=500),
+    st.just(""),
+    st.just("{}"),
+    st.just('{"timestamp": "2024-01-01T00:00:00", "level": "INFO", "message": "ok"}'),
+    st.just('{"level": "ERROR", "message": "fail", "_internal": "hidden"}'),
+    st.just("<script>alert('xss')</script>"),
+    st.just('{"nested": {"a": {"b": 1}}, "message": "deep"}'),
+    st.just("not json at all"),
+    st.just('{"timestamp": null, "level": null, "logger": null, "message": null}'),
+    st.binary(max_size=100).map(lambda b: b.decode("utf-8", errors="replace")),
+)
+
+_json_log_primitives = st.one_of(
+    st.none(),
+    st.booleans(),
+    st.integers(min_value=-(2**32), max_value=2**32),
+    st.floats(allow_nan=False, allow_infinity=False),
+    st.text(max_size=100),
+)
+
+_json_log_values = st.recursive(
+    _json_log_primitives,
+    lambda children: st.one_of(
+        st.lists(children, max_size=3),
+        st.dictionaries(st.text(max_size=20), children, max_size=3),
+    ),
+    max_leaves=10,
+)
+
+
+@st.composite
+def _structured_log_line(draw: st.DrawFn) -> str:
+    """Generate a JSON log line with optional standard fields."""
+    d: dict[str, object] = {}
+    if draw(st.booleans()):
+        d["timestamp"] = draw(st.one_of(st.text(max_size=30), st.none()))
+    if draw(st.booleans()):
+        d["level"] = draw(st.sampled_from(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]))
+    if draw(st.booleans()):
+        d["logger"] = draw(st.text(max_size=50))
+    if draw(st.booleans()):
+        d["message"] = draw(st.text(max_size=200))
+    # Extra fields — some with _ prefix (should be excluded from extra)
+    extra_keys = draw(st.lists(st.text(min_size=1, max_size=20), min_size=0, max_size=5))
+    for k in extra_keys:
+        d[k] = draw(_json_log_values)
+    return json.dumps(d)
+
+
+class TestParseLogLineFuzz:
+    @given(line=_log_line_inputs)
+    @settings(max_examples=500)
+    def test_parse_log_line__never_raises(self, line: str) -> None:
+        """_parse_log_line never raises an unhandled exception for any string input."""
+        result = _parse_log_line(line)
+        assert isinstance(result, tuple)
+        assert len(result) == 5
+        ts, level, logger, msg, extra = result
+        assert isinstance(ts, str)
+        assert isinstance(level, str)
+        assert isinstance(logger, str)
+        assert isinstance(msg, str)
+        assert isinstance(extra, str)
+
+    @given(line=_structured_log_line())
+    @settings(max_examples=300)
+    def test_parse_log_line__valid_json__returns_5_strings(self, line: str) -> None:
+        """Valid JSON log lines always return a 5-tuple of strings."""
+        ts, level, logger, msg, extra = _parse_log_line(line)
+        assert isinstance(ts, str)
+        assert isinstance(level, str)
+        assert isinstance(logger, str)
+        assert isinstance(msg, str)
+        assert isinstance(extra, str)
+
+    @given(line=st.just(""))
+    @settings(max_examples=5)
+    def test_parse_log_line__empty_string__fallback(self, line: str) -> None:
+        """Empty string uses fallback: level='INFO', others empty."""
+        ts, level, logger, msg, extra = _parse_log_line(line)
+        assert level == "INFO"
+        assert ts == ""
+        assert logger == ""
+        assert extra == ""
+
+    @given(line=st.text(max_size=200).filter(lambda s: not s.strip().startswith("{")))
+    @settings(max_examples=100)
+    def test_parse_log_line__non_json__fallback_returns_line_as_message(self, line: str) -> None:
+        """Non-JSON strings: level='INFO', message=original line, others empty."""
+        ts, level, logger, msg, extra = _parse_log_line(line)
+        assert level == "INFO"
+        assert ts == ""
+        assert logger == ""
+        assert extra == ""
+        assert msg == line
+
+    @given(
+        ts_value=st.text(max_size=30),
+        level_value=st.sampled_from(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]),
+        logger_value=st.text(max_size=30),
+        msg_value=st.text(max_size=200),
+    )
+    @settings(max_examples=200)
+    def test_parse_log_line__known_fields__extracted_correctly(
+        self,
+        ts_value: str,
+        level_value: str,
+        logger_value: str,
+        msg_value: str,
+    ) -> None:
+        """Known fields are extracted; timestamp truncated to 19 chars with T→space."""
+        line = json.dumps(
+            {
+                "timestamp": ts_value,
+                "level": level_value,
+                "logger": logger_value,
+                "message": msg_value,
+            }
+        )
+        ts, level, logger, msg, extra = _parse_log_line(line)
+        assert level == level_value
+        assert logger == logger_value
+        assert msg == msg_value
+        assert ts == ts_value[:19].replace("T", " ")
+        assert extra == ""  # no extra keys
+
+    @given(line=st.just('{"_hidden": "x", "_internal": 1, "message": "hello"}'))
+    @settings(max_examples=5)
+    def test_parse_log_line__underscore_keys__excluded_from_extra(self, line: str) -> None:
+        """Keys starting with _ are excluded from the extra field."""
+        _, _, _, _, extra = _parse_log_line(line)
+        assert "_hidden" not in extra
+        assert "_internal" not in extra

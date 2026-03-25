@@ -153,7 +153,7 @@ def _page(
         cls = ' class="active" aria-current="page"' if active else ""
         nav_links.append(f'<a href="{href}"{cls}>{_t(label_key)}</a>')
     nav_html = "\n  ".join(nav_links)
-    lang_switcher = language_switcher_html(lang)
+    lang_switcher = language_switcher_html(lang, path=path)
     theme_css = get_theme_css(theme)
     theme_style = f"\n  <style>{theme_css}</style>" if theme_css else ""
     body_class = f' class="theme-{theme}"' if theme != "default" else ""

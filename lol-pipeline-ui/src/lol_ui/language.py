@@ -59,16 +59,27 @@ def set_lang_cookie(response: Any, lang: str) -> None:
     )
 
 
-def language_switcher_html(current_lang: str) -> str:
-    """Render a compact language switcher (EN | 中文) as HTML links."""
+def language_switcher_html(current_lang: str, path: str = "") -> str:
+    """Render a compact language switcher (EN | 中文) as HTML links.
+
+    *path* is the current page path (e.g. ``/players``).  When provided it is
+    appended as ``&ref=<path>`` so the redirect lands back on the same page
+    rather than following the ``Referer`` header (which may be an absolute URL
+    that the safety check in ``/set-lang`` would reject).
+    """
+    from urllib.parse import quote
+
     parts: list[str] = []
     for lang_code in SUPPORTED_LANGUAGES:
         label = _LANG_LABELS.get(lang_code, lang_code)
         if lang_code == current_lang:
             parts.append(f'<span style="font-weight:700;color:var(--color-text)">{label}</span>')
         else:
+            href = f"/set-lang?lang={lang_code}"
+            if path:
+                href += f"&ref={quote(path, safe='/?&=')}"
             parts.append(
-                f'<a href="/set-lang?lang={lang_code}"'
+                f'<a href="{href}"'
                 f' style="color:var(--color-muted);text-decoration:none">{label}</a>'
             )
     inner = ' <span style="color:var(--color-muted)">|</span> '.join(parts)

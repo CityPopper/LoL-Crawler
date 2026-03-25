@@ -67,7 +67,7 @@ Typical prod involves 2–4 agents. More than 5 is usually a sign the proposal s
 Spawn all selected agents simultaneously. Give each agent:
 - The proposal statement (step 1)
 - The relevant source files or diffs
-- `.claude/archive/REJECTED.md` — so they don't ask about already-rejected alternatives
+- `workspace/rejected.md` — so they don't ask about already-rejected alternatives
 - Instruction to **research first** (web search, HN, codebase) before asking questions
 
 Each agent must be prompted with this framing (the pre-mortem inversion):
@@ -88,7 +88,7 @@ Collect all questions. For each:
 - If the question reveals the proposal was wrong → revert or redesign; run Feedback Pattern for the replacement
 - If the question reveals a missed optimization → evaluate; add to `TODO.md` if worth pursuing
 - If the question can be answered and the answer validates the proposal → record the rationale (code comment, TODO note, or CLAUDE.md gotcha)
-- If the question surfaces a rejected alternative → add to `.claude/archive/REJECTED.md` with the reason it was ruled out
+- If the question surfaces a rejected alternative → add to `workspace/rejected.md` with the reason it was ruled out
 
 ### 5. Record outcomes
 
@@ -132,4 +132,4 @@ The Prod Pattern feeds into the Feedback Pattern when the outcome is "Wrong call
 
 ## Reference
 
-Used in: `CLAUDE.md` (Research before implementation), `.claude/archive/REJECTED.md` (record alternatives ruled out during prodding).
+Used in: `CLAUDE.md` (Research before implementation), `workspace/rejected.md` (record alternatives ruled out during prodding).

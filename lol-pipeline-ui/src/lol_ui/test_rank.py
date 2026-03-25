@@ -11,7 +11,7 @@ class TestRankCardHtml:
     def test_renders_tier_and_division(self):
         rank = {"tier": "GOLD", "division": "II", "lp": "75", "wins": "60", "losses": "40"}
         html = _rank_card_html(rank)
-        assert "GOLD" in html
+        assert "Gold" in html  # i18n: "GOLD" -> "Gold" in English
         assert "II" in html
         assert "75 LP" in html
 
@@ -26,7 +26,7 @@ class TestRankHistoryHtml:
         entries = [("GOLD:II:75", 1700000000000.0)]
         html = _rank_history_html(entries)
         assert "<table>" in html
-        assert "GOLD" in html
+        assert "Gold" in html  # i18n: "GOLD" -> "Gold" in English
         assert "75 LP" in html
 
     def test_empty_entries__empty_string(self):
@@ -41,7 +41,7 @@ class TestProfileHeaderHtml:
         html = _profile_header_html("Faker", "KR1", rank)
         assert "Faker" in html
         assert "#KR1" in html
-        assert "PLATINUM IV" in html
+        assert "Platinum IV" in html  # i18n: "PLATINUM" -> "Platinum" in English
 
     def test_unranked_fallback(self):
         html = _profile_header_html("TestUser", "NA1", {})

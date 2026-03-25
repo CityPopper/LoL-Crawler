@@ -129,6 +129,14 @@ pre { background: var(--color-surface); padding: 12px;
 code { background: var(--color-surface); padding: 2px 6px; border-radius: var(--radius); }
 .streams td:last-child { text-align: right; }
 
+/* Stream depth gauge */
+.depth-bar { height: 4px; border-radius: 2px; background: var(--color-border);
+  overflow: hidden; display: block; width: 80px; margin-top: 3px; }
+.depth-bar__fill { height: 100%; border-radius: 2px; }
+.depth-bar__fill--ok { background: var(--color-success); }
+.depth-bar__fill--busy { background: var(--color-warning); }
+.depth-bar__fill--backlog { background: var(--color-error); }
+
 /* Cards */
 .card { background: var(--color-surface); border: 1px solid var(--color-border);
         border-radius: var(--radius); padding: var(--space-md); margin: var(--space-md) 0; }

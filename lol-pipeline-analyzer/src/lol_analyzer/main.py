@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import socket
@@ -177,6 +178,38 @@ async def _update_champion_stats(
                 int(p.get("quadra_kills", "0")),
                 int(p.get("penta_kills", "0")),
             )
+
+            # --- Build recommendations aggregation ---
+            builds_key = f"champion:builds:{champion_name}:{patch}:{team_position}"
+            runes_key = f"champion:runes:{champion_name}:{patch}:{team_position}"
+            spells_key = f"champion:spells:{champion_name}:{patch}:{team_position}"
+
+            # Item build fingerprint: sorted non-zero item IDs joined by comma
+            raw_items = p.get("items", "[]")
+            try:
+                item_list: list[int] = json.loads(raw_items)
+                non_zero = sorted(i for i in item_list if isinstance(i, int) and i > 0)
+                if non_zero:
+                    build_key = ",".join(str(i) for i in non_zero)
+                    pipe.zincrby(builds_key, 1, build_key)
+                    pipe.expire(builds_key, CHAMPION_STATS_TTL_SECONDS)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+
+            # Keystone rune: aggregate primary keystone ID
+            keystone = p.get("perk_keystone", "0")
+            if keystone and keystone != "0":
+                pipe.zincrby(runes_key, 1, keystone)
+                pipe.expire(runes_key, CHAMPION_STATS_TTL_SECONDS)
+
+            # Summoner spell combo: sorted pair joined by "+"
+            s1 = p.get("summoner1_id", "0")
+            s2 = p.get("summoner2_id", "0")
+            if s1 and s2 and s1 != "0" and s2 != "0":
+                combo = "+".join(sorted([s1, s2]))
+                pipe.zincrby(spells_key, 1, combo)
+                pipe.expire(spells_key, CHAMPION_STATS_TTL_SECONDS)
+
         await pipe.execute()
 
 

@@ -231,11 +231,22 @@ def _role_table_header(has_breakdown: bool) -> str:
 def _render_breakdown_rows(
     items: list[tuple[str, float]],
     breakdown: dict[str, _BreakdownEntry] | None,
+    domain: str | None = None,
 ) -> str:
-    """Render breakdown table rows, with optional win%/KDA columns."""
+    """Render breakdown table rows, with optional win%/KDA columns.
+
+    *domain* is the i18n domain used to translate row names (e.g. ``"role"``).
+    When ``None`` the raw name is displayed (champion names need no translation).
+    """
+    from lol_pipeline.i18n import label as _ilabel
+
+    from lol_ui.language import _current_lang
+
+    lang = _current_lang.get()
     parts: list[str] = []
     for name, n in items:
-        safe = html.escape(name)
+        display = _ilabel(domain, name, lang) if domain is not None else name
+        safe = html.escape(display)
         base = f"<tr><td>{safe}</td><td>{int(n)}</td>"
         if breakdown is not None:
             entry = breakdown.get(name)
@@ -259,5 +270,5 @@ def _render_role_rows(
     roles: list[tuple[str, float]],
     breakdown: dict[str, _BreakdownEntry] | None,
 ) -> str:
-    """Render role table rows, with optional breakdown columns."""
-    return _render_breakdown_rows(roles, breakdown)
+    """Render role table rows using localized role names."""
+    return _render_breakdown_rows(roles, breakdown, domain="role")

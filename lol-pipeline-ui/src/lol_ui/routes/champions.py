@@ -11,9 +11,11 @@ from fastapi.responses import HTMLResponse
 
 from lol_ui.champions_helpers import (
     _build_champion_rows,
+    _champion_builds_html,
     _champion_detail_html,
     _champion_filter_html,
     _champion_tier_table,
+    _fetch_champion_builds,
     _fetch_champion_matchups,
     _fetch_patch_history,
     _matchup_table_html,
@@ -137,21 +139,24 @@ async def show_champion_detail(request: Request, name: str) -> HTMLResponse:
     if not role or role not in all_roles:
         role = all_roles[0]
 
-    # Fetch current stats, patch history, DDragon version, matchups, and name map concurrently
+    # Fetch current stats, patch history, DDragon version, matchups, builds, and name map concurrently
     async def _get_stats() -> dict[str, str]:
         result: dict[str, str] = await r.hgetall(  # type: ignore[misc]
             f"champion:stats:{name}:{patch}:{role}"
         )
         return result or {}
 
-    stats, history, version, matchups, champ_name_map = await asyncio.gather(
+    stats, history, version, matchups, builds_tuple, champ_name_map = await asyncio.gather(
         _get_stats(),
         _fetch_patch_history(r, name, role, patch_list),
         _get_ddragon_version(r),
         _fetch_champion_matchups(r, name, role, patch),
+        _fetch_champion_builds(r, name, patch, role),
         get_champion_name_map(r, lang),
     )
+    top_builds, top_keystones, top_spells = builds_tuple
     mu_html = _matchup_table_html(matchups, name_map=champ_name_map)
+    builds_html = _champion_builds_html(top_builds, top_keystones, top_spells, version)
     detail = _champion_detail_html(
         name,
         role,
@@ -161,6 +166,7 @@ async def show_champion_detail(request: Request, name: str) -> HTMLResponse:
         version,
         matchups_html=mu_html,
         name_map=champ_name_map,
+        builds_html=builds_html,
     )
     display_name = html.escape(localize_champion_name(champ_name_map, name))
     return HTMLResponse(

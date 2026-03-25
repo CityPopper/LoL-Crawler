@@ -35,6 +35,28 @@ class TestSetLangRoute:
         assert "lang=zh-CN" in cookie_header
 
     @pytest.mark.asyncio
+    async def test_ref_param_takes_priority_over_referer(self, client):
+        """Explicit ref param overrides Referer header."""
+        resp = await client.get(
+            "/set-lang?lang=zh-CN&ref=/players",
+            headers={"referer": "/stats"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert resp.headers.get("location") == "/players"
+
+    @pytest.mark.asyncio
+    async def test_absolute_referer_header_extracts_path(self, client):
+        """Absolute URL in Referer header is parsed to path-only for redirect."""
+        resp = await client.get(
+            "/set-lang?lang=zh-CN",
+            headers={"referer": "http://localhost:8000/players"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert resp.headers.get("location") == "/players"
+
+    @pytest.mark.asyncio
     async def test_invalid_lang_defaults_to_en(self, client):
         resp = await client.get(
             "/set-lang?lang=invalid",
@@ -70,8 +92,8 @@ class TestLanguageRendering:
         """Language switcher must show zh-CN as the active (bold) language."""
         resp = await client.get("/", cookies={"lang": "zh-CN"})
         body = resp.text
-        # zh-CN label should be bold (active), EN should be a link
-        assert 'href="/set-lang?lang=en"' in body
+        # zh-CN label should be bold (active), EN should be a link (may include &ref=)
+        assert 'href="/set-lang?lang=en' in body
 
     @pytest.mark.asyncio
     async def test_en_default__renders_english_html_lang(self, client):

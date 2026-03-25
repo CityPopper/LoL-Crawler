@@ -86,13 +86,23 @@ class TestLanguageSwitcherHtml:
         assert "font-weight:700" in html
         assert ">EN<" in html
 
-    def test_other_lang_is_link(self):
+    def test_other_lang_is_link_no_path(self):
         html = language_switcher_html("en")
         assert 'href="/set-lang?lang=zh-CN"' in html
 
+    def test_other_lang_is_link_with_path(self):
+        """When path is provided, ref param is appended so redirect stays on same page."""
+        html = language_switcher_html("en", path="/players")
+        assert 'href="/set-lang?lang=zh-CN&ref=/players"' in html
+
+    def test_path_with_query_string(self):
+        html = language_switcher_html("en", path="/stats?riot_id=Foo%23NA1")
+        assert "ref=" in html
+        assert "/stats" in html
+
     def test_zh_cn_current(self):
         html = language_switcher_html("zh-CN")
-        assert 'href="/set-lang?lang=en"' in html
+        assert 'href="/set-lang?lang=en"' in html  # no path, so no &ref= appended
         # zh-CN label should be bold
         assert "\u4e2d\u6587" in html
 

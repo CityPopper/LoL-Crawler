@@ -5,8 +5,11 @@ from __future__ import annotations
 import html
 from datetime import UTC, datetime
 
+from lol_pipeline.i18n import label as _ilabel
+
 from lol_ui._helpers import _safe_int
 from lol_ui.constants import _RANK_WR_THRESHOLD
+from lol_ui.language import _current_lang
 from lol_ui.summoner_icon import _summoner_icon_html
 
 
@@ -14,8 +17,10 @@ def _rank_card_html(rank: dict[str, str]) -> str:
     """Render a rank card from player:rank:{puuid} hash data."""
     if not rank:
         return ""
+    lang = _current_lang.get()
     tier = rank.get("tier", "")
     division = rank.get("division", "")
+    tier_label = _ilabel("tier", tier, lang)
     lp = html.escape(rank.get("lp", "0"))
     wins = _safe_int(rank.get("wins"))
     losses = _safe_int(rank.get("losses"))
@@ -26,7 +31,7 @@ def _rank_card_html(rank: dict[str, str]) -> str:
         f'<div class="card" style="display:flex;align-items:center;gap:var(--space-md)">'
         f"<div>"
         f'<div style="font-family:var(--font-sans);font-size:var(--font-size-lg);font-weight:700">'
-        f"{html.escape(tier)} {html.escape(division)}</div>"
+        f"{html.escape(tier_label)} {html.escape(division)}</div>"
         f'<div style="font-size:var(--font-size-sm);color:var(--color-muted)">'
         f"{lp} LP &mdash; {wins}W {losses}L</div>"
         f'<div style="background:var(--color-surface2);'
@@ -49,10 +54,12 @@ def _rank_history_html(entries: list[tuple[str, float]]) -> str:
     """
     if not entries:
         return ""
+    lang = _current_lang.get()
     rows = ""
     for value, score in entries:
         parts = value.split(":", 2)
-        tier = html.escape(parts[0]) if len(parts) > 0 else ""
+        raw_tier = parts[0] if len(parts) > 0 else ""
+        tier = html.escape(_ilabel("tier", raw_tier, lang))
         division = html.escape(parts[1]) if len(parts) > 1 else ""
         lp = html.escape(parts[2]) if len(parts) > 2 else "0"
         dt = datetime.fromtimestamp(score / 1000, tz=UTC)
@@ -85,7 +92,12 @@ def _profile_header_html(
     lp = rank.get("lp", "0") if rank else "0"
     from lol_ui.strings import t
 
-    rank_text = f"{tier} {division}".strip() if tier != "UNRANKED" else t("unranked")
+    lang = _current_lang.get()
+    if tier != "UNRANKED":
+        tier_label = _ilabel("tier", tier, lang)
+        rank_text = f"{tier_label} {division}".strip()
+    else:
+        rank_text = t("unranked")
 
     if icon_id and version:
         avatar_html = _summoner_icon_html(icon_id, level, version)

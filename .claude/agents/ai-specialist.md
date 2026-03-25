@@ -85,8 +85,7 @@ You are an AI systems specialist with deep expertise in:
 
 Before making recommendations OR taking any action:
 1. Search for relevant patterns in the existing codebase
-2. Check `.claude/archive/REJECTED.md` for previously rejected ideas
-3. Look at existing agent definitions in `.claude/agents/` for patterns to follow
+2. Look at existing agent definitions in `.claude/agents/` for patterns to follow
 4. WebFetch Anthropic docs for current best practices on Claude API features
 5. WebSearch for known pitfalls, recent changes, or community findings relevant to the task
 
@@ -94,5 +93,4 @@ Do not rely solely on training data. If you have not yet researched, stop and re
 
 ## Key Constraints for This Project
 
-- Code writing: only `developer` writes implementation; only `tester` writes tests. TDD (Red → Green → Refactor) is their responsibility, not shared across all agents.
-- Doc-keeper bookend: run once before and once after each implementation cycle — sequential, never in parallel with implementation agents.
+Agent roles and workflow sequencing are governed by `.claude/agents/orchestrator.md`. Refer to it when advising on multi-agent coordination for this project.

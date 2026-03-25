@@ -7,9 +7,32 @@ from typing import Any
 
 from lol_pipeline.priority import has_priority_players
 
-from lol_ui.constants import _HALT_BANNER, _STREAM_KEYS
+from lol_ui.constants import (
+    _DEPTH_BADGE_BACKLOG_THRESHOLD,
+    _DEPTH_BADGE_BUSY_THRESHOLD,
+    _HALT_BANNER,
+    _STREAM_KEYS,
+)
 from lol_ui.rendering import _depth_badge
 from lol_ui.strings import t
+
+
+def _depth_bar_html(stream_name: str, depth: int) -> str:
+    """Render a narrow progress bar showing stream depth relative to backlog threshold."""
+    if stream_name == "stream:dlq":
+        # DLQ: any depth > 0 is an error; cap visual at 10 entries
+        cap = max(depth, 10) if depth > 0 else 10
+        pct = min(round(depth / cap * 100), 100) if depth > 0 else 0
+        cls = "depth-bar__fill--backlog" if depth > 0 else "depth-bar__fill--ok"
+    else:
+        pct = min(round(depth / _DEPTH_BADGE_BACKLOG_THRESHOLD * 100), 100)
+        if depth >= _DEPTH_BADGE_BACKLOG_THRESHOLD:
+            cls = "depth-bar__fill--backlog"
+        elif depth >= _DEPTH_BADGE_BUSY_THRESHOLD:
+            cls = "depth-bar__fill--busy"
+        else:
+            cls = "depth-bar__fill--ok"
+    return f'<div class="depth-bar"><div class="{cls} depth-bar__fill" style="width:{pct}%"></div></div>'
 
 
 def _translate_group_name(raw_name: str) -> str:
@@ -94,10 +117,12 @@ async def _streams_fragment_html(r: Any) -> str:
         status_badge = _depth_badge(s, length)
         key_label = html.escape(_translate_stream_key(s))
         group_cells = _format_group_cells(groups)
+        depth_bar = _depth_bar_html(s, length)
+        length_cell = f'<td class="text-right">{length}{depth_bar}</td>'
         if not groups:
             rows += (
                 f"<tr><td>{key_label}</td>"
-                f'<td class="text-right">{length}</td>'
+                f"{length_cell}"
                 f"{group_cells}"
                 f"<td>{status_badge}</td></tr>"
             )
@@ -112,7 +137,7 @@ async def _streams_fragment_html(r: Any) -> str:
                     rowspan = f' rowspan="{len(groups)}"' if len(groups) > 1 else ""
                     rows += (
                         f"<tr><td{rowspan}>{key_label}</td>"
-                        f'<td class="text-right"{rowspan}>{length}</td>'
+                        f'<td class="text-right"{rowspan}>{length}{depth_bar}</td>'
                         f"<td>{name}</td>"
                         f'<td class="text-right">{pending}</td>'
                         f'<td class="text-right">{lag_display}</td>'
@@ -127,9 +152,10 @@ async def _streams_fragment_html(r: Any) -> str:
 
     delayed_label = html.escape(_translate_stream_key("delayed:messages"))
     delayed_badge = _depth_badge("delayed:messages", delayed)
+    delayed_bar = _depth_bar_html("delayed:messages", delayed)
     rows += (
         f"<tr><td>{delayed_label}</td>"
-        f'<td class="text-right">{delayed}</td>'
+        f'<td class="text-right">{delayed}{delayed_bar}</td>'
         f'<td class="text-muted">&mdash;</td>'
         f'<td class="text-right text-muted">0</td>'
         f'<td class="text-right text-muted">0</td>'
