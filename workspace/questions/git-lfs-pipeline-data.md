@@ -110,6 +110,22 @@ Which is faster for a fresh setup? RDB restore is O(file size); JSONL replay req
 
 ---
 
+## Pending Human Questions
+
+**[H-5] Riot ToS / repo visibility — BLOCKING LFS-1+3**
+The JSONL files are raw Riot API responses containing PUUIDs, summoner IDs, and Riot IDs for ~59,000 participants across 7,193 matches. Riot's API Terms prohibit bulk redistribution and require deletion of all Game Information on key revocation. LFS objects are immutable in git history — purging requires force-push rewriting history.
+Options:
+- **Repo is private** — sharing with known collaborators only; ToS risk is lower; LFS plan proceeds as designed
+- **Repo is public, redesign seed data** — store only anonymized/derived stats (win rates, matchup aggregates) instead of raw match JSON; no PII in LFS
+Status: ⏳ Awaiting human answer
+
+**[H-6] GitHub LFS bandwidth — BLOCKING LFS-1+3**
+Free tier: 1 GB/month bandwidth (separate from 10 GB storage quota). At 29 MB per clone, ~34 clones per month exhausts the free tier and locks out all users.
+Options:
+- Purchase GitHub LFS data packs ($5/month per 50 GB bandwidth + 50 GB storage)
+- Keep LFS data in a private repo (fewer clones, slower quota consumption)
+Status: ⏳ Awaiting human answer (may be resolved by H-5)
+
 ## Implementation Tasks
 
 _(see TODO.md — LFS section)_
