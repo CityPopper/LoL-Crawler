@@ -2,34 +2,26 @@
 
 ---
 
-## LFS-1 — Git LFS: `.gitignore` + `.gitattributes` wiring
-**Decisions**: D-5 (only `*.jsonl.zst` in LFS), D-6 (all files, no rotation), D-7 (exclude AOF)
+## LFS-1+3 — Git LFS wiring + initial commit (atomic — do not split)
+**Decisions**: D-5, D-6, D-7. **Prod fix**: LFS-1 and LFS-3 must be one session (devops Q1).
 **Fix**:
-1. Remove from `.gitignore`: lines matching `pipeline-data/**/*.jsonl` (line 73), `pipeline-data/**/*.jsonl.zst` (line 74), `lol-pipeline-fetcher/match-data/**/*.jsonl.zst` (line 82); replace `redis-data/` (line 38) with `redis-data/appendonlydir/` + `redis-data/*.rdb` + `redis-data/*.rdb.tmp`
+1. `.gitignore` changes — ONLY remove `pipeline-data/**/*.jsonl.zst` (line 74) and `lol-pipeline-fetcher/match-data/**/*.jsonl.zst` (line 82). **Keep** `pipeline-data/**/*.jsonl` (line 73) — this protects the active uncompressed file from accidental commit (security Q1). Replace `redis-data/` (line 38) with blanket `redis-data/` kept as-is (security Q4: narrowing to specific patterns risks non-RDB files slipping through — keep the blanket ignore).
 2. Add to `.gitattributes`: `pipeline-data/**/*.jsonl.zst filter=lfs diff=lfs merge=lfs -text`
-3. Run `git lfs track "pipeline-data/**/*.jsonl.zst"` (idempotent)
-- [ ] **Red:** Test that `git check-attr filter pipeline-data/riot-api/NA1/2026-02.jsonl.zst` returns `lfs`
-- [ ] **Green:** Apply `.gitignore` + `.gitattributes` changes
-- [ ] **Refactor:** Verify no other `.jsonl.zst` patterns conflict
+3. In the SAME session: `git lfs track "pipeline-data/**/*.jsonl.zst"` then `git add pipeline-data/riot-api/NA1/*.jsonl.zst && git commit`
+Note: requires `git-lfs` installed (`brew install git-lfs && git lfs install`).
+⚠️ **Blocked on [H — Legal/ToS]**: confirm repo visibility + Riot ToS compliance before committing raw API response data to LFS.
+- [ ] **Red:** `git lfs ls-files` shows no pipeline-data files; `git check-attr filter pipeline-data/riot-api/NA1/2026-02.jsonl.zst` returns `lfs`
+- [ ] **Green:** Apply changes in one session, verify `git lfs ls-files --size` matches expected
+- [ ] **Refactor:** Confirm `pipeline-data/**/*.jsonl` still gitignored after edit
 
 ---
 
 ## LFS-2 — Delete orphaned `lol-pipeline-fetcher/match-data/`
 **Decisions**: D-4 (pipeline-data is canonical; match-data is orphaned duplicate)
-**Fix**: Delete `lol-pipeline-fetcher/match-data/` directory. Update `.gitignore` line 82 (already covered in LFS-1). Check for any hardcoded references to `match-data/` in code/docs/Justfile.
+**Fix**: Delete `lol-pipeline-fetcher/match-data/` directory. Update `.gitignore` line 82 (covered in LFS-1+3). Check for any hardcoded references to `match-data/` in code/docs/Justfile. Update `docs/architecture/04-storage.md` which still references the old path (architect Q4).
 - [ ] **Red:** Grep for `match-data` in all non-.gitignore files; confirm no live references
-- [ ] **Green:** `rm -rf lol-pipeline-fetcher/match-data/`; update any stale references
-- [ ] **Refactor:** Confirm `cfg.match_data_dir` in fetcher still points to `pipeline-data/riot-api` via env var
-
----
-
-## LFS-3 — Initial LFS commit of all existing `.zst` files
-**Decisions**: D-5, D-6
-**Fix**: After LFS-1 `.gitattributes` is committed, stage all existing `pipeline-data/riot-api/NA1/*.jsonl.zst` files and commit. Git will detect LFS attribute and upload as LFS objects.
-Note: requires `git-lfs` installed locally (`brew install git-lfs && git lfs install`).
-- [ ] **Red:** `git lfs ls-files` shows no pipeline-data files before this task
-- [ ] **Green:** `git add pipeline-data/riot-api/NA1/*.jsonl.zst && git commit`; verify `git lfs ls-files` shows them
-- [ ] **Refactor:** `git lfs ls-files --size` confirms sizes match expected
+- [ ] **Green:** `rm -rf lol-pipeline-fetcher/match-data/`; update stale refs in `04-storage.md`
+- [ ] **Refactor:** Confirm `cfg.match_data_dir` in fetcher still resolves to `pipeline-data/riot-api` via env var
 
 ---
 
@@ -49,32 +41,36 @@ Use-case: run before `git push` when sharing data updates.
 ---
 
 ## LFS-5 — Internal seed-from-disk script (called by `just up`, not exposed)
-**Decisions**: D-1, D-2, D-3, D-10 (internal, not top-level recipe)
+**Decisions**: D-1, D-2, D-3, D-10. **Prod fixes**: region lookup (arch Q2/opt Q2), throttled batching (opt Q3/Q5), LFS pointer guard (devops Q2), reverse-chronological `_search_bundles` fix (opt Q4).
 **Fix**: New script `scripts/seed_from_disk.py` that:
-1. Connects to Redis; checks if empty (`DBSIZE == 0`)
-2. If not empty, exits immediately (no-op)
-3. Reads `pipeline-data/riot-api/NA1/` files: `.jsonl.zst` sorted reverse-chronological (newest first), then active `*.jsonl` if present
-4. For each file, streaming-decompresses and reads match IDs (tab-delimited field 0 per line)
-5. Publishes each `match_id` to `stream:parse` as `MessageEnvelope(type="match", payload={"match_id": match_id})` with low priority
-6. Logs: "Seeding N matches from disk (newest first)..."
-NOT exposed as a top-level `just` recipe — called only from `just up`.
-- [ ] **Red:** Unit test: empty Redis → publishes newest-first; non-empty → no-ops; streaming decompression doesn't OOM
+1. Validates each `.zst` file is a real LFS object (check magic bytes `0x28 0xB5 0x2F 0xFD`); if pointer stub detected, abort with clear error ("run git lfs pull first")
+2. Connects to Redis; if DBSIZE > 0, exits immediately (no-op)
+3. Reads `.jsonl.zst` files sorted reverse-chronological (newest first), then active `*.jsonl` if present
+4. For each file, streaming-decompresses; extracts `match_id` (field 0) and `platform` (e.g. `NA1` from `NA1_12345`)
+5. Maps platform → routing region using lookup table: `NA1/BR1/LA1/LA2 → americas`, `EUW1/EUN1/TR1/RU → europe`, `KR/JP1 → asia`, `OC1 → sea`
+6. Publishes in **throttled batches of 200 messages**, sleeping 2s between batches to allow parser + analyzer to drain; monitors `stream:parse` length and pauses if > 5,000 pending
+7. `MessageEnvelope(type="match", payload={"match_id": match_id, "region": region}, priority=PRIORITY_LOW)`
+8. Logs progress per batch
+Also fix `lol-pipeline-common/src/lol_pipeline/raw_store.py:_search_bundles()` to sort bundles reverse-chronologically (newest first) so recent matches resolve in O(1) instead of O(M).
+NOT exposed as a top-level `just` recipe.
+- [ ] **Red:** Unit test: platform→region mapping; LFS pointer detection; batch throttle triggers at > 5000 pending; empty Redis publishes newest-first; non-empty → no-ops
 - [ ] **Green:** Implement; test against real Redis container
-- [ ] **Refactor:** Streaming decompression (pyzstd or subprocess `zstd -d -c`)
+- [ ] **Refactor:** Streaming decompression (no full-file load into memory)
 
 ---
 
-## LFS-6 — Extend `just up` with LFS pull + decompress + auto-seed
-**Decisions**: D-9, D-10 (bake everything into `just up`; minimize top-level commands)
-**Fix**: Extend the existing `just up` recipe in `Justfile` to:
-1. Run `git lfs pull` if `.git` exists (no-op outside a git repo)
-2. Decompress current month's `.zst` → `.jsonl` if `.jsonl` doesn't exist: `zstd -d pipeline-data/riot-api/NA1/$(date +%Y-%m).jsonl.zst 2>/dev/null || true`
-3. Start services normally (`{{DC}} up -d`)
-4. Wait for Redis ready; if Redis DBSIZE==0, run `python scripts/seed_from_disk.py` in background
-New user UX: `git clone ... && just up` — everything works automatically.
-- [ ] **Red:** Test: fresh clone simulation (no `.jsonl`, `.zst` present) → `just up` produces working `.jsonl` and queues seed
-- [ ] **Green:** Implement; test end-to-end
-- [ ] **Refactor:** Ensure `git lfs pull` failure (no LFS installed) degrades gracefully with a clear warning
+## LFS-6 — Extend `just up` with LFS pull + decompress + auto-seed + AOF cleanup
+**Decisions**: D-9, D-10. **Prod fixes**: AOF conflict (devops Q3), LFS pointer guard.
+**Fix**: Extend existing `just up` recipe in `Justfile` to:
+1. `git lfs pull` if `.git` exists (degrade gracefully if git-lfs not installed: warn, continue)
+2. Delete stale AOF: `rm -rf "${REDIS_DATA_DIR:-./redis-data}/appendonlydir"` — prevents AOF taking precedence over fresh-start RDB/empty Redis (survives `docker compose down -v` since it's a bind mount)
+3. Decompress current month's `.zst` → `.jsonl` if `.jsonl` doesn't exist: `zstd -d "pipeline-data/riot-api/NA1/$(date +%Y-%m).jsonl.zst" 2>/dev/null || true`
+4. Start services: `{{DC}} up -d`
+5. Wait for Redis ready; if DBSIZE==0, run `python scripts/seed_from_disk.py &` (background)
+New user UX: `git clone ... && just up` — everything works.
+- [ ] **Red:** Test: missing `.jsonl` → decompressed; stale `appendonlydir/` → deleted; LFS pointer stubs → clear error
+- [ ] **Green:** Implement; integration-test on simulated fresh clone
+- [ ] **Refactor:** AOF deletion must respect `REDIS_DATA_DIR` env var
 
 ---
 
