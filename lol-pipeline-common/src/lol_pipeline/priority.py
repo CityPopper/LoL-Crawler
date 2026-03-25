@@ -9,18 +9,31 @@
 
 from __future__ import annotations
 
-import os
+import logging
 
 import redis.asyncio as aioredis
+
+from lol_pipeline.config import Config
+
+_log = logging.getLogger(__name__)
 
 _PRIORITY_KEY_PREFIX = "player:priority:"
 PRIORITY_ACTIVE_SET = "priority:active"
 
-# Env: PRIORITY_KEY_TTL_SECONDS (matches Config.priority_key_ttl_seconds).
-PRIORITY_KEY_TTL_SECONDS = int(os.environ.get("PRIORITY_KEY_TTL_SECONDS", "86400"))
+
+def _ttl_from_config(default: int = 86400) -> int:
+    """Read priority_key_ttl_seconds from Config, falling back to *default*."""
+    try:
+        return Config().priority_key_ttl_seconds
+    except Exception:
+        _log.debug("Config() unavailable — using default priority TTL %d", default)
+        return default
+
+
+PRIORITY_KEY_TTL_SECONDS: int = _ttl_from_config()
 # TTL for the priority:active SET itself — slightly longer than individual keys
 # so the SET expires after all member keys have expired naturally.
-PRIORITY_ACTIVE_SET_TTL_SECONDS = PRIORITY_KEY_TTL_SECONDS + 3600  # +1h buffer
+PRIORITY_ACTIVE_SET_TTL_SECONDS: int = PRIORITY_KEY_TTL_SECONDS + 3600  # +1h buffer
 
 # 4-tier priority constants
 PRIORITY_MANUAL_20: str = "manual_20"

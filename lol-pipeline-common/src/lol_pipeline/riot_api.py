@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import math
-import os
 import time as _time
 from typing import Any, cast
 from urllib.parse import quote
@@ -14,10 +13,10 @@ import redis.asyncio as aioredis
 
 _log = logging.getLogger("riot_api")
 
-# Configurable rate limit windows — production Riot API keys use 10s/600s,
-# dev keys use 1s/120s.  Read once at module import.
-_SHORT_WINDOW_S = int(os.environ.get("RATE_LIMIT_SHORT_WINDOW_S", "1"))
-_LONG_WINDOW_S = int(os.environ.get("RATE_LIMIT_LONG_WINDOW_S", "120"))
+# Rate-limit window durations — hardcoded to match _rate_limiter_data.py
+# (1_000 ms = 1 s, 120_000 ms = 120 s).
+_SHORT_WINDOW_S: int = 1
+_LONG_WINDOW_S: int = 120
 
 _RATE_LIMIT_KEY_TTL = 3600  # 1 hour — stale limits expire after API key rotation
 _RATE_LIMIT_WRITE_INTERVAL_S = 1800  # Re-write cached values every 30 min to refresh TTL
@@ -72,19 +71,18 @@ class ServerError(RiotAPIError):
         self.status_code = status_code
 
 
-def _parse_app_rate_limit(
+def _parse_rate_limit_header(
     header: str,
+    field_name: str = "X-App-Rate-Limit",
     *,
     short_window_s: int | None = None,
     long_window_s: int | None = None,
 ) -> tuple[int, int] | None:
-    """Parse the X-App-Rate-Limit header value into (short_limit, long_limit).
+    """Parse a Riot rate-limit header into (short_value, long_value).
 
-    Expects the standard Riot format "20:1,100:120" where each entry is
-    "count:window_seconds". Looks for windows matching the configured durations
-    (defaulting to module-level ``_SHORT_WINDOW_S`` / ``_LONG_WINDOW_S`` which
-    are themselves env-configurable via ``RATE_LIMIT_SHORT_WINDOW_S`` and
-    ``RATE_LIMIT_LONG_WINDOW_S``).
+    Works for both ``X-App-Rate-Limit`` (limits) and ``X-App-Rate-Limit-Count``
+    (current usage).  Expects the standard Riot format ``"20:1,100:120"`` where
+    each entry is ``"value:window_seconds"``.
 
     Returns None if the header is absent, malformed, or missing either window.
     """
@@ -100,23 +98,43 @@ def _parse_app_rate_limit(
         short = by_window.get(target_short)
         long_ = by_window.get(target_long)
         if short is None or long_ is None:
-            _log.warning(
-                "X-App-Rate-Limit missing expected windows — using defaults",
-                extra={
-                    "header": header,
-                    "windows_found": list(by_window.keys()),
-                    "expected_short": target_short,
-                    "expected_long": target_long,
-                },
-            )
+            if field_name == "X-App-Rate-Limit":
+                _log.warning(
+                    "%s missing expected windows — using defaults",
+                    field_name,
+                    extra={
+                        "header": header,
+                        "windows_found": list(by_window.keys()),
+                        "expected_short": target_short,
+                        "expected_long": target_long,
+                    },
+                )
             return None
         return short, long_
     except (ValueError, TypeError):
-        _log.warning(
-            "failed to parse X-App-Rate-Limit header — using defaults",
-            extra={"header": header},
-        )
+        if field_name == "X-App-Rate-Limit":
+            _log.warning(
+                "failed to parse %s header — using defaults",
+                field_name,
+                extra={"header": header},
+            )
         return None
+
+
+# Public aliases that preserve the original call-site names.
+def _parse_app_rate_limit(
+    header: str,
+    *,
+    short_window_s: int | None = None,
+    long_window_s: int | None = None,
+) -> tuple[int, int] | None:
+    """Parse X-App-Rate-Limit header. Thin wrapper around _parse_rate_limit_header."""
+    return _parse_rate_limit_header(
+        header,
+        "X-App-Rate-Limit",
+        short_window_s=short_window_s,
+        long_window_s=long_window_s,
+    )
 
 
 def _parse_rate_limit_count(
@@ -125,27 +143,13 @@ def _parse_rate_limit_count(
     short_window_s: int | None = None,
     long_window_s: int | None = None,
 ) -> tuple[int, int] | None:
-    """Parse X-App-Rate-Limit-Count header into (short_count, long_count).
-
-    Format is "19:1,85:120" — requests used in each window.
-    Returns None if header is absent, malformed, or missing expected windows.
-    """
-    if not header:
-        return None
-    target_short = short_window_s if short_window_s is not None else _SHORT_WINDOW_S
-    target_long = long_window_s if long_window_s is not None else _LONG_WINDOW_S
-    try:
-        by_window: dict[int, int] = {}
-        for entry in header.split(","):
-            count_str, window_str = entry.strip().split(":")
-            by_window[int(window_str)] = int(count_str)
-        short = by_window.get(target_short)
-        long_ = by_window.get(target_long)
-        if short is None or long_ is None:
-            return None
-        return short, long_
-    except (ValueError, TypeError):
-        return None
+    """Parse X-App-Rate-Limit-Count header. Thin wrapper around _parse_rate_limit_header."""
+    return _parse_rate_limit_header(
+        header,
+        "X-App-Rate-Limit-Count",
+        short_window_s=short_window_s,
+        long_window_s=long_window_s,
+    )
 
 
 def _check_rate_limit_count(
@@ -293,9 +297,7 @@ class RiotClient:
         if limits:
             short, long_ = limits
             now = _time.monotonic()
-            values_changed = (
-                short != self._cached_short_limit or long_ != self._cached_long_limit
-            )
+            values_changed = short != self._cached_short_limit or long_ != self._cached_long_limit
             ttl_stale = now - self._limits_last_written_at >= _RATE_LIMIT_WRITE_INTERVAL_S
             if values_changed or ttl_stale:
                 await self._r.set("ratelimit:limits:short", str(short), ex=_RATE_LIMIT_KEY_TTL)

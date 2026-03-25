@@ -27,31 +27,66 @@ from lol_pipeline.streams import ack, consume, nack_to_dlq
 MessageHandler = Callable[[str, MessageEnvelope], Awaitable[None]]
 
 
+# ---------------------------------------------------------------------------
+# RetryTracker — Redis-backed per-message retry counter
+# ---------------------------------------------------------------------------
+
+
+class RetryTracker:
+    """Manages Redis-backed retry counters for consumer messages.
+
+    Each message's retry count is stored at ``{prefix}:{stream}:{msg_id}``
+    with a configurable TTL so that counters expire after prolonged inactivity.
+    """
+
+    def __init__(
+        self,
+        prefix: str = _RETRY_KEY_PREFIX,
+        ttl: int = _RETRY_KEY_TTL,
+    ) -> None:
+        self._prefix = prefix
+        self._ttl = ttl
+
+    def key(self, stream: str, msg_id: str) -> str:
+        """Build the Redis key for a message's retry counter."""
+        return f"{self._prefix}:{stream}:{msg_id}"
+
+    async def incr(self, r: aioredis.Redis, stream: str, msg_id: str) -> int:
+        """Increment the retry counter and return the new value.
+
+        INCR and EXPIRE are batched in a single pipeline so a crash between them
+        cannot leave the key without a TTL.
+        """
+        k = self.key(stream, msg_id)
+        async with r.pipeline(transaction=False) as pipe:
+            pipe.incr(k)
+            pipe.expire(k, self._ttl)
+            results: list[int] = await pipe.execute()
+        return results[0]
+
+    async def clear(self, r: aioredis.Redis, stream: str, msg_id: str) -> None:
+        """Delete the retry counter for a message."""
+        await r.delete(self.key(stream, msg_id))
+
+
+# Module-level singleton used by the handler/dispatch layer.
+_tracker = RetryTracker()
+
+
+# Public aliases so existing imports and tests still work.
 def _retry_key(stream: str, msg_id: str) -> str:
     """Build the Redis key for a message's retry counter."""
-    return f"{_RETRY_KEY_PREFIX}:{stream}:{msg_id}"
+    return _tracker.key(stream, msg_id)
 
 
 async def _incr_retry(r: aioredis.Redis, stream: str, msg_id: str) -> int:
-    """Increment the Redis-backed retry counter and return the new value.
-
-    INCR and EXPIRE are batched in a single pipeline so a crash between them
-    cannot leave the key without a TTL.  Using ``transaction=False`` (no
-    MULTI/EXEC) is sufficient — both commands execute in sequence without
-    interruption on single-node Redis, and the TTL is refreshed on every retry
-    (key expires ``_RETRY_KEY_TTL`` seconds after the *last* attempt).
-    """
-    key = _retry_key(stream, msg_id)
-    async with r.pipeline(transaction=False) as pipe:
-        pipe.incr(key)
-        pipe.expire(key, _RETRY_KEY_TTL)
-        results: list[int] = await pipe.execute()
-    return results[0]
+    """Increment the Redis-backed retry counter and return the new value."""
+    return await _tracker.incr(r, stream, msg_id)
 
 
 async def _clear_retry(r: aioredis.Redis, stream: str, msg_id: str) -> None:
     """Delete the Redis-backed retry counter for a message."""
-    await r.delete(_retry_key(stream, msg_id))
+    await _tracker.clear(r, stream, msg_id)
 
 
 async def _nack_with_fallback(
@@ -234,7 +269,10 @@ async def run_consumer(
             break
         try:
             messages = await consume(
-                r, stream, group, consumer,
+                r,
+                stream,
+                group,
+                consumer,
                 autoclaim_min_idle_ms=autoclaim_min_idle_ms,
             )
         except (RedisError, OSError):
@@ -248,6 +286,11 @@ async def run_consumer(
             )
         idle_polls = 0 if messages else _log_idle(idle_polls, log, stream)
         await _dispatch_batch(
-            r, stream, group, messages, handler, log,
+            r,
+            stream,
+            group,
+            messages,
+            handler,
+            log,
             shutdown_check=is_shutdown,
         )

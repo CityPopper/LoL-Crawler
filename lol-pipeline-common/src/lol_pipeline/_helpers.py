@@ -76,8 +76,7 @@ def consumer_id() -> str:
 
     Format: ``hostname-pid``.  Stable within a process lifetime but
     unique across hosts and restarts — sufficient for all consumer
-    services except the analyzer, which appends a UUID for lock
-    deduplication.
+    services.
     """
     return f"{socket.gethostname()}-{os.getpid()}"
 

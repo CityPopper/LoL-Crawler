@@ -4,13 +4,18 @@ Import from here instead of hard-coding string literals.  Services are free to
 keep using their own local ``_STREAM_*`` aliases today — this module provides a
 single source of truth when they're ready to migrate.
 
-TTL constants read from env vars whose defaults match the corresponding
-:class:`lol_pipeline.config.Config` fields.
+TTL constants are read from :class:`lol_pipeline.config.Config` on first access
+via a lazy helper so that ``Config()`` is only constructed once.
 """
 
 from __future__ import annotations
 
-import os
+import functools
+import logging
+
+from lol_pipeline.config import Config
+
+_log = logging.getLogger(__name__)
 
 # Game constants
 RANKED_SOLO_QUEUE_ID: str = "420"
@@ -34,12 +39,27 @@ VALID_REPLAY_STREAMS: frozenset[str] = frozenset(
     {STREAM_PUUID, STREAM_MATCH_ID, STREAM_PARSE, STREAM_ANALYZE}
 )
 
+
+@functools.cache
+def _config() -> Config | None:
+    """Try to load Config; return None when required env vars are absent (e.g. tests)."""
+    try:
+        return Config()
+    except Exception:
+        _log.debug("Config() unavailable — using built-in defaults for TTL constants")
+        return None
+
+
+def _cfg_or_default(attr: str, default: int) -> int:
+    """Read *attr* from Config if available, otherwise return *default*."""
+    cfg = _config()
+    return getattr(cfg, attr, default) if cfg is not None else default
+
+
 # TTL for player-scoped Redis keys (player:{puuid}, player:matches:{puuid}).
-# Env: PLAYER_DATA_TTL_SECONDS. Default: 30 days (2592000s).
-PLAYER_DATA_TTL_SECONDS: int = int(os.environ.get("PLAYER_DATA_TTL_SECONDS", "2592000"))
+# Default: 30 days (2592000s).
+PLAYER_DATA_TTL_SECONDS: int = _cfg_or_default("player_data_ttl_seconds", 2592000)
 
 # TTL for champion aggregate stats keys.
-# Env: CHAMPION_STATS_TTL_SECONDS. Default: 90 days (7776000s).
-CHAMPION_STATS_TTL_SECONDS: int = int(
-    os.environ.get("CHAMPION_STATS_TTL_SECONDS", "7776000")
-)
+# Default: 90 days (7776000s).
+CHAMPION_STATS_TTL_SECONDS: int = _cfg_or_default("champion_stats_ttl_seconds", 7776000)

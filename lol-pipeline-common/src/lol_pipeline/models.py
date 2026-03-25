@@ -17,6 +17,48 @@ def _new_id() -> str:
     return str(uuid.uuid4())
 
 
+# ---------------------------------------------------------------------------
+# Shared serialization helpers — DRY base for both envelope classes
+# ---------------------------------------------------------------------------
+
+
+def _common_to_redis(obj: MessageEnvelope | DLQEnvelope) -> dict[str, str]:
+    """Serialize the fields shared by both envelope types."""
+    return {
+        "id": obj.id,
+        "source_stream": obj.source_stream,
+        "type": obj.type,
+        "payload": json.dumps(obj.payload),
+        "attempts": str(obj.attempts),
+        "max_attempts": str(obj.max_attempts),
+        "enqueued_at": obj.enqueued_at,
+        "dlq_attempts": str(obj.dlq_attempts),
+        "priority": obj.priority,
+        "correlation_id": obj.correlation_id,
+    }
+
+
+def _common_from_redis(fields: dict[str, str]) -> dict[str, Any]:
+    """Deserialize the fields shared by both envelope types."""
+    return {
+        "id": fields["id"],
+        "source_stream": fields["source_stream"],
+        "type": fields["type"],
+        "payload": json.loads(fields["payload"]),
+        "attempts": int(fields["attempts"]),
+        "max_attempts": int(fields["max_attempts"]),
+        "enqueued_at": fields["enqueued_at"],
+        "dlq_attempts": int(fields.get("dlq_attempts", "0")),
+        "priority": fields.get("priority", "normal"),
+        "correlation_id": fields.get("correlation_id", ""),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Envelope dataclasses
+# ---------------------------------------------------------------------------
+
+
 @dataclass
 class MessageEnvelope:
     """A message moving through a pipeline stream."""
@@ -33,33 +75,11 @@ class MessageEnvelope:
     correlation_id: str = ""
 
     def to_redis_fields(self) -> dict[str, str]:
-        return {
-            "id": self.id,
-            "source_stream": self.source_stream,
-            "type": self.type,
-            "payload": json.dumps(self.payload),
-            "attempts": str(self.attempts),
-            "max_attempts": str(self.max_attempts),
-            "enqueued_at": self.enqueued_at,
-            "dlq_attempts": str(self.dlq_attempts),
-            "priority": self.priority,
-            "correlation_id": self.correlation_id,
-        }
+        return _common_to_redis(self)
 
     @classmethod
     def from_redis_fields(cls, fields: dict[str, str]) -> MessageEnvelope:
-        return cls(
-            id=fields["id"],
-            source_stream=fields["source_stream"],
-            type=fields["type"],
-            payload=json.loads(fields["payload"]),
-            attempts=int(fields["attempts"]),
-            max_attempts=int(fields["max_attempts"]),
-            enqueued_at=fields["enqueued_at"],
-            dlq_attempts=int(fields.get("dlq_attempts", "0")),
-            priority=fields.get("priority", "normal"),
-            correlation_id=fields.get("correlation_id", ""),
-        )
+        return cls(**_common_from_redis(fields))
 
 
 @dataclass
@@ -85,48 +105,38 @@ class DLQEnvelope:
     correlation_id: str = ""
 
     def to_redis_fields(self) -> dict[str, str]:
-        return {
-            "id": self.id,
-            "source_stream": self.source_stream,
-            "type": self.type,
-            "payload": json.dumps(self.payload),
-            "attempts": str(self.attempts),
-            "max_attempts": str(self.max_attempts),
-            "failure_code": self.failure_code,
-            "failure_reason": self.failure_reason,
-            "failed_by": self.failed_by,
-            "original_stream": self.original_stream,
-            "original_message_id": self.original_message_id,
-            "failed_at": self.failed_at,
-            "enqueued_at": self.enqueued_at,
-            "dlq_attempts": str(self.dlq_attempts),
-            "retry_after_ms": "null" if self.retry_after_ms is None else str(self.retry_after_ms),
-            "priority": self.priority,
-            "correlation_id": self.correlation_id,
-        }
+        base = _common_to_redis(self)
+        base.update(
+            {
+                "failure_code": self.failure_code,
+                "failure_reason": self.failure_reason,
+                "failed_by": self.failed_by,
+                "original_stream": self.original_stream,
+                "original_message_id": self.original_message_id,
+                "failed_at": self.failed_at,
+                "retry_after_ms": (
+                    "null" if self.retry_after_ms is None else str(self.retry_after_ms)
+                ),
+            }
+        )
+        return base
 
     @classmethod
     def from_redis_fields(cls, fields: dict[str, str]) -> DLQEnvelope:
+        base = _common_from_redis(fields)
         ram = fields.get("retry_after_ms", "null")
-        return cls(
-            id=fields["id"],
-            source_stream=fields["source_stream"],
-            type=fields["type"],
-            payload=json.loads(fields["payload"]),
-            attempts=int(fields["attempts"]),
-            max_attempts=int(fields["max_attempts"]),
-            failure_code=fields["failure_code"],
-            failure_reason=fields.get("failure_reason", ""),
-            failed_by=fields.get("failed_by", ""),
-            original_stream=fields.get("original_stream", ""),
-            original_message_id=fields.get("original_message_id", ""),
-            failed_at=fields["failed_at"],
-            enqueued_at=fields["enqueued_at"],
-            retry_after_ms=None if ram == "null" else int(ram),
-            dlq_attempts=int(fields.get("dlq_attempts", "0")),
-            priority=fields.get("priority", "normal"),
-            correlation_id=fields.get("correlation_id", ""),
+        base.update(
+            {
+                "failure_code": fields["failure_code"],
+                "failure_reason": fields.get("failure_reason", ""),
+                "failed_by": fields.get("failed_by", ""),
+                "original_stream": fields.get("original_stream", ""),
+                "original_message_id": fields.get("original_message_id", ""),
+                "failed_at": fields["failed_at"],
+                "retry_after_ms": None if ram == "null" else int(ram),
+            }
         )
+        return cls(**base)
 
 
 def make_replay_envelope(dlq: DLQEnvelope, max_attempts: int) -> MessageEnvelope:

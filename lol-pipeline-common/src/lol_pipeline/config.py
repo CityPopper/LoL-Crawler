@@ -1,6 +1,8 @@
 """Configuration: env var loading and validation via pydantic-settings."""
 
-from pydantic import Field
+import os
+
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -82,7 +84,16 @@ class Config(BaseSettings):
     )
     recovery_halt_sleep_s: float = Field(default=5.0, gt=0)
     recovery_archive_maxlen: int = Field(default=50_000, ge=1)
+    recovery_count: int = Field(default=10, ge=1)
+    recovery_block_ms: int = Field(default=5000, ge=1)
     # PRIN-UI-1: UI operational params (formerly hardcoded)
     ddragon_timeout_s: float = Field(default=5.0, gt=0)
     stats_fragment_cache_ttl_s: int = Field(default=21600, ge=1)  # 6 hours
     port: int = Field(default=8080, ge=1)
+
+    @model_validator(mode="after")
+    def _derive_opgg_match_data_dir(self) -> "Config":
+        """Fall back to match_data_dir/opgg when opgg_match_data_dir is unset."""
+        if not self.opgg_match_data_dir and self.match_data_dir:
+            self.opgg_match_data_dir = os.path.join(self.match_data_dir, "opgg")
+        return self

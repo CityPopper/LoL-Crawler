@@ -4,6 +4,13 @@ Items scrapped during the orchestrate-think debate phase. Review agents **must r
 
 ---
 
+## [PRIN-CMN-02] Split `riot_api.py` into separate modules for rate-limit parsing, circuit-breaker, and HTTP routing
+**Proposed**: Extract the three concerns in `riot_api.py` (rate-limit header parsing, circuit-breaker state, HTTP routing) into separate modules.
+**Rejected because**: `RiotClient._get()` executes a tight 4-step pipeline (circuit-breaker check → HTTP send → 5xx tracking → rate-limit header persist) where all three concerns share mutable instance state (`self._consecutive_5xx`, `self._circuit_open_until`). File-level separation would require cross-module callbacks or shared mutable state objects. The file already has method-level decomposition (`_check_circuit_breaker`, `_send_request`, `_track_5xx`, `_persist_rate_limits`, `_on_server_error`). Forcing file separation would produce worse coupling than the status quo.
+**Do not re-propose**: "split riot_api.py", "extract circuit-breaker module", "separate rate-limit parsing from HTTP client".
+
+---
+
 ## [CY1-D1] Make Delay Scheduler XADD+ZREM atomic via Lua script
 **Proposed**: Wrap the XADD and ZREM in a single Lua script to make delayed message delivery atomic.
 **Rejected because**: The non-atomicity is intentional. The design guarantees at-least-once delivery: if the process crashes between XADD and ZREM, the message stays in the sorted set and is re-delivered on the next tick. Making it atomic would create a window where the message is neither in the sorted set nor in the stream (exactly-once, but with a drop risk). The existing code has a comment documenting this intentional design.
