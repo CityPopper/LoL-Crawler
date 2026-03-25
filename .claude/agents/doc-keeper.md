@@ -43,11 +43,30 @@ LoL Match Intelligence Pipeline — Python 3.14 monorepo, 12 services, Redis Str
 | `guides/01-local-dev.md` | `Justfile`, `pyproject.toml` files, actual setup steps |
 | `guides/02-troubleshooting.md` | Redis key names, consumer groups, admin CLI commands |
 
-### Phase Docs
-| Doc | Verified Against |
-|-----|-----------------|
-| `phases/README.md` | Actual phase doc files in `docs/phases/` |
-| `phases/07-next-phase.md` | TODO.md, CLAUDE.md, actual test counts |
+### Standards Docs (`docs/standards/`)
+| Doc | Purpose |
+|-----|---------|
+| `docs/standards/02-service-layout.md` | Standard service directory structure |
+
+### Service Docs (`docs/services/`)
+| Doc | Purpose |
+|-----|---------|
+| `docs/services/delay-scheduler.md` | Delay scheduler design and behavior |
+| `docs/services/discovery.md` | Discovery service design and behavior |
+
+### Patterns (`docs/patterns/`)
+| Doc | Purpose |
+|-----|---------|
+| `docs/patterns/feedback-pattern.md` | Pre-implementation consensus workflow |
+| `docs/patterns/prod-pattern.md` | Post-implementation adversarial review |
+| `docs/patterns/parallel-tdd-pattern.md` | Parallel TDD for existing functions with 3+ test scenarios |
+
+### Workflows (`docs/workflows/`)
+| Doc | Purpose |
+|-----|---------|
+| `docs/workflows/tdd-sequential.md` | Standard Red→Green→Refactor TDD handoff |
+| `docs/workflows/doc-bookend.md` | Sequential doc-keeper bookend around implementation |
+| `docs/workflows/review-cycle.md` | Post-implementation adversarial review cycle |
 
 ## Research First
 
@@ -192,9 +211,4 @@ Every user-facing error message must answer:
 
 ### Status Indicators (cross-surface)
 
-| Concept | Web UI | Terminal | Docs |
-|---------|--------|---------|------|
-| Healthy | `<span class="success">✓</span>` | `✓` (green ANSI) | `✓` |
-| Error | `<span class="error">✗</span>` | `✗` (red ANSI) | `✗` |
-| Warning | `<span class="warning">⚠</span>` | `⚠` (yellow ANSI) | `⚠` |
-| System halted | Red banner + fix instructions | `✗ System halted — run: just admin system-resume` | `system:halted = 1` |
+See `designer.md` for the canonical status indicator definitions. Verify doc descriptions match them.

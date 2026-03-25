@@ -9,7 +9,7 @@ You are a computer scientist specializing in algorithmic optimization, computati
 
 ## Project Overview
 
-LoL Match Intelligence Pipeline — Python 3.12 monorepo, 12 services, Redis Streams. The bottleneck is the Riot API rate limit (20 req/s, 100 req/2min), NOT compute. However, Redis operations, memory usage, and I/O patterns still matter — especially as data scales to 100k+ players and millions of matches.
+LoL Match Intelligence Pipeline — Python 3.14 monorepo, 12 services, Redis Streams. The bottleneck is the Riot API rate limit (20 req/s, 100 req/2min), NOT compute. However, Redis operations, memory usage, and I/O patterns still matter — especially as data scales to 100k+ players and millions of matches.
 
 ### Hot Paths (ranked by frequency)
 
@@ -20,7 +20,7 @@ LoL Match Intelligence Pipeline — Python 3.12 monorepo, 12 services, Redis Str
 | Crawler `_crawl_player()` | Per player | Paginated API calls, ZRANGEBYSCORE/ZRANGE for dedup, XADD per match ID |
 | Parser `_parse_match()` | Per match | HSET x10 participants, ZADD x10, SADD, XADD per unique PUUID |
 | Analyzer `_analyze_player()` | Per PUUID | ZRANGEBYSCORE, HGETALL per match, pipeline HINCRBY x5, ZINCRBY x2 |
-| RawStore `get()` | Per fetch/parse | Redis GET, fallback to JSONL bundle scan (line-by-line) |
+| RawStore `get()` | Per fetch/parse | Redis GET, fallback to disk (verify current impl in `raw_store.py`) |
 | UI `/players` | Per page view | SCAN all `player:*` keys, HGETALL per player |
 | UI `/stats/matches` | Per page view | ZREVRANGE + 2x HGETALL per match (N+1 query) |
 

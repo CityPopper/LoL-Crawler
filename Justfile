@@ -316,11 +316,21 @@ typecheck-svc name:
 smoke: lint typecheck test
 
 # Full CI mirror — runs exactly what GitHub Actions runs (minus docker build + integration tests)
-ci: lint typecheck test contract
+# Intended to be run inside the dev container (via just dev-ci); calls internal recipes directly.
+ci: lint typecheck _test _contract
 
 # Build the dev container (Python 3.14 + all deps + Node.js + Claude Code CLI)
 dev-build:
     {{RUNTIME}} build -f .devcontainer/Dockerfile -t lol-crawler-dev .
+
+# Internal: build dev image only if it doesn't already exist
+_ensure-dev-image:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! {{RUNTIME}} image inspect lol-crawler-dev >/dev/null 2>&1; then
+        echo "Dev image not found — building lol-crawler-dev..."
+        just dev-build
+    fi
 
 # Run a command inside the dev container (e.g. just dev "just lint")
 dev *args:
@@ -328,7 +338,8 @@ dev *args:
 
 # Run full CI inside the dev container (consistent Python 3.14 environment)
 dev-ci: dev-build
-    {{RUNTIME}} run --rm -v "{{justfile_directory()}}:/workspace" -w /workspace lol-crawler-dev just ci
+    {{RUNTIME}} run --rm -v "{{justfile_directory()}}:/workspace" -w /workspace lol-crawler-dev \
+        bash -c "just _reinstall-workspace && just ci"
 
 # Update API mock fixtures from live Riot API (uses Pwnerer#1337)
 update-mocks:
@@ -337,8 +348,17 @@ update-mocks:
     echo "Fetching live data for Pwnerer#1337..."
     python3 scripts/update_mocks.py
 
-# Run integration tests (requires Docker or Podman for testcontainers)
-integration:
+# Run integration tests inside the dev container (testcontainers via Docker socket)
+integration: _ensure-dev-image
+    {{RUNTIME}} run --rm \
+        -v "{{justfile_directory()}}:/workspace" \
+        -v /var/run/docker.sock:/var/run/docker.sock \
+        -w /workspace \
+        lol-crawler-dev \
+        bash -c "just _reinstall-workspace && just _integration"
+
+# Internal: run integration tests directly (used inside container)
+_integration:
     python3 -m pytest tests/integration/ -v
 
 # Run end-to-end tests (requires running stack with valid API key)
@@ -347,15 +367,31 @@ e2e:
     set -euo pipefail
     python3 -m pytest tests/e2e/ -v
 
-# Run all unit tests (services tested in parallel)
-test:
+# Internal: reinstall all packages from workspace sources (run inside container)
+_reinstall-workspace:
+    uv pip install --system -q \
+        -e "lol-pipeline-common/[dev]" \
+        -e lol-pipeline-admin \
+        -e lol-pipeline-analyzer \
+        -e lol-pipeline-crawler \
+        -e lol-pipeline-delay-scheduler \
+        -e lol-pipeline-discovery \
+        -e lol-pipeline-fetcher \
+        -e lol-pipeline-parser \
+        -e lol-pipeline-recovery \
+        -e lol-pipeline-seed \
+        -e lol-pipeline-ui
+
+# Run all unit tests inside the dev container (services tested in parallel)
+test: _ensure-dev-image
+    {{RUNTIME}} run --rm -v "{{justfile_directory()}}:/workspace" -w /workspace lol-crawler-dev \
+        bash -c "just _reinstall-workspace && just _test"
+
+# Internal: run all unit tests directly (used inside container)
+_test:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [ -f ".venv/bin/python" ] && .venv/bin/python -c "import pytest" 2>/dev/null; then
-        PYTEST="$(pwd)/.venv/bin/python -m pytest"
-    else
-        PYTEST="$(command -v python3) -m pytest"
-    fi
+    PYTEST="python3 -m pytest"
     PIDS=()
     NAMES=()
     OUTTMP=$(mktemp -d)
@@ -383,20 +419,20 @@ test:
     rm -rf "$OUTTMP"
     exit $FAILED
 
-# Run unit tests for a single service (e.g. just test-svc crawler)
-test-svc name:
+# Run unit tests for a single service inside the dev container (e.g. just test-svc crawler)
+test-svc name: _ensure-dev-image
+    {{RUNTIME}} run --rm -v "{{justfile_directory()}}:/workspace" -w /workspace lol-crawler-dev \
+        bash -c "just _reinstall-workspace && just _test-svc {{name}}"
+
+# Internal: run unit tests for a single service directly (used inside container)
+_test-svc name:
     #!/usr/bin/env bash
     set -euo pipefail
-    PYTEST="python3 -m pytest"
-    if [ -f ".venv/bin/python" ]; then PYTEST=".venv/bin/python -m pytest"; fi
     PATHS="lol-pipeline-{{name}}/tests/unit"
-    # Also discover colocated tests in src/ (e.g. UI module)
-    if grep -q 'src/lol_' "lol-pipeline-{{name}}/pyproject.toml" 2>/dev/null; then
-        for f in $(find "lol-pipeline-{{name}}/src" -name "test_*.py" 2>/dev/null); do
-            PATHS="$PATHS $f"
-        done
-    fi
-    $PYTEST $PATHS -v --tb=short
+    for f in $(find "lol-pipeline-{{name}}/src" -name "test_*.py" 2>/dev/null); do
+        PATHS="$PATHS $f"
+    done
+    python3 -m pytest $PATHS -v --tb=short
 
 # Run UI in dev mode with hot reload (host, no Docker)
 dev-ui:
@@ -413,18 +449,17 @@ dev-ui:
 # Run all unit + contract tests
 test-all: test contract
 
-# Run all unit tests with coverage report
-coverage:
+# Run all unit tests with coverage report inside the dev container
+coverage: _ensure-dev-image
+    {{RUNTIME}} run --rm -v "{{justfile_directory()}}:/workspace" -w /workspace lol-crawler-dev \
+        bash -c "just _reinstall-workspace && just _coverage"
+
+# Internal: run coverage report directly (used inside container)
+_coverage:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [ -f ".venv/bin/python" ] && .venv/bin/python -c "import pytest" 2>/dev/null; then
-        PYTEST="$(pwd)/.venv/bin/python -m pytest"
-    else
-        PYTEST="$(command -v python3) -m pytest"
-    fi
     for dir in lol-pipeline-*/; do
         name="${dir%/}"
-        short="${name#lol-pipeline-}"
         if [ -d "$dir/tests/unit" ] && [ -d "$dir/src" ]; then
             pkg=$(ls "$dir/src/")
             # Collect test paths: always tests/unit, plus any colocated test_*.py in src/
@@ -433,7 +468,7 @@ coverage:
                 TEST_PATHS="$TEST_PATHS ${f#$dir/}"
             done
             echo "=== $name ==="
-            (cd "$dir" && $PYTEST $TEST_PATHS --cov="src/$pkg" --cov-report=term-missing -q --tb=short)
+            (cd "$dir" && python3 -m pytest $TEST_PATHS --cov="src/$pkg" --cov-report=term-missing -q --tb=short)
         fi
     done
 
@@ -465,8 +500,13 @@ security-audit:
     pip-audit --skip-editable || FAILED=1
     exit $FAILED
 
-# Run contract tests for all services
-contract:
+# Run contract tests for all services inside the dev container
+contract: _ensure-dev-image
+    {{RUNTIME}} run --rm -v "{{justfile_directory()}}:/workspace" -w /workspace lol-crawler-dev \
+        bash -c "just _reinstall-workspace && just _contract"
+
+# Internal: run contract tests directly (used inside container)
+_contract:
     #!/usr/bin/env bash
     set -euo pipefail
     for dir in lol-pipeline-*/; do

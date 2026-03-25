@@ -98,11 +98,7 @@ Per-service pipeline:
 
 **Required**: `RIOT_API_KEY`, `REDIS_URL`
 
-**Configurable** (with defaults):
-- `SEED_COOLDOWN_MINUTES=30`, `STREAM_ACK_TIMEOUT=60`, `MAX_ATTEMPTS=5`, `DLQ_MAX_ATTEMPTS=3`
-- `DELAY_SCHEDULER_INTERVAL_MS=500`, `ANALYZER_LOCK_TTL_SECONDS=300`
-- `API_RATE_LIMIT_PER_SECOND=20`, `DISCOVERY_POLL_INTERVAL_MS=5000`, `DISCOVERY_BATCH_SIZE=10`
-- `MATCH_DATA_DIR=""` (optional disk persistence)
+**Configurable**: see `.env.example` for full list and current defaults.
 
 ### Scaling Considerations
 

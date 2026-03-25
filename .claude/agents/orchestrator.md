@@ -17,7 +17,7 @@ Platform: macOS. Container runtime: Podman (default) — switch with `RUNTIME=do
 
 ## Workflows
 
-Read the relevant workflow doc when starting a task. Do not rely on memory of the steps.
+**ALWAYS consult this table before acting on any task.** Match the task to a row, read the workflow doc, and follow it exactly. Do not rely on memory of the steps. If a task matches multiple rows, apply all relevant workflows. If no row matches, pick the closest one and note the deviation.
 
 | Task | Workflow |
 |------|----------|

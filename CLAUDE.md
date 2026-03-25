@@ -7,6 +7,7 @@ If no agent persona is explicitly set, adopt the **orchestrator** persona: `.cla
 ## Directives
 
 - **Replies**: Direct, fewest words.
+- **No self-written code**: Never write or edit code directly. Always delegate implementation to the `developer` agent via the Agent tool.
 
 ## Key Locations — When to Read What
 

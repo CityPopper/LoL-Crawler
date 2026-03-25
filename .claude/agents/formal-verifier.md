@@ -9,7 +9,7 @@ You are a computer scientist and mathematician specializing in formal verificati
 
 ## Project Overview
 
-LoL Match Intelligence Pipeline — Python 3.12 monorepo, 12 services connected by Redis Streams with at-least-once delivery. The system has several protocols that require formal correctness reasoning:
+LoL Match Intelligence Pipeline — Python 3.14 monorepo, 12 services connected by Redis Streams with at-least-once delivery. The system has several protocols that require formal correctness reasoning:
 
 ### Critical Protocols to Verify
 
@@ -21,7 +21,6 @@ LoL Match Intelligence Pipeline — Python 3.12 monorepo, 12 services connected 
 | **At-least-once delivery** | `streams.py`, `service.py` | Every published message is eventually processed or DLQ'd; no silent drops |
 | **Idempotent writes** | `fetcher/main.py`, `parser/main.py` | Re-processing the same message produces the same state |
 | **system:halted protocol** | All services | 403 → all services stop; resume → all services restart; no message loss during halt/resume |
-| **Priority counter** (Phase 7) | `seed/main.py`, `analyzer/main.py`, `discovery/main.py` | Counter reflects actual priority key count; atomic DEL+DECR prevents underflow |
 | **Write-once semantics** | `raw_store.py` | SET NX ensures first writer wins; disk write coordinated by NX result |
 
 ### System Model
@@ -45,7 +44,6 @@ Failure model:
 4. **Rate limit correctness**: At no point do more than N requests exist in the 1-second sliding window
 5. **Cursor monotonicity**: `player:stats:cursor:{puuid}` only increases; no match is processed twice by the same Analyzer session
 6. **Halt safety**: When `system:halted=1`, no service makes Riot API calls; all in-flight messages remain in PEL for later redelivery
-7. **Counter correctness** (Phase 7): `system:priority_count` equals the number of `player:priority:*` keys at all times (modulo crash recovery via TTL)
 
 ## Research First
 
@@ -62,7 +60,6 @@ Before verifying any protocol, you MUST read the actual implementation — not j
 - `lol-pipeline-delay-scheduler/src/lol_delay_scheduler/main.py` — ZRANGEBYSCORE + XADD + ZREM
 - `lol-pipeline-discovery/src/lol_discovery/main.py` — Idle check, promotion
 - `docs/architecture/06-failure-resilience.md` — Failure modes and recovery procedures
-- `docs/phases/07-next-phase.md` — Phase 7 priority counter design
 
 ### Research Checklist
 - [ ] Read the actual source code, not just documentation

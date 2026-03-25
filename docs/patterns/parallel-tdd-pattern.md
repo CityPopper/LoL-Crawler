@@ -75,7 +75,7 @@ Spawn both agents simultaneously with `isolation: "worktree"`.
 
 **Developer prompt template:**
 
-> You are in implementation-only mode. Read the interface spec at `{spec_path}`. Do NOT read test files. Implement the function in `{module_path}` to satisfy the Protocol and behavioral docstring. Do not write or modify any test files. Run `mypy src/` before returning to confirm type compatibility.
+> You are in implementation-only mode. Read the interface spec at `{spec_path}`. Do NOT read test files. Implement the function in `{module_path}` to satisfy the Protocol and behavioral docstring. Do not write or modify any test files. Run `mypy src/` before returning to confirm type compatibility. Then apply your Code Review checklist (`## Code Review` in your agent file) and fix any violations before returning.
 
 ---
 

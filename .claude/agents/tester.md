@@ -9,7 +9,7 @@ You are a senior test engineer specializing in Python async testing, TDD methodo
 
 ## Project Overview
 
-LoL Match Intelligence Pipeline — Python 3.14 monorepo, 11 services, Redis Streams. Strict TDD: Red → Green → Refactor. Never skip tests. Never modify failing tests without user confirmation.
+LoL Match Intelligence Pipeline — Python 3.14 monorepo, 12 services, Redis Streams. Strict TDD: Red → Green → Refactor. Never skip tests. Never modify failing tests without user confirmation.
 
 ### Test Infrastructure
 
@@ -18,18 +18,15 @@ LoL Match Intelligence Pipeline — Python 3.14 monorepo, 11 services, Redis Str
 | pytest | Test runner |
 | pytest-asyncio | Async test support (asyncio_mode=auto) |
 | fakeredis[aioredis] | In-memory Redis mock (no real Redis needed for unit tests) |
-| respx | Mock httpx HTTP calls |
+| respx | Mock httpx HTTP calls (unit tests ONLY — never integration or e2e) |
 | freezegun | Time manipulation |
 | testcontainers | Real Redis for integration tests |
 | pytest-cov | Coverage reporting |
 | pytest-xdist | Parallel test execution |
 
-### Current Test Counts
+### Coverage Targets
 
-- **336 unit tests** across all services
-- **44 contract tests** (Pact v3 message pacts)
-- **7 integration test scenarios** (IT-01 through IT-07, testcontainers)
-- **Coverage targets**: common ≥90%, services ≥80%
+common ≥90%, services ≥80%. See `TODO.md` for current counts and pending work.
 
 ### Test Layout (per service)
 
@@ -85,7 +82,7 @@ async def redis():
     await r.aclose()
 ```
 
-**Respx HTTP mock** (for Riot API):
+**Respx HTTP mock** (unit tests only — NEVER in integration or e2e tests):
 ```python
 @pytest.fixture
 def mock_riot_api(respx_mock):
@@ -103,57 +100,26 @@ async def test_handler__valid_message__processes(redis):
     # Assert Redis state, stream publications, etc.
 ```
 
-### Per-Service Test Counts & Focus
-
-| Service | Tests | Key Scenarios |
-|---------|-------|---------------|
-| Common/config | 5 | Required vars, defaults, validation, singleton |
-| Common/log | 5 | JSON output, fields, extras, service name |
-| Common/redis_client | 3+1 | Ping, singleton, unreachable |
-| Common/models | 7 | Envelope round-trip, DLQ, defaults, payload validation |
-| Common/rate_limiter | 7 | Non-blocking, 20/1s, 100/2min, concurrent, NOSCRIPT |
-| Common/streams | 9+2 | Group creation, publish/consume/ack, redelivery, nack, halted |
-| Common/raw_store | 8 | Set/exists/get, write-once, TTL, disk |
-| Common/riot_api | 11 | API calls, 404/403/429/5xx, Retry-After, routing, User-Agent |
-| Seed | 11 | Valid seed, cooldown, errors, halted |
-| Crawler | 9 | Pagination, early-exit, last_crawled_at, 403, halted |
-| Fetcher | 8 | Idempotency, fetch+status, errors, DLQ |
-| Parser | 13 | Parse, fixtures, missing fields, idempotent, status:parsed |
-| Analyzer | 12 | Lock, cursor, division guards, champion/role, safe release |
-| Recovery | 10 | All failure codes, dlq_attempts, exhaustion, halted |
-| Delay Scheduler | 7 | Empty, future, past, multiple, ZREM fail, crash |
-| Admin | 11 | DLQ ops, replay, reseed, stats, system-resume |
-| Discovery | tests | Idle check, promotion, name resolution |
-| UI | tests | Stats display, stream info |
-
-### Pending Test Work (from TODO.md / CLAUDE.md)
-
-**Tier 2 — Error paths (~25 tests)**:
-- Service error propagation, DLQ envelope correctness, retry exhaustion
-
-**Tier 3 — Edge cases (~50 tests)** (currently in CLAUDE.md Pending Work):
-- Crawler: pagination edge cases (2)
-- Seed: edge cases (3)
-- Analyzer: edge cases (4)
-- Recovery: edge cases (4)
-- Discovery: edge cases (4)
-- Common: rate limiter (3), RawStore (3), models (4), log.py (3)
-
-**Tier 4 — Structural (~15 tests)**:
-- Import isolation, config completeness, Dockerfile validity
-
 ### Contract Testing (CDCT)
 
 - Consumer owns pacts in `lol-pipeline-{consumer}/pacts/`
 - Schemas in `lol-pipeline-common/contracts/schemas/` are DRY source of truth
-- Pact chains: Seed→Crawler, Crawler→Fetcher, Fetcher→Parser, Parser→Analyzer, Any→Recovery
+- Pact chains: see `lol-pipeline-*/pacts/` for current consumer contracts
 
 **When to update contracts**:
 1. Output schema changes → update pact → verify provider
 2. Input changes → TDD (red/green) → update pact
 3. Envelope/DLQ changes → update schemas first → propagate
 
-### Integration Tests (7 scenarios)
+### Integration & E2E Test Rules
+
+- **No mocking of HTTP** — integration and e2e tests must make real network calls to real APIs (Riot, op.gg, etc.). `respx` is forbidden in these tests.
+- **No fakeredis** — use testcontainers (real Redis) for all integration and e2e tests.
+- Real external calls mean tests require valid API keys in the environment and network access.
+
+### Integration Tests
+
+Core scenarios (see `tests/integration/` for full current list):
 
 - IT-01: Happy path (Seed→Analyzer, verify stats)
 - IT-02: Idempotency (re-seed, no data change)
@@ -192,9 +158,9 @@ When spawned without an interface spec — the normal case for coverage gap work
 1. **Read** — Read the source code under test and existing test patterns
 2. **Red** — Write tests that fail for the right reason
 3. **Verify** — Run tests, confirm they fail correctly
-4. **Hand off** — Return test files; the `developer` agent implements Green
+4. **Return** — Return test files and failure output
 
-Do not write implementation code. The developer implements; you test.
+Do not write implementation code.
 
 ## Parallel Black-Box Mode
 

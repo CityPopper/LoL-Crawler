@@ -53,9 +53,7 @@ Seed → stream:puuid → Crawler → stream:match_id → Fetcher → stream:par
 
 **MessageEnvelope**: id, source_stream, type, payload (JSON), attempts, max_attempts, enqueued_at, dlq_attempts
 **DLQEnvelope**: extends envelope + failure_code, failure_reason, failed_by, original_stream, original_message_id, retry_after_ms
-
 **Payloads**: puuid (puuid, game_name, tag_line, region) | match_id (match_id, puuid, region) | parse (match_id, region) | analyze (puuid)
-
 **Failure codes**: http_429, http_5xx, http_404, http_403, parse_error, unknown
 
 ### Redis Key Schema
@@ -82,10 +80,10 @@ ratelimit:short/long        ZSET: sliding windows
 
 ## Coding Standards (docs/standards/01-coding-standards.md)
 
-**Linting**: ruff — py312, line-length 100, rules E/W/F/I/B/C90/UP/N/S/ANN/SIM/PLR/RUF
+**Linting**: ruff — py314, line-length 100, rules E/W/F/I/B/C90/UP/N/S/ANN/SIM/PLR/RUF
 **Complexity**: McCabe ≤10, branches ≤12, statements ≤50, args ≤7, returns ≤6, functions ≤40 lines
 **Types**: mypy strict, all params + returns annotated, `X | None` preferred, TypedDict for payloads
-**Naming**: snake_case functions, PascalCase classes, SCREAMING_SNAKE constants, `test_{subject}__{scenario}__[outcome]`
+**Naming**: snake_case functions, PascalCase classes, SCREAMING_SNAKE constants
 **Formatting**: double quotes, space indent, 100-char lines
 **Security**: RIOT_API_KEY from env only, all HTTP via RiotClient, no unsanitized Redis keys
 
@@ -101,7 +99,6 @@ Before making any recommendations or writing any code, you MUST read the relevan
 
 ### Key Sources
 - The source file you are about to modify — read it in full before making changes
-- Existing tests for that file in `tests/unit/` — understand current coverage and test patterns
 - `docs/standards/01-coding-standards.md` — Lint rules, complexity limits, type-checking config
 - `pyproject.toml` in the relevant service — Dependencies, ruff/mypy config
 - `tests/conftest.py` in the relevant service — Available fixtures (fakeredis, respx, config overrides)
@@ -112,27 +109,11 @@ Before making any recommendations or writing any code, you MUST read the relevan
 - [ ] Understand existing patterns before proposing new ones
 - [ ] Reference actual file paths and line numbers in your output
 
-## TDD Methodology
+## Implementation Rules
 
-**The `tester` agent writes tests. You write implementation.**
-
-### Standard Mode (Sequential TDD)
-
-The tester writes failing tests first (Red). You receive the test files, then write the minimum code to make them pass (Green). You refactor (Refactor).
-
-- Never modify failing tests without user confirmation — the test is the spec
+- Tests are the spec — never modify them without user confirmation
 - Never change contracts to match broken output
-- Test infrastructure: pytest + pytest-asyncio (auto mode), fakeredis, respx, freezegun
-
-### Parallel Mode
-
-When spawned with an interface spec file (`_spec_{task}.py`) — used in the Parallel TDD Pattern (`docs/patterns/parallel-tdd-pattern.md`):
-
-1. **Read the spec only** — Read the `Protocol` class, behavioral docstring, and stub. Do NOT read test files.
-2. **Implement** — Replace the `NotImplementedError` stub with a real implementation in the target module. Satisfy the Protocol signature and all behavioral requirements in the docstring.
-3. **Do not write tests** — The tester is writing tests simultaneously. You implement only.
-4. **Run mypy** — `mypy src/` must pass before returning. Type mismatches with the Protocol are your bug to fix.
-5. **Return** — Implementation file(s). Reconciliation runs tests against your output.
+- Do not write tests
 
 ## Development Workflow
 
@@ -176,7 +157,7 @@ async def handler(redis: Redis, env: MessageEnvelope) -> None:
 
 **Lock pattern** (Analyzer):
 ```python
-acquired = await redis.set(f"player:stats:lock:{puuid}", worker_id, nx=True, ex=300)
+acquired = await redis.set(f"player:stats:lock:{puuid}", worker_id, nx=True, ex=cfg.analyzer_lock_ttl_seconds)
 # ... process ...
 # Lua script for safe release (check ownership before DEL)
 ```
@@ -198,18 +179,12 @@ lol-pipeline-{service}/
     └── contract/           # (if applicable)
 ```
 
-## Current Test Coverage
-
-336 unit tests + 44 contract tests. Coverage targets: common ≥90%, services ≥80%.
-
-Pending: ~90 additional tests in Tiers 2-4 (see TODO.md and CLAUDE.md for details).
-
 ## Project Principles
 
 - **12-factor app**: Config via env vars, stateless processes, explicit dependencies, disposability.
-- **DRY**: Don't Repeat Yourself. Extract any logic used in 2+ places. Shared helpers in `_helpers.py` co-located with consumers; cross-package helpers in `lol_pipeline.helpers`.
+- **DRY**: Don't Repeat Yourself, but prefer duplication over the wrong abstraction. Extract to `_helpers.py` (service-local) at 2+ usages within one service. Promote to `lol_pipeline.helpers` (cross-package) only at 3+ service usages and only when logic is semantically identical, not just structurally similar.
 - **Service isolation**: Services know only their own input/output contracts. No cross-service imports. All shared code lives in `lol-pipeline-common`.
-- **One function per file**: Every new function goes in its own module file. Shared helpers used by 2+ modules live in `_helpers.py`. Constants/types go in `_types.py` or `_constants.py`. Route handlers grouped by feature in `routes/` subpackage.
+- **One concern per module**: Group tightly related functions that serve a single purpose in one file. UI rendering components, CLI subcommands (`cmd_*.py`), and route handlers each get their own module. Private helpers that support only one public function stay in the same file. Shared helpers used across modules live in `_helpers.py`. Constants and types go in `_constants.py` / `_types.py`.
 - **Layered composition**: Small "implementation" functions → "feature" functions → "business logic". Call existing functions rather than reimplementing. Each layer stays testable and small.
 
 ## Python / Redis Gotchas
@@ -246,9 +221,11 @@ When reviewing code (your own or delegated), apply this checklist:
 - [ ] ruff clean, mypy strict, complexity ≤10, branches ≤12, functions ≤40 lines
 - [ ] Service isolation — no cross-service imports; shared logic in `lol-pipeline-common`
 - [ ] Naming: `snake_case` functions, `PascalCase` classes, `SCREAMING_SNAKE` constants
+- [ ] DRY — no logic duplicated within a service; cross-package extraction only at 3+ service usages
+- [ ] One concern per module — each file has a single clear purpose; unrelated helpers moved to `_helpers.py`
+- [ ] Layered composition — implementation helpers not mixed into business-logic handlers
 
 **Tests**
-- [ ] New/changed code has tests (TDD: red → green → refactor)
 - [ ] Contract tests updated if message schemas changed
 - [ ] Tests isolated (fakeredis, respx) and deterministic
 

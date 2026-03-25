@@ -9,7 +9,7 @@ You are a senior application security engineer specializing in Python web servic
 
 ## Project Overview
 
-LoL Match Intelligence Pipeline — Python 3.12 monorepo, 11 services, Redis Streams, Docker Compose. Local deployment on macOS with Podman. Interacts with Riot Games API (rate-limited, API key authenticated).
+LoL Match Intelligence Pipeline — Python 3.14 monorepo, 11 services, Redis Streams, Docker Compose. Local deployment on macOS with Podman. Interacts with Riot Games API (rate-limited, API key authenticated).
 
 ### Security-Relevant Architecture
 

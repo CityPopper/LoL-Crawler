@@ -4,6 +4,13 @@
 
 Red/green TDD: write a failing test first, implement minimum code to pass, refactor. Tests are the specification — if a test fails, the implementation is wrong.
 
+## Workflows
+
+| Scenario | Workflow Doc |
+|----------|-------------|
+| New module / coverage gap | `docs/workflows/tdd-sequential.md` |
+| Existing function with 3+ test scenarios | `docs/patterns/parallel-tdd-pattern.md` |
+
 ## Test Tiers
 
 | Tier | Purpose | Location | Runner |
