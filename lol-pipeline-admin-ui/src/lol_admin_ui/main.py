@@ -7,27 +7,41 @@ handled here, keeping lol-pipeline-ui strictly read-only.
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+
+from lol_admin_ui import _helpers
+
+# ---------------------------------------------------------------------------
+# PRIN-AUI-03 — refuse to start when ADMIN_UI_SECRET is unset or empty
+# ---------------------------------------------------------------------------
+_ADMIN_SECRET = os.environ.get("ADMIN_UI_SECRET", "")
+if not _ADMIN_SECRET:
+    raise ValueError("ADMIN_UI_SECRET environment variable must be set and non-empty")
 
 app = FastAPI(title="LoL Pipeline Admin UI")
 
-_ADMIN_SECRET = os.environ.get("ADMIN_UI_SECRET", "")
+
+# ---------------------------------------------------------------------------
+# PRIN-AUI-01 — shared dependency: auth check + Redis injection
+# ---------------------------------------------------------------------------
 
 
-def _get_redis(request: Request) -> Any:
-    """Return the Redis client from app state."""
+def _get_authed_redis(request: Request) -> Any:
+    """Verify auth header and return the Redis client.
+
+    Raises HTTPException(401) when the X-Admin-Secret header is missing or
+    does not match the expected value.
+    """
+    secret = request.headers.get("X-Admin-Secret", "")
+    if not secret or secret != _ADMIN_SECRET:
+        raise HTTPException(status_code=401, detail="unauthorized")
     return request.app.state.r
 
 
-def _check_auth(request: Request) -> JSONResponse | None:
-    """Return a 401 JSONResponse if the request is not authenticated, else None."""
-    secret = request.headers.get("X-Admin-Secret", "")
-    if not secret or secret != _ADMIN_SECRET:
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    return None
+AuthedRedis = Annotated[Any, Depends(_get_authed_redis)]
 
 
 # ---------------------------------------------------------------------------
@@ -47,18 +61,9 @@ async def health() -> JSONResponse:
 
 
 @app.get("/dlq")
-async def list_dlq(request: Request) -> JSONResponse:
+async def list_dlq(r: AuthedRedis) -> JSONResponse:
     """List all entries in stream:dlq."""
-    auth_err = _check_auth(request)
-    if auth_err:
-        return auth_err
-
-    r = _get_redis(request)
-    raw_entries: list[tuple[str, dict[str, str]]] = await r.xrange("stream:dlq")
-    entries: list[dict[str, str]] = []
-    for entry_id, fields in raw_entries:
-        entry: dict[str, str] = {"id": entry_id, **fields}
-        entries.append(entry)
+    entries = await _helpers.list_dlq_entries(r)
     return JSONResponse({"entries": entries, "total": len(entries)})
 
 
@@ -68,31 +73,17 @@ async def list_dlq(request: Request) -> JSONResponse:
 
 
 @app.post("/dlq/replay/{message_id}")
-async def replay_dlq_entry(request: Request, message_id: str) -> JSONResponse:
+async def replay_dlq_entry(r: AuthedRedis, message_id: str) -> JSONResponse:
     """Replay a DLQ entry back to its original stream."""
-    auth_err = _check_auth(request)
-    if auth_err:
-        return auth_err
+    try:
+        result = await _helpers.replay_entry(r, message_id)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
 
-    r = _get_redis(request)
-    entries: list[tuple[str, dict[str, str]]] = await r.xrange(
-        "stream:dlq", min=message_id, max=message_id, count=1
-    )
-    if not entries:
+    if result is None:
         return JSONResponse({"error": "not found"}, status_code=404)
 
-    entry_id, fields = entries[0]
-    original_stream = fields.get("original_stream", "")
-    if not original_stream:
-        return JSONResponse({"error": "no original_stream field"}, status_code=422)
-
-    # Publish message fields to the original stream
-    publish_fields: dict[str, str] = {
-        k: v for k, v in fields.items() if k != "original_stream"
-    }
-    await r.xadd(original_stream, publish_fields)
-    await r.xdel("stream:dlq", entry_id)
-
+    entry_id, original_stream = result
     return JSONResponse({"replayed": entry_id, "to": original_stream})
 
 
@@ -102,15 +93,9 @@ async def replay_dlq_entry(request: Request, message_id: str) -> JSONResponse:
 
 
 @app.post("/dlq/clear")
-async def clear_dlq(request: Request) -> JSONResponse:
+async def clear_dlq(r: AuthedRedis) -> JSONResponse:
     """Remove all entries from stream:dlq."""
-    auth_err = _check_auth(request)
-    if auth_err:
-        return auth_err
-
-    r = _get_redis(request)
-    # Delete the entire stream key (recreated automatically on next xadd)
-    await r.delete("stream:dlq")
+    await _helpers.clear_dlq(r)
     return JSONResponse({"cleared": True})
 
 
@@ -120,14 +105,9 @@ async def clear_dlq(request: Request) -> JSONResponse:
 
 
 @app.post("/system/halt")
-async def system_halt(request: Request) -> JSONResponse:
+async def system_halt(r: AuthedRedis) -> JSONResponse:
     """Set system:halted flag in Redis."""
-    auth_err = _check_auth(request)
-    if auth_err:
-        return auth_err
-
-    r = _get_redis(request)
-    await r.set("system:halted", "1")
+    await _helpers.set_system_halted(r)
     return JSONResponse({"halted": True})
 
 
@@ -137,12 +117,7 @@ async def system_halt(request: Request) -> JSONResponse:
 
 
 @app.post("/system/resume")
-async def system_resume(request: Request) -> JSONResponse:
+async def system_resume(r: AuthedRedis) -> JSONResponse:
     """Remove system:halted flag from Redis."""
-    auth_err = _check_auth(request)
-    if auth_err:
-        return auth_err
-
-    r = _get_redis(request)
-    await r.delete("system:halted")
+    await _helpers.clear_system_halted(r)
     return JSONResponse({"halted": False})

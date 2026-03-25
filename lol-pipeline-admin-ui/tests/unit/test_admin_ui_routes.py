@@ -205,9 +205,7 @@ class TestDlqReplay:
                 "max_attempts": "3",
             },
         )
-        resp = await client.post(
-            f"/dlq/replay/{entry_id}", headers=_auth_headers()
-        )
+        resp = await client.post(f"/dlq/replay/{entry_id}", headers=_auth_headers())
         assert resp.status_code == 200
         # Entry should be removed from DLQ
         remaining = await r.xlen("stream:dlq")
@@ -229,9 +227,7 @@ class TestDlqReplay:
                 "max_attempts": "3",
             },
         )
-        resp = await client.post(
-            f"/dlq/replay/{entry_id}", headers=_auth_headers()
-        )
+        resp = await client.post(f"/dlq/replay/{entry_id}", headers=_auth_headers())
         assert resp.status_code == 200
         # Message should now be on the original stream
         entries = await r.xrange("stream:match_id")
@@ -240,9 +236,7 @@ class TestDlqReplay:
     @pytest.mark.asyncio
     async def test_dlq_replay__nonexistent_entry__returns_404(self, client):
         """Replaying a non-existent DLQ entry returns 404."""
-        resp = await client.post(
-            "/dlq/replay/9999999-0", headers=_auth_headers()
-        )
+        resp = await client.post("/dlq/replay/9999999-0", headers=_auth_headers())
         assert resp.status_code == 404
 
 
