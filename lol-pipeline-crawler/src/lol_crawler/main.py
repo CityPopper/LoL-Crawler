@@ -32,10 +32,7 @@ from lol_crawler._constants import (
     _IN_STREAM,
     _OUT_STREAM,
 )
-
-# Re-exported for backward compat (tests import from lol_crawler.main).
-# Runtime code reads from cfg.crawler_rank_history_max instead.
-_RANK_HISTORY_MAX: int = 500
+from lol_crawler._helpers import _key_crawl_cursor, _key_player, _key_player_matches
 
 
 async def _check_backpressure(
@@ -153,7 +150,7 @@ async def _should_stop_pagination(
 
 async def _resume_cursor(r: aioredis.Redis, puuid: str) -> int:
     """Return the saved cursor offset, or 0 if none exists."""
-    saved = await r.get(f"crawl:cursor:{puuid}")
+    saved = await r.get(_key_crawl_cursor(puuid))
     if saved:
         try:
             return int(saved)
@@ -183,8 +180,15 @@ async def _process_page(  # noqa: PLR0913
     )
     if new_ids:
         published, current_priority = await _publish_batch(
-            r, cfg, new_ids, puuid, region,
-            published, priority, current_priority, correlation_id,
+            r,
+            cfg,
+            new_ids,
+            puuid,
+            region,
+            published,
+            priority,
+            current_priority,
+            correlation_id,
         )
     return published, current_priority, bool(new_ids)
 
@@ -209,7 +213,7 @@ async def _fetch_match_ids_paginated(  # noqa: PLR0913
     published = 0
     pages_fetched = 0
     current_priority = priority
-    cursor_key = f"crawl:cursor:{puuid}"
+    cursor_key = _key_crawl_cursor(puuid)
     page_size = cfg.crawler_page_size
     cursor_ttl = cfg.crawler_cursor_ttl
 
@@ -220,8 +224,17 @@ async def _fetch_match_ids_paginated(  # noqa: PLR0913
         if not page:
             break
         published, current_priority, has_new = await _process_page(
-            r, cfg, page, known, puuid, region,
-            published, priority, current_priority, correlation_id, log,
+            r,
+            cfg,
+            page,
+            known,
+            puuid,
+            region,
+            published,
+            priority,
+            current_priority,
+            correlation_id,
+            log,
         )
         if len(page) == page_size and not has_new:
             break
@@ -273,7 +286,7 @@ async def _update_summoner_profile(
     if icon_id is not None:
         player_updates["profile_icon_id"] = str(icon_id)
     if player_updates:
-        await r.hset(f"player:{puuid}", mapping=player_updates)  # type: ignore[misc]
+        await r.hset(_key_player(puuid), mapping=player_updates)  # type: ignore[misc]
 
 
 async def _store_rank_data(
@@ -321,7 +334,9 @@ async def _fetch_rank(
         return
     try:
         await wait_for_token(
-            r, limit_per_second=cfg.api_rate_limit_per_second, region=region,
+            r,
+            limit_per_second=cfg.api_rate_limit_per_second,
+            region=region,
         )
         summoner = await riot.get_summoner_by_puuid(puuid, region)
         summoner_id: str = summoner.get("id", "")
@@ -329,7 +344,9 @@ async def _fetch_rank(
             return
         await _update_summoner_profile(r, puuid, summoner)
         await wait_for_token(
-            r, limit_per_second=cfg.api_rate_limit_per_second, region=region,
+            r,
+            limit_per_second=cfg.api_rate_limit_per_second,
+            region=region,
         )
         entries: list[dict[str, object]] = await riot.get_league_entries(summoner_id, region)
         for entry in entries:
@@ -354,7 +371,7 @@ async def _compute_activity_rate(
         mid_rate = cfg.crawler_cooldown_mid_rate if cfg else 1
         mid_hours = cfg.crawler_cooldown_mid_hours if cfg else 6
         low_hours = cfg.crawler_cooldown_low_hours if cfg else 24
-        matches_key = f"player:matches:{puuid}"
+        matches_key = _key_player_matches(puuid)
         async with r.pipeline(transaction=False) as read_pipe:
             read_pipe.zrange(matches_key, 0, 0, withscores=True)
             read_pipe.zcard(matches_key)
@@ -374,9 +391,8 @@ async def _compute_activity_rate(
         else:
             cooldown_hours = low_hours
         recrawl_after = str(time.time() + cooldown_hours * 3600)
-        player_key = f"player:{puuid}"
         await r.hset(  # type: ignore[misc]
-            player_key,
+            _key_player(puuid),
             mapping={"activity_rate": f"{rate:.2f}", "recrawl_after": recrawl_after},
         )
     except Exception:
@@ -389,20 +405,18 @@ async def _load_known_matches(
     log: logging.Logger,
 ) -> set[str]:
     """Load known match IDs using windowed dedup or full ZRANGE fallback."""
-    last_crawled = await r.hget(f"player:{puuid}", "last_crawled_at")  # type: ignore[misc]
+    last_crawled = await r.hget(_key_player(puuid), "last_crawled_at")  # type: ignore[misc]
     if last_crawled:
         try:
             cutoff_dt = datetime.fromisoformat(last_crawled) - timedelta(days=7)
             cutoff_ms = cutoff_dt.timestamp() * 1000
-            return set(
-                await r.zrangebyscore(f"player:matches:{puuid}", cutoff_ms, "+inf")
-            )
+            return set(await r.zrangebyscore(_key_player_matches(puuid), cutoff_ms, "+inf"))
         except ValueError:
             log.warning(
                 "corrupt last_crawled_at — falling back to full ZRANGE",
                 extra={"puuid": puuid, "last_crawled_at": last_crawled},
             )
-    return set(await r.zrange(f"player:matches:{puuid}", 0, -1))
+    return set(await r.zrange(_key_player_matches(puuid), 0, -1))
 
 
 async def _post_crawl_update(
@@ -416,7 +430,7 @@ async def _post_crawl_update(
 ) -> None:
     """Update last_crawled_at, fetch rank, compute activity rate, clear priority."""
     now_iso = datetime.now(tz=UTC).isoformat()
-    player_key = f"player:{puuid}"
+    player_key = _key_player(puuid)
     async with r.pipeline(transaction=False) as post_pipe:
         post_pipe.hset(player_key, mapping={"last_crawled_at": now_iso})
         post_pipe.expire(player_key, PLAYER_DATA_TTL_SECONDS)
@@ -425,6 +439,47 @@ async def _post_crawl_update(
     if published > 0:
         await _compute_activity_rate(r, puuid, log, cfg=cfg)
     await clear_priority(r, puuid)
+
+
+async def _run_crawl(
+    r: aioredis.Redis,
+    riot: RiotClient,
+    cfg: Config,
+    puuid: str,
+    region: str,
+    envelope: MessageEnvelope,
+    log: logging.Logger,
+) -> tuple[int, int]:
+    """Execute the crawl workflow: load known matches, paginate, post-update.
+
+    Returns ``(published, pages_fetched)``.  Raises Riot API exceptions
+    to the caller.
+    """
+    known = await _load_known_matches(r, puuid, log)
+    log.info(
+        "starting crawl",
+        extra={
+            "puuid": puuid,
+            "game_name": envelope.payload.get("game_name", ""),
+            "tag_line": envelope.payload.get("tag_line", ""),
+            "region": region,
+            "known_matches": len(known),
+        },
+    )
+    published, pages_fetched = await _fetch_match_ids_paginated(
+        r,
+        riot,
+        cfg,
+        puuid,
+        region,
+        known,
+        log,
+        priority=envelope.priority,
+        correlation_id=envelope.correlation_id,
+    )
+    if pages_fetched > 0:
+        await _post_crawl_update(r, riot, cfg, puuid, region, published, log)
+    return published, pages_fetched
 
 
 async def _crawl_player(
@@ -441,26 +496,16 @@ async def _crawl_player(
 
     puuid: str = envelope.payload["puuid"]
     region: str = envelope.payload["region"]
-    game_name: str = envelope.payload.get("game_name", "")
-    tag_line: str = envelope.payload.get("tag_line", "")
-
-    known = await _load_known_matches(r, puuid, log)
-    log.info(
-        "starting crawl",
-        extra={
-            "puuid": puuid,
-            "game_name": game_name,
-            "tag_line": tag_line,
-            "region": region,
-            "known_matches": len(known),
-        },
-    )
 
     try:
-        published, pages_fetched = await _fetch_match_ids_paginated(
-            r, riot, cfg, puuid, region, known, log,
-            priority=envelope.priority,
-            correlation_id=envelope.correlation_id,
+        published, pages_fetched = await _run_crawl(
+            r,
+            riot,
+            cfg,
+            puuid,
+            region,
+            envelope,
+            log,
         )
     except (NotFoundError, AuthError, RateLimitError, ServerError) as exc:
         await _handle_crawl_error(r, msg_id, envelope, exc, puuid, log)
@@ -471,16 +516,13 @@ async def _crawl_player(
             "crawl aborted before any API call (rate limiter timeout)",
             extra={"puuid": puuid},
         )
-        await ack(r, _IN_STREAM, _GROUP, msg_id)
-        return
 
-    await _post_crawl_update(r, riot, cfg, puuid, region, published, log)
     log.info(
         "crawl complete",
         extra={
             "puuid": puuid,
-            "game_name": game_name,
-            "tag_line": tag_line,
+            "game_name": envelope.payload.get("game_name", ""),
+            "tag_line": envelope.payload.get("tag_line", ""),
             "region": region,
             "published": published,
         },

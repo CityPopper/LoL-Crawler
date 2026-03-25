@@ -15,7 +15,6 @@ from lol_pipeline.riot_api import RiotClient
 from lol_pipeline.streams import consume, publish
 
 from lol_crawler.main import (
-    _RANK_HISTORY_MAX,
     _compute_activity_rate,
     _crawl_player,
     _fetch_rank,
@@ -1577,14 +1576,15 @@ class TestRankHistoryCap:
 
     @pytest.mark.asyncio
     async def test_rank_history__capped_at_max(self, r, cfg, log):
-        """Rank history ZSET is trimmed to _RANK_HISTORY_MAX entries."""
+        """Rank history ZSET is trimmed to cfg.crawler_rank_history_max entries."""
+        rank_max = cfg.crawler_rank_history_max
         puuid = "test-puuid-cap"
         hist_key = f"player:rank:history:{puuid}"
 
-        # Pre-fill with _RANK_HISTORY_MAX + 50 entries
-        for i in range(_RANK_HISTORY_MAX + 50):
+        # Pre-fill with rank_max + 50 entries
+        for i in range(rank_max + 50):
             await r.zadd(hist_key, {f"GOLD:II:{i}": float(i)})
-        assert await r.zcard(hist_key) == _RANK_HISTORY_MAX + 50
+        assert await r.zcard(hist_key) == rank_max + 50
 
         with respx.mock:
             respx.get(self._summoner_url(puuid)).mock(
@@ -1609,9 +1609,9 @@ class TestRankHistoryCap:
             await _fetch_rank(r, riot, cfg, puuid, "na1", log)
             await riot.close()
 
-        # After trim, should be at most _RANK_HISTORY_MAX
+        # After trim, should be at most cfg.crawler_rank_history_max
         count = await r.zcard(hist_key)
-        assert count <= _RANK_HISTORY_MAX
+        assert count <= rank_max
 
     @pytest.mark.asyncio
     async def test_rank_history__small_set_not_trimmed(self, r, cfg, log):
@@ -1650,9 +1650,9 @@ class TestRankHistoryCap:
         count = await r.zcard(hist_key)
         assert count == 6
 
-    def test_rank_history_max_constant(self):
-        """_RANK_HISTORY_MAX is 500."""
-        assert _RANK_HISTORY_MAX == 500
+    def test_rank_history_max_default(self, cfg):
+        """Config default for crawler_rank_history_max is 500."""
+        assert cfg.crawler_rank_history_max == 500
 
 
 class TestCrawlCorrelationIdPropagation:
@@ -1701,9 +1701,7 @@ class TestOpggSourceSkip:
         opgg_ids = ["OPGG_NA1_111", "OPGG_NA1_222"]
 
         with respx.mock:
-            respx.get(_match_ids_url(start=0)).mock(
-                return_value=httpx.Response(200, json=opgg_ids)
-            )
+            respx.get(_match_ids_url(start=0)).mock(return_value=httpx.Response(200, json=opgg_ids))
             riot = RiotClient("RGAPI-test")
             await _crawl_player(r, riot, cfg, msg_id, env, log)
             await riot.close()
@@ -1711,8 +1709,7 @@ class TestOpggSourceSkip:
         entries = await r.xrange(_STREAM_OUT)
         assert len(entries) == 2
         match_ids = [
-            MessageEnvelope.from_redis_fields(fields).payload["match_id"]
-            for _, fields in entries
+            MessageEnvelope.from_redis_fields(fields).payload["match_id"] for _, fields in entries
         ]
         assert "OPGG_NA1_111" in match_ids
         assert "OPGG_NA1_222" in match_ids
