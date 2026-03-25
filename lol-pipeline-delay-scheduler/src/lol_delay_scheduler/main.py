@@ -19,22 +19,35 @@ from lol_pipeline.redis_client import get_redis
 from redis.exceptions import RedisError
 
 from lol_delay_scheduler._circuit_breaker import (
-    _circuit_open as _circuit_open,  # noqa: F401 — re-export for tests
-    _is_circuit_open as _is_circuit_open,  # noqa: F401 — re-export for tests
-    _member_failures as _member_failures,  # noqa: F401 — re-export for tests
-    _record_failure as _record_failure,  # noqa: F401 — re-export for tests
-    _record_success as _record_success,  # noqa: F401 — re-export for tests
+    _cb as _cb,
+)
+from lol_delay_scheduler._circuit_breaker import (
+    _circuit_open as _circuit_open,
+)
+from lol_delay_scheduler._circuit_breaker import (
+    _is_circuit_open as _is_circuit_open,
+)
+from lol_delay_scheduler._circuit_breaker import (
+    _member_failures as _member_failures,
+)
+from lol_delay_scheduler._circuit_breaker import (
+    _record_failure as _record_failure,
+)
+from lol_delay_scheduler._circuit_breaker import (
+    _record_success as _record_success,
+)
+from lol_delay_scheduler._circuit_breaker import (
     init_circuit_config,
 )
-from lol_delay_scheduler._constants import (
-    _DISPATCH_LUA as _DISPATCH_LUA,
-)
+from lol_delay_scheduler._constants import _DISPATCH_LUA as _DISPATCH_LUA
 from lol_delay_scheduler._helpers import (
     _is_envelope_id,
-    _maxlen_for_stream as _maxlen_for_stream,  # noqa: F401 — re-export for tests
+)
+from lol_delay_scheduler._helpers import (
+    _maxlen_for_stream as _maxlen_for_stream,
 )
 
-# Batch size — set from Config at startup via _init_circuit_config().
+# Batch size — overridden from Config at startup via _init_circuit_config().
 _BATCH_SIZE: int = 100
 
 
@@ -95,6 +108,35 @@ async def _resolve_member(
             return None
 
 
+def _build_dispatch_args(
+    member: str,
+    ml: int | None,
+    fields: dict[str, str],
+) -> list[str]:
+    """Build the flat ARGV list for the dispatch Lua script."""
+    flat_args: list[str] = [member, str(ml if ml is not None else 0)]
+    for k, v in fields.items():
+        flat_args.append(str(k))
+        flat_args.append(str(v))
+    return flat_args
+
+
+async def _execute_dispatch_lua(
+    r: aioredis.Redis,
+    stream: str,
+    flat_args: list[str],
+) -> int:
+    """Execute the atomic XADD+ZREM Lua script and return its result."""
+    result: int = await r.eval(  # type: ignore[misc]
+        _DISPATCH_LUA,
+        2,
+        stream,
+        DELAYED_MESSAGES_KEY,
+        *flat_args,
+    )
+    return result
+
+
 async def _dispatch_member(
     r: aioredis.Redis,
     member: str,
@@ -104,17 +146,8 @@ async def _dispatch_member(
     """Dispatch a single resolved envelope via Lua and log the result."""
     redis_fields = env.to_redis_fields()
     ml = _maxlen_for_stream(env.source_stream)
-    flat_args: list[str] = [member, str(ml if ml is not None else 0)]
-    for k, v in redis_fields.items():
-        flat_args.append(str(k))
-        flat_args.append(str(v))
-    result = await r.eval(  # type: ignore[misc]
-        _DISPATCH_LUA,
-        2,
-        env.source_stream,
-        DELAYED_MESSAGES_KEY,
-        *flat_args,
-    )
+    flat_args = _build_dispatch_args(member, ml, redis_fields)
+    result = await _execute_dispatch_lua(r, env.source_stream, flat_args)
     _record_success(member)
     # Clean up envelope hash for ID-based members (RDB-5)
     if _is_envelope_id(member):
@@ -148,9 +181,7 @@ async def _tick(r: aioredis.Redis, log: logging.Logger) -> None:
         for member in members:
             if _is_circuit_open(member):
                 # Push member to future so it doesn't starve other ready messages.
-                from lol_delay_scheduler._circuit_breaker import _CIRCUIT_OPEN_TTL_S
-
-                future_ms = int(time.time() * 1000) + (_CIRCUIT_OPEN_TTL_S * 1000)
+                future_ms = int(time.time() * 1000) + (_cb.open_ttl_s * 1000)
                 await r.zadd(DELAYED_MESSAGES_KEY, {member: future_ms}, xx=True)
                 dispatched += 1
                 continue

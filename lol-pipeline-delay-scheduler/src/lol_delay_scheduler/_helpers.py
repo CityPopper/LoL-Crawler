@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from lol_delay_scheduler._constants import _STREAM_MAXLEN
 from lol_pipeline.streams import DEFAULT_STREAM_MAXLEN
+
+from lol_delay_scheduler._constants import _STREAM_MAXLEN
 
 
 def _maxlen_for_stream(stream: str) -> int | None:

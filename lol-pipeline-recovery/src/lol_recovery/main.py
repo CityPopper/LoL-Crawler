@@ -34,8 +34,8 @@ _CLAIM_IDLE_MS: int = 60_000
 async def _consume_dlq(
     r: aioredis.Redis,
     consumer: str,
-    count: int = 10,
-    block: int = 5000,
+    count: int,
+    block: int,
     *,
     claim_idle_ms: int = _CLAIM_IDLE_MS,
 ) -> list[tuple[str, DLQEnvelope]]:
@@ -66,6 +66,26 @@ async def _write_archive(
     )
 
 
+def _archive_with_match_status(
+    pipe: aioredis.client.Pipeline,
+    dlq: DLQEnvelope,
+    match_id: str,
+    cfg: Config,
+) -> None:
+    """Build a Redis pipeline that archives a DLQ entry and marks the match as failed."""
+    match_key = f"match:{match_id}"
+    pipe.xadd(
+        _ARCHIVE_STREAM,
+        dlq.to_redis_fields(),  # type: ignore[arg-type]
+        maxlen=cfg.recovery_archive_maxlen,
+        approximate=True,
+    )
+    pipe.hset(match_key, mapping={"status": "failed"})
+    pipe.expire(match_key, cfg.match_data_ttl_seconds)
+    pipe.sadd("match:status:failed", match_id)
+    pipe.ttl("match:status:failed")
+
+
 async def _archive(
     r: aioredis.Redis,
     dlq: DLQEnvelope,
@@ -74,18 +94,8 @@ async def _archive(
 ) -> None:
     match_id: str | None = dlq.payload.get("match_id")
     if match_id:
-        match_key = f"match:{match_id}"
         async with r.pipeline(transaction=False) as pipe:
-            pipe.xadd(
-                _ARCHIVE_STREAM,
-                dlq.to_redis_fields(),  # type: ignore[arg-type]
-                maxlen=cfg.recovery_archive_maxlen,
-                approximate=True,
-            )
-            pipe.hset(match_key, mapping={"status": "failed"})
-            pipe.expire(match_key, cfg.match_data_ttl_seconds)
-            pipe.sadd("match:status:failed", match_id)
-            pipe.ttl("match:status:failed")
+            _archive_with_match_status(pipe, dlq, match_id, cfg)
             results = await pipe.execute()
         # Only set TTL when none exists (ttl < 0) — same guard as parser
         failed_ttl: int = results[4]
@@ -135,14 +145,12 @@ async def _requeue_delayed(
         await pipe.execute()
 
 
-_DEFAULT_BACKOFF_MS: list[int] = [5_000, 15_000, 60_000, 300_000]
-
-
 def _backoff_ms(
     dlq_attempts: int,
     cfg: Config | None = None,
 ) -> int:
-    backoff_schedule = cfg.recovery_backoff_ms if cfg is not None else _DEFAULT_BACKOFF_MS
+    default = [5_000, 15_000, 60_000, 300_000]
+    backoff_schedule = cfg.recovery_backoff_ms if cfg is not None else default
     idx = min(dlq_attempts, len(backoff_schedule) - 1)
     base = backoff_schedule[idx]
     # R3: Jitter — multiply by 0.5..1.5 to avoid thundering herd
@@ -271,7 +279,11 @@ async def main() -> None:
             try:
                 any_handled = False
                 for msg_id, dlq in await _consume_dlq(
-                    r, consumer, claim_idle_ms=cfg.recovery_claim_idle_ms
+                    r,
+                    consumer,
+                    count=cfg.recovery_count,
+                    block=cfg.recovery_block_ms,
+                    claim_idle_ms=cfg.recovery_claim_idle_ms,
                 ):
                     handled = await _process(r, cfg, consumer, msg_id, dlq, log)
                     any_handled = any_handled or handled
