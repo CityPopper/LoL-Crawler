@@ -2,17 +2,20 @@
 
 ---
 
-## LFS-1+3 — Git LFS wiring + initial commit (atomic — do not split)
-**Decisions**: D-5, D-6, D-7. **Prod fix**: LFS-1 and LFS-3 must be one session (devops Q1).
-**Fix**:
-1. `.gitignore` changes — ONLY remove `pipeline-data/**/*.jsonl.zst` (line 74) and `lol-pipeline-fetcher/match-data/**/*.jsonl.zst` (line 82). **Keep** `pipeline-data/**/*.jsonl` (line 73) — this protects the active uncompressed file from accidental commit (security Q1). Replace `redis-data/` (line 38) with blanket `redis-data/` kept as-is (security Q4: narrowing to specific patterns risks non-RDB files slipping through — keep the blanket ignore).
-2. Add to `.gitattributes`: `pipeline-data/**/*.jsonl.zst filter=lfs diff=lfs merge=lfs -text`
-3. In the SAME session: `git lfs track "pipeline-data/**/*.jsonl.zst"` then `git add pipeline-data/riot-api/NA1/*.jsonl.zst && git commit`
-Note: requires `git-lfs` installed (`brew install git-lfs && git lfs install`).
-⚠️ **Blocked on [H — Legal/ToS]**: confirm repo visibility + Riot ToS compliance before committing raw API response data to LFS.
-- [ ] **Red:** `git lfs ls-files` shows no pipeline-data files; `git check-attr filter pipeline-data/riot-api/NA1/2026-02.jsonl.zst` returns `lfs`
-- [ ] **Green:** Apply changes in one session, verify `git lfs ls-files --size` matches expected
-- [ ] **Refactor:** Confirm `pipeline-data/**/*.jsonl` still gitignored after edit
+## LFS-1 — Anonymize seed data + upload to Hugging Face Datasets
+**Decisions**: D-11 (HF Datasets backend), D-12 (anonymize before upload). Data format: `{match_id}\t{json}` per line.
+**PII fields to strip from `info.participants[]`**: `puuid`, `summonerName`, `riotIdGameName`, `riotIdTagline`, `summonerId`. `metadata.participants[]` is a PUUID array — replace each with `anon_{sha256(puuid)[:16]}`. All `.zst` files stay gitignored (pipeline-data in HF Datasets, not git).
+**Fix**: New script `scripts/anonymize_and_upload.py` that:
+1. For each `.jsonl.zst` in `pipeline-data/riot-api/NA1/`, streaming-decompresses
+2. For each record: replace `puuid`, `metadata.participants` entries with `anon_{sha256(puuid)[:16]}`; strip `summonerName`, `riotIdGameName`, `riotIdTagline`, `summonerId` (remove keys entirely)
+3. Writes anonymized lines to a temp `.jsonl.zst` (same zstd level)
+4. Uploads each file to HF Datasets via `HfApi().upload_file(repo_type="dataset")`; derives repo_id from `HfApi().whoami()["name"] + "/lol-pipeline-seed"` — no `HUGGINGFACE_REPO_ID` env var needed
+5. After successful upload, overwrites local `.zst` with anonymized version (local disk no longer has raw PII)
+Also update `.gitignore` comment on lines 72-76 to note pipeline data lives in HF Datasets.
+Also remove stale line 82 (`lol-pipeline-fetcher/match-data/**/*.jsonl.zst`) — that directory was deleted from history.
+- [ ] **Red:** Unit test: given a record with real puuid, anonymized output has consistent `anon_` hash, no summonerName/riotId fields
+- [ ] **Green:** Implement; test against one file before bulk run
+- [ ] **Refactor:** Streaming (no full-file load into memory); idempotent (skip already-anonymized files)
 
 ---
 
@@ -361,3 +364,70 @@ New user UX: `git clone ... && just up` — everything works.
 **Principle**: Service layout
 **Locations**: `src/lol_champion_stats/` (absent)
 **Fix**: Add `__main__.py` following the standard pattern (`asyncio.run(main())`).
+
+---
+
+## RL-1 — New `lol-pipeline-rate-limiter` service scaffold
+**Decisions**: D-3, D-6 (rate-limiter questions file)
+**Fix**: New service directory `lol-pipeline-rate-limiter/` with:
+- `pyproject.toml` / `Dockerfile` following existing service pattern
+- FastAPI app on port 8079 (internal Docker network, not exposed externally)
+- `POST /token/acquire` — `{source, endpoint}` → `{granted: bool, retry_after_ms: int|null}`
+- `POST /headers` — `{source, rate_limit, rate_limit_count}` → `{updated: bool, throttle: bool}` (raw Riot header strings)
+- `GET /health` — `{status: "ok"}`
+- `GET /status` — observability: current bucket state
+- Bucket config via env vars (RATELIMIT_RIOT_SHORT_LIMIT, RATELIMIT_RIOT_SHORT_WINDOW_MS, etc.)
+- Unknown `(source, endpoint)` returns 404
+- Fail open if Redis unreachable (log warning, return `{granted: true}`)
+- `docker-compose.yml` service entry with `depends_on: redis`
+- [ ] **Red:** Unit tests for `/token/acquire`, `/headers`, bucket config parsing, unknown-source 404
+- [ ] **Green:** Implement scaffold + FastAPI routes
+- [ ] **Refactor:** `GET /status` shows live bucket ZSET cardinalities
+
+---
+
+## RL-2 — Port Lua dual-window logic into the rate limiter service
+**Decisions**: D-1 (delete `_rate_limiter_data.py`); Lua script moves to service internals
+**Fix**: Move the Lua sliding-window ZSET script from `lol-pipeline-common/src/lol_pipeline/_rate_limiter_data.py` into the rate limiter service's internal implementation. Service invokes it against the shared Redis container. Window constants become env var config (defaulting to short=1000ms/20, long=120000ms/100 for Riot). Delete `_rate_limiter_data.py` after migration.
+- [ ] **Red:** Service integration test: 21 concurrent `/token/acquire` calls; 20 granted, 1 denied with `retry_after_ms > 0`
+- [ ] **Green:** Implement + delete source file
+- [ ] **Refactor:** `_parse_rate_limit_header` from `riot_api.py` also moves to service (used by `POST /headers`)
+
+---
+
+## RL-3 — Thin client `rate_limiter_client.py` in common; update all call sites
+**Decisions**: D-4, D-9, D-11, D-12
+**Fix**: In `lol-pipeline-common/src/lol_pipeline/`:
+1. Add `rate_limiter_client.py` with:
+   - `async def wait_for_token(source: str, endpoint: str, *, max_wait_s: float = 60.0) -> None` — calls `POST /token/acquire`, sleeps `retry_after_ms` with jitter, retries until granted or timeout
+   - `async def try_token(source: str, endpoint: str) -> bool` — calls `POST /token/acquire` once, returns `granted`
+   - `httpx.AsyncClient` with persistent connection pooling; service URL from `RATE_LIMITER_URL` env var
+   - Fail open: if service unreachable, log warning and return (don't raise)
+2. Delete `rate_limiter.py` and `_rate_limiter_data.py`
+3. Update all 6 call sites (fetcher ×2, crawler ×3, discovery ×1, UI ×1, opgg_client ×1): change import + drop `r` param + add `source`/`endpoint`
+4. Update fetcher pattern-A tests (lupa/fakeredis) to use `patch("...wait_for_token", AsyncMock)` (pattern B)
+5. Delete `lol-pipeline-common/tests/unit/test_rate_limiter.py`
+- [ ] **Red:** Each service's unit tests pass with mocked `wait_for_token`; `test_rate_limiter.py` deleted
+- [ ] **Green:** Implement thin client; migrate call sites
+- [ ] **Refactor:** Add `RATE_LIMITER_URL` to `.env.example` and `.env`
+
+---
+
+## RL-4 — Update `RiotClient._persist_rate_limits` to call `POST /headers`
+**Decisions**: D-5
+**Fix**: In `lol-pipeline-common/src/lol_pipeline/riot_api.py`, change `_persist_rate_limits` to call `POST /headers` on the rate limiter service instead of writing `ratelimit:limits:short/long` keys to Redis directly. If `throttle: true` returned, apply the 200ms proactive sleep (replaces `ratelimit:throttle` Redis key check). Also remove direct Redis writes for `ratelimit:limits:*` and `ratelimit:throttle`. PRIN-CMN-05 (duplicate parse functions) and PRIN-CMN-07 (constant divergence) are automatically resolved — move parsing to service.
+- [ ] **Red:** `RiotClient` unit test: after a 200 response with rate-limit headers, verify `POST /headers` called (not Redis SET)
+- [ ] **Green:** Implement; delete Redis writes for limit keys
+- [ ] **Refactor:** Confirm PRIN-CMN-07 task can be removed (divergence gone)
+
+---
+
+## RL-5 — Update integration tests IT-07 and IT-12 for HTTP rate limiter
+**Decisions**: D-10
+**Fix**: In `tests/integration/`:
+1. Add `rate_limiter` fixture in `conftest.py`: `GenericContainer` running `lol-pipeline-rate-limiter` image, pointing at the session-scoped Redis container; exposes URL via env var
+2. Update `test_it07_rate_limit.py`: rate monitor still samples Redis ZSET cardinality directly; concurrency assertions unchanged; fetcher now calls HTTP service
+3. Update `test_it12_concurrent_rate_limit.py`: 20 concurrent `wait_for_token()` calls go through HTTP; correctness assertions unchanged
+- [ ] **Red:** Run IT-07 and IT-12 before fix; confirm they fail (service not found)
+- [ ] **Green:** Add container fixture; update tests
+- [ ] **Refactor:** Confirm session-scoped container teardown works with pytest-xdist
