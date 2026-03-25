@@ -82,9 +82,7 @@ async def show_dlq(request: Request) -> HTMLResponse:
             payload_preview += "..."
         orig_stream = html.escape(dlq.original_stream or "?")
         # Replay is now handled by admin-ui; show entry ID for reference
-        action_cell = (
-            f'<span class="muted" title="Use admin-ui to replay">{safe_id}</span>'
-        )
+        action_cell = f'<span class="muted" title="Use admin-ui to replay">{safe_id}</span>'
         # Full envelope JSON for detail expansion
         full_json = json.dumps(dlq.payload, indent=2)
         safe_full = html.escape(full_json)
@@ -108,11 +106,7 @@ async def show_dlq(request: Request) -> HTMLResponse:
         if next_cursor
         else ""
     )
-    pagination = (
-        f'<p style="display:flex;gap:var(--space-md);align-items:center">{next_link}</p>'
-        if next_link
-        else ""
-    )
+    pagination = f'<p class="pagination">{next_link}</p>' if next_link else ""
 
     body = f"""{halt_html}<h2>{t("page_dlq")}</h2>
 {summary_html}

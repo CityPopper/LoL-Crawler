@@ -7,6 +7,7 @@ import html as _html
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
+from lol_ui._render_helpers import _riot_id_form_script
 from lol_ui.constants import _HALT_BANNER, _REGIONS, _STREAM_KEYS
 from lol_ui.rendering import _badge, _depth_badge, _page
 from lol_ui.streams_helpers import _translate_stream_key
@@ -60,13 +61,14 @@ async def index(request: Request) -> HTMLResponse:
 
     region_options = "\n        ".join(f'<option value="{reg}">{reg}</option>' for reg in _REGIONS)
 
+    lookup_script = _riot_id_form_script("dash-lookup-form", "dash-riot-id", "dash-region")
     body = f"""{halt_html}
 <h2>{t("dashboard")}</h2>
 <div class="dashboard-grid">
   <div class="card">
     <h3 class="card__title">{t("system_status")}</h3>
     <div>{system_badge}</div>
-    <p style="margin:var(--space-sm) 0 0">
+    <p class="mt-sm">
       <a href="/streams">{t("view_streams")} &rarr;</a>
     </p>
   </div>
@@ -76,14 +78,14 @@ async def index(request: Request) -> HTMLResponse:
       <span class="stat__value">{total_players}</span>
       <span class="stat__label">{t("total_players")}</span>
     </div>
-    <p style="margin:var(--space-sm) 0 0">
+    <p class="mt-sm">
       <a href="/players">{t("browse_players")} &rarr;</a>
     </p>
   </div>
   <div class="card">
     <h3 class="card__title">{t("dead_letter_queue")}</h3>
     <div>{dlq_badge}</div>
-    <p style="margin:var(--space-sm) 0 0">
+    <p class="mt-sm">
       <a href="/dlq">{t("view_dlq")} &rarr;</a>
     </p>
   </div>
@@ -103,7 +105,7 @@ async def index(request: Request) -> HTMLResponse:
 
 <div class="card">
   <h3 class="card__title">{t("look_up_player")}</h3>
-  <p style="color:var(--color-muted);font-size:var(--font-size-sm)">
+  <p class="text-muted text-sm">
     {t("look_up_player_desc")}
   </p>
   <form class="form-inline" method="get" action="/stats" id="dash-lookup-form">
@@ -117,22 +119,7 @@ async def index(request: Request) -> HTMLResponse:
     </label>
     <button type="submit">{t("look_up")}</button>
   </form>
-  <script>
-(function() {{
-  var form = document.getElementById('dash-lookup-form');
-  if (!form) return;
-  form.addEventListener('submit', function(e) {{
-    var input = document.getElementById('dash-riot-id');
-    if (input && input.value.indexOf('#') !== -1) {{
-      e.preventDefault();
-      var region = document.getElementById('dash-region');
-      var url = '/stats?riot_id=' + encodeURIComponent(input.value)
-        + '&region=' + (region ? region.value : 'na1');
-      window.location.href = url;
-    }}
-  }});
-}})();
-</script>
+  {lookup_script}
   <p><a href="/stats">{t("all_regions")} &rarr;</a></p>
 </div>
 """

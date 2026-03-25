@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse
 from lol_pipeline._helpers import is_system_halted
 from lol_pipeline.config import Config
 
+from lol_ui._render_helpers import _auto_refresh_script
 from lol_ui.constants import _HALT_BANNER, _LOG_LINES
 from lol_ui.log_helpers import _merged_log_lines, _render_log_lines, _service_filter_html
 from lol_ui.rendering import _empty_state, _page
@@ -80,58 +81,16 @@ async def show_logs(request: Request) -> HTMLResponse:
 
     svc_filter = _service_filter_html(service)
 
-    pause_label = t("logs_pause")
-    resume_label = t("logs_resume")
-    script = f"""
-<script>
-(function() {{
-  var paused = false;
-  var btn = document.getElementById('pause-btn');
-  var clearBtn = document.getElementById('clear-btn');
-  var container = document.getElementById('log-container');
-  var svcSelect = document.getElementById('svc-filter');
-  var pauseLabel = '{pause_label}';
-  var resumeLabel = '{resume_label}';
-  var timer;
-
-  btn.addEventListener('click', function() {{
-    paused = !paused;
-    btn.textContent = paused ? resumeLabel : pauseLabel;
-    btn.classList.toggle('paused', paused);
-  }});
-
-  clearBtn.addEventListener('click', function() {{
-    container.innerHTML = '';
-  }});
-
-  svcSelect.addEventListener('change', function() {{
-    refresh();
-  }});
-
-  function refresh() {{
-    if (paused) return;
-    var svc = svcSelect.value;
-    var url = '/logs/fragment' + (svc ? '?service=' + encodeURIComponent(svc) : '');
-    fetch(url)
-      .then(function(r) {{
-        if (!r.ok) throw new Error("HTTP " + r.status);
-        return r.text();
-      }})
-      .then(function(html) {{ container.innerHTML = html; }})
-      .catch(function(e) {{
-        var existing = container.querySelector('.error-msg');
-        if (existing) existing.remove();
-        var msg = document.createElement('p');
-        msg.className = 'error-msg';
-        msg.textContent = e.message || 'error';
-        container.prepend(msg);
-      }});
-  }}
-
-  timer = setInterval(refresh, 2000);
-}})();
-</script>
-"""
+    script = _auto_refresh_script(
+        container_id="log-container",
+        pause_btn_id="pause-btn",
+        fragment_url="/logs/fragment",
+        interval_ms=2000,
+        clear_btn_id="clear-btn",
+        svc_select_id="svc-filter",
+        pause_label=t("logs_pause"),
+        resume_label=t("logs_resume"),
+    )
 
     logs_meta = t("logs_last_n_lines").replace("{n}", str(_LOG_LINES))
     body = (

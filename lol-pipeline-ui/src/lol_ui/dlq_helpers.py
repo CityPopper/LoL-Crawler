@@ -6,11 +6,10 @@ import contextlib
 import html
 
 import redis.asyncio as aioredis
-from lol_pipeline.models import DLQEnvelope, MessageEnvelope, make_replay_envelope
+from lol_pipeline.models import make_replay_envelope
 
 from lol_ui.rendering import _badge, _time_ago
 from lol_ui.strings import t as _t
-
 
 _make_replay_envelope = make_replay_envelope
 
@@ -53,42 +52,38 @@ async def _dlq_summary_html(r: aioredis.Redis) -> tuple[str, int]:
     # Build failure-code breakdown rows
     code_rows = ""
     for fc, count in sorted(code_counts.items(), key=lambda x: x[1], reverse=True):
-        code_rows += (
-            f'<tr><td>{_badge("error", fc)}</td><td style="text-align:right">{count}</td></tr>'
-        )
+        code_rows += f'<tr><td>{_badge("error", fc)}</td><td class="text-right">{count}</td></tr>'
 
     # Build source-stream breakdown rows
     stream_rows = ""
     for os, count in sorted(stream_counts.items(), key=lambda x: x[1], reverse=True):
-        stream_rows += (
-            f'<tr><td>{html.escape(os)}</td><td style="text-align:right">{count}</td></tr>'
-        )
+        stream_rows += f'<tr><td>{html.escape(os)}</td><td class="text-right">{count}</td></tr>'
 
     breakdowns = ""
     if code_rows:
         breakdowns += (
-            '<div style="flex:1;min-width:200px">'
-            '<h4 style="margin:0 0 var(--space-sm);color:var(--color-muted)">'
+            '<div class="flex-col-min200">'
+            f'<h4 class="dlq-breakdown-title">'
             f"{_t('dlq_breakdown_failure_codes')}</h4>"
-            '<table style="margin:0"><thead><tr>'
+            '<table class="m-0"><thead><tr>'
             f'<th scope="col">{_t("dlq_breakdown_col_code")}</th>'
-            f'<th scope="col" style="text-align:right">{_t("dlq_breakdown_col_count")}</th>'
+            f'<th scope="col" class="text-right">{_t("dlq_breakdown_col_count")}</th>'
             f"</tr></thead><tbody>{code_rows}</tbody></table></div>"
         )
     if stream_rows:
         breakdowns += (
-            '<div style="flex:1;min-width:200px">'
-            '<h4 style="margin:0 0 var(--space-sm);color:var(--color-muted)">'
+            '<div class="flex-col-min200">'
+            f'<h4 class="dlq-breakdown-title">'
             f"{_t('dlq_breakdown_source_streams')}</h4>"
-            '<table style="margin:0"><thead><tr>'
+            '<table class="m-0"><thead><tr>'
             f'<th scope="col">{_t("dlq_breakdown_col_stream")}</th>'
-            f'<th scope="col" style="text-align:right">{_t("dlq_breakdown_col_count")}</th>'
+            f'<th scope="col" class="text-right">{_t("dlq_breakdown_col_count")}</th>'
             f"</tr></thead><tbody>{stream_rows}</tbody></table></div>"
         )
 
     summary = f"""<div class="card">
   <h3 class="card__title">{_t("dlq_analytics_title")}</h3>
-  <div style="display:flex;gap:var(--space-xl);flex-wrap:wrap;margin-bottom:var(--space-md)">
+  <div class="flex-wrap-xl mb-sm">
     <div class="stat">
       <span class="stat__value">{dlq_depth}</span>
       <span class="stat__label">{_t("dlq_stat_pending")}</span>
@@ -102,7 +97,7 @@ async def _dlq_summary_html(r: aioredis.Redis) -> tuple[str, int]:
       <span class="stat__label">{_t("dlq_stat_oldest")}</span>
     </div>
   </div>
-  <div style="display:flex;gap:var(--space-xl);flex-wrap:wrap">
+  <div class="flex-wrap-xl">
     {breakdowns}
   </div>
 </div>

@@ -8,11 +8,16 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 from lol_pipeline._helpers import is_system_halted
 
+from lol_ui._render_helpers import (
+    _pagination_html,
+    _player_filter_script,
+    _region_select,
+    _sort_link,
+)
 from lol_ui.constants import (
     _HALT_BANNER,
     _PLAYERS_PAGE_SIZE,
     _PLAYERS_SORT_OPTIONS,
-    _REGIONS,
     _REGIONS_SET,
     _PlayerRow,
 )
@@ -98,78 +103,29 @@ async def show_players(request: Request) -> HTMLResponse:
 
     rows = _render_player_rows(player_rows)
 
-    def _sort_link(key: str, label_key: str) -> str:
-        cls = ' class="active"' if sort == key else ""
-        label = t(label_key)
-        return (
-            f'<a href="/players?sort={key}&amp;page={page}'
-            f'&amp;region={region_filter}"{cls}'
-            f' aria-label="Sort by {label}">{label}</a>'
-        )
-
     sort_controls = f"""<div class="sort-controls">
   <span>{t("players_sort")}</span>
-  {_sort_link("rank", "players_sort_rank")}
-  {_sort_link("name", "players_sort_name")}
-  {_sort_link("region", "players_sort_region")}
+  {_sort_link("rank", "players_sort_rank", sort, page, region_filter)}
+  {_sort_link("name", "players_sort_name", sort, page, region_filter)}
+  {_sort_link("region", "players_sort_region", sort, page, region_filter)}
 </div>"""
 
-    region_options = f'<option value="">{t("players_all_regions")}</option>\n'
-    region_options += "\n".join(
-        f'<option value="{reg}"{" selected" if reg == region_filter else ""}>{reg}</option>'
-        for reg in _REGIONS
-    )
-    region_select = (
-        '<div class="filter-controls" style="margin:var(--space-sm) 0">'
-        f'<label for="region-filter">{t("players_col_region")}:</label>'
-        f'<select id="region-filter"'
-        f" onchange=\"window.location.href='/players?sort={sort}"
-        f"&region='+this.value\">"
-        f"{region_options}</select></div>"
-    )
+    region_sel = _region_select(sort, region_filter)
 
-    prev_link = (
-        f'<a class="page-link" href="/players?sort={sort}'
-        f'&amp;region={region_filter}&amp;page={page - 1}">'
-        f"&larr; {t('players_prev')}</a>"
-        if has_prev
-        else ""
-    )
     page_indicator = f"{t('players_page')} {page + 1} / {total_pages}"
-    next_link = (
-        f'<a class="page-link" href="/players?sort={sort}'
-        f'&amp;region={region_filter}&amp;page={page + 1}">'
-        f"{t('players_next')} &rarr;</a>"
-        if has_next
-        else ""
+    prev_url = (
+        f"/players?sort={sort}&amp;region={region_filter}&amp;page={page - 1}" if has_prev else None
     )
-    pagination = (
-        f'<p style="display:flex;gap:var(--space-md);align-items:center">'
-        f"{prev_link}{page_indicator}{next_link}</p>"
+    next_url = (
+        f"/players?sort={sort}&amp;region={region_filter}&amp;page={page + 1}" if has_next else None
     )
-
-    filter_script = """
-<script>
-(function() {
-  var input = document.getElementById('player-search');
-  if (!input) return;
-  input.addEventListener('input', function() {
-    var filter = input.value.toLowerCase();
-    var rows = document.querySelectorAll('#players-table tbody tr');
-    for (var i = 0; i < rows.length; i++) {
-      var cell = rows[i].cells[0];
-      var text = cell ? cell.textContent.toLowerCase() : '';
-      rows[i].style.display = text.indexOf(filter) !== -1 ? '' : 'none';
-    }
-  });
-})();
-</script>
-"""
+    pagination = _pagination_html(prev_url, next_url, page_indicator)
+    filter_script = _player_filter_script()
 
     body = f"""{halt_html}<h2>{t("page_players")} ({display_total}\
  {t("players_total_page")} {page + 1} {t("players_of")} {total_pages})</h2>
 {sort_controls}
-{region_select}
+{region_sel}
 <input id="player-search" placeholder="{t("players_filter")}" type="text"
   aria-label="{t("players_filter_aria")}">
 <div class="table-scroll">

@@ -28,22 +28,18 @@ def _rank_card_html(rank: dict[str, str]) -> str:
     wr = round(_win_rate(wins, total))
     wr_color = "var(--color-win)" if wr >= _RANK_WR_THRESHOLD else "var(--color-loss)"
     return (
-        f'<div class="card" style="display:flex;align-items:center;gap:var(--space-md)">'
+        f'<div class="card rank-card">'
         f"<div>"
-        f'<div style="font-family:var(--font-sans);font-size:var(--font-size-lg);font-weight:700">'
+        f'<div class="rank-tier">'
         f"{html.escape(tier_label)} {html.escape(division)}</div>"
-        f'<div style="font-size:var(--font-size-sm);color:var(--color-muted)">'
+        f'<div class="rank-lp">'
         f"{lp} LP &mdash; {wins}W {losses}L</div>"
-        f'<div style="background:var(--color-surface2);'
-        f'border-radius:4px;height:6px;margin-top:6px">'
-        f'<div style="background:{wr_color};width:{wr}%;'
-        f'height:6px;border-radius:4px"></div></div>'
+        f'<div class="wr-track">'
+        f'<div class="wr-fill" style="background:{wr_color};width:{wr}%"></div></div>'
         f"</div>"
-        f'<div style="margin-left:auto;text-align:right">'
-        f'<span style="font-family:var(--font-sans);'
-        f"font-size:var(--font-size-xl);"
-        f'font-weight:700;color:{wr_color}">{wr}%</span>'
-        f'<div style="font-size:10px;color:var(--color-muted)">Win Rate</div></div></div>'
+        f'<div class="rank-wr-col">'
+        f'<span class="rank-wr-val" style="color:{wr_color}">{wr}%</span>'
+        f'<div class="rank-wr-label">Win Rate</div></div></div>'
     )
 
 
@@ -104,28 +100,19 @@ def _profile_header_html(
     else:
         # Fallback: letter-circle with optional level badge
         avatar_html = (
-            '<div style="position:relative;display:inline-block">'
-            '<div style="width:64px;height:64px;border-radius:50%;'
-            "background:var(--color-surface2);"
-            "display:flex;align-items:center;justify-content:center;"
-            "border:3px solid var(--color-win);flex-shrink:0;"
-            "font-family:var(--font-sans);font-size:28px;"
-            f'font-weight:700;color:var(--color-win)">'
+            '<div class="avatar-wrap">'
+            f'<div class="avatar-circle">'
             f"{html.escape(game_name[:1].upper())}</div></div>"
         )
 
     return (
-        f'<div class="card" style="display:flex;'
-        f"align-items:center;gap:var(--space-lg);"
-        f'padding:var(--space-lg)">'
+        f'<div class="card profile-card">'
         f"{avatar_html}"
         f"<div>"
-        f'<div style="font-family:var(--font-sans);'
-        f'font-size:var(--font-size-xl);font-weight:700">'
+        f'<div class="profile-name">'
         f"{safe_name}"
-        f'<span style="color:var(--color-muted);'
-        f'font-size:var(--font-size-base)">#{safe_tag}</span></div>'
-        f'<div style="font-size:var(--font-size-sm);color:var(--color-muted);margin-top:2px">'
+        f'<span class="profile-tag">#{safe_tag}</span></div>'
+        f'<div class="profile-rank-line">'
         f"{html.escape(rank_text)} &mdash; {html.escape(lp)} LP</div>"
         f"</div></div>"
     )

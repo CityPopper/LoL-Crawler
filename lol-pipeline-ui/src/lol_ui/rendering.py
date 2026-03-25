@@ -220,7 +220,7 @@ def _stats_form(
 })();
 </script>"""
     onboarding_html = (
-        '<p style="color:var(--color-muted);margin-bottom:var(--space-sm)">'
+        '<p class="onboarding-hint">'
         "Enter a tracked player&#x2019;s Riot ID and region to view their match statistics."
         "</p>"
         if not msg and not stats_html

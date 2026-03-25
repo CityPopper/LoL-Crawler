@@ -12,11 +12,22 @@ import json
 import logging
 
 import redis.asyncio as aioredis
-from lol_pipeline._helpers import is_system_halted
+from lol_pipeline._helpers import consumer_id, is_system_halted
 from lol_pipeline.config import Config
-from lol_pipeline.constants import CHAMPION_STATS_TTL_SECONDS, RANKED_SOLO_QUEUE_ID
+from lol_pipeline.constants import CHAMPION_STATS_TTL_SECONDS
+from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
+from lol_pipeline.redis_client import get_redis
+from lol_pipeline.service import run_consumer
 from lol_pipeline.streams import ack
+
+from lol_champion_stats._helpers import (
+    _builds_key,
+    _extract_ranked_context,
+    _matchup_key,
+    _runes_key,
+    _stats_key,
+)
 
 _IN_STREAM = "stream:analyze"
 _GROUP = "champion-stats-workers"
@@ -63,27 +74,24 @@ async def _update_champion_stats(
     ):
         if not p or not meta:
             continue
-        queue_id = meta.get("queue_id", "")
-        patch = meta.get("patch", "")
-        team_position = p.get("team_position", "")
-        champion_name = p.get("champion_name", "")
-        if queue_id != RANKED_SOLO_QUEUE_ID or not patch or not team_position or not champion_name:
+        ctx = _extract_ranked_context(p, meta)
+        if ctx is None:
             continue
-        calls.append((champion_name, patch, team_position, p, int(score)))
+        calls.append((ctx.champion_name, ctx.patch, ctx.team_position, p, int(score)))
 
     if not calls:
         return
 
     async with r.pipeline(transaction=False) as pipe:
         for champion_name, patch, team_position, p, score_int in calls:
-            stats_key = f"champion:stats:{champion_name}:{patch}:{team_position}"
+            sk = _stats_key(champion_name, patch, team_position)
             index_key = f"champion:index:{patch}"
             index_member = f"{champion_name}:{team_position}"
 
             pipe.eval(
                 _UPDATE_CHAMPION_LUA,
                 3,
-                stats_key,
+                sk,
                 index_key,
                 "patch:list",
                 int(p.get("win", "0")),
@@ -121,15 +129,15 @@ def _aggregate_builds(
     position: str,
 ) -> None:
     """Add item build fingerprint to builds sorted set."""
-    builds_key = f"champion:builds:{champion}:{patch}:{position}"
+    bk = _builds_key(champion, patch, position)
     raw_items = p.get("items", "[]")
     try:
         item_list: list[int] = json.loads(raw_items)
         non_zero = sorted(i for i in item_list if isinstance(i, int) and i > 0)
         if non_zero:
             build_fp = ",".join(str(i) for i in non_zero)
-            pipe.zincrby(builds_key, 1, build_fp)
-            pipe.expire(builds_key, CHAMPION_STATS_TTL_SECONDS)
+            pipe.zincrby(bk, 1, build_fp)
+            pipe.expire(bk, CHAMPION_STATS_TTL_SECONDS)
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
 
@@ -142,11 +150,11 @@ def _aggregate_runes(
     position: str,
 ) -> None:
     """Add keystone rune to runes sorted set."""
-    runes_key = f"champion:runes:{champion}:{patch}:{position}"
+    rk = _runes_key(champion, patch, position)
     keystone = p.get("perk_keystone", "0")
     if keystone and keystone != "0":
-        pipe.zincrby(runes_key, 1, keystone)
-        pipe.expire(runes_key, CHAMPION_STATS_TTL_SECONDS)
+        pipe.zincrby(rk, 1, keystone)
+        pipe.expire(rk, CHAMPION_STATS_TTL_SECONDS)
 
 
 async def _update_matchups(
@@ -162,11 +170,8 @@ async def _update_matchups(
     ):
         if not p or not meta:
             continue
-        queue_id = meta.get("queue_id", "")
-        patch = meta.get("patch", "")
-        team_position = p.get("team_position", "")
-        champion_name = p.get("champion_name", "")
-        if queue_id != RANKED_SOLO_QUEUE_ID or not patch or not team_position or not champion_name:
+        ctx = _extract_ranked_context(p, meta)
+        if ctx is None:
             continue
 
         opponent: dict[str, str] = await r.hgetall(f"opponent:{puuid}:{match_id}")  # type: ignore[misc]
@@ -175,20 +180,39 @@ async def _update_matchups(
 
         opp_champ = opponent.get("champion_name", "")
         opp_position = opponent.get("team_position", "")
-        if not opp_champ or opp_position != team_position:
+        if not opp_champ or opp_position != ctx.team_position:
             continue
 
         # Alphabetical ordering for consistent key
-        champ_a, champ_b = sorted([champion_name, opp_champ])
-        matchup_key = f"matchup:{champ_a}:{champ_b}:{team_position}:{patch}"
+        champ_a, champ_b = sorted([ctx.champion_name, opp_champ])
+        mk = _matchup_key(champ_a, champ_b, ctx.team_position, ctx.patch)
 
         win = p.get("win", "0") == "1"
         async with r.pipeline(transaction=False) as pipe:
-            pipe.hincrby(matchup_key, "games", 1)
+            pipe.hincrby(mk, "games", 1)
             if win:
-                pipe.hincrby(matchup_key, f"{champion_name}_wins", 1)
-            pipe.expire(matchup_key, CHAMPION_STATS_TTL_SECONDS)
+                pipe.hincrby(mk, f"{ctx.champion_name}_wins", 1)
+            pipe.expire(mk, CHAMPION_STATS_TTL_SECONDS)
             await pipe.execute()
+
+
+async def _analyze_player_matches(
+    r: aioredis.Redis,
+    puuid: str,
+    all_matches: list[tuple[str, float]],
+) -> None:
+    """Middle layer: fetch participant data and run all champion-stats aggregations."""
+    async with r.pipeline(transaction=False) as pipe:
+        for match_id, _score in all_matches:
+            pipe.hgetall(f"participant:{match_id}:{puuid}")
+            pipe.hgetall(f"match:{match_id}")
+        raw_results: list[dict[str, str]] = await pipe.execute()
+
+    participant_data: list[dict[str, str]] = raw_results[0::2]
+    match_metadata: list[dict[str, str]] = raw_results[1::2]
+
+    await _update_champion_stats(r, all_matches, participant_data, match_metadata)
+    await _update_matchups(r, puuid, all_matches, participant_data, match_metadata)
 
 
 async def handle_champion_stats(
@@ -212,17 +236,32 @@ async def handle_champion_stats(
     )
 
     if all_matches:
-        # Batch fetch participant + match metadata
-        async with r.pipeline(transaction=False) as pipe:
-            for match_id, _score in all_matches:
-                pipe.hgetall(f"participant:{match_id}:{puuid}")
-                pipe.hgetall(f"match:{match_id}")
-            raw_results: list[dict[str, str]] = await pipe.execute()
-
-        participant_data: list[dict[str, str]] = raw_results[0::2]
-        match_metadata: list[dict[str, str]] = raw_results[1::2]
-
-        await _update_champion_stats(r, all_matches, participant_data, match_metadata)
-        await _update_matchups(r, puuid, all_matches, participant_data, match_metadata)
+        await _analyze_player_matches(r, puuid, all_matches)
 
     await ack(r, _IN_STREAM, _GROUP, msg_id)
+
+
+async def main() -> None:
+    """Champion stats worker loop."""
+    log = get_logger("champion-stats")
+    cfg = Config()
+    r = get_redis(cfg.redis_url)
+    worker = consumer_id()
+
+    async def _handler(msg_id: str, envelope: MessageEnvelope) -> None:
+        await handle_champion_stats(r, cfg, worker, msg_id, envelope, log)
+
+    log.info("champion-stats started", extra={"consumer": worker})
+    try:
+        autoclaim_ms = cfg.stream_ack_timeout * 1000
+        await run_consumer(
+            r,
+            _IN_STREAM,
+            _GROUP,
+            worker,
+            _handler,
+            log,
+            autoclaim_min_idle_ms=autoclaim_ms,
+        )
+    finally:
+        await r.aclose()
