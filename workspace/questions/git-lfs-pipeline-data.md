@@ -101,8 +101,10 @@ Which is faster for a fresh setup? RDB restore is O(file size); JSONL replay req
 | D-2 | Auto-detect empty Redis → trigger pipeline rebuild | On `just up`, if Redis is empty, seed from disk `.zst` files automatically. |
 | D-3 | Process newest months first | Contributor gets recent stats immediately; older history loads in background. |
 | D-4 | `pipeline-data/riot-api/` is canonical; delete `lol-pipeline-fetcher/match-data/` | Architect confirmed: match-data is an orphaned duplicate from pre-Docker local dev. 25 `.zst` files are byte-identical; pipeline-data has 157 more recent matches. Zero functional loss. |
-| D-5 | Only `*.jsonl.zst` in LFS (not active `*.jsonl`) | Active `.jsonl` changes on every Fetcher run — would burn LFS quota rapidly. `.zst` files are immutable once month rolls over. |
-| D-6 | All `.zst` files in LFS; no rotation for now | Disk keeps ALL historical data forever. LFS currently 29 MB vs 10 GB cap — trivial. If cap approached, migrate old files to S3. No rotation logic needed yet. |
+| D-5 | Only `*.jsonl.zst` in seed store (not active `*.jsonl`) | Active `.jsonl` changes on every Fetcher run. `.zst` files are immutable once month rolls over. |
+| D-6 | All `.zst` files stored; no rotation for now | Disk keeps ALL historical data. If storage cap approached, revisit. |
+| D-11 | **Hugging Face Datasets** as seed data backend (not GitHub LFS) | Public repo → no bandwidth cap, no storage quota anxiety, no ToS issue with anonymized data. `just restore-seed` uses `huggingface-cli download` or `datasets` Python library. GitHub LFS not used for pipeline data (only screenshots stay in LFS). |
+| D-12 | Anonymize all seed data before upload | Strip `puuid`, `summonerId`, `riotIdGameName`, `riotIdTagline`, `summonerName` from every JSONL record. Replace PUUIDs with consistent SHA-256 hash (first 16 chars) so player stats remain aggregatable without exposing real identifiers. Purge raw files from local disk. Force-push to wipe from git history. |
 | D-8 | Two-stage compression: append-friendly during run, max compression at compaction | Active month: plain `.jsonl` (line-appendable by Fetcher). At compaction: `zstd -19` (max compression, ~15-16x ratio). The `-19` level is slow but only runs at push/rollover time. |
 | D-9 | Compress-before-push / decompress-after-pull baked into `just up` and `just compact-data` | `just compact-data` compresses ALL `.jsonl` files (including active month) → `.zst` before committing/pushing. `just up` decompresses the current month's `.zst` back to `.jsonl` at startup if no `.jsonl` exists, so Fetcher can append. This handles the active month growing large (thousands of players). |
 | D-10 | Minimize new top-level `just` commands — bake everything into `just up` | New user UX: clone → `just up` → done. `just up` handles: git lfs pull, decompress current month, start services, auto-seed if Redis empty. Only 1 new command exposed: `just compact-data` (pre-push data step). Internal scripts (seed_from_disk.py) not exposed as top-level recipes. |
@@ -112,19 +114,23 @@ Which is faster for a fresh setup? RDB restore is O(file size); JSONL replay req
 
 ## Pending Human Questions
 
-**[H-5] Riot ToS / repo visibility — BLOCKING LFS-1+3**
-The JSONL files are raw Riot API responses containing PUUIDs, summoner IDs, and Riot IDs for ~59,000 participants across 7,193 matches. Riot's API Terms prohibit bulk redistribution and require deletion of all Game Information on key revocation. LFS objects are immutable in git history — purging requires force-push rewriting history.
-Options:
-- **Repo is private** — sharing with known collaborators only; ToS risk is lower; LFS plan proceeds as designed
-- **Repo is public, redesign seed data** — store only anonymized/derived stats (win rates, matchup aggregates) instead of raw match JSON; no PII in LFS
-Status: ⏳ Awaiting human answer
+**[H-5] Riot ToS / repo visibility — RESOLVED**
+Repo is public. Decision: store only **anonymized** data in LFS (strip PUUIDs, summonerIds, riotIdGameName/TagLine from all JSONL files before committing). Also purge offending raw data from local disk. Force-push to wipe from repo history later.
+Status: ✅ Resolved
 
-**[H-6] GitHub LFS bandwidth — BLOCKING LFS-1+3**
-Free tier: 1 GB/month bandwidth (separate from 10 GB storage quota). At 29 MB per clone, ~34 clones per month exhausts the free tier and locks out all users.
+**[H-6] GitHub LFS bandwidth — RESOLVED**
+Do not purchase data packs yet. Investigating "facehugger" as alternative storage backend (H-7).
+Status: ✅ Resolved (deferred to H-7)
+
+**[H-7] Alternative data storage backend — BLOCKING H-6**
+User suggested "somewhere online for large datasets" (possibly Hugging Face Datasets — "Hugging Face" misheard as "facehugger").
 Options:
-- Purchase GitHub LFS data packs ($5/month per 50 GB bandwidth + 50 GB storage)
-- Keep LFS data in a private repo (fewer clones, slower quota consumption)
-Status: ⏳ Awaiting human answer (may be resolved by H-5)
+- **GitHub LFS** — anonymized data will be much smaller; bandwidth concern may be moot
+- **Hugging Face Datasets** — free public hosting, Python API, no bandwidth caps
+- **DVC** — data version control, backs onto S3/GCS/Azure
+- **Zenodo** — CERN, 50 GB free, DOI-assigned, immutable
+- **Kaggle Datasets** — free, good for ML-adjacent data
+Status: ✅ Resolved — Hugging Face Datasets
 
 ## Implementation Tasks
 
