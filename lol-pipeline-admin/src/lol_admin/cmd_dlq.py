@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-from typing import Any
 
 import redis.asyncio as aioredis
 from lol_pipeline.config import Config
@@ -16,6 +15,7 @@ from lol_admin._constants import _STREAM_DLQ
 from lol_admin._formatting import _format_dlq_table
 from lol_admin._helpers import (
     _confirm,
+    _dlq_archive_entries,
     _dlq_entries,
     _make_replay_envelope,
     _print_error,
@@ -91,11 +91,11 @@ async def cmd_dlq_clear(r: aioredis.Redis, args: argparse.Namespace) -> int:
 
 async def cmd_dlq_archive_list(r: aioredis.Redis, args: argparse.Namespace) -> int:
     """List entries in stream:dlq:archive."""
-    raw: list[Any] = await r.xrange(STREAM_DLQ_ARCHIVE, "-", "+")
-    if not raw:
+    entries = await _dlq_archive_entries(r)
+    if not entries:
         _print_info("DLQ archive is empty")
         return 0
-    for entry_id, fields in raw:
+    for entry_id, fields in entries:
         try:
             dlq = DLQEnvelope.from_redis_fields(fields)
             stream = dlq.original_stream[:15]
@@ -105,7 +105,7 @@ async def cmd_dlq_archive_list(r: aioredis.Redis, args: argparse.Namespace) -> i
             stream = fields.get("original_stream", "?")[:15]
             reason = fields.get("failure_reason", "?")
             _print_info(f"{entry_id}  {stream:<16}  {code}  ({reason})")
-    _print_ok(f"{len(raw)} archive entries")
+    _print_ok(f"{len(entries)} archive entries")
     return 0
 
 

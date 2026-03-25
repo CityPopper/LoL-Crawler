@@ -1,11 +1,9 @@
-"""Admin CLI: player-related commands (reseed, reset-stats, clear-priority, recalc)."""
+"""Admin CLI: player-targeted commands (reseed, reset-stats, clear-priority)."""
 
 from __future__ import annotations
 
 import argparse
-import json
 import uuid
-from datetime import datetime
 
 import redis.asyncio as aioredis
 from lol_pipeline.config import Config
@@ -25,12 +23,14 @@ from lol_admin._helpers import (
     _print_ok,
     _resolve_puuid,
     _sanitize,
+    _scan_priority_keys,
 )
 
 
 async def cmd_reseed(
     r: aioredis.Redis, riot: RiotClient, cfg: Config, args: argparse.Namespace
 ) -> int:
+    """Clear cooldown and re-enqueue player to stream:puuid."""
     puuid = await _resolve_puuid(riot, args.riot_id, args.region, r)
     if puuid is None:
         return 1
@@ -92,7 +92,7 @@ async def cmd_clear_priority(r: aioredis.Redis, riot: RiotClient, args: argparse
         _print_error("specify a Riot ID or --all")
         return 1
     if getattr(args, "all", False):
-        keys = [key async for key in r.scan_iter(match="player:priority:*", count=100)]
+        keys = await _scan_priority_keys(r)
         if keys:
             await r.delete(*keys)
         await r.delete(PRIORITY_ACTIVE_SET)
@@ -110,41 +110,4 @@ async def cmd_clear_priority(r: aioredis.Redis, riot: RiotClient, args: argparse
         _print_ok(f"deleted player:priority:{puuid}")
     else:
         _print_info(f"no priority key found for {safe_rid}")
-    return 0
-
-
-async def cmd_recalc_priority(r: aioredis.Redis, args: argparse.Namespace) -> int:
-    """Diagnostic: scan player:priority:* keys and report the count."""
-    count = 0
-    async for _key in r.scan_iter(match="player:priority:*", count=100):
-        count += 1
-    if getattr(args, "json", False):
-        print(json.dumps({"count": count}))
-    else:
-        _print_ok(
-            f"player:priority:* keys found: {count}  (read-only diagnostic — no changes made)"
-        )
-    return 0
-
-
-async def cmd_recalc_players(r: aioredis.Redis, args: argparse.Namespace) -> int:
-    """Rebuild players:all sorted set from existing player:{puuid} hashes."""
-    count = 0
-    async for key in r.scan_iter(match="player:*", count=200):
-        if key.count(":") != 1:
-            continue
-        puuid = key.removeprefix("player:")
-        seeded_at: str | None = await r.hget(key, "seeded_at")  # type: ignore[misc]
-        if not seeded_at:
-            continue
-        try:
-            score = datetime.fromisoformat(seeded_at).timestamp()
-        except ValueError:
-            continue
-        await r.zadd("players:all", {puuid: score})
-        count += 1
-    if getattr(args, "json", False):
-        print(json.dumps({"count": count}))
-    else:
-        _print_ok(f"players:all rebuilt — {count} players indexed")
     return 0

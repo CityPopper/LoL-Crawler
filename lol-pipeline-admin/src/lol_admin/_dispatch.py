@@ -18,12 +18,14 @@ from lol_admin.cmd_dlq import (
     cmd_dlq_replay,
 )
 from lol_admin.cmd_opgg import cmd_opgg_status
-from lol_admin.cmd_player import (
+from lol_admin.cmd_player_ops import (
     cmd_clear_priority,
-    cmd_recalc_players,
-    cmd_recalc_priority,
     cmd_reseed,
     cmd_reset_stats,
+)
+from lol_admin.cmd_player_scans import (
+    cmd_recalc_players,
+    cmd_recalc_priority,
 )
 from lol_admin.cmd_replay import cmd_replay_fetch, cmd_replay_parse
 from lol_admin.cmd_stats import cmd_stats

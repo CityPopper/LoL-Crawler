@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 
 import redis.asyncio as aioredis
 from lol_pipeline.config import Config
@@ -18,17 +17,10 @@ async def cmd_opgg_status(
     args: argparse.Namespace,
 ) -> int:
     """Show OP.GG integration status: enabled flag, fetch count, data dir size."""
-    enabled: bool = getattr(cfg, "opgg_enabled", False)
+    enabled: bool = cfg.opgg_enabled
     fetch_count = int(await r.get("opgg:fetch_count") or 0)
 
-    # Determine data directory — check opgg-specific, fall back to match_data_dir
-    opgg_data_dir: str = getattr(cfg, "opgg_match_data_dir", "")
-    if not opgg_data_dir:
-        base = getattr(cfg, "match_data_dir", "")
-        if base:
-            opgg_data_dir = os.path.join(base, "opgg")
-
-    data_dir_size = _data_dir_size_mb(opgg_data_dir)
+    data_dir_size = _data_dir_size_mb(cfg.opgg_match_data_dir)
 
     if getattr(args, "json", False):
         record = {

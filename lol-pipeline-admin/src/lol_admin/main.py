@@ -10,7 +10,6 @@ import argparse
 import asyncio
 import sys
 
-import redis.asyncio as aioredis
 from lol_pipeline.config import Config
 
 # Re-export get_redis so mocks in tests still patch "lol_admin.main.get_redis"
@@ -19,6 +18,9 @@ from lol_pipeline.riot_api import RiotClient
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import RedisError
 
+from lol_admin._dispatch import (
+    _dispatch as _dispatch,
+)
 from lol_admin._formatting import (  # noqa: F401
     _format_dlq_table,
     _format_stat_value,
@@ -40,9 +42,6 @@ from lol_admin._helpers import (  # noqa: F401
     _resolve_puuid,
     _sanitize,
 )
-from lol_admin._dispatch import (
-    _dispatch as _dispatch,  # noqa: F401 — re-export for tests
-)
 from lol_admin.cmd_backfill import cmd_backfill_champions  # noqa: F401
 from lol_admin.cmd_delayed import cmd_delayed_flush, cmd_delayed_list  # noqa: F401
 from lol_admin.cmd_dlq import (  # noqa: F401
@@ -53,12 +52,14 @@ from lol_admin.cmd_dlq import (  # noqa: F401
     cmd_dlq_replay,
 )
 from lol_admin.cmd_opgg import cmd_opgg_status  # noqa: F401
-from lol_admin.cmd_player import (  # noqa: F401
+from lol_admin.cmd_player_ops import (  # noqa: F401
     cmd_clear_priority,
-    cmd_recalc_players,
-    cmd_recalc_priority,
     cmd_reseed,
     cmd_reset_stats,
+)
+from lol_admin.cmd_player_scans import (  # noqa: F401
+    cmd_recalc_players,
+    cmd_recalc_priority,
 )
 from lol_admin.cmd_replay import cmd_replay_fetch, cmd_replay_parse  # noqa: F401
 from lol_admin.cmd_stats import cmd_stats  # noqa: F401
