@@ -143,6 +143,7 @@ Before making any recommendations or writing any code, you MUST read the relevan
 - [ ] Read the source files relevant to this task
 - [ ] Understand existing patterns before proposing new ones
 - [ ] Reference actual file paths and line numbers in your output
+- [ ] **Ambiguous or very complex tasks only**: WebSearch Hacker News (`site:news.ycombinator.com <topic>`) and the broader web for real-world experience and known pitfalls
 
 ## TDD Rules (ABSOLUTE)
 

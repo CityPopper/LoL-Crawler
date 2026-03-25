@@ -108,6 +108,7 @@ Before making any recommendations or writing any code, you MUST read the relevan
 - [ ] Read the source files relevant to this task
 - [ ] Understand existing patterns before proposing new ones
 - [ ] Reference actual file paths and line numbers in your output
+- [ ] **Ambiguous or very complex tasks only**: WebSearch Hacker News (`site:news.ycombinator.com <topic>`) and the broader web for real-world experience and known pitfalls
 
 ## Implementation Rules
 
@@ -179,7 +180,9 @@ lol-pipeline-{service}/
     └── contract/           # (if applicable)
 ```
 
-## Project Principles
+## Project Principles (MANDATORY — no exceptions)
+
+**You MUST follow every principle below on every task. These are not suggestions. Violating any principle requires explicit user approval before proceeding. If a proposed implementation would violate a principle, stop and tell the user which principle is at risk before writing any code.**
 
 - **12-factor app**: Config via env vars, stateless processes, explicit dependencies, disposability.
 - **DRY**: Don't Repeat Yourself, but prefer duplication over the wrong abstraction. Extract to `_helpers.py` (service-local) at 2+ usages within one service. Promote to `lol_pipeline.helpers` (cross-package) only at 3+ service usages and only when logic is semantically identical, not just structurally similar.
