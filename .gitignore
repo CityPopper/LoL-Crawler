@@ -77,3 +77,6 @@ pipeline-data/**/*.jsonl.zst
 */.hypothesis/
 .hypothesis/
 prompts.md
+
+# Fetcher match-data binary files
+lol-pipeline-fetcher/match-data/**/*.jsonl.zst

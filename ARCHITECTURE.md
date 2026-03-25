@@ -52,35 +52,6 @@ Detailed documentation lives in `docs/`. Start here for orientation, then follow
 | [Local Development](docs/guides/01-local-dev.md) | Setup, venv workflow, testing, linting, TDD, adding services, IDE tips |
 | [Troubleshooting](docs/guides/02-troubleshooting.md) | Diagnostic commands, stream/DLQ/lock debugging, nuclear options |
 
-## Implementation Phases
-
-See [docs/phases/README.md](docs/phases/README.md) for the phased delivery plan with quantifiable acceptance criteria.
-
-| Phase | Name |
-|-------|------|
-| [00](docs/phases/00-mvp-scope.md) | MVP Scope & Success Criteria |
-| [01](docs/phases/01-foundation.md) | Foundation — repos, CI, Docker |
-| [02a](docs/phases/02a-shared-foundation.md) | Shared Foundation — config, log, redis_client, models |
-| [02b](docs/phases/02b-shared-protocols.md) | Shared Protocols — streams, rate_limiter, raw_store, riot_api |
-| [03](docs/phases/03-ingestion.md) | Ingestion Pipeline — Seed, Crawler, Fetcher |
-| [04](docs/phases/04-processing.md) | Processing Pipeline — Parser, Analyzer |
-| [05](docs/phases/05-resilience.md) | Resilience Layer — Recovery, Delay Scheduler |
-| [06](docs/phases/06-operations.md) | Operations — Admin CLI, Justfile, integration tests |
-| [07](docs/phases/07-next-phase.md) | IRONCLAD — Security hardening, code quality, weighted queue |
-| [08](docs/phases/08-ui-overhaul.md) | FACELIFT — UI overhaul |
-| 09 | Architecture hardening, UI Phase 9, integration tests IT-08–IT-12 (v1.1.0) |
-| 10 | ILLUMINATE — Rate limiter, mobile UX, admin CLI, security (v1.2.0) |
-| 11 | APEX — Hardening, responsive design, DX, observability (v1.3.0) |
-| 12 | ZENITH — Champion icons, CSP, async log IO, TTLs, ARIA (v1.4.0) |
-| 13 | SUMMIT — Cache invalidation, TTLs, parser pipeline, UX (v1.5.0) |
-| 14 | HORIZON — Rate limiter hardening, atomicity, pipeline optimizations (v1.6.0) |
-| 15 | HORIZON — TTL constants, TimeoutError handling, UX, DX hardening (v1.7.0) |
-| 16 | HORIZON — Discovery XLEN fix, crawler atomicity, UI hardening (v1.8.0) |
-| 17 | RESOLUTION — Delay scheduler starvation, DLQ whitelist, docs, perf (v1.9.0) |
-| 18 | INTEGRITY — Atomic DLQ replay, constants DRY, tests, docs (v2.0.0) |
-| 19 | FINALIZE — Replay tests, admin whitelist tests, doc fixes (v2.1.0) |
-| 20 | CONSOLIDATE — DRY helpers, ValidationError UX, TTL guards, agent files (v2.2.0) |
-
 ---
 
 ## Data Flow (Summary)
