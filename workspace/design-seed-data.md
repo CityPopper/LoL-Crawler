@@ -98,7 +98,7 @@ Which is faster for a fresh setup? RDB restore is O(file size); JSONL replay req
 
 | # | Decision | Rationale |
 |---|----------|-----------|
-| D-1 | No `dump.rdb` in LFS | User choice: use JSONL + auto-trigger pipeline instead. RDB restore complex (AOF conflict at startup); JSONL path is self-healing. |
+| D-1 | **Include anonymized `dump.rdb`** in HF Datasets | Reversed. Contributors get instant Redis state (`just up` → download dump → restore, skip pipeline entirely). The current dump has real PUUIDs as keys so we cannot upload it raw. Workflow: run anonymize_and_upload.py on JSONL → seed pipeline → let pipeline process all matches → snapshot → upload. The new dump has `anon_xxx` PUUID keys throughout — no PII, not raw API data. AOF excluded (D-7). |
 | D-2 | Auto-detect empty Redis → trigger pipeline rebuild | On `just up`, if Redis is empty, seed from disk `.zst` files automatically. |
 | D-3 | Process newest months first | Contributor gets recent stats immediately; older history loads in background. |
 | D-4 | `pipeline-data/riot-api/` is canonical; delete `lol-pipeline-fetcher/match-data/` | Architect confirmed: match-data is an orphaned duplicate from pre-Docker local dev. 25 `.zst` files are byte-identical; pipeline-data has 157 more recent matches. Zero functional loss. |
@@ -108,7 +108,7 @@ Which is faster for a fresh setup? RDB restore is O(file size); JSONL replay req
 | D-12 | Anonymize all seed data before upload | Strip `puuid`, `summonerId`, `riotIdGameName`, `riotIdTagline`, `summonerName` from every JSONL record. Replace PUUIDs with consistent SHA-256 hash (first 16 chars) so player stats remain aggregatable without exposing real identifiers. Purge raw files from local disk. Force-push to wipe from git history. |
 | D-8 | Two-stage compression: append-friendly during run, max compression at compaction | Active month: plain `.jsonl` (line-appendable by Fetcher). At compaction: `zstd -19` (max compression, ~15-16x ratio). The `-19` level is slow but only runs at push/rollover time. |
 | D-9 | Compress-before-push / decompress-after-pull baked into `just up` and `just compact-data` | `just compact-data` compresses ALL `.jsonl` files (including active month) → `.zst` before committing/pushing. `just up` decompresses the current month's `.zst` back to `.jsonl` at startup if no `.jsonl` exists, so Fetcher can append. This handles the active month growing large (thousands of players). |
-| D-10 | Minimize new top-level `just` commands — bake everything into `just up` | New user UX: clone → `just up` → done. `just up` handles: git lfs pull, decompress current month, start services, auto-seed if Redis empty. Only 1 new command exposed: `just compact-data` (pre-push data step). Internal scripts (seed_from_disk.py) not exposed as top-level recipes. |
+| D-10 | Two top-level data commands: `just download` + `just upload`; `just up` auto-calls download if empty | Expose `just download` (pull dump.rdb + JSONL.ZST from HF) and `just upload` (compact → anonymize → upload to HF) as top-level commands. `just up` still auto-calls `just download` if pipeline-data and redis-data are empty. Internal scripts (seed_from_disk.py) stay internal. |
 | D-7 | Exclude AOF entirely | Redundant with RDB; 194 MB; causes silent RDB-ignore on startup if present with `appendonly yes`. |
 
 ---

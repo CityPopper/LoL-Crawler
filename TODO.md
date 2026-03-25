@@ -2,75 +2,108 @@
 
 ---
 
-## SEED-1 — Run anonymize_and_upload.py (one-time data migration)
-**Decisions**: D-11, D-12. Script already implemented at `scripts/anonymize_and_upload.py`.
-**Fix**: Run the script against all 25 `.jsonl.zst` files in `pipeline-data/riot-api/NA1/`. Script streams each file, replaces PUUIDs with `anon_{sha256[:16]}`, strips summonerName/riotId/summonerId, re-compresses, uploads to `{username}/lol-pipeline-seed` on HF Datasets, overwrites local file. Idempotent (skips already-anonymized files).
-Also clean up `.gitignore`: remove stale line `lol-pipeline-fetcher/match-data/**/*.jsonl.zst` (directory deleted); update comment on the pipeline-data block to say files live in HF Datasets.
-- [ ] **Red:** Verify a file still has raw PUUIDs: `python scripts/anonymize_and_upload.py` would change it
-- [ ] **Green:** `python scripts/anonymize_and_upload.py` — watch logs; verify HF Datasets receives 25 files
-- [ ] **Refactor:** Spot-check one uploaded file on HF: no summonerName/riotIdGameName fields, puuid = `anon_*`
+## SEED-1 — Fix `anonymize_and_upload.py` + run (one-time data migration)
+**Decisions**: D-11, D-12. Script at `scripts/anonymize_and_upload.py` exists but has prod review issues to fix first.
+**Dependency**: SEED-2 (compact-data) must run first so active `.jsonl` is converted to `.zst` before this script sees it.
+**Fixes to apply to `scripts/anonymize_and_upload.py` before running**:
+1. Add `api.create_repo(repo_id, repo_type="dataset", exist_ok=True)` once in `main()` before first upload (otherwise 404 on fresh HF repo)
+2. Reverse order: `os.replace` (overwrite local) before `api.upload_file` — if killed mid-run, re-run re-uploads (deterministic SHA256); current order uploads anonymized version but leaves local as raw PII if `os.replace` fails
+3. Change compression `level=3` → `level=19` (D-8 mandates max compression; script runs once, slow is fine)
+4. Load token + resolve `repo_id` once in `main()`, pass to `_upload_file()` — no per-file `whoami()` calls
+5. Use `python-dotenv` (`load_dotenv()`) instead of hand-rolled `.env` parser — handles inline comments
+6. Fix `_is_already_anonymized`: check `any(p.get("puuid","").startswith("anon_") for p in participants)` instead of only first participant
+7. Delete `1970-01.jsonl.zst` (anomalous bad-date file) before running — do not upload garbage-dated records to public dataset
+8. Do NOT strip `riotIdGameName`/`riotIdTagline` — replace with `Player_{hash[:8]}` instead of removing entirely (parser writes these as display names; empty → no name shown in UI)
+9. Add `HF_DATASET_REPO` env var support: prefer env var over `whoami()` derivation (download script also needs it for unauthenticated contributors)
+Also clean up `.gitignore`: remove stale line 82 (`lol-pipeline-fetcher/match-data/**/*.jsonl.zst`); update pipeline-data block comment.
+- [ ] **Red:** Unit test anonymize: PUUID replaced, riotIdGameName replaced with `Player_*` (not removed), consistent across records
+- [ ] **Green:** Apply fixes 1-9; run `python scripts/anonymize_and_upload.py`; verify 25 files on HF
+- [ ] **Refactor:** Spot-check uploaded file on HF: no raw PUUIDs, display name = `Player_*`
 
 ---
 
 ## SEED-2 — `just compact-data` recipe (compress active `.jsonl` → `.zst` before uploading)
-**Decisions**: D-5, D-8, D-9
+**Decisions**: D-5, D-8, D-9. **Must run before SEED-1.**
 **Fix**: Add Justfile recipe that:
-1. Finds ALL `pipeline-data/riot-api/NA1/*.jsonl` files (including current active month)
-2. Compresses each with `zstd -19 --rm` (removes original after compression succeeds)
-3. Prints: "Compacted N files. Run `python scripts/anonymize_and_upload.py` to anonymize and push to HF."
+1. Finds ALL `pipeline-data/riot-api/NA1/*.jsonl` files (including active month)
+2. Compresses each with `python3 -c "import zstandard, pathlib; ..."` (use Python zstandard, not `zstd` CLI — not guaranteed on all machines)
+   Alternatively use `zstd` CLI if available, fallback to Python
+3. Removes original after compression succeeds
+4. Prints: "Compacted N files. Run `python scripts/anonymize_and_upload.py` to anonymize and push to HF."
 Does NOT auto-upload (user runs anonymize_and_upload.py separately).
-Use-case: run when you want to share a data update to HF Datasets.
-- [ ] **Red:** Given a `.jsonl` file, `compact-data` produces a `.zst`, removes the `.jsonl`, `zstd -d` round-trips it
-- [ ] **Green:** Implement recipe
-- [ ] **Refactor:** Confirm active-month `.zst` can be decompressed back by `just up`
+- [ ] **Red:** Given a `.jsonl`, `compact-data` produces `.zst`, removes `.jsonl`, zstd round-trips it
+- [ ] **Green:** Implement recipe with Python-based compression fallback
+- [ ] **Refactor:** Confirm active-month `.zst` decompresses back by `just up`
 
 ---
 
-## SEED-3 — `scripts/download_seed.py` (restore data on fresh clone)
-**Decisions**: D-2, D-3, D-10. New script — the "restore" side of the HF workflow.
-**Fix**: New script `scripts/download_seed.py` that:
-1. Checks if `pipeline-data/riot-api/NA1/` has any `.jsonl.zst` files; if yes, exits (no-op)
-2. Reads `HUGGINGFACE_TOKEN` from env (optional — public dataset, token only needed for rate limits)
-3. Downloads all `NA1/*.jsonl.zst` files from `{username}/lol-pipeline-seed` using `huggingface_hub.snapshot_download` or per-file `hf_hub_download`
-4. Repo ID: since the dataset is public, can hardcode `{username}/lol-pipeline-seed` or read from env var `HF_DATASET_REPO` (set in `.env.example`)
-5. Logs: `Downloading {filename}...` per file
-NOT exposed as a top-level `just` recipe.
-- [ ] **Red:** On a system with empty `pipeline-data/`, script downloads files to correct path
-- [ ] **Green:** Implement; test against real HF repo (requires SEED-1 complete)
-- [ ] **Refactor:** Use `snapshot_download` with `allow_patterns=["NA1/*.jsonl.zst"]` for efficiency
+## SEED-3 — `just download` + `scripts/download_seed.py` (restore JSONL.ZST + dump.rdb)
+**Decisions**: D-1 (reversed — include dump.rdb), D-3, D-10.
+**Fix**: New script `scripts/download_seed.py` + top-level Justfile recipe `download`:
+- `just download` calls `python scripts/download_seed.py` — explicitly exposed to users
+- `just up` also auto-calls it if `pipeline-data/riot-api/NA1/` has no `.jsonl.zst` files AND `redis-data/dump.rdb` doesn't exist
+Script:
+1. Reads `HF_DATASET_REPO` from env (required — set to actual owner's repo ID, e.g. `abhiregmi/lol-pipeline-seed`; public dataset so no token required for download)
+2. Downloads `dump.rdb` → `redis-data/dump.rdb` (skip if already exists)
+3. Downloads all `NA1/*.jsonl.zst` → `pipeline-data/riot-api/NA1/` (skip files that already exist)
+4. Uses `huggingface_hub.snapshot_download(allow_patterns=["NA1/*.jsonl.zst", "dump.rdb"])`
+5. Logs: `Downloading {filename}...`; `Done — Redis dump + {N} data files ready.`
+Token optional (`HUGGINGFACE_TOKEN` env var avoids rate limits). Download is unauthenticated for public datasets.
+Add `HF_DATASET_REPO=` (required) and `# HUGGINGFACE_TOKEN=` (optional) to `.env.example`.
+- [ ] **Red:** Empty dirs → both populated; existing files → skipped (idempotent)
+- [ ] **Green:** Implement; expose as `just download`; test against real HF repo (requires SEED-1 + SEED-7)
+- [ ] **Refactor:** Handle partial download (verify zstd magic bytes after download; re-download if corrupt)
 
 ---
 
-## SEED-4 — Internal seed-from-disk script (called by `just up`, not exposed)
-**Decisions**: D-1, D-2, D-3, D-10. **Prod fixes**: region lookup, throttled batching, reverse-chronological `_search_bundles` fix.
+## SEED-4 — `scripts/seed_from_disk.py` (pipeline rebuild fallback — only if no dump.rdb)
+**Decisions**: D-2, D-3. Prod fixes: region lookup, throttled batching, raw_store sort fix.
+**Note**: With dump.rdb available (D-1 reversed), this script is the fallback path for when dump.rdb is unavailable or stale. `just up` prefers dump.rdb restore; runs this only if Redis is still empty after dump load.
 **Fix**: New script `scripts/seed_from_disk.py` that:
-1. Validates each `.zst` file starts with zstd magic bytes `0x28 0xB5 0x2F 0xFD`; if not, abort with clear error ("corrupt or missing file — run `python scripts/download_seed.py` first")
-2. Connects to Redis (from env vars); if DBSIZE > 0, exits immediately (no-op)
-3. Reads `.jsonl.zst` files sorted reverse-chronological (newest first), then active `*.jsonl` if present
-4. For each file, streaming-decompresses; extracts `match_id` and platform prefix
+1. Validates each `.zst` file starts with zstd magic bytes `0x28 0xB5 0x2F 0xFD`; if corrupt, abort ("run `python scripts/download_seed.py` first")
+2. Connects to Redis via `get_redis()` from `lol_pipeline.redis_client`; if ZCARD players:all > 0, exit (no-op — use `players:all` not DBSIZE, which counts infra keys)
+3. Reads `.jsonl.zst` files sorted reverse-chronological (newest first), active `*.jsonl` last
+4. Streaming-decompresses; extracts `match_id` and platform prefix
 5. Platform → routing region: `NA1/BR1/LA1/LA2 → americas`, `EUW1/EUN1/TR1/RU → europe`, `KR/JP1 → asia`, `OC1 → sea`
-6. Publishes in **throttled batches of 200**, pausing if `XLEN stream:parse > 5000`
-7. `MessageEnvelope(type="match", payload={"match_id": match_id, "region": region}, priority=PRIORITY_LOW)`
-Also fix `lol-pipeline-common/src/lol_pipeline/raw_store.py:_search_bundles()` to sort reverse-chronologically.
+6. Publishes throttled batches of 200 to `stream:parse`; pause if `XLEN > DEFAULT_STREAM_MAXLEN // 2`
+7. `MessageEnvelope(type="parse", payload={"match_id": match_id, "region": region}, priority=PRIORITY_AUTO_NEW)` — NOT `type="match"`, NOT `PRIORITY_LOW`
+8. Logs stderr to `./logs/seed.log`; print "Seeding in background. Logs: ./logs/seed.log"
+Also fix `raw_store.py:_search_bundles()`: wrap both glob calls in `sorted(..., reverse=True)`.
 NOT a top-level `just` recipe.
-- [ ] **Red:** Unit tests: platform→region mapping; corrupt file detected; throttle at >5000 pending; empty Redis → publish newest-first; non-empty → no-op
+- [ ] **Red:** Unit tests: platform→region; corrupt file detected; `players:all` > 0 → no-op; batch throttle; newest-first order
 - [ ] **Green:** Implement; test against real Redis container
-- [ ] **Refactor:** Streaming decompression (no full-file load)
+- [ ] **Refactor:** Confirm `type="parse"` and `PRIORITY_AUTO_NEW` match what parser expects
 
 ---
 
-## SEED-5 — Extend `just up` with download + decompress + auto-seed + AOF cleanup
-**Decisions**: D-9, D-10. **Prod fixes**: AOF conflict.
-**Fix**: Extend existing `just up` recipe in `Justfile` to:
-1. Download seed data if `pipeline-data/` empty: `python scripts/download_seed.py` (fast no-op if files exist)
-2. Delete stale AOF: `rm -rf "${REDIS_DATA_DIR:-./redis-data}/appendonlydir"` (survives `docker compose down -v`)
-3. Decompress current month: `zstd -d "pipeline-data/riot-api/NA1/$(date +%Y-%m).jsonl.zst" 2>/dev/null || true`
+## SEED-4b — `just upload` recipe + fix `anonymize_and_upload.py` entry point
+**Decisions**: D-10 (expose `just upload` as top-level command).
+**Fix**: Add top-level Justfile recipe `upload` that:
+1. Runs `just compact-data` (compress any active `.jsonl` → `.zst`)
+2. Runs `python scripts/anonymize_and_upload.py` (anonymize + upload all `.zst` to HF)
+3. Prints instructions to run SEED-7 manually for dump.rdb update
+Also ensure `anonymize_and_upload.py` is runnable standalone (`python scripts/anonymize_and_upload.py`) as well as via `just upload`.
+- [ ] **Red:** `just upload` runs both steps in order; errors in either step halt the recipe
+- [ ] **Green:** Implement; test dry-run
+- [ ] **Refactor:** Confirm `HF_DATASET_REPO` and `HUGGINGFACE_TOKEN` are validated early with clear errors
+
+---
+
+## SEED-5 — Extend `just up` with download + dump restore + AOF cleanup + fallback seed
+**Decisions**: D-9, D-10. **Prod fixes**: AOF conflict; zstd CLI dependency; background seed logging.
+**Fix**: Extend existing `just up` recipe in `Justfile` to (in order):
+1. Download seed data: `python scripts/download_seed.py` (no-op if files exist; downloads dump.rdb + JSONL.ZST on fresh clone)
+2. Delete stale AOF: `rm -rf "${REDIS_DATA_DIR:-./redis-data}/appendonlydir"` (bind mount survives down -v)
+3. Decompress current month `.zst` → `.jsonl` if `.jsonl` doesn't exist (use Python, not `zstd` CLI — not installed by default):
+   `python3 -c "import zstandard, pathlib, datetime; ..."`
 4. Start services: `{{DC}} up -d`
-5. Wait for Redis ready; if DBSIZE==0, run `python scripts/seed_from_disk.py &` (background)
-New contributor UX: `git clone ... && just up` → everything works.
-- [ ] **Red:** Empty `pipeline-data/` → files downloaded; stale AOF → deleted; missing `.jsonl` → decompressed
+5. Wait for Redis ready
+6. If `players:all` cardinality is 0, fall back to: `python scripts/seed_from_disk.py >> ./logs/seed.log 2>&1 &`; print log path
+**dump.rdb path**: Redis starts with dump.rdb already populated (downloaded by step 1) → `players:all` > 0 → step 6 is a no-op. Contributors get instant stats.
+New UX: `git clone ... && just up` → download dump+data → AOF clean → decompress → start → done (no pipeline wait).
+- [ ] **Red:** Empty repo → files downloaded; stale AOF → deleted; `.jsonl` missing → decompressed; dump.rdb present → Redis populated; `players:all` > 0 → step 6 skipped
 - [ ] **Green:** Implement; test on simulated fresh clone
-- [ ] **Refactor:** AOF deletion respects `REDIS_DATA_DIR` env var
+- [ ] **Refactor:** AOF deletion validates path doesn't escape project dir
 
 ---
 
@@ -81,6 +114,23 @@ New contributor UX: `git clone ... && just up` → everything works.
 - [ ] **Red:** Test that `POST /player/refresh` with `region="invalid"` returns 422
 - [ ] **Green:** Add `if region not in _REGIONS_SET: return JSONResponse({"error": "invalid region"}, status_code=422)`
 - [ ] **Refactor:** Confirm existing tests still pass (`just test-svc ui`)
+
+---
+
+## SEED-7 — Generate anonymized dump.rdb + upload to HF Datasets
+**Decisions**: D-1 (reversed), D-7. One-time workflow to create the anonymized Redis snapshot.
+**Dependency**: SEED-1 must complete first (local JSONL.ZST files must be anonymized before pipeline processes them).
+**Fix**: After SEED-1 completes:
+1. Start a fresh Redis with no data: `docker compose down -v && just up --no-seed`
+2. Run seed_from_disk.py with anonymized JSONL.ZST → pipeline processes all matches
+3. Wait for pipeline to drain (check `LLEN stream:parse == 0`, `LLEN stream:analyze == 0`)
+4. Take snapshot: `docker compose exec redis redis-cli BGSAVE && sleep 5`
+5. Copy dump: `cp redis-data/dump.rdb /tmp/seed-dump.rdb`
+6. Upload to HF: `HfApi().upload_file(path_or_fileobj="/tmp/seed-dump.rdb", path_in_repo="dump.rdb", repo_id=repo_id, repo_type="dataset")`
+7. Verify: check HF shows `dump.rdb` with expected size
+This is a manual/one-shot operation, not a script. Document steps in `workspace/design-seed-data.md`.
+- [ ] **Green:** Execute steps 1-7; HF Datasets contains both JSONL.ZST files + dump.rdb
+- [ ] **Refactor:** Confirm dump loads correctly: fresh Redis start + `DBSIZE` > 0 after mount
 
 ---
 
