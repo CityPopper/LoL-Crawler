@@ -100,23 +100,23 @@ class TestAnonPuuid:
 
     def test_anon_puuid_format(self):
         """_anon_puuid returns anon_ followed by exactly 16 hex chars."""
-        result = _anon_puuid(FAKE_PUUID_1, {})
+        result = _anon_puuid(FAKE_PUUID_1, {}, "")
         assert re.match(r"^anon_[0-9a-f]{16}$", result), f"Bad format: {result}"
 
     def test_anon_puuid_consistency(self):
         """Same PUUID always maps to same anon hash with shared cache."""
         cache: dict[str, str] = {}
-        first = _anon_puuid(FAKE_PUUID_1, cache)
-        second = _anon_puuid(FAKE_PUUID_1, cache)
-        third = _anon_puuid(FAKE_PUUID_1, {})  # fresh cache, still same hash
+        first = _anon_puuid(FAKE_PUUID_1, cache, "")
+        second = _anon_puuid(FAKE_PUUID_1, cache, "")
+        third = _anon_puuid(FAKE_PUUID_1, {}, "")  # fresh cache, still same hash
         assert first == second
         assert first == third
 
     def test_anon_different_puuids(self):
         """Two different PUUIDs produce different hashes."""
         cache: dict[str, str] = {}
-        hash1 = _anon_puuid(FAKE_PUUID_1, cache)
-        hash2 = _anon_puuid(FAKE_PUUID_2, cache)
+        hash1 = _anon_puuid(FAKE_PUUID_1, cache, "")
+        hash2 = _anon_puuid(FAKE_PUUID_2, cache, "")
         assert hash1 != hash2
 
 
@@ -136,7 +136,7 @@ class TestAnonymizeRecord:
         riotIdGameName replaced (not removed), riotIdTagline replaced (not removed)."""
         record = make_match_record()
         cache: dict[str, str] = {}
-        result = _anonymize_record(record, cache)
+        result = _anonymize_record(record, cache, "")
         p0 = result["info"]["participants"][0]
 
         # puuid replaced
@@ -167,7 +167,7 @@ class TestAnonymizeRecord:
         """The anon_ hash in metadata.participants[0] equals info.participants[0].puuid."""
         record = make_match_record()
         cache: dict[str, str] = {}
-        result = _anonymize_record(record, cache)
+        result = _anonymize_record(record, cache, "")
         meta_anon = result["metadata"]["participants"][0]
         info_anon = result["info"]["participants"][0]["puuid"]
         assert meta_anon == info_anon, "Same PUUID must map to same hash in both locations"
@@ -179,7 +179,7 @@ class TestAnonymizeRecord:
             "info": {"gameId": 0, "participants": []},
         }
         cache: dict[str, str] = {}
-        result = _anonymize_record(record, cache)
+        result = _anonymize_record(record, cache, "")
         assert result["info"]["participants"] == []
         assert result["metadata"]["participants"] == []
 
@@ -187,11 +187,11 @@ class TestAnonymizeRecord:
         """The Player_ suffix in riotIdGameName is the first 8 chars of the PUUID's anon hash."""
         record = make_match_record()
         cache: dict[str, str] = {}
-        result = _anonymize_record(record, cache)
+        result = _anonymize_record(record, cache, "")
         p0 = result["info"]["participants"][0]
 
         # The anon hash for FAKE_PUUID_1
-        expected_hash = _anon_puuid(FAKE_PUUID_1, {})
+        expected_hash = _anon_puuid(FAKE_PUUID_1, {}, "")
         # Extract the 16-char hex from anon_{hex}
         hex_part = expected_hash.removeprefix("anon_")
         expected_name = f"Player_{hex_part[:8]}"
@@ -341,7 +341,7 @@ class TestProcessFile:
         original_upload = _mod._upload_file
         _mod._upload_file = lambda *a, **kw: None
         try:
-            count, skipped = _process_file(zst_path, cache)
+            count, skipped = _process_file(zst_path, cache, "", None, "", "")
         finally:
             _mod._upload_file = original_upload
         assert skipped is True
@@ -358,13 +358,14 @@ class TestProcessFile:
 
         captured_data: list[bytes] = []
 
-        def mock_upload(local_path: Path, filename: str) -> None:
-            captured_data.append(local_path.read_bytes())
+        def mock_upload(*args: object, **kwargs: object) -> None:
+            local_path = args[1] if len(args) > 1 else args[0]
+            captured_data.append(Path(local_path).read_bytes())
 
         original_upload = _mod._upload_file
         _mod._upload_file = mock_upload
         try:
-            count, skipped = _process_file(zst_path, cache)
+            count, skipped = _process_file(zst_path, cache, "", None, "", "")
         finally:
             _mod._upload_file = original_upload
 
@@ -393,7 +394,7 @@ class TestProcessFile:
         original_upload = _mod._upload_file
         _mod._upload_file = lambda *a, **kw: None
         try:
-            count, skipped = _process_file(zst_path, cache)
+            count, skipped = _process_file(zst_path, cache, "", None, "", "")
         finally:
             _mod._upload_file = original_upload
         assert skipped is True
@@ -502,15 +503,17 @@ async def test_e2e_anonymize_upload_download_seed(r, tmp_path: Path):
     # ------------------------------------------------------------------
     captured_files: list[tuple[Path, str]] = []
 
-    def mock_upload(local_path: Path, filename: str) -> None:
-        # Read the file before it gets moved
+    def mock_upload(*args: object, **kwargs: object) -> None:
+        # _upload_file(api, local_path, filename, repo_id, token)
+        local_path = Path(str(args[1]))
+        filename = str(args[2])
         captured_files.append((local_path, filename))
 
     original_upload = _mod._upload_file
     _mod._upload_file = mock_upload
     cache: dict[str, str] = {}
     try:
-        count, skipped = _process_file(zst_path, cache)
+        count, skipped = _process_file(zst_path, cache, "", None, "", "")
     finally:
         _mod._upload_file = original_upload
 
@@ -644,8 +647,8 @@ class TestMultipleRecordConsistency:
         cache: dict[str, str] = {}
         r1 = make_match_record("NA1_1", [FAKE_PUUID_1, FAKE_PUUID_2])
         r2 = make_match_record("NA1_2", [FAKE_PUUID_1, FAKE_PUUID_2])
-        _anonymize_record(r1, cache)
-        _anonymize_record(r2, cache)
+        _anonymize_record(r1, cache, "")
+        _anonymize_record(r2, cache, "")
         assert r1["info"]["participants"][0]["puuid"] == r2["info"]["participants"][0]["puuid"]
         assert r1["info"]["participants"][1]["puuid"] == r2["info"]["participants"][1]["puuid"]
 
@@ -653,7 +656,7 @@ class TestMultipleRecordConsistency:
         """Cache contains all PUUIDs after anonymizing a record."""
         cache: dict[str, str] = {}
         record = make_match_record()
-        _anonymize_record(record, cache)
+        _anonymize_record(record, cache, "")
         assert FAKE_PUUID_1 in cache
         assert FAKE_PUUID_2 in cache
         assert len(cache) == 2

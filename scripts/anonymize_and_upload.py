@@ -74,7 +74,7 @@ def _anonymize_record(record: dict, cache: dict[str, str], salt: str) -> dict:
         if puuid:
             anon = _anon_puuid(puuid, cache, salt)
             participant["puuid"] = anon
-            participant["riotIdGameName"] = f"Player_{anon[:8]}"
+            participant["riotIdGameName"] = f"Player_{anon.removeprefix('anon_')[:8]}"
             participant["riotIdTagline"] = "Anon"
         for key in PII_KEYS_TO_REMOVE:
             participant.pop(key, None)
