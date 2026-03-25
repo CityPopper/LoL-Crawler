@@ -44,8 +44,8 @@ build:
 run:
     {{DC}} up -d
 
-# Setup + build + run in one step
-up: setup build run
+# Setup + build + run in one step (downloads seed data and auto-seeds Redis on fresh clone)
+up: setup build _seed-data-check _aof-cleanup _decompress-current-month run _auto-seed
 
 # Internal: ensure the stack is running; start it automatically if not
 _ensure_up:
@@ -80,6 +80,96 @@ down:
 # Remove containers AND wipe all Redis data
 reset:
     {{DC}} down -v
+
+# Compress active .jsonl data files to .zst for upload (run before `just upload`)
+compact-data:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    DATA_DIR="pipeline-data/riot-api/NA1"
+    count=0
+    for f in "$DATA_DIR"/*.jsonl; do
+        [ -f "$f" ] || continue
+        out="${f%.jsonl}.jsonl.zst"
+        echo "Compressing $(basename "$f")..."
+        python3 -c "import zstandard,pathlib,sys;s=pathlib.Path(sys.argv[1]);d=pathlib.Path(sys.argv[2]);d.write_bytes(zstandard.ZstdCompressor(level=19).compress(s.read_bytes()))" "$f" "$out"
+        rm "$f"
+        echo "  -> $(basename "$out")"
+        count=$((count + 1))
+    done
+    if [ "$count" -eq 0 ]; then
+        echo "No .jsonl files to compact."
+    else
+        echo "Compacted $count file(s). Run 'just upload' to anonymize and push to HF."
+    fi
+
+# Download anonymized seed data from Hugging Face Datasets
+download:
+    python3 scripts/download_seed.py
+
+# Anonymize + upload seed data to Hugging Face Datasets (run `just compact-data` first)
+upload:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "Step 1/2: Compacting active .jsonl files..."
+    just compact-data
+    echo "Step 2/2: Anonymizing and uploading to Hugging Face..."
+    python3 scripts/anonymize_and_upload.py
+    echo ""
+    echo "Upload complete. To regenerate dump.rdb, see workspace/design-seed-data.md SEED-7."
+
+# Internal: download seed data if missing
+_seed-data-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    DATA_DIR="pipeline-data/riot-api/NA1"
+    DUMP="redis-data/dump.rdb"
+    if [ ! -f "$DUMP" ] && ! ls "$DATA_DIR"/*.jsonl.zst &>/dev/null 2>&1; then
+        echo "No seed data found — downloading from Hugging Face..."
+        python3 scripts/download_seed.py
+    fi
+
+# Internal: remove stale AOF directory (bind mount survives docker compose down -v)
+_aof-cleanup:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    AOF_DIR="${REDIS_DATA_DIR:-./redis-data}/appendonlydir"
+    if [ -d "$AOF_DIR" ]; then
+        echo "Removing stale AOF directory: $AOF_DIR"
+        rm -rf "$AOF_DIR"
+    fi
+
+# Internal: decompress current month .zst → .jsonl if .jsonl missing
+_decompress-current-month:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    MONTH=$(date +%Y-%m)
+    ZST="pipeline-data/riot-api/NA1/${MONTH}.jsonl.zst"
+    JSONL="pipeline-data/riot-api/NA1/${MONTH}.jsonl"
+    if [ -f "$ZST" ] && [ ! -f "$JSONL" ]; then
+        echo "Decompressing ${ZST}..."
+        python3 -c "import zstandard,pathlib;s=pathlib.Path('$ZST');d=pathlib.Path('$JSONL');d.write_bytes(zstandard.ZstdDecompressor().decompress(s.read_bytes()));print('Decompressed to $JSONL')"
+    fi
+
+# Internal: auto-seed Redis from disk if players:all is empty (dump.rdb path is preferred)
+_auto-seed:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    DC="{{DC}}"
+    # Wait for Redis ready
+    for i in $(seq 1 20); do
+        $DC exec -T redis redis-cli ping &>/dev/null 2>&1 && break
+        sleep 1
+    done
+    # Check if Redis has player data (use ZCARD players:all, not DBSIZE)
+    ZCARD=$($DC exec -T redis redis-cli ZCARD players:all 2>/dev/null | tr -d '[:space:]' || echo "0")
+    if [ "$ZCARD" = "0" ]; then
+        echo "Redis player data empty — seeding from disk in background..."
+        mkdir -p logs
+        python3 scripts/seed_from_disk.py >> logs/seed.log 2>&1 &
+        echo "Seed running in background. Logs: logs/seed.log"
+    else
+        echo "Redis already seeded (${ZCARD} players). Skipping seed."
+    fi
 
 # Tail logs for a service (e.g. just logs fetcher)
 logs svc:
