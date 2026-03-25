@@ -22,6 +22,9 @@ from lol_pipeline._streams_data import (
     ANALYZE_STREAM_MAXLEN as ANALYZE_STREAM_MAXLEN,
 )
 from lol_pipeline._streams_data import (
+    DEFAULT_STREAM_MAXLEN as DEFAULT_STREAM_MAXLEN,
+)
+from lol_pipeline._streams_data import (
     MATCH_ID_STREAM_MAXLEN as MATCH_ID_STREAM_MAXLEN,
 )
 from lol_pipeline.constants import STREAM_DLQ, STREAM_DLQ_ARCHIVE
@@ -128,6 +131,55 @@ async def _deserialize_entries_typed[T](
     return result
 
 
+async def _drain_own_pel[T](
+    r: aioredis.Redis,
+    stream: str,
+    group: str,
+    consumer: str,
+    deserializer: Callable[[dict[str, Any]], T],
+    count: int,
+) -> list[tuple[str, T]]:
+    """Drain this consumer's own PEL (messages delivered but not yet ACKed).
+
+    Redis 7 returns ``[["stream", []]]`` (truthy!) when the PEL is empty, so
+    the caller must check the returned list length, not its truthiness.
+    """
+    try:
+        pending: list[Any] = await r.xreadgroup(group, consumer, {stream: "0"}, count=count)
+    except ResponseError as exc:
+        if "NOGROUP" in str(exc):
+            _invalidate_ensured(r, stream, group)
+        raise
+    return await _deserialize_entries_typed(r, stream, group, pending, deserializer)
+
+
+async def _autoclaim[T](
+    r: aioredis.Redis,
+    stream: str,
+    group: str,
+    consumer: str,
+    deserializer: Callable[[dict[str, Any]], T],
+    count: int,
+    min_idle_ms: int,
+) -> list[tuple[str, T]]:
+    """Reclaim idle messages from dead workers via XAUTOCLAIM."""
+    result: Any = await r.xautoclaim(
+        stream, group, consumer, min_idle_ms, start_id="0-0", count=count
+    )
+    claimed_entries = result[1]  # xautoclaim returns [cursor, entries]
+    claimed: list[tuple[str, T]] = []
+    for msg_id, fields in claimed_entries:
+        if not fields:  # skip deleted entries (nil bodies)
+            continue
+        try:
+            env = deserializer(fields)
+            claimed.append((msg_id, env))
+        except (KeyError, json.JSONDecodeError, ValueError, TypeError) as exc:
+            await _archive_corrupt(r, stream, msg_id, fields, str(exc))
+            await r.xack(stream, group, msg_id)
+    return claimed
+
+
 async def consume_typed[T](  # noqa: PLR0913
     r: aioredis.Redis,
     stream: str,
@@ -152,38 +204,14 @@ async def consume_typed[T](  # noqa: PLR0913
     """
     await _ensure_group(r, stream, group)
 
-    # Drain own PEL first (id="0" returns already-delivered, unacked messages).
-    # Note: Redis 7 returns [["stream", []]] (truthy!) when PEL is empty, so we
-    # must check actual message count rather than the truthiness of the outer list.
-    try:
-        pending: list[Any] = await r.xreadgroup(group, consumer, {stream: "0"}, count=count)
-    except ResponseError as exc:
-        if "NOGROUP" in str(exc):
-            # Redis restarted and the consumer group is gone — invalidate the cache
-            # so _ensure_group recreates it on the next call instead of being skipped.
-            _invalidate_ensured(r, stream, group)
-        raise
-    pel_messages = await _deserialize_entries_typed(r, stream, group, pending, deserializer)
+    pel_messages = await _drain_own_pel(r, stream, group, consumer, deserializer, count)
     if pel_messages:
         return pel_messages
 
-    # XAUTOCLAIM: reclaim idle messages from other consumers (dead workers).
-    # Single call per consume(); the service loop handles further iterations.
     if autoclaim_min_idle_ms is not None:
-        result: Any = await r.xautoclaim(
-            stream, group, consumer, autoclaim_min_idle_ms, start_id="0-0", count=count
+        claimed = await _autoclaim(
+            r, stream, group, consumer, deserializer, count, autoclaim_min_idle_ms
         )
-        claimed_entries = result[1]  # xautoclaim returns [cursor, entries]
-        claimed: list[tuple[str, T]] = []
-        for msg_id, fields in claimed_entries:
-            if not fields:  # skip deleted entries (nil bodies)
-                continue
-            try:
-                env = deserializer(fields)
-                claimed.append((msg_id, env))
-            except (KeyError, json.JSONDecodeError, ValueError, TypeError) as exc:
-                await _archive_corrupt(r, stream, msg_id, fields, str(exc))
-                await r.xack(stream, group, msg_id)
         if claimed:
             return claimed
 

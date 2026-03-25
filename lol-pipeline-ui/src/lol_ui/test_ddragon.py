@@ -17,6 +17,7 @@ from lol_ui.ddragon import (
     _get_champion_id_map,
     _get_ddragon_json,
     _get_ddragon_version,
+    _mem_cache,
     _validate_ddragon_version,
     get_champion_name_map,
     localize_champion_name,
@@ -67,10 +68,10 @@ class TestGetDdragonJson:
         respx.get("https://example.com/data.json").mock(return_value=httpx.Response(200, json=data))
         result = await _get_ddragon_json(r, "test:cache", "https://example.com/data.json")
         assert result == data
-        # Verify cached
-        cached = await r.get("test:cache")
-        assert cached is not None
-        assert json.loads(cached) == data
+        # Verify cached in memory (not Redis)
+        assert "test:cache" in _mem_cache
+        cached_data, _expiry = _mem_cache["test:cache"]
+        assert cached_data == data
 
     @respx.mock
     async def test_returns_none_on_http_error(self, r):
@@ -89,12 +90,18 @@ class TestGetDdragonJson:
 
     @respx.mock
     async def test_custom_ttl(self, r):
+        import time
+
         data = {"ttl": "custom"}
         respx.get("https://example.com/ttl.json").mock(return_value=httpx.Response(200, json=data))
+        before = time.monotonic()
         await _get_ddragon_json(r, "test:ttl", "https://example.com/ttl.json", ttl=7200)
-        ttl_val = await r.ttl("test:ttl")
-        assert ttl_val > 0
-        assert ttl_val <= 7200
+        # Verify in-memory cache entry has correct TTL
+        assert "test:ttl" in _mem_cache
+        _cached_data, expiry = _mem_cache["test:ttl"]
+        remaining = expiry - before
+        assert remaining > 0
+        assert remaining <= 7200 + 1  # +1s tolerance for monotonic clock skew
 
 
 class TestGetDdragonVersion:
@@ -227,17 +234,16 @@ class TestGetChampionNameMap:
         assert result["MonkeyKing"] == "\u5b59\u609f\u7a7a"
 
     @respx.mock
-    async def test_caches_result_in_redis(self, r):
+    async def test_caches_result_in_mem_cache(self, r):
         await r.set(_DDRAGON_VERSION_KEY, "14.10.1", ex=3600)
         respx.get("https://ddragon.leagueoflegends.com/cdn/14.10.1/data/en_US/champion.json").mock(
             return_value=httpx.Response(200, json=_CHAMPION_JSON_EN)
         )
         await get_champion_name_map(r, "en")
         cache_key = f"{_DDRAGON_CHAMPION_NAMES_KEY_PREFIX}:en_US"
-        cached = await r.get(cache_key)
-        assert cached is not None
-        parsed = json.loads(cached)
-        assert "Annie" in parsed
+        assert cache_key in _mem_cache
+        cached_data, _expiry = _mem_cache[cache_key]
+        assert "Annie" in cached_data
 
     @respx.mock
     async def test_falls_back_to_english_on_locale_failure(self, r):
@@ -303,23 +309,39 @@ class TestDdragonFetchErrorLogging:
         """_get_ddragon_json logs WARNING on fetch failure."""
         import logging
 
-        respx.get("https://example.com/fail.json").mock(
-            side_effect=httpx.ConnectError("connection refused")
-        )
-        with caplog.at_level(logging.WARNING, logger="ui.ddragon"):
-            result = await _get_ddragon_json(r, "test:cache", "https://example.com/fail.json")
-        assert result is None
-        assert any("DDragon fetch failed" in rec.message for rec in caplog.records)
+        # Ensure propagation is enabled so caplog (root handler) captures records,
+        # even when the structured JSON logger has set propagate=False on parent "ui".
+        logger = logging.getLogger("ui.ddragon")
+        parent = logging.getLogger("ui")
+        orig_propagate = parent.propagate
+        parent.propagate = True
+        try:
+            respx.get("https://example.com/fail.json").mock(
+                side_effect=httpx.ConnectError("connection refused")
+            )
+            with caplog.at_level(logging.WARNING, logger="ui.ddragon"):
+                result = await _get_ddragon_json(r, "test:cache", "https://example.com/fail.json")
+            assert result is None
+            assert any("DDragon fetch failed" in rec.message for rec in caplog.records)
+        finally:
+            parent.propagate = orig_propagate
 
     @respx.mock
     async def test_get_ddragon_version__network_error__logs_warning(self, r, caplog):
         """_get_ddragon_version logs WARNING on fetch failure."""
         import logging
 
-        respx.get("https://ddragon.leagueoflegends.com/api/versions.json").mock(
-            side_effect=httpx.ConnectError("connection refused")
-        )
-        with caplog.at_level(logging.WARNING, logger="ui.ddragon"):
-            result = await _get_ddragon_version(r)
-        assert result is None
-        assert any("DDragon version fetch failed" in rec.message for rec in caplog.records)
+        # Ensure propagation is enabled so caplog (root handler) captures records.
+        parent = logging.getLogger("ui")
+        orig_propagate = parent.propagate
+        parent.propagate = True
+        try:
+            respx.get("https://ddragon.leagueoflegends.com/api/versions.json").mock(
+                side_effect=httpx.ConnectError("connection refused")
+            )
+            with caplog.at_level(logging.WARNING, logger="ui.ddragon"):
+                result = await _get_ddragon_version(r)
+            assert result is None
+            assert any("DDragon version fetch failed" in rec.message for rec in caplog.records)
+        finally:
+            parent.propagate = orig_propagate

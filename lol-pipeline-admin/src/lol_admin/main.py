@@ -40,26 +40,30 @@ from lol_admin._helpers import (  # noqa: F401
     _resolve_puuid,
     _sanitize,
 )
-from lol_admin.cmd_backfill import cmd_backfill_champions
-from lol_admin.cmd_delayed import cmd_delayed_flush, cmd_delayed_list
-from lol_admin.cmd_dlq import (
+from lol_admin._dispatch import (
+    _dispatch as _dispatch,  # noqa: F401 — re-export for tests
+)
+from lol_admin.cmd_backfill import cmd_backfill_champions  # noqa: F401
+from lol_admin.cmd_delayed import cmd_delayed_flush, cmd_delayed_list  # noqa: F401
+from lol_admin.cmd_dlq import (  # noqa: F401
     cmd_dlq_archive_clear,
     cmd_dlq_archive_list,
     cmd_dlq_clear,
     cmd_dlq_list,
     cmd_dlq_replay,
 )
-from lol_admin.cmd_opgg import cmd_opgg_status
-from lol_admin.cmd_player import (
+from lol_admin.cmd_opgg import cmd_opgg_status  # noqa: F401
+from lol_admin.cmd_player import (  # noqa: F401
     cmd_clear_priority,
     cmd_recalc_players,
     cmd_recalc_priority,
     cmd_reseed,
     cmd_reset_stats,
 )
-from lol_admin.cmd_replay import cmd_replay_fetch, cmd_replay_parse
-from lol_admin.cmd_stats import cmd_stats
-from lol_admin.cmd_system import cmd_system_halt, cmd_system_resume
+from lol_admin.cmd_replay import cmd_replay_fetch, cmd_replay_parse  # noqa: F401
+from lol_admin.cmd_stats import cmd_stats  # noqa: F401
+from lol_admin.cmd_system import cmd_system_halt, cmd_system_resume  # noqa: F401
+from lol_admin.cmd_track import cmd_track  # noqa: F401
 
 _log = _get_log()
 
@@ -117,6 +121,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_rf = sub.add_parser("replay-fetch", help="re-enqueue a match_id to stream:match_id")
     p_rf.add_argument("match_id")
 
+    p_track = sub.add_parser("track", help="seed a player (resolve Riot ID, cooldown, publish)")
+    p_track.add_argument("riot_id", metavar="GameName#TagLine")
+    p_track.add_argument("--region", default="na1")
+
     p_rs = sub.add_parser("reseed", help="clear cooldown and re-enqueue player to stream:puuid")
     p_rs.add_argument("riot_id", metavar="GameName#TagLine")
     p_rs.add_argument("--region", default="na1")
@@ -156,68 +164,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     return parser
-
-
-# ---------------------------------------------------------------------------
-# Dispatch
-# ---------------------------------------------------------------------------
-
-
-_DLQ_ARCHIVE_DISPATCH = {
-    "list": lambda r, cfg, args: cmd_dlq_archive_list(r, args),
-    "clear": lambda r, cfg, args: cmd_dlq_archive_clear(r, args),
-}
-
-_DLQ_DISPATCH = {
-    "list": lambda r, cfg, args: cmd_dlq_list(r, args),
-    "replay": cmd_dlq_replay,
-    "clear": lambda r, cfg, args: cmd_dlq_clear(r, args),
-    "archive": lambda r, cfg, args: _dispatch_dlq_archive(r, cfg, args),
-}
-
-_CMD_DISPATCH = {
-    "stats": cmd_stats,
-    "system-halt": lambda r, riot, cfg, args: cmd_system_halt(r, args),
-    "system-resume": lambda r, riot, cfg, args: cmd_system_resume(r, args),
-    "dlq": lambda r, riot, cfg, args: _dispatch_dlq(r, cfg, args),
-    "replay-parse": lambda r, riot, cfg, args: cmd_replay_parse(r, cfg, args),
-    "replay-fetch": lambda r, riot, cfg, args: cmd_replay_fetch(r, cfg, args),
-    "reseed": cmd_reseed,
-    "reset-stats": cmd_reset_stats,
-    "clear-priority": lambda r, riot, cfg, args: cmd_clear_priority(r, riot, args),
-    "recalc-priority": lambda r, riot, cfg, args: cmd_recalc_priority(r, args),
-    "recalc-players": lambda r, riot, cfg, args: cmd_recalc_players(r, args),
-    "delayed-list": lambda r, riot, cfg, args: cmd_delayed_list(r, args),
-    "delayed-flush": lambda r, riot, cfg, args: cmd_delayed_flush(r, args),
-    "backfill-champions": lambda r, riot, cfg, args: cmd_backfill_champions(r, cfg, args),
-    "opgg-status": lambda r, riot, cfg, args: cmd_opgg_status(r, cfg, args),
-}
-
-
-async def _dispatch(
-    r: aioredis.Redis,
-    riot: RiotClient,
-    cfg: Config,
-    args: argparse.Namespace,
-) -> int:
-    handler = _CMD_DISPATCH.get(args.command)
-    if handler is None:
-        raise AssertionError(f"unreachable command: {args.command}")
-    return await handler(r, riot, cfg, args)  # type: ignore[no-untyped-call]
-
-
-async def _dispatch_dlq(r: aioredis.Redis, cfg: Config, args: argparse.Namespace) -> int:
-    handler = _DLQ_DISPATCH.get(args.dlq_command)
-    if handler is None:
-        raise AssertionError(f"unreachable dlq subcommand: {args.dlq_command}")
-    return await handler(r, cfg, args)  # type: ignore[no-untyped-call]
-
-
-async def _dispatch_dlq_archive(r: aioredis.Redis, cfg: Config, args: argparse.Namespace) -> int:
-    handler = _DLQ_ARCHIVE_DISPATCH.get(args.archive_command)
-    if handler is None:
-        raise AssertionError(f"unreachable archive subcommand: {args.archive_command}")
-    return await handler(r, cfg, args)
 
 
 # ---------------------------------------------------------------------------

@@ -9,7 +9,7 @@ All inter-service communication uses Redis Streams with consumer groups.
 | `stream:puuid`       | Seed, Discovery, Web UI (auto-seed) | Crawler            | ~10 000  | PUUIDs to crawl for match history    |
 | `stream:match_id`    | Crawler             | Fetcher              | ~500 000 | Match IDs to fetch from Riot API     |
 | `stream:parse`       | Fetcher             | Parser               | ~10 000  | Match IDs with raw blob ready        |
-| `stream:analyze`     | Parser              | Analyzer             | ~50 000  | PUUIDs whose stats need updating     |
+| `stream:analyze`     | Parser              | Player Stats (`player-stats-workers`), Champion Stats (`champion-stats-workers`) | ~50 000  | PUUIDs whose stats need updating     |
 | `stream:dlq`         | Any service         | Recovery             | ~50 000  | Failed messages with failure context |
 | `stream:dlq:archive` | Recovery            | (manual only)        | ~50 000  | Exhausted messages for inspection    |
 

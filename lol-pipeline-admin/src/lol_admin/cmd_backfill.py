@@ -6,8 +6,9 @@ import argparse
 
 import redis.asyncio as aioredis
 from lol_pipeline.config import Config
+from lol_pipeline.constants import CHAMPION_STATS_TTL_SECONDS, RANKED_SOLO_QUEUE_ID
 
-from lol_admin._helpers import _print_info, _print_ok
+from lol_admin._helpers import _print_info, _print_ok, _scan_parsed_matches
 
 _UPDATE_CHAMPION_LUA = """
 local stats_key = KEYS[1]
@@ -54,20 +55,6 @@ return 1
 """
 
 
-async def _scan_parsed_matches(r: aioredis.Redis) -> set[str]:
-    """Collect match IDs whose per-match hash has status=parsed (RDB-2)."""
-    result: set[str] = set()
-    async for key in r.scan_iter(match="match:*", count=200):
-        key_str: str = key
-        # Skip non-match keys (match:participants:*, match:status:*)
-        if key_str.count(":") != 1:
-            continue
-        status = await r.hget(key_str, "status")
-        if status == "parsed":
-            result.add(key_str.removeprefix("match:"))
-    return result
-
-
 async def cmd_backfill_champions(r: aioredis.Redis, cfg: Config, args: argparse.Namespace) -> int:
     """Reprocess all parsed ranked matches to populate champion stats."""
     done_key = "champion:backfill:done"
@@ -91,7 +78,7 @@ async def cmd_backfill_champions(r: aioredis.Redis, cfg: Config, args: argparse.
         processed = await _backfill_batch(r, batch)
         count += processed
         await r.sadd(done_key, *batch)  # type: ignore[misc]
-    await r.expire(done_key, 90 * 86400)
+    await r.expire(done_key, CHAMPION_STATS_TTL_SECONDS)
     _print_ok(f"Backfilled champion stats from {count} ranked matches")
     return 0
 
@@ -146,9 +133,9 @@ async def _backfill_batch(r: aioredis.Redis, match_ids: list[str]) -> int:
             pipe.hgetall(f"match:{mid}")
         metadata_list: list[dict[str, str]] = await pipe.execute()
     count = 0
-    ttl = 90 * 86400  # 90 days
+    ttl = CHAMPION_STATS_TTL_SECONDS
     for match_id, meta in zip(match_ids, metadata_list, strict=True):
-        if not meta or meta.get("queue_id") != "420":
+        if not meta or meta.get("queue_id") != RANKED_SOLO_QUEUE_ID:
             continue
         patch = meta.get("patch", "")
         if not patch:

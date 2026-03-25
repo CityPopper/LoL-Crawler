@@ -8,9 +8,9 @@ import logging
 from typing import Any
 
 import redis.asyncio as aioredis
+from lol_pipeline._helpers import consumer_id, is_system_halted
 from lol_pipeline.config import Config
 from lol_pipeline.constants import CHAMPION_STATS_TTL_SECONDS, PLAYER_DATA_TTL_SECONDS
-from lol_pipeline.helpers import consumer_id, is_system_halted
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.raw_store import RawStore
@@ -20,164 +20,33 @@ from lol_pipeline.streams import ANALYZE_STREAM_MAXLEN, ack, nack_to_dlq
 
 from lol_parser._data import (
     _DISCOVER_KEY,
-    _GOLD_TIMELINE_MAX_FRAMES,
     _GROUP,
     _IN_STREAM,
-    _ITEM_KEYS,
-    _KILL_EVENTS_MAX,
     _OUT_STREAM,
     _RANKED_QUEUE_ID,
 )
+from lol_parser._extract import (
+    _extract_full_perks as _extract_full_perks,  # noqa: F401 — re-export for tests
+    _extract_gold_timelines as _extract_gold_timelines,  # noqa: F401
+    _extract_kill_events as _extract_kill_events,  # noqa: F401
+    _extract_perks as _extract_perks,  # noqa: F401
+    _extract_team_objectives,
+    _extract_timeline_events,
+    _normalize_patch,
+)
+from lol_parser._helpers import (
+    _find_shared_positions,
+    _group_by_team_position,
+    _queue_matchup_cmds,
+    _queue_participant,
+    _queue_pid_json,
+    _validate,
+    _warn_non_monotonic_gold,
+)
 
-
-def _normalize_patch(game_version: str) -> str:
-    """Extract major.minor from game version (e.g. '13.24.1' -> '13.24')."""
-    parts = game_version.split(".")
-    if len(parts) >= 2:
-        return f"{parts[0]}.{parts[1]}"
-    return game_version
-
-
-def _extract_perks(p: dict[str, Any]) -> tuple[int, int, int]:
-    """Return (keystone_id, primary_style_id, sub_style_id) from participant perks."""
-    perks = p.get("perks", {})
-    styles = perks.get("styles", [])
-    primary_style = styles[0] if styles else {}
-    sub_style = styles[1] if len(styles) > 1 else {}
-    selections = primary_style.get("selections", [])
-    keystone = selections[0].get("perk", 0) if selections else 0
-    return keystone, primary_style.get("style", 0), sub_style.get("style", 0)
-
-
-def _extract_full_perks(
-    p: dict[str, Any],
-) -> tuple[list[int], list[int], list[int]]:
-    """Return (primary_selections, sub_selections, stat_shards) from participant perks.
-
-    Extracts available elements without asserting exact array lengths.
-    Returns empty lists for any missing data.
-    """
-    perks = p.get("perks", {})
-    styles = perks.get("styles", [])
-    primary_style = styles[0] if styles else {}
-    sub_style = styles[1] if len(styles) > 1 else {}
-    primary_sel = [s.get("perk", 0) for s in primary_style.get("selections", [])]
-    sub_sel = [s.get("perk", 0) for s in sub_style.get("selections", [])]
-    stat_perks = perks.get("statPerks", {})
-    stat_shards: list[int] = []
-    for key in ("offense", "flex", "defense"):
-        if key in stat_perks:
-            stat_shards.append(stat_perks[key])
-    return primary_sel, sub_sel, stat_shards
-
-
-def _extract_team_objectives(info: dict[str, Any]) -> dict[str, str]:
-    """Extract team objective fields from info.teams[], keyed by teamId (100/200).
-
-    Maps via explicit teamId comparison (100=blue, 200=red), NOT array index.
-    Returns a flat dict of string fields ready for HSET on match:{match_id}.
-    """
-    teams = info.get("teams", [])
-    team_map: dict[int, dict[str, Any]] = {}
-    for team in teams:
-        tid = team.get("teamId", 0)
-        if tid in (100, 200):
-            team_map[tid] = team.get("objectives", {})
-
-    result: dict[str, str] = {}
-    for tid, prefix in ((100, "team_blue"), (200, "team_red")):
-        obj = team_map.get(tid, {})
-        result[f"{prefix}_dragons"] = str(obj.get("dragon", {}).get("kills", 0))
-        result[f"{prefix}_barons"] = str(obj.get("baron", {}).get("kills", 0))
-        result[f"{prefix}_towers"] = str(obj.get("tower", {}).get("kills", 0))
-        result[f"{prefix}_inhibitors"] = str(obj.get("inhibitor", {}).get("kills", 0))
-        result[f"{prefix}_heralds"] = str(obj.get("riftHerald", {}).get("kills", 0))
-        champion_obj = obj.get("champion", {})
-        result[f"{prefix}_first_blood"] = "1" if champion_obj.get("first") else "0"
-    return result
-
-
-def _validate(data: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Extract and validate info + metadata; raise KeyError on missing required fields."""
-    info: dict[str, Any] = data["info"]
-    if "participants" not in info or not info["participants"]:
-        raise KeyError("participants")
-    if "gameStartTimestamp" not in info:
-        raise KeyError("gameStartTimestamp")
-    return data["metadata"], info
-
-
-def _queue_participant(
-    pipe: aioredis.client.Pipeline,
-    match_id: str,
-    game_start: int,
-    p: dict[str, Any],
-    match_data_ttl: int,
-) -> str:
-    """Queue all Redis commands for one participant onto *pipe* (no execute).
-
-    Returns the participant's puuid.
-    """
-    puuid: str = p["puuid"]
-    keystone, primary_style_id, sub_style_id = _extract_perks(p)
-    primary_sel, sub_sel, stat_shards = _extract_full_perks(p)
-    items = json.dumps([p.get(k, 0) for k in _ITEM_KEYS])
-    participant_key = f"participant:{match_id}:{puuid}"
-    pipe.hset(
-        participant_key,
-        mapping={
-            "champion_id": str(p.get("championId", "")),
-            "champion_name": p.get("championName", ""),
-            "team_id": str(p.get("teamId", "")),
-            "team_position": p.get("teamPosition", ""),
-            "role": p.get("role", ""),
-            "win": "1" if p.get("win") else "0",
-            "kills": str(p.get("kills", 0)),
-            "deaths": str(p.get("deaths", 0)),
-            "assists": str(p.get("assists", 0)),
-            "gold_earned": str(p.get("goldEarned", 0)),
-            "total_damage_dealt_to_champions": str(p.get("totalDamageDealtToChampions", 0)),
-            "total_minions_killed": str(p.get("totalMinionsKilled", 0)),
-            "vision_score": str(p.get("visionScore", 0)),
-            "items": items,
-            "summoner1_id": str(p.get("summoner1Id", 0)),
-            "summoner2_id": str(p.get("summoner2Id", 0)),
-            "champion_level": str(p.get("champLevel", 0)),
-            "gold_spent": str(p.get("goldSpent", 0)),
-            "physical_damage": str(p.get("physicalDamageDealtToChampions", 0)),
-            "magic_damage": str(p.get("magicDamageDealtToChampions", 0)),
-            "true_damage": str(p.get("trueDamageDealtToChampions", 0)),
-            "damage_taken": str(p.get("totalDamageTaken", 0)),
-            "damage_mitigated": str(p.get("damageSelfMitigated", 0)),
-            "healing_done": str(p.get("totalHeal", 0)),
-            "wards_placed": str(p.get("wardsPlaced", 0)),
-            "wards_killed": str(p.get("wardsKilled", 0)),
-            "detector_wards": str(p.get("detectorWardsPlaced", 0)),
-            "neutral_minions": str(p.get("neutralMinionsKilled", 0)),
-            "turret_kills": str(p.get("turretKills", 0)),
-            "double_kills": str(p.get("doubleKills", 0)),
-            "triple_kills": str(p.get("tripleKills", 0)),
-            "quadra_kills": str(p.get("quadraKills", 0)),
-            "penta_kills": str(p.get("pentaKills", 0)),
-            "time_played": str(p.get("timePlayed", 0)),
-            "perk_keystone": str(keystone),
-            "perk_primary_style": str(primary_style_id),
-            "perk_sub_style": str(sub_style_id),
-            "perk_primary_selections": json.dumps(primary_sel),
-            "perk_sub_selections": json.dumps(sub_sel),
-            "perk_stat_shards": json.dumps(stat_shards),
-        },
-    )
-    pipe.expire(participant_key, match_data_ttl)
-    pipe.sadd(f"match:participants:{match_id}", puuid)
-    pipe.expire(f"match:participants:{match_id}", match_data_ttl)
-    pipe.zadd(f"player:matches:{puuid}", {match_id: float(game_start)})
-    riot_name = p.get("riotIdGameName", "")
-    riot_tag = p.get("riotIdTagline", "")
-    if riot_name and riot_tag:
-        pipe.hsetnx(f"player:{puuid}", "game_name", riot_name)
-        pipe.hsetnx(f"player:{puuid}", "tag_line", riot_tag)
-    return puuid
+# Re-export for tests that import from lol_parser.main
+_normalize_patch = _normalize_patch  # noqa: PLW0127
+_validate = _validate  # noqa: PLW0127
 
 
 async def _write_participants(
@@ -260,171 +129,19 @@ async def _write_matchups(
     """Compute and store lane matchup data from match participants."""
     if not cfg.track_matchups:
         return
-    queue_id = str(info.get("queueId", ""))
-    if queue_id != _RANKED_QUEUE_ID:
+    if str(info.get("queueId", "")) != _RANKED_QUEUE_ID:
         return
 
-    participants = info.get("participants", [])
-    # Group by team and position
-    team_positions: dict[int, dict[str, dict[str, Any]]] = {}
-    for p in participants:
-        team_id = p.get("teamId", 0)
-        position = p.get("teamPosition", "")
-        if not position or not team_id:
-            continue
-        if team_id not in team_positions:
-            team_positions[team_id] = {}
-        team_positions[team_id][position] = p
-
-    teams = sorted(team_positions.keys())
-    if len(teams) != 2:
+    team_positions = _group_by_team_position(info.get("participants", []))
+    result = _find_shared_positions(team_positions)
+    if result is None:
         return
-
-    team_a, team_b = teams[0], teams[1]
-    # Match positions that exist in both teams
-    shared_positions = set(team_positions[team_a]) & set(team_positions[team_b])
-    if not shared_positions:
-        return
+    team_a, team_b, shared = result
 
     async with r.pipeline(transaction=False) as pipe:
-        for position in sorted(shared_positions):
-            a = team_positions[team_a][position]
-            b = team_positions[team_b][position]
-            champ_a = a.get("championName", "")
-            champ_b = b.get("championName", "")
-            if not champ_a or not champ_b:
-                continue
-            win_a = 1 if a.get("win") else 0
-            win_b = 1 - win_a
-
-            # Store matchup: champion A's perspective vs champion B
-            key_ab = f"matchup:{champ_a}:{champ_b}:{position}:{patch}"
-            pipe.hincrby(key_ab, "games", 1)
-            pipe.hincrby(key_ab, "wins", win_a)
-            pipe.expire(key_ab, CHAMPION_STATS_TTL_SECONDS)
-
-            # Store reverse: champion B's perspective vs champion A
-            key_ba = f"matchup:{champ_b}:{champ_a}:{position}:{patch}"
-            pipe.hincrby(key_ba, "games", 1)
-            pipe.hincrby(key_ba, "wins", win_b)
-            pipe.expire(key_ba, CHAMPION_STATS_TTL_SECONDS)
-
-            # Index: track all matchups for a champion
-            idx_a = f"matchup:index:{champ_a}:{position}:{patch}"
-            pipe.sadd(idx_a, champ_b)
-            pipe.expire(idx_a, CHAMPION_STATS_TTL_SECONDS)
-            idx_b = f"matchup:index:{champ_b}:{position}:{patch}"
-            pipe.sadd(idx_b, champ_a)
-            pipe.expire(idx_b, CHAMPION_STATS_TTL_SECONDS)
-
+        _queue_matchup_cmds(pipe, team_positions, team_a, team_b, shared, patch)
         await pipe.execute()
     log.debug("wrote matchups", extra={"match_id": match_id, "patch": patch})
-
-
-def _extract_timeline_events(
-    frames: list[dict[str, Any]],
-) -> tuple[dict[int, list[int]], dict[int, list[int]]]:
-    """Extract build and skill orders from timeline frames."""
-    build_orders: dict[int, list[int]] = {}
-    skill_orders: dict[int, list[int]] = {}
-    for frame in frames:
-        for event in frame.get("events", []):
-            event_type = event.get("type", "")
-            pid = event.get("participantId", 0)
-            if not pid:
-                continue
-            if event_type == "ITEM_PURCHASED":
-                build_orders.setdefault(pid, []).append(
-                    event.get("itemId", 0),
-                )
-            elif event_type == "SKILL_LEVEL_UP" and event.get("levelUpType") == "NORMAL":
-                skill_orders.setdefault(pid, []).append(
-                    event.get("skillSlot", 0),
-                )
-    return build_orders, skill_orders
-
-
-def _extract_gold_timelines(
-    frames: list[dict[str, Any]],
-) -> dict[int, list[int]]:
-    """Extract per-participant gold totals from timeline participantFrames.
-
-    Returns a dict mapping participant ID (int) to a list of totalGold values,
-    one per frame, capped at 120 frames.
-    """
-    gold: dict[int, list[int]] = {}
-    for frame in frames[:_GOLD_TIMELINE_MAX_FRAMES]:
-        pframes = frame.get("participantFrames", {})
-        for pid_str, pdata in pframes.items():
-            try:
-                pid = int(pid_str)
-            except (ValueError, TypeError):
-                continue
-            gold.setdefault(pid, []).append(pdata.get("totalGold", 0))
-    return gold
-
-
-def _extract_kill_events(
-    frames: list[dict[str, Any]],
-    pid_to_champ: dict[int, str],
-) -> list[dict[str, Any]]:
-    """Extract CHAMPION_KILL events from timeline, denormalized with champion names.
-
-    Returns a list of kill event dicts sorted by timestamp, capped at 200.
-    Unknown participant IDs resolve to "Unknown" (logged at call site).
-    """
-    kills: list[dict[str, Any]] = []
-    for frame in frames:
-        for event in frame.get("events", []):
-            if event.get("type") != "CHAMPION_KILL":
-                continue
-            killer_id = event.get("killerId", 0)
-            victim_id = event.get("victimId", 0)
-            assist_ids: list[int] = event.get("assistingParticipantIds", [])
-            pos = event.get("position", {})
-            kills.append(
-                {
-                    "t": event.get("timestamp", 0),
-                    "killer": pid_to_champ.get(killer_id, "Unknown"),
-                    "victim": pid_to_champ.get(victim_id, "Unknown"),
-                    "assists": [pid_to_champ.get(a, "Unknown") for a in assist_ids],
-                    "x": pos.get("x", 0),
-                    "y": pos.get("y", 0),
-                }
-            )
-    kills.sort(key=lambda e: e["t"])
-    return kills[:_KILL_EVENTS_MAX]
-
-
-def _warn_non_monotonic_gold(
-    gold_timelines: dict[int, list[int]],
-    match_id: str,
-    log: logging.Logger,
-) -> None:
-    """Log warning for any participant with non-monotonic totalGold sequence."""
-    for pid, golds in gold_timelines.items():
-        for i in range(1, len(golds)):
-            if golds[i] < golds[i - 1]:
-                log.warning(
-                    "non-monotonic gold timeline",
-                    extra={"match_id": match_id, "participant_id": pid},
-                )
-                break
-
-
-def _queue_pid_json(
-    pipe: aioredis.client.Pipeline,
-    pid_data: dict[int, list[int]],
-    pid_to_puuid: dict[int, str],
-    key_prefix: str,
-    match_id: str,
-    ttl: int,
-) -> None:
-    """Queue SET commands for per-participant JSON arrays onto a pipeline."""
-    for pid, values in pid_data.items():
-        puuid = pid_to_puuid.get(pid, "")
-        if puuid:
-            pipe.set(f"{key_prefix}:{match_id}:{puuid}", json.dumps(values), ex=ttl)
 
 
 async def _store_timeline_data(
@@ -519,34 +236,24 @@ async def _discover_co_players(
         )
 
 
-async def _parse_match(
+async def _load_and_validate(
     r: aioredis.Redis,
     raw_store: RawStore,
-    cfg: Config,
+    match_id: str,
     msg_id: str,
     envelope: MessageEnvelope,
     log: logging.Logger,
-) -> None:
-    if await is_system_halted(r):
-        log.critical("system halted — skipping message")
-        return
-
-    match_id: str = envelope.payload["match_id"]
-    region: str = envelope.payload["region"]
-    log.info("parsing match", extra={"match_id": match_id, "region": region})
-
+) -> dict[str, Any] | None:
+    """Load raw JSON and validate. Return info dict, or None after DLQ nack."""
     raw = await raw_store.get(match_id)
     if raw is None:
         log.error("raw blob missing", extra={"match_id": match_id})
         await nack_to_dlq(
-            r,
-            envelope,
-            failure_code="parse_error",
-            failed_by="parser",
-            original_message_id=msg_id,
+            r, envelope, failure_code="parse_error",
+            failed_by="parser", original_message_id=msg_id,
         )
         await ack(r, _IN_STREAM, _GROUP, msg_id)
-        return
+        return None
 
     try:
         data = json.loads(raw)
@@ -554,24 +261,25 @@ async def _parse_match(
     except (KeyError, json.JSONDecodeError, TypeError) as exc:
         log.error("parse error", extra={"match_id": match_id, "error": str(exc)})
         await nack_to_dlq(
-            r,
-            envelope,
-            failure_code="parse_error",
-            failed_by="parser",
-            original_message_id=msg_id,
+            r, envelope, failure_code="parse_error",
+            failed_by="parser", original_message_id=msg_id,
         )
         await ack(r, _IN_STREAM, _GROUP, msg_id)
-        return
+        return None
+    return info
 
-    game_start: int = info["gameStartTimestamp"]
 
+async def _write_match_metadata(
+    r: aioredis.Redis,
+    match_id: str,
+    info: dict[str, Any],
+    region: str,
+    cfg: Config,
+) -> int:
+    """Write match-level fields and return first_parse flag (1 = first, 0 = re-parse)."""
     match_key = f"match:{match_id}"
-
-    # RDB-2: Atomic idempotency guard via per-match hash field.
-    # HSETNX returns 1 if the field was newly set (first writer wins) or 0
-    # if it already existed (another worker parsed this match first).
-    # This replaces the unbounded global `match:status:parsed` SET.
     first_parse: int = await r.hsetnx(match_key, "status", "parsed")
+    game_start = info["gameStartTimestamp"]
     match_fields: dict[str, str] = {
         "queue_id": str(info.get("queueId", "")),
         "game_mode": info.get("gameMode", ""),
@@ -589,10 +297,64 @@ async def _parse_match(
         pipe.hset(match_key, mapping=match_fields)
         pipe.expire(match_key, cfg.match_data_ttl_seconds)
         await pipe.execute()
+    return first_parse
 
-    seen_puuids = await _write_participants(r, match_id, game_start, info["participants"], log, cfg)
 
-    # Ban/matchup tracking + timeline parsing run concurrently (3 RTTs -> 1).
+async def _publish_analyze_batch(
+    r: aioredis.Redis,
+    seen_puuids: set[str],
+    cfg: Config,
+    envelope: MessageEnvelope,
+) -> None:
+    """Batch-publish analyze messages for all seen participants."""
+    if not seen_puuids:
+        return
+    async with r.pipeline(transaction=False) as pub_pipe:
+        for puuid in seen_puuids:
+            out = MessageEnvelope(
+                source_stream=_OUT_STREAM,
+                type="analyze",
+                payload={"puuid": puuid},
+                max_attempts=cfg.max_attempts,
+                priority=envelope.priority,
+                correlation_id=envelope.correlation_id,
+            )
+            pub_pipe.xadd(
+                _OUT_STREAM,
+                out.to_redis_fields(),  # type: ignore[arg-type]
+                maxlen=ANALYZE_STREAM_MAXLEN,
+                approximate=True,
+            )
+        await pub_pipe.execute()
+
+
+async def _parse_match(
+    r: aioredis.Redis,
+    raw_store: RawStore,
+    cfg: Config,
+    msg_id: str,
+    envelope: MessageEnvelope,
+    log: logging.Logger,
+) -> None:
+    if await is_system_halted(r):
+        log.critical("system halted — skipping message")
+        return
+
+    match_id: str = envelope.payload["match_id"]
+    region: str = envelope.payload["region"]
+    log.info("parsing match", extra={"match_id": match_id, "region": region})
+
+    info = await _load_and_validate(r, raw_store, match_id, msg_id, envelope, log)
+    if info is None:
+        return
+
+    game_start: int = info["gameStartTimestamp"]
+    first_parse = await _write_match_metadata(r, match_id, info, region, cfg)
+    seen_puuids = await _write_participants(
+        r, match_id, game_start, info["participants"], log, cfg,
+    )
+
+    # Ban/matchup tracking + timeline parsing run concurrently.
     # Bans/matchups only on first parse — HINCRBY is not idempotent.
     if first_parse:
         patch = _normalize_patch(info.get("gameVersion", ""))
@@ -604,26 +366,7 @@ async def _parse_match(
     else:
         await _parse_timeline(r, match_id, cfg, log)
 
-    # P13-OPT-7: Batch all analyze publishes into one pipeline round-trip.
-    if seen_puuids:
-        async with r.pipeline(transaction=False) as pub_pipe:
-            for puuid in seen_puuids:
-                out = MessageEnvelope(
-                    source_stream=_OUT_STREAM,
-                    type="analyze",
-                    payload={"puuid": puuid},
-                    max_attempts=cfg.max_attempts,
-                    priority=envelope.priority,
-                    correlation_id=envelope.correlation_id,
-                )
-                pub_pipe.xadd(
-                    _OUT_STREAM,
-                    out.to_redis_fields(),  # type: ignore[arg-type]
-                    maxlen=ANALYZE_STREAM_MAXLEN,
-                    approximate=True,
-                )
-            await pub_pipe.execute()
-
+    await _publish_analyze_batch(r, seen_puuids, cfg, envelope)
     await _discover_co_players(r, cfg, seen_puuids, region, game_start, log)
 
     await ack(r, _IN_STREAM, _GROUP, msg_id)

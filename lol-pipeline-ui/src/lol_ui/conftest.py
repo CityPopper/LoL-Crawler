@@ -5,6 +5,16 @@ from collections.abc import AsyncIterator
 import fakeredis.aioredis
 import pytest
 
+from lol_ui.ddragon import _mem_cache
+
+
+@pytest.fixture(autouse=True)
+def _clear_ddragon_mem_cache():
+    """Clear the ddragon module-level in-memory cache before each test."""
+    _mem_cache.clear()
+    yield
+    _mem_cache.clear()
+
 
 @pytest.fixture
 async def r() -> AsyncIterator[fakeredis.aioredis.FakeRedis]:

@@ -37,10 +37,10 @@ docker compose exec redis redis-cli INFO memory | grep used_memory_human
 | `stream:parse` growing, `stream:analyze` empty | Parser stuck or crashed | `just logs parser`, check for parse errors |
 | `stream:analyze` growing steadily | Analyzer lock contention or crash | `just logs analyzer`, check for lock warnings |
 | DLQ count increasing | Repeated failures on specific messages | `just admin dlq list` to inspect failure codes |
-| No stream activity at all | Nothing seeded, or all services halted | `just seed "Name#Tag" region` |
+| No stream activity at all | Nothing tracked, or all services halted | `just admin track "Name#Tag" --region <region>` |
 | `delayed:messages` growing | Rate limiting or Delay Scheduler down | Check Delay Scheduler: `just logs delay-scheduler` |
 | Web UI returns 500 | Redis connection issue or config error | `just logs ui`, check `REDIS_URL` |
-| `just seed` hangs | Stack not running | Wait for auto-start, or run `just up` first |
+| `just admin track` hangs | Stack not running | Wait for auto-start, or run `just up` first |
 | Container exits immediately | Missing env var or import error | `docker compose logs <svc>` for the error |
 
 ---
@@ -52,8 +52,8 @@ To follow a specific player or match through the entire pipeline:
 ### Trace by Riot ID
 
 ```bash
-# 1. Seed the player
-just seed "Faker#KR1" kr
+# 1. Track the player
+just admin track "Faker#KR1" --region kr
 
 # 2. Find the PUUID
 docker compose exec redis redis-cli GET "player:name:faker#kr1"
@@ -83,8 +83,8 @@ docker compose exec redis redis-cli HGET "match:<match_id>" status
 # 2. Check if raw blob exists
 docker compose exec redis redis-cli EXISTS "raw:match:<match_id>"
 
-# 3. Check if match was parsed
-docker compose exec redis redis-cli SISMEMBER "match:status:parsed" "<match_id>"
+# 3. Check if match was parsed (RDB-2: status lives in the match hash, not a global Set)
+docker compose exec redis redis-cli HGET "match:<match_id>" status
 
 # 4. Check if match failed
 docker compose exec redis redis-cli SISMEMBER "match:status:failed" "<match_id>"
@@ -332,8 +332,8 @@ docker compose exec redis redis-cli GET system:halted
 # Total players
 docker compose exec redis redis-cli --scan --pattern "player:stats:*" | wc -l
 
-# Total parsed matches
-docker compose exec redis redis-cli SCARD "match:status:parsed"
+# Total parsed matches (RDB-2: no global Set; SCAN match:* + HGET status to count)
+docker compose exec redis redis-cli --scan --pattern "match:*" | xargs -I{} docker compose exec -T redis redis-cli HGET "{}" status | grep -c "^parsed$"
 
 # Total failed matches
 docker compose exec redis redis-cli SCARD "match:status:failed"

@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import html
+import json
 from typing import Any
 
 import redis.asyncio as aioredis
 
-from lol_ui.ddragon import _DDRAGON_TTL_S, _get_ddragon_json, _get_ddragon_version
+from lol_ui.ddragon import (
+    _DDRAGON_TTL_S,
+    _get_ddragon_json,
+    _get_ddragon_version,
+    _mem_get,
+    _mem_put,
+)
 
 _DDRAGON_SUMMONERS_KEY = "ddragon:summoners"
 
@@ -17,14 +24,17 @@ async def _get_summoner_spell_map(
 ) -> dict[str, str]:
     """Return {spell_numeric_id: spell_image_filename} from DDragon.
 
-    Cached in Redis for 24h. Returns empty dict on failure.
+    Cached in-memory (with Redis read fallback) for 24h. Returns empty dict on failure.
     """
+    mem = _mem_get(_DDRAGON_SUMMONERS_KEY)
+    if mem is not None and isinstance(mem, dict):
+        return mem
     cached_map = await r.get(_DDRAGON_SUMMONERS_KEY)
     if cached_map:
-        import json
-
         try:
-            return json.loads(str(cached_map))  # type: ignore[no-any-return]
+            mapping = json.loads(str(cached_map))
+            _mem_put(_DDRAGON_SUMMONERS_KEY, mapping)
+            return mapping  # type: ignore[no-any-return]
         except (json.JSONDecodeError, TypeError):
             pass
     version = await _get_ddragon_version(r)
@@ -42,11 +52,7 @@ async def _get_summoner_spell_map(
         image_file = spell_data.get("image", {}).get("full", "")
         if key and image_file:
             mapping[key] = image_file
-    import json
-
-    await r.set(_DDRAGON_SUMMONERS_KEY, json.dumps(mapping), ex=_DDRAGON_TTL_S)
-    # Clean up temp key
-    await r.delete("_tmp:summoner_raw")
+    _mem_put(_DDRAGON_SUMMONERS_KEY, mapping)
     return mapping
 
 

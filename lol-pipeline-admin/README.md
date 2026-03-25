@@ -14,6 +14,7 @@ Global flags: `--json` (JSON output where supported), `-y` / `--yes` (skip confi
 
 | Command | Description |
 |---------|-------------|
+| `track <GameName#TagLine> [--region r]` | Resolve Riot ID → PUUID, check 30-min cooldown, register player with `PRIORITY_MANUAL_20`, publish to `stream:puuid`; checks `system:halted` first |
 | `stats <GameName#TagLine> [--region r]` | Show aggregated stats for a player |
 | `reseed <GameName#TagLine> [--region r]` | Force re-seed bypassing cooldown |
 | `reset-stats <GameName#TagLine> [--region r]` | Wipe player stats and re-trigger analysis |
@@ -32,6 +33,7 @@ Global flags: `--json` (JSON output where supported), `-y` / `--yes` (skip confi
 | `delayed-list` | Show entries in `delayed:messages` sorted set |
 | `delayed-flush --all` | Remove all delayed messages |
 | `backfill-champions` | Reprocess parsed matches to populate champion stats |
+| `opgg-status` | Show OP.GG integration status (enabled, fetch count, data dir size) |
 
 ## Module Structure
 

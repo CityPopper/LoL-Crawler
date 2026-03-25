@@ -19,9 +19,9 @@ without processing. See [06-failure-resilience.md](06-failure-resilience.md) for
 
 ---
 
-## 1. Seed Service
+## 1. Admin `track` Sub-Command (Player Seeding)
 
-**Consumes:** CLI argument or API call
+**Type:** One-shot CLI invocation (`just admin track "GameName#TagLine" --region <region>`)
 
 **Produces:** `stream:puuid`
 ```json
@@ -34,19 +34,28 @@ without processing. See [06-failure-resilience.md](06-failure-resilience.md) for
 
 **Writes:**
 - `player:{puuid}` (Hash) → fields: `game_name`, `tag_line`, `region`, `seeded_at`
+- Sets `PRIORITY_MANUAL_20` on the player entry
 
 **Behavior:**
 1. Check `system:halted`; exit if set
 2. Accept Riot ID as `GameName#TagLine`; reject if no `#` with a clear error
 3. Resolve PUUID via Account-v1 API (regional routing)
 4. Read `player:{puuid}` fields `seeded_at` and `last_crawled_at`; compute `last_activity = MAX(seeded_at, last_crawled_at)` (treating missing values as epoch 0); if `last_activity` is within `SEED_COOLDOWN_MINUTES` (default: `30`): log skip reason including which field triggered the cooldown, exit 0
-5. HSET `player:{puuid}` with `game_name`, `tag_line`, `region`, `seeded_at = now`
+5. Write player data via `register_player`; set `PRIORITY_MANUAL_20`
 6. Publish envelope to `stream:puuid`
 
 **Error handling:**
 - Riot 404 → log "player not found", exit 1
 - Riot 403 → set `system:halted`, log CRITICAL, exit 1
-- Riot 429 / 5xx → log error, exit 1 (caller retries; Seed is a one-shot process)
+- Riot 429 / 5xx → log error, exit 1 (caller retries; `track` is a one-shot command)
+
+**Invocation:**
+```bash
+just admin track "Faker#KR1" --region kr
+# 'just seed' is a deprecated alias that delegates here
+```
+
+Implementation: `lol-pipeline-admin/src/lol_admin/cmd_track.py`
 
 ---
 
@@ -137,9 +146,8 @@ will re-publish in-flight IDs; the Fetcher handles these idempotently.
 ```
 
 **Produces:**
-- `match:{match_id}` (Hash) — match metadata + status
+- `match:{match_id}` (Hash) — match metadata + status (uses `HSETNX` to set `status=parsed`; return value 1 = first parse, 0 = already parsed)
 - `match:participants:{match_id}` (Set) — PUUIDs of all participants
-- `match:status:parsed` (Set) — secondary index of parsed match IDs
 - `participant:{match_id}:{puuid}` (Hash) — per-player stats (one per participant)
 - `player:matches:{puuid}` (Sorted Set, score = `game_start` epoch ms) — one entry per participant
 - `stream:analyze` — one message per unique PUUID in the match
@@ -156,7 +164,7 @@ will re-publish in-flight IDs; the Fetcher handles these idempotently.
 2. Read raw blob via `RawStore.get(match_id)`; if None: `nack_to_dlq` with `parse_error`
 3. Parse JSON; validate required fields (`metadata`, `info`, `info.participants`, `info.gameStartTimestamp`); on failure: `nack_to_dlq` with `parse_error`; raw blob preserved
 4. Write `match:{match_id}` Hash: `queue_id`, `game_mode`, `game_type`, `game_version`, `game_duration`, `game_start`, `platform_id`, `region`, `status = parsed`
-5. SADD `match:status:parsed` with `match_id` (secondary index)
+5. `HSETNX match:{match_id} status parsed` — atomically marks first parse; return value 1 = first writer, 0 = duplicate (already parsed, skip)
 6. For each participant:
    - Write `participant:{match_id}:{puuid}` Hash: `champion_id`, `champion_name`, `team_id`, `team_position`, `role`, `win`, `kills`, `deaths`, `assists`, `gold_earned`, `total_damage_dealt_to_champions`, `total_minions_killed`, `vision_score`, `items` (JSON array of 7 item IDs)
    - SADD `match:participants:{match_id}` with `puuid`
@@ -177,23 +185,23 @@ will re-publish in-flight IDs; the Fetcher handles these idempotently.
 This enables the Discovery service to fan out to new players discovered from processed matches.
 
 **Notes:**
-- All Redis writes in step 4–6 are idempotent (HSET overwrites; SADD and ZADD ignore duplicates)
+- All Redis writes in step 4–6 are idempotent (HSET overwrites; SADD and ZADD NX/GT ignore duplicates; HSETNX in step 5 is a no-op if already set)
 - Participant count varies by game mode; do not assume exactly 10
 
 ---
 
-## 5. Analyzer Service
+## 5. Player Stats Service
 
-**Consumes:** `stream:analyze`
+**Consumes:** `stream:analyze` (consumer group `player-stats-workers`)
 ```json
 { "puuid": "<string>" }
 ```
 
 **Produces:**
-- `player:stats:{puuid}` (Hash) — running raw totals + derived metrics
-- `player:champions:{puuid}` (Sorted Set) — member=champion_name, score=games played
-- `player:roles:{puuid}` (Sorted Set) — member=role, score=games played
-- `player:stats:cursor:{puuid}` (String) — `game_start` epoch ms of last processed match
+- `player:stats:{puuid}` (Hash) — running raw totals + derived metrics; TTL 30 days
+- `player:champions:{puuid}` (Sorted Set) — member=champion_name, score=games played; TTL 30 days
+- `player:roles:{puuid}` (Sorted Set) — member=role, score=games played; TTL 30 days
+- `player:stats:cursor:{puuid}` (String) — `game_start` epoch ms of last processed match; TTL 30 days
 
 **Reads:**
 - `system:halted` — halt check per message
@@ -210,37 +218,54 @@ This enables the Discovery service to fan out to new players discovered from pro
 4. ZRANGEBYSCORE `player:matches:{puuid}` `(cursor` `+inf` (exclusive lower bound)
 5. For each new match:
    - HGETALL `participant:{match_id}:{puuid}`
-   - HINCRBY `player:stats:{puuid}.total_games` by 1
-   - HINCRBY `player:stats:{puuid}.total_wins` by `win` (0 or 1)
-   - HINCRBY `player:stats:{puuid}.total_kills` by `kills`
-   - HINCRBY `player:stats:{puuid}.total_deaths` by `deaths`
-   - HINCRBY `player:stats:{puuid}.total_assists` by `assists`
+   - HINCRBY `player:stats:{puuid}` fields: `total_games`, `total_wins`, `total_kills`, `total_deaths`, `total_assists`
    - ZINCRBY `player:champions:{puuid}` by 1 for `champion_name`
    - ZINCRBY `player:roles:{puuid}` by 1 for `role`
-6. Recompute derived fields:
-   - `win_rate = total_wins / total_games` (guard: total_games > 0)
-   - `avg_kills = total_kills / total_games`
-   - `avg_deaths = total_deaths / total_games`
-   - `avg_assists = total_assists / total_games`
-   - `kda = (total_kills + total_assists) / max(total_deaths, 1)`
-   - HSET all derived fields to `player:stats:{puuid}`
-7. If any new matches were processed: SET `player:stats:cursor:{puuid}` to the highest `game_start` score processed. If zero new matches, cursor is left unchanged.
-8. Release lock via atomic Lua ownership check (safe release):
-   ```lua
-   -- KEYS[1] = lock key, ARGV[1] = worker_id
-   if redis.call("get", KEYS[1]) == ARGV[1] then
-       return redis.call("del", KEYS[1])
-   else
-       return 0
-   end
-   ```
-   If the lock was not owned by this worker (TTL expired, stolen), log a warning but do not error.
+6. Recompute derived fields: `win_rate`, `avg_kills`, `avg_deaths`, `avg_assists`, `kda`; HSET to `player:stats:{puuid}`
+7. If any new matches were processed: SET `player:stats:cursor:{puuid}` to the highest `game_start` score processed
+8. Release lock via atomic Lua ownership check; log warning if lock expired
 9. ACK
 
 **Notes:**
-- Multiple `stream:analyze` messages for the same PUUID arrive when a match is parsed (one per participant × all participants). The cursor naturally deduplicates: the first worker to acquire the lock processes all new matches; subsequent workers find the cursor already up-to-date.
-- Lock TTL default is 300s. This covers even very large histories (3000 matches × ~1ms/Redis call = ~3s).
-- Division-by-zero guards: `total_games > 0` for averages; `max(deaths, 1)` for KDA.
+- Multiple `stream:analyze` messages for the same PUUID arrive (one per participant in the parsed match). The distributed lock + cursor ensures only one worker computes at a time, and subsequent messages find the cursor already up-to-date.
+- Lock TTL default is 300s (`ANALYZER_LOCK_TTL_SECONDS`).
+
+Implementation: `lol-pipeline-player-stats/src/lol_player_stats/main.py`
+
+---
+
+## 5b. Champion Stats Service
+
+**Consumes:** `stream:analyze` (consumer group `champion-stats-workers`)
+```json
+{ "puuid": "<string>" }
+```
+
+**Reads:**
+- `system:halted` — halt check per message
+- `match:{match_id}` (Hash) — `queue_id`, `game_version`, `game_start`, `platform_id`
+- `participant:{match_id}:{puuid}` (Hash) — per-player match stats
+- `player:matches:{puuid}` (Sorted Set) — match IDs for this PUUID
+
+**Produces:**
+- `champion:stats:{champion}:{patch}:{role}` (Hash) — aggregate stats; TTL 90 days
+- `champion:builds:{champion}:{patch}:{role}` (Sorted Set) — item builds by play count; TTL 90 days
+- `champion:runes:{champion}:{patch}:{role}` (Sorted Set) — rune configurations by play count; TTL 90 days
+- `matchup:{a}:{b}:{role}:{patch}` (Hash) — head-to-head matchup stats; TTL 90 days
+- `champion:index` (Sorted Set) — global champion index by games played; TTL 90 days
+- `patch:list` (Sorted Set) — known patches; member=patch string, score=earliest game_start epoch; TTL 90 days
+
+**Behavior:**
+1. Check `system:halted`; if set: do not ACK, exit
+2. Filter: only process matches where `queue_id == "420"` (RANKED_SOLO_QUEUE_ID); skip all others
+3. For each new match from `player:matches:{puuid}`, read `match:{match_id}` and `participant:{match_id}:{puuid}`
+4. Increment `champion:stats` hash fields (games, wins, kills, deaths, assists, etc.)
+5. Update `champion:builds` and `champion:runes` sorted sets
+6. Update `matchup:{a}:{b}:{role}:{patch}` for all opponents faced
+7. Update `champion:index` and `patch:list`
+8. ACK
+
+Implementation: `lol-pipeline-champion-stats/src/lol_champion_stats/main.py`
 
 ---
 
@@ -347,7 +372,7 @@ halted) regardless of system state.
 - Recursive fan-out: Parser adds co-players from every parsed match; Discovery promotes them
 - Newest-first: `GT` scoring in ZADD ensures highest game_start score wins; `ZREVRANGE` iterates from highest score
 - Idle-only: Discovery never competes with user-triggered seeds (`stream:puuid` length gate)
-- User requests (direct seed or UI stats lookup) always take precedence — they publish directly to `stream:puuid` without going through `discover:players`
+- User requests (via `admin track` or UI stats lookup) always take precedence — they publish directly to `stream:puuid` without going through `discover:players`
 
 ---
 
@@ -361,29 +386,38 @@ halted) regardless of system state.
 
 | Command | Description |
 |---------|-------------|
+| `track <GameName#TagLine> [--region]` | Resolve Riot ID → PUUID, check cooldown, register player, publish to `stream:puuid` |
 | `stats <GameName#TagLine> [--region]` | Look up player stats from Redis (resolves Riot ID to PUUID first) |
 | `system-halt` | Set `system:halted = "1"` — all consumers stop on next message |
 | `system-resume` | Clear `system:halted` — resume normal operation |
 | `dlq list` | List all entries in `stream:dlq` |
 | `dlq replay [--all \| <id>]` | Replay DLQ entries back to their original streams |
 | `dlq clear --all` | Delete all DLQ entries |
+| `dlq archive list` | List DLQ archive entries |
+| `dlq archive clear --all` | Clear all DLQ archive entries |
 | `replay-parse --all` | Re-enqueue all parsed matches to `stream:parse` for re-processing |
 | `replay-fetch <match_id>` | Re-enqueue a single match ID to `stream:match_id` |
 | `reseed <GameName#TagLine> [--region]` | Clear cooldown and re-enqueue a player to `stream:puuid` |
-| `recalc-priority` | Recalculate `system:priority_count` by scanning `player:priority:*` keys |
+| `reset-stats <GameName#TagLine> [--region]` | Wipe player stats and re-trigger analysis |
+| `clear-priority [GameName#TagLine \| --all]` | Delete `player:priority:*` keys |
+| `recalc-priority` | Diagnostic: count `player:priority:*` keys (read-only) |
 | `recalc-players` | Rebuilds `players:all` sorted set from existing `player:{puuid}` hashes |
+| `delayed-list` | Show entries in `delayed:messages` sorted set |
+| `delayed-flush --all` | Remove all delayed messages |
+| `backfill-champions` | Reprocess parsed matches to populate champion stats |
+| `opgg-status` | Show OP.GG integration status |
 
 **Reads:**
 - `player:stats:{puuid}` (Hash) — for `stats` command
 - `stream:dlq` (Stream) — for `dlq list` and `dlq replay`
-- `match:status:parsed` (Set) — for `replay-parse`
-- `player:priority:*` (String) — for `recalc-priority`
+- `match:{match_id}` (Hash) — `replay-parse` uses `SCAN match:*` + `HGET match:{id} status` to enumerate parsed matches (RDB-2: global `match:status:parsed` Set no longer written)
+- `player:priority:*` (String) — for `recalc-priority`, `clear-priority`
 
 **Writes:**
 - `system:halted` (String) — `system-halt` / `system-resume`
 - Target streams via XADD — `dlq replay`, `replay-parse`, `replay-fetch`, `reseed`
-- `player:{puuid}` (Hash) — `reseed` clears cooldown fields
-- `system:priority_count` (String) — `recalc-priority`
+- `player:{puuid}` (Hash) — `reseed` clears cooldown fields; `reset-stats` deletes stats keys
+- `player:priority:{puuid}` (String) — `clear-priority` deletes these keys
 
 ---
 
@@ -391,21 +425,57 @@ halted) regardless of system state.
 
 **Port:** `8080`
 
+**Read-only posture:** The UI makes no Redis write calls. Fragment and DDragon/spell caches are in-memory dicts, not Redis. For write operations (DLQ replay, halt/resume), use the Admin UI or the CLI.
+
 **Pages:**
 
 | Route | Description |
 |-------|-------------|
 | `/` | Redirect to `/stats` |
-| `/stats?riot_id=...&region=...` | Player stats — Riot API data + lazy-load match history; auto-seeds player if no data found |
+| `/stats?riot_id=...&region=...` | Player stats — Riot API data + lazy-load match history; shows "not found" message with `admin track` suggestion if no data exists |
 | `/stats/matches?puuid=...&region=...&riot_id=...&page=N` | Fragment: paginated match history rows (lazy-loaded by `/stats`) |
-| `/players?page=N` | Paginated player list. Uses `SCAN` to find all `player:{puuid}` keys, fetches metadata via pipeline, sorts by `seeded_at` descending (newest first). 25 players per page with prev/next navigation. Each row links to the player's `/stats` page. |
+| `/stats/match-detail?match_id=...&puuid=...` | Fragment: full match detail (overview, builds, team analysis, AI score, timeline). Results cached in-memory for 6 hours. |
+| `/players?page=N` | Paginated player list. Reads `players:all` sorted set, fetches metadata via pipeline, supports rank/name/region sort and region filter. 25 players per page with prev/next navigation. Each row links to the player's `/stats` page. |
+| `/champions` | Champion tier list by patch with PBI scoring |
+| `/matchups` | Head-to-head champion matchup lookup with autocomplete |
 | `/streams` | Redis stream depths + system halted status + priority player count |
+| `/dlq` | Dead-letter queue browser with pagination and analytics summary (read-only; replay/clear via Admin UI or CLI) |
 | `/logs` | Merged structured JSON logs from all services with auto-refresh (2s polling). Reads `*.log` files from `LOG_DIR`, tails last 50 lines per file, merges by timestamp via `heapq.merge`. Includes pause/resume button. |
 | `/logs/fragment` | Fragment: raw log lines HTML for AJAX polling (used by `/logs` auto-refresh) |
 
-**Auto-seed:** If `/stats` is requested for a player with no data, the UI automatically publishes to `stream:puuid` (same as a manual seed) and shows a "processing" message. No manual seed step required.
-
 **Match history lazy-load:** After stats are displayed, a "Load match history" link fetches `/stats/matches` (paginated, 20 per page) without reloading the page. Each page shows date, result, champion, role, K/D/A, and game mode.
+
+**Reads:** `players:all`, `player:{puuid}`, `player:stats:{puuid}`, `player:champions:{puuid}`, `player:roles:{puuid}`, `participant:{match_id}:{puuid}`, `match:{match_id}`, `stream:dlq`, stream info via XINFO.
 
 **Env vars:**
 - `LOG_DIR` (default unset; set to `/logs` in Docker via `x-service-defaults` environment; required for `/logs` route to function)
+
+---
+
+## 11. Admin UI
+
+**Port:** `8081`
+
+**Profile:** `tools` — not started by `docker compose up` by default. Start with `docker compose --profile tools up admin-ui`.
+
+**Authentication:** Every request must include the `X-Admin-Secret` header matching the `ADMIN_UI_SECRET` env var. Requests without a valid secret receive `403 Forbidden`.
+
+**Routes:**
+
+| Route | Method | Description |
+|-------|--------|-------------|
+| `/health` | GET | Liveness check — no auth required |
+| `/dlq` | GET | List all entries in `stream:dlq` |
+| `/dlq/replay/{id}` | POST | Replay a single DLQ entry to its original stream |
+| `/dlq/clear` | POST | Delete all entries in `stream:dlq` |
+| `/system/halt` | POST | Set `system:halted = "1"` — all consumers stop |
+| `/system/resume` | POST | DEL `system:halted` — resume normal operation |
+
+**Reads:**
+- `stream:dlq` (Stream) — list and replay
+
+**Writes:**
+- `system:halted` (String) — set on `/system/halt`, deleted on `/system/resume`
+- `stream:dlq` (Stream) — entries deleted on replay and clear
+
+Implementation: `lol-pipeline-admin-ui/src/lol_admin_ui/main.py`

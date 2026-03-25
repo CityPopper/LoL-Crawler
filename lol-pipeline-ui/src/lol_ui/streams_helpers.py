@@ -71,7 +71,7 @@ def _format_group_cells(groups: list[dict[str, Any]]) -> str:
         name = html.escape(_translate_group_name(raw_name))
         pending = g.get("pending", 0) or 0
         lag = g.get("lag")
-        lag_display = str(lag) if lag is not None else "0"
+        lag_display = str(lag) if lag is not None else "?"
         parts.append(
             f"<td>{name}</td>"
             f'<td class="text-right">{pending}</td>'
@@ -132,7 +132,7 @@ async def _streams_fragment_html(r: Any) -> str:
                 name = html.escape(_translate_group_name(raw_name))
                 pending = g.get("pending", 0) or 0
                 lag = g.get("lag")
-                lag_display = str(lag) if lag is not None else "0"
+                lag_display = str(lag) if lag is not None else "?"
                 if i == 0:
                     rowspan = f' rowspan="{len(groups)}"' if len(groups) > 1 else ""
                     rows += (

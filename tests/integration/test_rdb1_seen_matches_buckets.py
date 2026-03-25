@@ -20,7 +20,7 @@ from lol_fetcher.main import _fetch_match
 from lol_pipeline.config import Config
 from lol_pipeline.raw_store import RawStore
 from lol_pipeline.riot_api import RiotClient
-from lol_seed.main import seed
+from lol_admin.cmd_track import seed
 
 
 @pytest.mark.asyncio

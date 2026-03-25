@@ -87,7 +87,7 @@ resumes.
 
 | Redis key | Set by | Cleared by | TTL |
 |-----------|--------|-----------|-----|
-| `player:priority:{puuid}` | Seed via `set_priority()` (before publishing to `stream:puuid`) | Crawler via `clear_priority()` (after all match IDs published) | `PRIORITY_KEY_TTL` (default 86400 s) |
+| `player:priority:{puuid}` | `admin track` via `set_priority()` (before publishing to `stream:puuid`) | Crawler via `clear_priority()` (after all match IDs published) | `PRIORITY_KEY_TTL` (default 86400 s) |
 
 Both operations are performed by atomic Lua scripts in `lol_pipeline.priority` to
 prevent races between concurrent Seed and Crawler instances.
@@ -187,13 +187,13 @@ when no promotion activity occurs, to confirm the service is alive.
 | Key | Type | Written by | Read by | Description |
 |-----|------|-----------|---------|-------------|
 | `discover:players` | Sorted set | Parser | Discovery | Candidate PUUIDs, score = game_start_timestamp |
-| `player:{puuid}` | Hash | Discovery (promote), Seed, UI | Discovery (cache lookup) | Player metadata including `seeded_at`, `game_name`, `tag_line`, `region` |
-| `players:all` | Sorted set | Discovery, Seed, UI | UI `/players` | All known players, score = seeded_at epoch |
+| `player:{puuid}` | Hash | Discovery (promote), `admin track`, UI | Discovery (cache lookup) | Player metadata including `seeded_at`, `game_name`, `tag_line`, `region` |
+| `players:all` | Sorted set | Discovery, `admin track`, UI | UI `/players` | All known players, score = seeded_at epoch |
 | `system:halted` | String | Any service on 403 | All services | Set to `"1"` to stop the pipeline |
 | `player:priority:{puuid}` | String | Seed via `set_priority()` | Crawler via `clear_priority()` | Presence (TTL 86400 s) indicates player is high-priority; Discovery scans for these |
 | `stream:dlq` | Stream | Any service (via `nack_to_dlq`) | Recovery, Discovery (idle check) | Dead-letter queue for failed messages |
 | `delayed:messages` | Sorted set | Recovery | Delay Scheduler, Discovery (idle check) | Messages waiting for delayed re-dispatch |
-| `stream:puuid` | Stream | Discovery, Seed | Crawler | Published player PUUIDs |
+| `stream:puuid` | Stream | Discovery, `admin track` | Crawler | Published player PUUIDs |
 
 ---
 

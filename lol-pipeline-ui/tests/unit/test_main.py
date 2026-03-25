@@ -22,13 +22,11 @@ from lol_ui.champions_helpers import (
     _pbi_tier,
 )
 from lol_ui.constants import (
-    _AUTOSEED_COOLDOWN_S,
     _BADGE_VARIANTS,
     _DELTA_MIN_GAMES,
     _HALT_BANNER,
     _MATCH_BADGE_COLORS,
     _NAME_CACHE_INDEX,
-    _NAME_CACHE_MAX,
     _PBI_MIN_GAMES,
     _PLAYSTYLE_MIN_GAMES,
     _PUUID_RE,
@@ -599,9 +597,8 @@ except ImportError:
 
 class TestAutoSeedPriority:
     @pytest.mark.asyncio
-    @pytest.mark.skipif(not _LUPA_AVAILABLE, reason="lupa required for Lua scripts")
-    async def test_show_stats__auto_seed_sets_priority_high(self):
-        """Auto-seed envelope has priority='high' and sets player:priority key."""
+    async def test_show_stats__not_seeded_returns_warning(self):
+        """STRUCT-3: UI no longer auto-seeds; returns 'not seeded' warning."""
         import fakeredis.aioredis
 
         from lol_ui.routes.stats import show_stats
@@ -617,7 +614,6 @@ class TestAutoSeedPriority:
             api_rate_limit_per_second = 20
             players_all_max = 50000
 
-        request = re.Match  # unused, just need a MagicMock
         from unittest.mock import MagicMock
 
         request = MagicMock()
@@ -626,15 +622,14 @@ class TestAutoSeedPriority:
         request.app.state.cfg = FakeCfg()
         request.app.state.riot = FakeRiot()
 
-        await show_stats(request)
+        resp = await show_stats(request)
+        body = resp.body.decode()
 
-        # Check envelope in stream has priority=manual_20
+        # No auto-seed, no stream publish
         entries = await r.xrange("stream:puuid")
-        assert len(entries) == 1
-        assert entries[0][1]["priority"] == "manual_20"
-
-        # Check priority key was set
-        assert await r.get("player:priority:test-puuid-ui") == "1"
+        assert len(entries) == 0
+        # Warning shown instead
+        assert "No stats available" in body
 
         await r.aclose()
 
@@ -663,61 +658,35 @@ class TestAutoSeedPriority:
 
 
 class TestAutoSeedOrdering:
-    """CQ-12: publish() must happen before hset(seeded_at) in auto-seed path."""
+    """STRUCT-3: Auto-seed removed; UI is now read-only."""
 
     @pytest.mark.asyncio
-    async def test_publish_before_hset_seeded_at(self):
-        """Auto-seed writes to stream:puuid BEFORE marking seeded_at in player hash."""
+    async def test_no_auto_seed__returns_not_seeded_response(self):
+        """UI returns 'not seeded' message instead of auto-seeding."""
         from unittest.mock import AsyncMock, MagicMock
 
         from lol_ui.routes.stats import show_stats
 
-        call_order: list[str] = []
-
-        mock_seed_pipe = AsyncMock()
-        mock_seed_pipe.execute.return_value = [None, None, None]
-
-        mock_seed_ctx = MagicMock()
-        mock_seed_ctx.__aenter__ = AsyncMock(return_value=mock_seed_pipe)
-        mock_seed_ctx.__aexit__ = AsyncMock(return_value=False)
-
         mock_r = AsyncMock()
-        mock_r.get.return_value = None  # no system:halted, no cached puuid
+        mock_r.get.return_value = None  # no cached puuid
         mock_r.hgetall.return_value = {}  # no stats
-        mock_r.set.return_value = True
-        mock_r.pipeline = MagicMock(return_value=mock_seed_ctx)
-
-        original_hset = mock_r.hset
-
-        async def tracking_hset(key, *args, **kwargs):
-            if "seeded_at" in str(kwargs.get("mapping", {})):
-                call_order.append("hset_seeded_at")
-            return await original_hset(key, *args, **kwargs)
-
-        mock_r.hset = tracking_hset
 
         mock_riot = AsyncMock()
         mock_riot.get_account_by_riot_id.return_value = {"puuid": "test-puuid-123"}
 
         mock_cfg = MagicMock()
         mock_cfg.max_attempts = 5
+        mock_cfg.api_rate_limit_per_second = 20
 
-        with patch("lol_ui.routes.stats.publish", new_callable=AsyncMock) as mock_publish:
+        request = MagicMock()
+        request.query_params = {"riot_id": "Test#NA1", "region": "na1"}
+        request.app.state.r = mock_r
+        request.app.state.cfg = mock_cfg
+        request.app.state.riot = mock_riot
 
-            async def tracking_publish(*args, **kwargs):
-                call_order.append("publish")
-
-            mock_publish.side_effect = tracking_publish
-
-            request = MagicMock()
-            request.query_params = {"riot_id": "Test#NA1", "region": "na1"}
-            request.app.state.r = mock_r
-            request.app.state.cfg = mock_cfg
-            request.app.state.riot = mock_riot
-
-            await show_stats(request)
-
-        assert call_order == ["publish", "hset_seeded_at"]
+        resp = await show_stats(request)
+        body = resp.body.decode()
+        assert "No stats available" in body
 
 
 class TestStatsOrder:
@@ -1353,11 +1322,11 @@ class TestRegionValidation:
 
 
 class TestNameCacheTTLInUI:
-    """Fix 7: player:name cache in UI has 24h TTL."""
+    """STRUCT-3: UI no longer writes to name cache (read-only)."""
 
     @pytest.mark.asyncio
-    async def test_name_cache_set_with_ttl(self):
-        """show_stats sets player:name cache with ex=86400."""
+    async def test_name_cache_not_written(self):
+        """STRUCT-3: show_stats no longer writes to the name cache."""
         from unittest.mock import AsyncMock, MagicMock
 
         from lol_ui.routes.stats import show_stats
@@ -1390,11 +1359,8 @@ class TestNameCacheTTLInUI:
 
         await show_stats(request)
 
-        # Verify set was called with cache TTL
-        from lol_pipeline.resolve import CACHE_TTL_S
-
-        # The stats route caches the PUUID via pipeline, not a direct r.set call
-        mock_pipe.set.assert_any_call("player:name:test#na1", "test-puuid-ttl", ex=CACHE_TTL_S)
+        # Name cache write was removed (STRUCT-3: read-only UI)
+        mock_pipe.set.assert_not_called()
 
 
 class TestRegionPreservation:
@@ -1727,8 +1693,8 @@ class TestDlqBrowserEdgeCases:
         resp = await show_dlq(request)
         body = resp.body.decode()
 
-        # Count DLQ data rows via Replay buttons (one per entry)
-        row_count = body.count('action="/dlq/replay/')
+        # Count DLQ data rows (one per entry)
+        row_count = body.count('class="dlq-row"')
         assert row_count == _DLQ_DEFAULT_PER_PAGE
         await r.aclose()
 
@@ -1749,7 +1715,7 @@ class TestStreamsFragmentHtmlEdgeCases:
             await r.xadd("stream:puuid", {"dummy": str(i)})
 
         result = await _streams_fragment_html(r)
-        assert '<td class="text-right">5</td>' in result
+        assert '<td class="text-right">5<div class="depth-bar">' in result
         await r.aclose()
 
     @pytest.mark.asyncio
@@ -1764,7 +1730,7 @@ class TestStreamsFragmentHtmlEdgeCases:
 
         result = await _streams_fragment_html(r)
         assert "delayed:messages" in result
-        assert '<td class="text-right">2</td>' in result
+        assert '<td class="text-right">2<div class="depth-bar">' in result
         await r.aclose()
 
 
@@ -2189,8 +2155,8 @@ class TestDlqCorruptEntries:
         assert "NA1_good2" in body
         # Should still render as a table
         assert "<table>" in body
-        # Exactly 2 DLQ data rows (corrupt entry skipped), counted via Replay buttons
-        assert body.count('action="/dlq/replay/') == 2
+        # Exactly 2 DLQ data rows (corrupt entry skipped)
+        assert body.count('class="dlq-row"') == 2
         await r.aclose()
 
     @pytest.mark.asyncio
@@ -2217,8 +2183,8 @@ class TestDlqCorruptEntries:
 
         assert resp.status_code == 200
         assert "Dead Letter Queue" in body
-        # No DLQ data rows (all corrupt, skipped), counted via Replay buttons
-        assert body.count('action="/dlq/replay/') == 0
+        # No DLQ data rows (all corrupt, skipped)
+        assert body.count('class="dlq-row"') == 0
         await r.aclose()
 
 
@@ -2359,11 +2325,11 @@ class TestRateLimitBeforeRiotCall:
 
 
 class TestNameCacheIndex:
-    """SEC: name cache index tracks entries and caps at _NAME_CACHE_MAX."""
+    """STRUCT-3: Name cache writes removed — UI is read-only."""
 
     @pytest.mark.asyncio
-    async def test_resolve_adds_entry_to_name_cache_index(self):
-        """After resolving a PUUID, the cache key is tracked in name_cache:index."""
+    async def test_resolve_does_not_write_to_name_cache_index(self):
+        """STRUCT-3: After resolving a PUUID, no name cache index writes occur."""
         from unittest.mock import AsyncMock, MagicMock
 
         import fakeredis.aioredis
@@ -2386,38 +2352,28 @@ class TestNameCacheIndex:
         request.app.state.cfg = FakeCfg()
         request.app.state.riot = FakeRiot()
 
-        # Pre-set stats so auto-seed path is not entered
+        # Pre-set stats so not-seeded path is not entered
         await r.hset("player:stats:idx-puuid-1", mapping={"total_games": "1"})
 
         with patch("lol_ui.routes.stats.wait_for_token", new_callable=AsyncMock):
             await show_stats(request)
 
-        # The name_cache:index should have one entry
+        # Read-only UI: name_cache:index should be empty (no writes)
         index_size = await r.zcard(_NAME_CACHE_INDEX)
-        assert index_size == 1
-
-        members = await r.zrange(_NAME_CACHE_INDEX, 0, -1)
-        assert len(members) == 1
-        assert "player:name:" in members[0]
+        assert index_size == 0
 
         await r.aclose()
 
     @pytest.mark.asyncio
-    async def test_name_cache_index_evicts_oldest_when_full(self):
-        """When cache index reaches _NAME_CACHE_MAX, the oldest entry is evicted."""
+    async def test_resolve_puuid_returns_puuid_without_cache_write(self):
+        """STRUCT-3: _resolve_puuid returns PUUID without writing to Redis."""
         from unittest.mock import AsyncMock
 
         import fakeredis.aioredis
 
-        from lol_ui.routes.stats import _resolve_and_cache_puuid
+        from lol_ui.routes.stats import _resolve_puuid
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-
-        # Pre-fill index to _NAME_CACHE_MAX entries
-        for i in range(_NAME_CACHE_MAX):
-            await r.zadd(_NAME_CACHE_INDEX, {f"player:name:user{i}#tag": float(i)})
-
-        assert await r.zcard(_NAME_CACHE_INDEX) == _NAME_CACHE_MAX
 
         class FakeRiot:
             async def get_account_by_riot_id(self, gn, tl, region):
@@ -2427,17 +2383,13 @@ class TestNameCacheIndex:
             api_rate_limit_per_second = 20
 
         with patch("lol_ui.routes.stats.wait_for_token", new_callable=AsyncMock):
-            result = await _resolve_and_cache_puuid(
+            result = await _resolve_puuid(
                 r, FakeRiot(), "NewRiotId#NA1", "NewRiotId", "NA1", "na1", FakeCfg()
             )
 
         assert result == "new-puuid"
-        # Size should still be _NAME_CACHE_MAX (oldest evicted, new one added)
-        assert await r.zcard(_NAME_CACHE_INDEX) == _NAME_CACHE_MAX
-
-        # The oldest entry (score=0.0, "player:name:user0#tag") should be gone
-        members = await r.zrange(_NAME_CACHE_INDEX, 0, 0)
-        assert members[0] != "player:name:user0#tag"
+        # No cache writes
+        assert await r.zcard(_NAME_CACHE_INDEX) == 0
 
         await r.aclose()
 
@@ -2513,12 +2465,11 @@ class TestRegionValidation400:
 
 
 class TestAutoSeedCooldown:
-    """SEC: Auto-seed has per-player cooldown to prevent abuse."""
+    """STRUCT-3: Auto-seed removed — UI returns 'not seeded' message."""
 
     @pytest.mark.asyncio
-    @pytest.mark.skipif(not _LUPA_AVAILABLE, reason="lupa required for Lua scripts")
-    async def test_auto_seed__sets_cooldown_key(self):
-        """After auto-seeding, a cooldown key is set with 5-minute TTL."""
+    async def test_no_stats__returns_not_seeded(self):
+        """When player has no stats, UI returns not-seeded warning."""
         from unittest.mock import AsyncMock, MagicMock
 
         import fakeredis.aioredis
@@ -2543,40 +2494,28 @@ class TestAutoSeedCooldown:
         request.app.state.riot = FakeRiot()
 
         with patch("lol_ui.routes.stats.wait_for_token", new_callable=AsyncMock):
-            await show_stats(request)
+            resp = await show_stats(request)
 
-        # Cooldown key should be set
+        body = resp.body.decode()
+        assert "No stats available" in body
+        # No cooldown key set (no writes)
         cooldown = await r.get("autoseed:cooldown:cooldown-puuid-1")
-        assert cooldown == "1"
-
-        # TTL should be around 300 seconds
-        ttl = await r.ttl("autoseed:cooldown:cooldown-puuid-1")
-        assert 0 < ttl <= _AUTOSEED_COOLDOWN_S
+        assert cooldown is None
 
         await r.aclose()
 
     @pytest.mark.asyncio
-    async def test_auto_seed__blocked_by_cooldown(self):
-        """When cooldown key exists, auto-seed is skipped."""
+    async def test_no_stats__no_stream_publish(self):
+        """When player has no stats, no messages are published to streams."""
         from unittest.mock import AsyncMock, MagicMock
 
         from lol_ui.routes.stats import show_stats
 
-        mock_seed_pipe = AsyncMock()
-        mock_seed_pipe.execute.return_value = [None, "1", None]
-
-        mock_seed_ctx = MagicMock()
-        mock_seed_ctx.__aenter__ = AsyncMock(return_value=mock_seed_pipe)
-        mock_seed_ctx.__aexit__ = AsyncMock(return_value=False)
-
         mock_r = AsyncMock()
         mock_r.get.side_effect = lambda key: {
             "player:name:blocked#na1": "blocked-puuid-123",
-            "system:halted": None,
-            "player:priority:blocked-puuid-123": None,
         }.get(key)
-        mock_r.hgetall.return_value = {}  # no stats, triggers auto-seed path
-        mock_r.pipeline = MagicMock(return_value=mock_seed_ctx)
+        mock_r.hgetall.return_value = {}  # no stats
 
         request = MagicMock()
         request.query_params = {"riot_id": "Blocked#NA1", "region": "na1"}
@@ -2587,33 +2526,20 @@ class TestAutoSeedCooldown:
         resp = await show_stats(request)
         body = resp.body.decode()
 
-        # Should get the "seeded recently" message, not the "Auto-seeded" message
-        assert "seeded recently" in body
-        assert "Auto-seeded" not in body
+        assert "No stats available" in body
 
     @pytest.mark.asyncio
-    async def test_auto_seed__no_cooldown__proceeds(self):
-        """When no cooldown key exists, auto-seed proceeds normally."""
+    async def test_no_stats__read_only_response(self):
+        """When player has no stats, response suggests using admin CLI."""
         from unittest.mock import AsyncMock, MagicMock
 
         from lol_ui.routes.stats import show_stats
 
-        mock_seed_pipe = AsyncMock()
-        mock_seed_pipe.execute.return_value = [None, None, None]
-
-        mock_seed_ctx = MagicMock()
-        mock_seed_ctx.__aenter__ = AsyncMock(return_value=mock_seed_pipe)
-        mock_seed_ctx.__aexit__ = AsyncMock(return_value=False)
-
         mock_r = AsyncMock()
         mock_r.get.side_effect = lambda key: {
             "player:name:proceed#na1": "proceed-puuid-456",
-            "system:halted": None,
-            "player:priority:proceed-puuid-456": None,
         }.get(key)
         mock_r.hgetall.return_value = {}  # no stats
-        mock_r.set.return_value = True
-        mock_r.pipeline = MagicMock(return_value=mock_seed_ctx)
 
         request = MagicMock()
         request.query_params = {"riot_id": "Proceed#NA1", "region": "na1"}
@@ -2621,12 +2547,10 @@ class TestAutoSeedCooldown:
         request.app.state.riot = MagicMock()
         request.app.state.cfg = MagicMock()
 
-        with patch("lol_ui.routes.stats.publish", new_callable=AsyncMock):
-            with patch("lol_ui.routes.stats.set_priority", new_callable=AsyncMock):
-                resp = await show_stats(request)
-
+        resp = await show_stats(request)
         body = resp.body.decode()
-        assert "Auto-seeded" in body
+        assert "No stats available" in body
+        assert "just admin seed" in body
 
 
 # ---------------------------------------------------------------------------
@@ -2920,14 +2844,15 @@ class TestTailFileLargeAndExact:
 
 
 class TestDlqReplayEndpoint:
-    """Phase 9: POST /dlq/replay/{entry_id} replays a DLQ entry."""
+    """STRUCT-3: DLQ replay moved to admin-ui. UI DLQ is read-only."""
 
     @pytest.mark.asyncio
-    async def test_dlq_replay__replays_entry_to_original_stream(self):
+    async def test_dlq_page_is_read_only(self):
+        """DLQ page no longer has replay forms (STRUCT-3)."""
         import fakeredis.aioredis
         from lol_pipeline.models import DLQEnvelope
 
-        from lol_ui.routes.dlq import dlq_replay
+        from lol_ui.routes.dlq import show_dlq
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         dlq = DLQEnvelope(
@@ -2941,205 +2866,24 @@ class TestDlqReplayEndpoint:
             failed_by="fetcher",
             original_stream="stream:match_id",
             original_message_id="orig-rp1",
-            dlq_attempts=1,
-            priority="high",
         )
-        entry_id = await r.xadd("stream:dlq", dlq.to_redis_fields())
+        await r.xadd("stream:dlq", dlq.to_redis_fields())
 
         from unittest.mock import MagicMock
 
         request = MagicMock()
         request.app.state.r = r
-        request.app.state.cfg = MagicMock(max_attempts=5)
+        request.query_params = {}
 
-        resp = await dlq_replay(request, entry_id)
-
-        # Should redirect to /dlq
-        assert resp.status_code == 303
-        assert resp.headers["location"] == "/dlq"
-
-        # DLQ entry should be deleted
-        remaining = await r.xrange("stream:dlq")
-        assert len(remaining) == 0
-
-        # Original stream should have the replayed message
-        replayed = await r.xrange("stream:match_id")
-        assert len(replayed) == 1
-        fields = replayed[0][1]
-        assert fields["source_stream"] == "stream:match_id"
-        assert fields["type"] == "match_id"
-        assert fields["priority"] == "high"
-        assert fields["dlq_attempts"] == "1"
-        payload = json.loads(fields["payload"])
-        assert payload["match_id"] == "NA1_rp1"
-        await r.aclose()
-
-    @pytest.mark.asyncio
-    async def test_dlq_replay__nonexistent_entry_returns_404(self):
-        import fakeredis.aioredis
-
-        from lol_ui.routes.dlq import dlq_replay
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-
-        from unittest.mock import MagicMock
-
-        request = MagicMock()
-        request.app.state.r = r
-        request.app.state.cfg = MagicMock(max_attempts=5)
-
-        resp = await dlq_replay(request, "0-0")
-
-        assert resp.status_code == 404
+        resp = await show_dlq(request)
         body = resp.body.decode()
-        assert "not found" in body.lower()
-        assert "Back to DLQ" in body
-        await r.aclose()
 
-    @pytest.mark.asyncio
-    async def test_dlq_replay__corrupt_entry_returns_422(self):
-        import fakeredis.aioredis
-
-        from lol_ui.routes.dlq import dlq_replay
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        entry_id = await r.xadd("stream:dlq", {"garbage": "data"})
-
-        from unittest.mock import MagicMock
-
-        request = MagicMock()
-        request.app.state.r = r
-        request.app.state.cfg = MagicMock(max_attempts=5)
-
-        resp = await dlq_replay(request, entry_id)
-
-        assert resp.status_code == 422
-        body = resp.body.decode()
-        assert "corrupt" in body.lower()
-        assert "Back to DLQ" in body
-        await r.aclose()
-
-    @pytest.mark.asyncio
-    async def test_dlq_replay__preserves_envelope_fields(self):
-        """Replayed envelope preserves enqueued_at, dlq_attempts, priority."""
-        import fakeredis.aioredis
-        from lol_pipeline.models import DLQEnvelope
-
-        from lol_ui.routes.dlq import dlq_replay
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        dlq = DLQEnvelope(
-            source_stream="stream:dlq",
-            type="dlq",
-            payload={"puuid": "p1", "region": "kr"},
-            attempts=3,
-            max_attempts=5,
-            failure_code="http_5xx",
-            failure_reason="server error",
-            failed_by="parser",
-            original_stream="stream:parse",
-            original_message_id="orig-pres",
-            enqueued_at="2026-01-01T00:00:00+00:00",
-            dlq_attempts=2,
-            priority="normal",
-        )
-        entry_id = await r.xadd("stream:dlq", dlq.to_redis_fields())
-
-        from unittest.mock import MagicMock
-
-        request = MagicMock()
-        request.app.state.r = r
-        request.app.state.cfg = MagicMock(max_attempts=10)
-
-        await dlq_replay(request, entry_id)
-
-        replayed = await r.xrange("stream:parse")
-        assert len(replayed) == 1
-        fields = replayed[0][1]
-        assert fields["enqueued_at"] == "2026-01-01T00:00:00+00:00"
-        assert fields["dlq_attempts"] == "2"
-        assert fields["priority"] == "normal"
-        assert fields["source_stream"] == "stream:parse"
-        assert fields["type"] == "parse"
-        assert fields["max_attempts"] == "10"
-        await r.aclose()
-
-    @pytest.mark.asyncio
-    async def test_dlq_replay__invalid_original_stream__returns_422(self):
-        """S16-1: DLQ entry with unknown original_stream is rejected with 422."""
-        import fakeredis.aioredis
-        from lol_pipeline.models import DLQEnvelope
-
-        from lol_ui.routes.dlq import dlq_replay
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        dlq = DLQEnvelope(
-            source_stream="stream:dlq",
-            type="dlq",
-            payload={"puuid": "p1", "region": "na1"},
-            attempts=1,
-            max_attempts=5,
-            failure_code="http_5xx",
-            failure_reason="server error",
-            failed_by="crawler",
-            original_stream="stream:arbitrary-unknown",
-            original_message_id="orig-x",
-        )
-        entry_id = await r.xadd("stream:dlq", dlq.to_redis_fields())
-
-        from unittest.mock import MagicMock
-
-        request = MagicMock()
-        request.app.state.r = r
-        request.app.state.cfg = MagicMock(max_attempts=5)
-
-        resp = await dlq_replay(request, entry_id)
-
-        assert resp.status_code == 422
-        body = resp.body.decode()
-        assert "invalid" in body.lower() or "refused" in body.lower()
-        # DLQ entry must NOT be deleted — replay was rejected
-        assert await r.xlen("stream:dlq") == 1
-        # Nothing published to unknown stream
-        assert await r.xlen("stream:arbitrary-unknown") == 0
-        await r.aclose()
-
-    @pytest.mark.asyncio
-    async def test_dlq_replay__self_referential__returns_422(self):
-        """S16-1: DLQ entry whose original_stream is stream:dlq itself is rejected."""
-        import fakeredis.aioredis
-        from lol_pipeline.models import DLQEnvelope
-
-        from lol_ui.routes.dlq import dlq_replay
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        dlq = DLQEnvelope(
-            source_stream="stream:dlq",
-            type="dlq",
-            payload={"puuid": "p1", "region": "na1"},
-            attempts=1,
-            max_attempts=5,
-            failure_code="http_5xx",
-            failure_reason="server error",
-            failed_by="crawler",
-            original_stream="stream:dlq",  # self-referential
-            original_message_id="orig-self",
-        )
-        entry_id = await r.xadd("stream:dlq", dlq.to_redis_fields())
-
-        from unittest.mock import MagicMock
-
-        request = MagicMock()
-        request.app.state.r = r
-        request.app.state.cfg = MagicMock(max_attempts=5)
-
-        resp = await dlq_replay(request, entry_id)
-
-        assert resp.status_code == 422
-        body = resp.body.decode()
-        assert "invalid" in body.lower() or "refused" in body.lower()
-        # Entry must remain in DLQ
-        assert await r.xlen("stream:dlq") == 1
+        # Page renders successfully
+        assert resp.status_code == 200
+        # No replay form actions
+        assert 'action="/dlq/replay/' not in body
+        # DLQ entry is shown
+        assert "http_429" in body
         await r.aclose()
 
 
@@ -3185,7 +2929,7 @@ class TestDlqPagination:
         resp = await show_dlq(request)
         body = resp.body.decode()
 
-        row_count = body.count('action="/dlq/replay/')
+        row_count = body.count('class="dlq-row"')
         assert row_count == 5
         assert "Next" not in body
         await r.aclose()
@@ -3222,7 +2966,7 @@ class TestDlqPagination:
         resp = await show_dlq(request)
         body = resp.body.decode()
 
-        row_count = body.count('action="/dlq/replay/')
+        row_count = body.count('class="dlq-row"')
         assert row_count == 10
         assert "Next" in body
         await r.aclose()
@@ -3334,45 +3078,13 @@ class TestMakeReplayEnvelope:
 
 
 class TestAutoSeedPriorityBeforePublish:
-    @pytest.mark.asyncio
-    async def test_auto_seed_player__sets_priority_before_publish(self):
-        """set_priority() must be called BEFORE publish() to avoid race with Crawler."""
-        from unittest.mock import AsyncMock, MagicMock
+    """STRUCT-3: Auto-seed removed from UI."""
 
-        from lol_ui.routes.stats import _auto_seed_player
+    def test_auto_seed_function_removed(self):
+        """STRUCT-3: _auto_seed_player no longer exists in stats module."""
+        from lol_ui.routes import stats
 
-        call_order: list[str] = []
-
-        mock_pipe = AsyncMock()
-        mock_pipe.execute.return_value = [None, None, None]
-
-        mock_pipeline_ctx = MagicMock()
-        mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
-        mock_pipeline_ctx.__aexit__ = AsyncMock(return_value=False)
-
-        mock_r = AsyncMock()
-        mock_r.pipeline = MagicMock(return_value=mock_pipeline_ctx)
-        mock_r.set.return_value = True
-
-        mock_cfg = MagicMock()
-        mock_cfg.max_attempts = 5
-
-        async def tracking_publish(*args, **kwargs):
-            call_order.append("publish")
-
-        async def tracking_set_priority(*args, **kwargs):
-            call_order.append("set_priority")
-
-        with (
-            patch("lol_ui.routes.stats.publish", new_callable=AsyncMock) as mock_pub,
-            patch("lol_ui.routes.stats.set_priority", new_callable=AsyncMock) as mock_sp,
-        ):
-            mock_pub.side_effect = tracking_publish
-            mock_sp.side_effect = tracking_set_priority
-
-            await _auto_seed_player(mock_r, "test-puuid", "GameName", "Tag", "na1", mock_cfg)
-
-        assert call_order == ["set_priority", "publish"]
+        assert not hasattr(stats, "_auto_seed_player")
 
 
 # ---------------------------------------------------------------------------
@@ -3381,40 +3093,13 @@ class TestAutoSeedPriorityBeforePublish:
 
 
 class TestAutoSeedWritesPlayersAll:
-    @pytest.mark.asyncio
-    async def test_auto_seed_player__writes_to_players_all(self):
-        """Auto-seed must call zadd('players:all', {puuid: timestamp})."""
-        from unittest.mock import AsyncMock, MagicMock
+    """STRUCT-3: Auto-seed removed from UI — no writes to players:all."""
 
-        from lol_ui.routes.stats import _auto_seed_player
+    def test_no_auto_seed_in_stats_module(self):
+        """STRUCT-3: _auto_seed_player no longer exists in stats module."""
+        from lol_ui.routes import stats
 
-        mock_pipe = AsyncMock()
-        mock_pipe.execute.return_value = [None, None, None]
-
-        mock_pipeline_ctx = MagicMock()
-        mock_pipeline_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
-        mock_pipeline_ctx.__aexit__ = AsyncMock(return_value=False)
-
-        mock_r = AsyncMock()
-        mock_r.pipeline = MagicMock(return_value=mock_pipeline_ctx)
-        mock_r.set.return_value = True
-
-        mock_cfg = MagicMock()
-        mock_cfg.max_attempts = 5
-
-        with (
-            patch("lol_ui.routes.stats.publish", new_callable=AsyncMock),
-            patch("lol_ui.routes.stats.set_priority", new_callable=AsyncMock),
-        ):
-            await _auto_seed_player(mock_r, "seed-puuid-1", "Player", "NA1", "na1", mock_cfg)
-
-        mock_r.zadd.assert_called_once()
-        args, _kwargs = mock_r.zadd.call_args
-        assert args[0] == "players:all"
-        mapping = args[1]
-        assert "seed-puuid-1" in mapping
-        # Score should be a timestamp (positive number)
-        assert mapping["seed-puuid-1"] > 0
+        assert not hasattr(stats, "_auto_seed_player")
 
 
 # ---------------------------------------------------------------------------
@@ -3613,77 +3298,13 @@ class TestContentSecurityPolicy:
 
 
 class TestDlqReplayEntryIdValidation:
-    """P12-SEC-7: DLQ replay endpoint validates entry_id format."""
+    """STRUCT-3: DLQ replay removed from UI — moved to admin-ui."""
 
-    @pytest.mark.asyncio
-    async def test_dlq_replay__invalid_entry_id__returns_400(self):
-        """Invalid entry_id (not timestamp-sequence) returns 400."""
-        from unittest.mock import MagicMock
+    def test_dlq_route_module_has_no_replay_endpoint(self):
+        """STRUCT-3: dlq_replay no longer exists in the UI routes."""
+        from lol_ui.routes import dlq
 
-        from fastapi import HTTPException
-
-        from lol_ui.routes.dlq import dlq_replay
-
-        request = MagicMock()
-        request.app.state.r = MagicMock()
-        request.app.state.cfg = MagicMock(max_attempts=5)
-
-        with pytest.raises(HTTPException) as exc_info:
-            await dlq_replay(request, "../../etc/passwd")
-        assert exc_info.value.status_code == 400
-
-    @pytest.mark.asyncio
-    async def test_dlq_replay__path_traversal__returns_400(self):
-        """Path traversal attempt in entry_id returns 400."""
-        from unittest.mock import MagicMock
-
-        from fastapi import HTTPException
-
-        from lol_ui.routes.dlq import dlq_replay
-
-        request = MagicMock()
-        request.app.state.r = MagicMock()
-        request.app.state.cfg = MagicMock(max_attempts=5)
-
-        with pytest.raises(HTTPException) as exc_info:
-            await dlq_replay(request, "abc-def")
-        assert exc_info.value.status_code == 400
-
-    @pytest.mark.asyncio
-    async def test_dlq_replay__valid_entry_id__accepted(self):
-        """Valid entry_id (e.g. '1234567890-0') passes validation (not 400)."""
-        from unittest.mock import MagicMock
-
-        import fakeredis.aioredis
-
-        from lol_ui.routes.dlq import dlq_replay
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        request = MagicMock()
-        request.app.state.r = r
-        request.app.state.cfg = MagicMock(max_attempts=5)
-
-        # Valid format, but no entry exists -> should return 404, not 400
-        resp = await dlq_replay(request, "1234567890-0")
-        assert resp.status_code == 404
-        await r.aclose()
-
-    @pytest.mark.asyncio
-    async def test_dlq_replay__script_injection__returns_400(self):
-        """Script injection in entry_id returns 400."""
-        from unittest.mock import MagicMock
-
-        from fastapi import HTTPException
-
-        from lol_ui.routes.dlq import dlq_replay
-
-        request = MagicMock()
-        request.app.state.r = MagicMock()
-        request.app.state.cfg = MagicMock(max_attempts=5)
-
-        with pytest.raises(HTTPException) as exc_info:
-            await dlq_replay(request, "<script>alert(1)</script>")
-        assert exc_info.value.status_code == 400
+        assert not hasattr(dlq, "dlq_replay")
 
 
 class TestLogsAsyncIo:
@@ -4077,7 +3698,7 @@ class TestStatsPageRankDisplay:
         )
         body = resp.body.decode()
 
-        assert "GOLD" in body
+        assert "Gold" in body
         assert "II" in body
         assert "47 LP" in body
         assert "120W" in body
@@ -4369,7 +3990,7 @@ class TestGetChampionIdMap:
 
     @pytest.mark.asyncio
     async def test_champion_id_map__fetches_and_caches(self):
-        """When no cache, fetches from DDragon and stores in Redis."""
+        """When no cache, fetches from DDragon and stores in memory."""
         import fakeredis.aioredis
         import httpx
         import respx
@@ -4393,10 +4014,12 @@ class TestGetChampionIdMap:
             result = await _get_champion_id_map(r)
 
         assert result == {"266": "Aatrox", "103": "Ahri", "238": "Zed"}
-        # Verify it was cached
-        cached = await r.get(_DDRAGON_CHAMPION_IDS_KEY)
+        # Verify it was cached in memory
+        from lol_ui.ddragon import _mem_get
+
+        cached = _mem_get(_DDRAGON_CHAMPION_IDS_KEY)
         assert cached is not None
-        assert json.loads(cached) == result
+        assert cached == result
         await r.aclose()
 
     @pytest.mark.asyncio
@@ -6249,7 +5872,7 @@ class TestRankHistoryHtml:
         entries = [("GOLD:II:75", 1700000000000.0)]
         result = _rank_history_html(entries)
         assert "Rank History" in result
-        assert "GOLD" in result
+        assert "Gold" in result
         assert "II" in result
         assert "75 LP" in result
         assert "<table>" in result
@@ -6260,8 +5883,8 @@ class TestRankHistoryHtml:
             ("GOLD:IV:0", 1700100000000.0),
         ]
         result = _rank_history_html(entries)
-        assert "SILVER" in result
-        assert "GOLD" in result
+        assert "Silver" in result
+        assert "Gold" in result
 
     def test_date_format(self):
         # 1700000000 epoch = 2023-11-14 22:13:20 UTC
@@ -6498,7 +6121,7 @@ class TestRenderChampionRows:
 class TestRenderRoleRows:
     def test_no_breakdown__games_only(self):
         result = _render_role_rows([("TOP", 5.0)], None)
-        assert "TOP" in result
+        assert "Top" in result
         assert "<td>5</td>" in result
 
     def test_with_breakdown(self):

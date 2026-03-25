@@ -9,7 +9,7 @@ import pytest
 import redis.asyncio as aioredis
 
 from helpers import MATCH_ID, PUUID, consume_all, tlog
-from lol_analyzer.main import _analyze_player
+from lol_player_stats.main import handle_player_stats
 from lol_parser.main import _parse_match
 from lol_pipeline.config import Config
 from lol_pipeline.models import MessageEnvelope
@@ -66,7 +66,7 @@ async def test_crash_redelivery(
 
     # Analyze all participants
     for mid, envelope in await consume_all(r, "stream:analyze", "analyzers", "w"):
-        await _analyze_player(r, cfg, "w", mid, envelope, log)
+        await handle_player_stats(r, cfg, "w", mid, envelope, log)
 
     # --- Assertions ---
     assert await r.hget(f"match:{MATCH_ID}", "status") == "parsed"

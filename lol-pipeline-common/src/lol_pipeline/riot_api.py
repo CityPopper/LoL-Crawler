@@ -237,13 +237,37 @@ class RiotClient:
         self._cached_long_limit: int | None = None
         self._limits_last_written_at: float = 0.0
 
-    async def _get(self, url: str) -> Any:
-        # R4: Circuit breaker — reject requests while circuit is open
+    # -- PRIN-COM-3: circuit-breaker increment extracted ----------------------
+
+    def _on_server_error(self) -> None:
+        """Increment the consecutive 5xx counter and open the circuit if threshold hit."""
+        self._consecutive_5xx += 1
+        if self._consecutive_5xx >= self._CIRCUIT_THRESHOLD:
+            self._circuit_open_until = _time.monotonic() + self._CIRCUIT_OPEN_S
+            _log.warning(
+                "circuit breaker opened after %d consecutive 5xx errors",
+                self._consecutive_5xx,
+            )
+
+    # -- PRIN-COM-2: routing resolution extracted -----------------------------
+
+    @staticmethod
+    def _resolve_base(region: str) -> str:
+        """Resolve a platform region to the Riot API base URL."""
+        routing = PLATFORM_TO_REGION.get(region, "americas")
+        return _API_BASE.format(routing=routing)
+
+    # -- PRIN-COM-4: _get decomposed into sub-functions -----------------------
+
+    def _check_circuit_breaker(self) -> None:
+        """Reject requests while the circuit breaker is open."""
         if _time.monotonic() < self._circuit_open_until:
             raise ServerError("circuit breaker open — skipping API call", status_code=503)
 
+    async def _send_request(self, url: str) -> httpx.Response:
+        """Send the authenticated GET request; translate network errors."""
         try:
-            resp = await self._client.get(
+            return await self._client.get(
                 url,
                 headers={
                     "X-Riot-Token": self._api_key,
@@ -251,63 +275,57 @@ class RiotClient:
                 },
             )
         except httpx.RequestError as exc:
-            self._consecutive_5xx += 1
-            if self._consecutive_5xx >= self._CIRCUIT_THRESHOLD:
-                self._circuit_open_until = _time.monotonic() + self._CIRCUIT_OPEN_S
-                _log.warning(
-                    "circuit breaker opened after %d consecutive 5xx errors",
-                    self._consecutive_5xx,
-                )
+            self._on_server_error()
             raise ServerError(f"network error: {exc}") from exc
 
-        # Check for 5xx before _raise_for_status (which raises)
+    def _track_5xx(self, resp: httpx.Response) -> None:
+        """Update circuit-breaker state based on response status."""
         if resp.status_code >= 500:
-            self._consecutive_5xx += 1
-            if self._consecutive_5xx >= self._CIRCUIT_THRESHOLD:
-                self._circuit_open_until = _time.monotonic() + self._CIRCUIT_OPEN_S
-                _log.warning(
-                    "circuit breaker opened after %d consecutive 5xx errors",
-                    self._consecutive_5xx,
-                )
+            self._on_server_error()
         else:
             self._consecutive_5xx = 0
 
-        data = _raise_for_status(resp)
-        # On success, persist actual rate limits so the shared rate limiter uses
-        # the real values for this API key (dev vs production keys differ).
-        if self._r:
-            limits = _parse_app_rate_limit(resp.headers.get("X-App-Rate-Limit", ""))
-            if limits:
-                short, long_ = limits
-                # Only write to Redis when the values change or the TTL needs
-                # refreshing (every _RATE_LIMIT_WRITE_INTERVAL_S).  At 20 req/s
-                # this avoids ~40 redundant SET commands per second.
-                now = _time.monotonic()
-                values_changed = (
-                    short != self._cached_short_limit or long_ != self._cached_long_limit
-                )
-                ttl_stale = now - self._limits_last_written_at >= _RATE_LIMIT_WRITE_INTERVAL_S
-                if values_changed or ttl_stale:
-                    await self._r.set("ratelimit:limits:short", str(short), ex=_RATE_LIMIT_KEY_TTL)
-                    await self._r.set("ratelimit:limits:long", str(long_), ex=_RATE_LIMIT_KEY_TTL)
-                    self._cached_short_limit = short
-                    self._cached_long_limit = long_
-                    self._limits_last_written_at = now
-            # R5: Parse X-App-Rate-Limit-Count for near-limit warnings + throttle hint
-            should_throttle = _check_rate_limit_count(
-                resp.headers.get("X-App-Rate-Limit-Count", ""),
-                limits,
+    async def _persist_rate_limits(self, resp: httpx.Response) -> None:
+        """Parse rate-limit headers from *resp* and persist to Redis if needed."""
+        if not self._r:
+            return
+        limits = _parse_app_rate_limit(resp.headers.get("X-App-Rate-Limit", ""))
+        if limits:
+            short, long_ = limits
+            now = _time.monotonic()
+            values_changed = (
+                short != self._cached_short_limit or long_ != self._cached_long_limit
             )
-            if should_throttle:
-                await self._r.set("ratelimit:throttle", "1", ex=2)
+            ttl_stale = now - self._limits_last_written_at >= _RATE_LIMIT_WRITE_INTERVAL_S
+            if values_changed or ttl_stale:
+                await self._r.set("ratelimit:limits:short", str(short), ex=_RATE_LIMIT_KEY_TTL)
+                await self._r.set("ratelimit:limits:long", str(long_), ex=_RATE_LIMIT_KEY_TTL)
+                self._cached_short_limit = short
+                self._cached_long_limit = long_
+                self._limits_last_written_at = now
+        should_throttle = _check_rate_limit_count(
+            resp.headers.get("X-App-Rate-Limit-Count", ""),
+            limits,
+        )
+        if should_throttle:
+            await self._r.set("ratelimit:throttle", "1", ex=2)
+
+    async def _get(self, url: str) -> Any:
+        """Authenticated GET with circuit breaker, error mapping, and rate-limit persistence."""
+        self._check_circuit_breaker()
+        resp = await self._send_request(url)
+        self._track_5xx(resp)
+        data = _raise_for_status(resp)
+        await self._persist_rate_limits(resp)
         return data
+
+    # -- Public API methods ---------------------------------------------------
 
     async def get_account_by_riot_id(
         self, game_name: str, tag_line: str, region: str
     ) -> dict[str, Any]:
         """Resolve a Riot ID to an account dict containing 'puuid'."""
-        routing = PLATFORM_TO_REGION.get(region, "americas")
-        base = _API_BASE.format(routing=routing)
+        base = self._resolve_base(region)
         safe_name = quote(game_name, safe="")
         safe_tag = quote(tag_line, safe="")
         url = f"{base}/riot/account/v1/accounts/by-riot-id/{safe_name}/{safe_tag}"
@@ -315,8 +333,7 @@ class RiotClient:
 
     async def get_account_by_puuid(self, puuid: str, region: str) -> dict[str, Any]:
         """Resolve a PUUID to an account dict containing 'gameName' and 'tagLine'."""
-        routing = PLATFORM_TO_REGION.get(region, "americas")
-        base = _API_BASE.format(routing=routing)
+        base = self._resolve_base(region)
         url = f"{base}/riot/account/v1/accounts/by-puuid/{puuid}"
         return cast(dict[str, Any], await self._get(url))
 
@@ -324,22 +341,19 @@ class RiotClient:
         self, puuid: str, region: str, start: int = 0, count: int = 100
     ) -> list[str]:
         """Return up to count match IDs for puuid, paginated by start."""
-        routing = PLATFORM_TO_REGION.get(region, "americas")
-        base = _API_BASE.format(routing=routing)
+        base = self._resolve_base(region)
         url = f"{base}/lol/match/v5/matches/by-puuid/{puuid}/ids?start={start}&count={count}"
         return cast(list[str], await self._get(url))
 
     async def get_match(self, match_id: str, region: str) -> dict[str, Any]:
         """Fetch raw match JSON by match_id."""
-        routing = PLATFORM_TO_REGION.get(region, "americas")
-        base = _API_BASE.format(routing=routing)
+        base = self._resolve_base(region)
         url = f"{base}/lol/match/v5/matches/{match_id}"
         return cast(dict[str, Any], await self._get(url))
 
     async def get_match_timeline(self, match_id: str, region: str) -> dict[str, Any]:
         """Fetch match timeline JSON by match_id."""
-        routing = PLATFORM_TO_REGION.get(region, "americas")
-        base = _API_BASE.format(routing=routing)
+        base = self._resolve_base(region)
         url = f"{base}/lol/match/v5/matches/{match_id}/timeline"
         return cast(dict[str, Any], await self._get(url))
 

@@ -9,7 +9,7 @@ import redis.asyncio as aioredis
 import respx
 
 from helpers import GAME_NAME, MATCH_ID, PUUID, REGION, TAG_LINE, consume_all, tlog
-from lol_analyzer.main import _analyze_player
+from lol_player_stats.main import handle_player_stats
 from lol_crawler.main import _crawl_player
 from lol_delay_scheduler.main import _tick
 from lol_fetcher.main import _fetch_match
@@ -19,7 +19,7 @@ from lol_pipeline.models import DLQEnvelope
 from lol_pipeline.raw_store import RawStore
 from lol_pipeline.riot_api import RiotClient
 from lol_recovery.main import _process as recovery_process
-from lol_seed.main import seed
+from lol_admin.cmd_track import seed
 
 
 @pytest.mark.asyncio
@@ -96,7 +96,7 @@ async def test_429_recovery(
 
             # 8. Analyze
             for mid, env in await consume_all(r, "stream:analyze", "analyzers", "w"):
-                await _analyze_player(r, cfg, "w", mid, env, log)
+                await handle_player_stats(r, cfg, "w", mid, env, log)
         finally:
             await riot.close()
 

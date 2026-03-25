@@ -16,13 +16,22 @@ Set to `"1"` by:
 - Recovery continues processing `stream:dlq` while halted to handle the 403 entries already in the DLQ
 
 **Clearing the flag:**
+
+Via CLI:
 ```
 admin system-resume
 ```
-This DELs `system:halted`. When a service detects `system:halted` it exits its worker loop,
+
+Via Admin UI (web interface):
+```
+POST http://localhost:8081/system/resume
+X-Admin-Secret: <ADMIN_UI_SECRET>
+```
+
+Both paths DEL `system:halted`. When a service detects `system:halted` it exits its worker loop,
 causing the container to exit. Docker's `restart: unless-stopped` policy will restart the
 container automatically. On restart, if the flag is still set the service exits again
-immediately; if cleared, it proceeds normally. After `admin system-resume`, force an
+immediately; if cleared, it proceeds normally. After resuming, force an
 immediate restart of all containers with `docker compose restart` rather than waiting for
 Docker's restart backoff.
 

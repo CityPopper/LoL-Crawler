@@ -8,31 +8,14 @@ Provides:
 from __future__ import annotations
 
 import html
-from collections import Counter
 from typing import Any
 
+from lol_ui._helpers import _count_co_players
 from lol_ui.strings import t
 
 _MAX_MATCHES = 20
 _MIN_SHARED_GAMES = 3
 _TOP_N = 5
-
-
-def _count_co_players(
-    participant_sets: list[set[str]],
-    current_puuid: str,
-) -> Counter[str]:
-    """Count how many matches each co-player shares with *current_puuid*.
-
-    Returns a Counter mapping co-player PUUIDs to shared game counts.
-    The current player is excluded from the count.
-    """
-    counter: Counter[str] = Counter()
-    for pset in participant_sets:
-        for p in pset:
-            if p != current_puuid:
-                counter[p] += 1
-    return counter
 
 
 async def _recently_played_html(

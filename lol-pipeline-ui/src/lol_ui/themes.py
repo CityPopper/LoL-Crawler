@@ -4,11 +4,20 @@ from __future__ import annotations
 
 import contextvars
 
+from lol_ui._helpers import get_theme, set_theme_cookie
 from lol_ui.strings import t as _t
 
+# Re-export for backwards compatibility
+__all__ = [
+    "SUPPORTED_THEMES",
+    "_current_theme",
+    "get_theme",
+    "get_theme_css",
+    "set_theme_cookie",
+    "theme_switcher_html",
+]
+
 _DEFAULT_THEME = "default"
-_COOKIE_NAME = "theme"
-_COOKIE_MAX_AGE = 365 * 24 * 3600  # 1 year
 
 SUPPORTED_THEMES: list[str] = ["default", "artpop"]
 
@@ -493,31 +502,6 @@ _THEME_CSS: dict[str, str] = {
 def get_theme_css(theme: str) -> str:
     """Return the CSS override block for the given theme (empty for default)."""
     return _THEME_CSS.get(theme, "")
-
-
-def get_theme(request: object) -> str:
-    """Resolve the active theme from request cookie.
-
-    The *request* object must have a ``cookies`` attribute (dict-like).
-    """
-    cookie_val: str = getattr(request, "cookies", {}).get(_COOKIE_NAME, "")
-    if cookie_val in SUPPORTED_THEMES:
-        return cookie_val
-    return _DEFAULT_THEME
-
-
-def set_theme_cookie(response: object, theme: str) -> None:
-    """Set the ``theme`` cookie on *response*."""
-    safe_theme = theme if theme in SUPPORTED_THEMES else _DEFAULT_THEME
-    set_cookie = getattr(response, "set_cookie", None)
-    if callable(set_cookie):
-        set_cookie(
-            key=_COOKIE_NAME,
-            value=safe_theme,
-            max_age=_COOKIE_MAX_AGE,
-            httponly=True,
-            samesite="lax",
-        )
 
 
 def theme_switcher_html(current_theme: str) -> str:

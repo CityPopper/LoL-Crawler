@@ -35,8 +35,8 @@ just build
 # 5. Start the full stack (Redis + all services)
 just run
 
-# 6. Seed your first player
-just seed "Faker#KR1" kr
+# 6. Track your first player
+just admin track "Faker#KR1" --region kr
 
 # 7. Open the Web UI
 just ui
@@ -61,20 +61,21 @@ All services are defined in `docker-compose.yml` at the repo root. The stack con
 | crawler | Long-running worker | Auto (depends on Redis health) | `unless-stopped` |
 | fetcher | Long-running worker | Auto | `unless-stopped` |
 | parser | Long-running worker | Auto | `unless-stopped` |
-| analyzer | Long-running worker | Auto | `unless-stopped` |
+| player-stats | Long-running worker | Auto | `unless-stopped` |
+| champion-stats | Long-running worker | Auto | `unless-stopped` |
 | recovery | Long-running worker | Auto | `unless-stopped` |
 | delay-scheduler | Long-running worker | Auto | `unless-stopped` |
 | discovery | Long-running worker | Auto | `unless-stopped` |
 | ui | HTTP server (port 8080) | Auto | `unless-stopped` |
-| seed | One-shot tool | On demand (`just seed`) | `no` |
 | admin | One-shot tool | On demand (`just admin`) | `no` |
+| admin-ui | HTTP server (port 8081) | On demand (`--profile tools`) | `unless-stopped` |
 
 **Key design decisions:**
 
 - Services mount source code as volumes — code changes take effect on `just restart <svc>` without rebuilding
 - `lol-pipeline-common` is mounted at `/common` and installed in editable mode at container startup
 - Redis data is persisted to `${REDIS_DATA_DIR:-./redis-data}` on the host
-- Seed and admin use `profiles: ["tools"]` so they do not start with `docker compose up`
+- Admin uses `profiles: ["tools"]` so it does not start with `docker compose up`
 - All services share `.env` via `env_file: .env`
 - All services wait for Redis healthcheck before starting (`depends_on: condition: service_healthy`)
 
@@ -168,7 +169,8 @@ docker compose up --scale fetcher=3 -d
 - `parser` — each instance parses different matches
 
 **Scale with caution:**
-- `analyzer` — uses per-PUUID distributed locks; scaling is safe but offers limited benefit (lock contention means only one worker processes a given PUUID at a time)
+- `player-stats` — uses per-PUUID distributed locks; scaling is safe but offers limited benefit (lock contention means only one worker processes a given PUUID at a time)
+- `champion-stats` — stateless aggregation; safe to scale, though throughput is bounded by `stream:analyze` depth
 
 **Do NOT scale (singletons):**
 - `delay-scheduler` — single instance moves messages from `delayed:messages`; multiple instances cause harmless duplicate deliveries but waste resources
@@ -204,12 +206,13 @@ docker compose exec redis redis-cli ZCARD "ratelimit:long"
 | `MAX_ATTEMPTS` | No | `5` | Delivery attempts before routing to DLQ |
 | `DLQ_MAX_ATTEMPTS` | No | `3` | Recovery attempts before archiving from DLQ |
 | `DELAY_SCHEDULER_INTERVAL_MS` | No | `500` | Delay Scheduler poll interval (ms) |
-| `ANALYZER_LOCK_TTL_SECONDS` | No | `300` | Per-PUUID Analyzer lock TTL (seconds) |
+| `ANALYZER_LOCK_TTL_SECONDS` | No | `300` | Per-PUUID Player Stats lock TTL (seconds) |
 | `API_RATE_LIMIT_PER_SECOND` | No | `20` | Riot API per-second request cap |
 | `DISCOVERY_POLL_INTERVAL_MS` | No | `5000` | Discovery idle-check poll interval (ms) |
 | `DISCOVERY_BATCH_SIZE` | No | `10` | Players promoted per Discovery poll cycle |
 | `LOG_DIR` | No | `/logs` | Directory for rotating JSON log files |
 | `LOG_LEVEL` | No | `INFO` | Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL |
+| `ADMIN_UI_SECRET` | Yes (admin-ui only) | — | Shared secret; must match `X-Admin-Secret` header on all Admin UI requests |
 
 ---
 
@@ -282,15 +285,17 @@ just reset
 # match-data/ on disk is NOT deleted
 ```
 
-### Seed a Player
+### Track a Player
 
 ```bash
-just seed "Faker#KR1" kr
+just admin track "Faker#KR1" --region kr
 # Auto-starts the stack if not running
-# Region defaults to na1 if omitted
+# Region defaults to na1 if --region is omitted
 
-# Or via the Web UI at http://localhost:8080/stats
-# Enter "Faker#KR1" and select region — auto-seeds if no stats exist
+# The Web UI at http://localhost:8080/stats shows a "not found" message
+# with instructions to run 'admin track' — it no longer auto-seeds.
+
+# 'just seed' is a deprecated alias for just admin track
 ```
 
 ### Force Re-Seed (Bypass Cooldown)
@@ -438,7 +443,7 @@ docker compose exec redis redis-cli --scan --pattern "raw:*" | head -20
 **Data corruption (rare):**
 
 ```bash
-# Analyzer stats are fully recomputable
+# Player Stats are fully recomputable
 # 1. Delete corrupted stats
 docker compose exec redis redis-cli --scan --pattern "player:stats:*" \
   | xargs -I{} docker compose exec -T redis redis-cli DEL "{}"
@@ -475,7 +480,7 @@ docker compose exec redis redis-cli XLEN stream:dlq:archive
 ### Data Corruption / Incorrect Stats
 
 ```bash
-# Analyzer stats are incrementally computed and fully recomputable.
+# Player Stats are incrementally computed and fully recomputable.
 # To recompute a single player:
 
 # 1. Get the PUUID
@@ -484,7 +489,7 @@ docker compose exec redis redis-cli GET "player:name:faker#kr1"
 # 2. Delete their stats
 docker compose exec redis redis-cli DEL "player:stats:<puuid>"
 
-# 3. Reset their cursor so Analyzer reprocesses all matches
+# 3. Reset their cursor so Player Stats reprocesses all matches
 docker compose exec redis redis-cli DEL "player:stats:cursor:<puuid>"
 
 # 4. Publish an analyze message
@@ -551,7 +556,8 @@ If `MATCH_DATA_DIR` is set, raw match JSON is persisted to disk independently of
 | `just build` | Build all Docker images |
 | `just run` | Start all services (`docker compose up -d`) |
 | `just up` | `setup` + `build` + `run` in one step |
-| `just seed "ID#TAG" region` | Seed a player (auto-starts stack) |
+| `just admin track "ID#TAG" [--region r]` | Track a player — resolve Riot ID, check cooldown, enqueue (auto-starts stack) |
+| `just seed "ID#TAG" region` | Deprecated alias for `just admin track` |
 | `just stop` | Pause all containers (data preserved) |
 | `just down` | Remove containers (data preserved) |
 | `just reset` | Remove containers AND wipe Redis data |

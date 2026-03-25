@@ -11,6 +11,7 @@ from typing import Any
 
 from lol_ui.constants import _EST_BYTES_PER_LOG_LINE, _LOG_LEVEL_CSS
 from lol_ui.rendering import _empty_state
+from lol_ui.strings import t
 
 # ---------------------------------------------------------------------------
 # Log helpers
@@ -126,3 +127,27 @@ def _merged_log_lines(
     merged = heapq.merge(*per_file_iters, key=lambda x: x[0])
     tail: collections.deque[tuple[str, str]] = collections.deque(merged, maxlen=n)
     return [line for _, line in tail]
+
+
+_SERVICE_NAMES = [
+    "crawler",
+    "fetcher",
+    "parser",
+    "analyzer",
+    "recovery",
+    "delay-scheduler",
+    "discovery",
+    "ui",
+]
+
+
+def _service_filter_html(selected: str) -> str:
+    """Render a <select> dropdown for service filtering."""
+    options = f'<option value="">{t("logs_all_services")}</option>'
+    for svc in _SERVICE_NAMES:
+        sel = " selected" if svc == selected else ""
+        options += f'<option value="{html.escape(svc)}"{sel}>{html.escape(svc)}</option>'
+    return (
+        f'<label for="svc-filter">{t("logs_service_label")}</label>'
+        f'<select id="svc-filter">{options}</select>'
+    )

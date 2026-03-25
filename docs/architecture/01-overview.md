@@ -37,16 +37,17 @@ All services are written in Python. The primary bottleneck is the Riot API rate 
 
 | # | Service           | Role                                              |
 |---|-------------------|---------------------------------------------------|
-| 1 | Seed              | Accepts Riot ID input; resolves PUUID; enqueues   |
-| 2 | Crawler           | Fetches all match IDs for a PUUID; deduplicates   |
-| 3 | Fetcher           | Downloads raw match JSON from Riot API            |
-| 4 | Parser            | Transforms raw JSON into structured Redis records |
-| 5 | Analyzer          | Builds incremental per-player aggregate stats     |
+| 1 | Crawler           | Fetches all match IDs for a PUUID; deduplicates   |
+| 2 | Fetcher           | Downloads raw match JSON from Riot API            |
+| 3 | Parser            | Transforms raw JSON into structured Redis records |
+| 4 | Player Stats      | Builds incremental per-player aggregate stats     |
+| 5 | Champion Stats    | Aggregates ranked solo queue stats per champion, patch, and role |
 | 6 | Recovery          | Processes DLQ; retries or archives failed jobs    |
 | 7 | Delay Scheduler   | Moves ready delayed messages into target streams  |
 | 8 | Discovery         | Promotes co-discovered players to stream:puuid when idle |
-| 9 | Admin             | One-shot CLI tool for operational commands         |
-| 10 | UI               | Web dashboard for stats, streams, and logs        |
+| 9 | Admin             | One-shot CLI tool; includes `track` sub-command for seeding players |
+| 10 | UI               | Read-only web dashboard for stats, streams, and logs (port 8080) |
+| 11 | Admin UI          | Write operations web interface: DLQ management, halt/resume (port 8081; opt-in via `tools` profile) |
 
 Full service contracts: [02-services.md](02-services.md)
 
@@ -62,7 +63,7 @@ Full service contracts: [02-services.md](02-services.md)
 | Backing services     | Redis treated as attached resource via `REDIS_URL`                   |
 | Build / release / run| Separate stages; config injected at runtime, not build time          |
 | Stateless processes  | No local state; all state in Redis                                   |
-| Port binding         | Services are workers (no inbound ports); Seed is CLI-driven          |
+| Port binding         | Services are workers (no inbound ports); seeding via `just admin track` |
 | Concurrency          | Scale each service by running more worker containers                 |
 | Disposability        | Fast startup; safe crash — PEL drain + XAUTOCLAIM reclaims messages  |
 | Dev/prod parity      | Local Redis container in dev; managed Redis URL in prod; same code   |
@@ -87,8 +88,9 @@ Full service contracts: [02-services.md](02-services.md)
 | `MAX_ATTEMPTS`              | Max delivery attempts before DLQ                  | `5`       |
 | `DLQ_MAX_ATTEMPTS`          | Max recovery attempts before DLQ archive          | `3`       |
 | `DELAY_SCHEDULER_INTERVAL_MS` | How often Delay Scheduler polls (ms)            | `500`     |
-| `ANALYZER_LOCK_TTL_SECONDS`   | TTL for the per-PUUID Analyzer lock                       | `300`     |
+| `ANALYZER_LOCK_TTL_SECONDS`   | TTL for the per-PUUID Player Stats lock                   | `300`     |
 | `API_RATE_LIMIT_PER_SECOND`   | Riot API per-second request cap (1s sliding window)       | `20`      |
 | `MATCH_DATA_DIR`              | Directory for write-through raw match JSON disk persistence | `` |
 | `DISCOVERY_POLL_INTERVAL_MS`  | How often Discovery polls for idle pipeline (ms) | `5000` |
 | `DISCOVERY_BATCH_SIZE`        | Max players promoted per idle poll | `10` |
+| `ADMIN_UI_SECRET`             | Shared secret for Admin UI `X-Admin-Secret` header | required (Admin UI only) |

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import contextlib
 import html
+import json
 import math
 from datetime import UTC, datetime
+from typing import Any
 
-from lol_ui._helpers import _safe_int
+from lol_ui._helpers import _kda, _safe_int, _win_rate
 from lol_ui.constants import (
+    VALID_ROLES,
     _DIVERSITY_LABELS,
     _DIVERSITY_MIN_GAMES,
     _RANKED_SPLIT_STARTS,
@@ -61,12 +65,12 @@ class _BreakdownEntry:
         self.games += 1
         if win:
             self.wins += 1
-        self.total_kda += (kills + assists) / max(deaths, 1)
+        self.total_kda += _kda(kills, deaths, assists)
 
     @property
     def win_rate(self) -> float:
         """Win rate as 0-100 percentage."""
-        return round(self.wins / self.games * 100, 1) if self.games else 0.0
+        return round(_win_rate(self.wins, self.games), 1)
 
     @property
     def avg_kda(self) -> float:
@@ -74,7 +78,7 @@ class _BreakdownEntry:
         return round(self.total_kda / self.games, 2) if self.games else 0.0
 
 
-_VALID_ROLES = frozenset({"TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"})
+_VALID_ROLES = VALID_ROLES
 
 
 def _compute_breakdown(
@@ -272,3 +276,111 @@ def _render_role_rows(
 ) -> str:
     """Render role table rows using localized role names."""
     return _render_breakdown_rows(roles, breakdown, domain="role")
+
+
+# ---------------------------------------------------------------------------
+# Type alias used by route-level helpers below and by routes/stats.py
+# ---------------------------------------------------------------------------
+
+_TeamEntry = tuple[str, dict[str, str], dict[str, str], list[str]]
+
+
+# ---------------------------------------------------------------------------
+# Helpers extracted from routes/stats.py (REFACTOR-9)
+# ---------------------------------------------------------------------------
+
+
+def _build_participant_list(
+    blue_team: list[_TeamEntry],
+    red_team: list[_TeamEntry],
+) -> list[dict[str, str]]:
+    """Flatten blue + red team entries into participant dicts with puuid added."""
+    result: list[dict[str, str]] = []
+    for p, part, _player, _build in blue_team:
+        entry = dict(part)
+        entry["puuid"] = p
+        result.append(entry)
+    for p, part, _player, _build in red_team:
+        entry = dict(part)
+        entry["puuid"] = p
+        result.append(entry)
+    return result
+
+
+def _build_minimap_events(
+    kill_events: list[dict[str, object]],
+    gold_data: dict[str, dict[str, object]],
+) -> list[dict[str, object]]:
+    """Map kill events to minimap-ready dicts with killer_team resolved."""
+    champ_team: dict[str, str] = {}
+    for info in gold_data.values():
+        cname = str(info.get("champion_name", ""))
+        tid = str(info.get("team_id", "100"))
+        if cname:
+            champ_team[cname] = tid
+
+    result: list[dict[str, object]] = []
+    for event in kill_events:
+        killer_name = str(event.get("killer", ""))
+        result.append(
+            {
+                "x": event.get("x", 0),
+                "y": event.get("y", 0),
+                "t": event.get("t", 0),
+                "killer": killer_name,
+                "victim": str(event.get("victim", "")),
+                "killer_team": champ_team.get(killer_name, "100"),
+            }
+        )
+    return result
+
+
+def _group_participants(
+    sorted_puuids: list[str],
+    pipe_results: list[Any],
+) -> tuple[list[_TeamEntry], list[_TeamEntry], dict[str, list[str]], int]:
+    """Group pipeline results into blue/red teams, skill orders, and max damage."""
+    blue_team: list[_TeamEntry] = []
+    red_team: list[_TeamEntry] = []
+    skill_orders: dict[str, list[str]] = {}
+    max_damage = 1
+    for i, p in enumerate(sorted_puuids):
+        participant_data: dict[str, str] = pipe_results[i * 4]
+        player_data: dict[str, str] = pipe_results[i * 4 + 1]
+        build_raw: str | None = pipe_results[i * 4 + 2]
+        skills_raw: str | None = pipe_results[i * 4 + 3]
+        if not participant_data:
+            continue
+        try:
+            dmg = int(participant_data.get("total_damage_dealt_to_champions", "0"))
+        except ValueError:
+            dmg = 0
+        max_damage = max(max_damage, dmg)
+        build_order: list[str] = []
+        if build_raw:
+            with contextlib.suppress(json.JSONDecodeError, TypeError):
+                build_order = [str(x) for x in json.loads(build_raw)]
+        if skills_raw:
+            with contextlib.suppress(json.JSONDecodeError, TypeError):
+                parsed = json.loads(skills_raw)
+                if isinstance(parsed, list):
+                    skill_orders[p] = [str(x) for x in parsed]
+        team_id = participant_data.get("team_id", "")
+        entry: _TeamEntry = (p, participant_data, player_data, build_order)
+        if team_id == "200":
+            red_team.append(entry)
+        else:
+            blue_team.append(entry)
+    return blue_team, red_team, skill_orders, max_damage
+
+
+def _has_timeline_data(html_content: str) -> bool:
+    """Check if the rendered HTML has real content worth caching.
+
+    Returns False for placeholder/error responses that should not be cached:
+    - "Match details not available" (empty match:participants)
+    - "Timeline data unavailable" (FETCH_TIMELINE=false)
+    """
+    if "Match details not available" in html_content:
+        return False
+    return "Timeline data unavailable" not in html_content

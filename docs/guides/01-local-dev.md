@@ -33,8 +33,8 @@ just build
 # Start everything
 just run
 
-# Seed a player to verify the pipeline works
-just seed "Faker#KR1" kr
+# Track a player to verify the pipeline works
+just admin track "Faker#KR1" --region kr
 
 # Open the Web UI
 just ui
@@ -106,14 +106,16 @@ podman compose up -d
 # or Docker: RUNTIME=docker just run
 ```
 
-### Seed a Player
+### Track a Player
 
 ```bash
-just seed "Faker#KR1" kr
-# Auto-starts the stack if not running
-# Region defaults to na1 if omitted
+just admin track "Faker#KR1" --region kr
+# Resolves Riot ID, checks cooldown, publishes to stream:puuid
+# Region defaults to na1 if --region is omitted
 
-just seed "Hide on bush#KR1" kr
+just admin track "Hide on bush#KR1" --region kr
+
+# 'just seed' is a deprecated alias for the above
 ```
 
 ### Watch the Pipeline Process
@@ -132,6 +134,22 @@ just logs parser
 # http://localhost:8080/streams — stream depths
 # http://localhost:8080/logs — merged logs with auto-refresh
 ```
+
+### Admin UI (Optional)
+
+The Admin UI is opt-in via the `tools` Docker profile. It is not started by `just run`.
+
+```bash
+# Start the Admin UI alongside the main stack
+docker compose --profile tools up -d admin-ui
+
+# Or start it alone (requires Redis + main services already running)
+docker compose --profile tools up admin-ui
+```
+
+Once running, the Admin UI is available at http://localhost:8081. All requests require the `X-Admin-Secret` header matching the `ADMIN_UI_SECRET` env var set in `.env`.
+
+---
 
 ### Stop / Resume
 

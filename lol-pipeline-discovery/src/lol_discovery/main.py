@@ -12,11 +12,9 @@ import uuid
 from typing import Any
 
 import redis.asyncio as aioredis
-from pydantic import ValidationError
-
+from lol_pipeline._helpers import is_system_halted, register_player
 from lol_pipeline.config import Config
-from lol_pipeline.constants import PLAYER_DATA_TTL_SECONDS
-from lol_pipeline.helpers import is_system_halted, register_player
+from lol_pipeline.constants import DELAYED_MESSAGES_KEY, PLAYER_DATA_TTL_SECONDS, STREAM_PUUID
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.priority import PRIORITY_AUTO_20, has_priority_players
@@ -24,39 +22,26 @@ from lol_pipeline.rate_limiter import wait_for_token
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.riot_api import AuthError, NotFoundError, RiotAPIError, RiotClient
 from lol_pipeline.streams import publish
-from redis.exceptions import RedisError, ResponseError
+from pydantic import ValidationError
+from redis.exceptions import RedisError
 
-from lol_discovery._data import (
-    _DELAYED_KEY,
+from lol_discovery._constants import (
     _DISCOVER_KEY,
-    _STREAM_PUUID,
 )
-from lol_discovery._data import (
+from lol_discovery._constants import (
     _PIPELINE_STREAMS as _PIPELINE_STREAMS,
 )
+from lol_discovery._helpers import (
+    _parse_member as _parse_member,  # noqa: F401 — re-export for tests
+    _should_skip_seeded,
+    _xinfo_groups_safe,
+    init_default_region,
+)
 
 
-def _parse_member(member: str) -> tuple[str, str]:
-    """Split 'puuid:region' member into (puuid, region). Region has no colons."""
-    idx = member.rfind(":")
-    if idx == -1:
-        return member, "na1"
-    puuid, region = member[:idx], member[idx + 1 :]
-    if not puuid:
-        return member, "na1"
-    return puuid, region
-
-
-async def _xinfo_groups_safe(r: aioredis.Redis, stream: str) -> list[Any] | None:
-    """Fetch XINFO GROUPS for a stream, returning None if the stream does not exist."""
-    try:
-        result: list[Any] = await r.xinfo_groups(stream)
-        return result
-    except ResponseError as exc:
-        exc_str = str(exc)
-        if "NOGROUP" not in exc_str and "no such key" not in exc_str:
-            raise
-        return None  # stream does not exist yet — idle for this stream
+def _init_config(cfg: Config) -> None:
+    """Seed module-level defaults from Config."""
+    init_default_region(cfg.default_region)
 
 
 async def _is_idle(r: aioredis.Redis) -> bool:
@@ -82,7 +67,7 @@ async def _is_idle(r: aioredis.Redis) -> bool:
     results = await asyncio.gather(
         has_priority_players(r),
         *[_xinfo_groups_safe(r, stream) for stream in _PIPELINE_STREAMS],
-        r.zcard(_DELAYED_KEY),
+        r.zcard(DELAYED_MESSAGES_KEY),
     )
     # results[0] = has_priority_players
     # results[1..N] = XINFO GROUPS per stream (None = stream missing)
@@ -137,25 +122,6 @@ async def _resolve_names(
     return str(game_name), str(tag_line)
 
 
-def _should_skip_seeded(
-    recrawl_after: str | None,
-    now: float,
-) -> bool | None:
-    """Decide whether to skip a seeded player.
-
-    Returns True to skip (remove from queue), False to skip (not yet due),
-    and None to allow re-promotion (recrawl_after has passed).
-    """
-    if not recrawl_after:
-        return True  # no recrawl scheduled -- skip
-    try:
-        if float(recrawl_after) > now:
-            return True  # not yet due
-    except (ValueError, TypeError):
-        pass
-    return None  # recrawl_after has passed -- allow
-
-
 async def _publish_and_commit(
     r: aioredis.Redis,
     cfg: Config,
@@ -167,7 +133,7 @@ async def _publish_and_commit(
 ) -> None:
     """Publish envelope and atomically update player state."""
     envelope = MessageEnvelope(
-        source_stream=_STREAM_PUUID,
+        source_stream=STREAM_PUUID,
         type="puuid",
         payload={
             "puuid": puuid,
@@ -179,7 +145,7 @@ async def _publish_and_commit(
         priority=PRIORITY_AUTO_20,
         correlation_id=str(uuid.uuid4()),
     )
-    await publish(r, _STREAM_PUUID, envelope)
+    await publish(r, STREAM_PUUID, envelope)
     await register_player(
         r,
         puuid=puuid,
@@ -310,6 +276,7 @@ async def main() -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+    _init_config(cfg)
     r = get_redis(cfg.redis_url)
     riot = RiotClient(cfg.riot_api_key, r=r)
 

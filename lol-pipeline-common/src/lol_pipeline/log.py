@@ -9,8 +9,9 @@ from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
 from typing import Any
 
-_LOG_LEVEL: int = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
-_LOG_DIR: str | None = os.getenv("LOG_DIR")
+# Read from env vars whose defaults match Config.log_level / Config.log_dir.
+_LOG_LEVEL: int = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO)
+_LOG_DIR: str | None = os.environ.get("LOG_DIR") or None
 
 _LOG_RESERVED = frozenset(
     {

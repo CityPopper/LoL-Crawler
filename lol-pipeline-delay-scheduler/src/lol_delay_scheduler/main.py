@@ -12,71 +12,40 @@ from typing import Any
 
 import redis.asyncio as aioredis
 from lol_pipeline.config import Config
+from lol_pipeline.constants import DELAYED_MESSAGES_KEY
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.redis_client import get_redis
-from lol_pipeline.streams import _DEFAULT_MAXLEN
 from redis.exceptions import RedisError
 
-from lol_delay_scheduler._data import (
-    _BATCH_SIZE,
-    _CIRCUIT_OPEN_TTL_S,
-    _DELAYED_KEY,
-    _MAX_MEMBER_FAILURES,
-    _STREAM_MAXLEN,
+from lol_delay_scheduler._circuit_breaker import (
+    _circuit_open as _circuit_open,  # noqa: F401 — re-export for tests
+    _is_circuit_open as _is_circuit_open,  # noqa: F401 — re-export for tests
+    _member_failures as _member_failures,  # noqa: F401 — re-export for tests
+    _record_failure as _record_failure,  # noqa: F401 — re-export for tests
+    _record_success as _record_success,  # noqa: F401 — re-export for tests
+    init_circuit_config,
 )
-from lol_delay_scheduler._data import (
+from lol_delay_scheduler._constants import (
     _DISPATCH_LUA as _DISPATCH_LUA,
 )
+from lol_delay_scheduler._helpers import (
+    _is_envelope_id,
+    _maxlen_for_stream as _maxlen_for_stream,  # noqa: F401 — re-export for tests
+)
 
-# Per-member failure tracking (module-level, survives across ticks).
-_member_failures: dict[str, int] = {}
-# Circuit-open members: member → time.monotonic() when circuit was opened.
-_circuit_open: dict[str, float] = {}
-
-
-def _maxlen_for_stream(stream: str) -> int | None:
-    """Return the maxlen policy for *stream* (None = no trimming)."""
-    return _STREAM_MAXLEN.get(stream, _DEFAULT_MAXLEN)
+# Batch size — set from Config at startup via _init_circuit_config().
+_BATCH_SIZE: int = 100
 
 
-def _is_circuit_open(member: str) -> bool:
-    """Return True if *member* is in the circuit-open set and TTL has not expired."""
-    opened_at = _circuit_open.get(member)
-    if opened_at is None:
-        return False
-    if time.monotonic() - opened_at >= _CIRCUIT_OPEN_TTL_S:
-        # TTL expired — allow a single retry; reset failure counter
-        del _circuit_open[member]
-        _member_failures.pop(member, None)
-        return False
-    return True
-
-
-def _record_failure(member: str, log: logging.Logger) -> None:
-    """Increment failure count; open circuit after _MAX_MEMBER_FAILURES."""
-    count = _member_failures.get(member, 0) + 1
-    _member_failures[member] = count
-    if count >= _MAX_MEMBER_FAILURES:
-        _circuit_open[member] = time.monotonic()
-        log.warning(
-            "circuit opened for member after %d failures — skipping for %ds",
-            count,
-            _CIRCUIT_OPEN_TTL_S,
-            extra={"member_preview": member[:80]},
-        )
-
-
-def _record_success(member: str) -> None:
-    """Clear failure state on successful dispatch."""
-    _member_failures.pop(member, None)
-    _circuit_open.pop(member, None)
-
-
-def _is_envelope_id(member: str) -> bool:
-    """Return True if *member* looks like a UUID envelope ID (not a JSON blob)."""
-    # UUID v4: 36 chars, no braces/brackets.  JSON blobs start with '{'.
-    return len(member) <= 40 and not member.startswith("{")
+def _init_circuit_config(cfg: Config) -> None:
+    """Seed module-level circuit-breaker thresholds and batch size from Config."""
+    global _BATCH_SIZE
+    init_circuit_config(
+        max_failures=cfg.delay_scheduler_max_member_failures,
+        open_ttl_s=cfg.delay_scheduler_circuit_open_ttl_s,
+    )
+    _BATCH_SIZE = cfg.delay_scheduler_batch_size
 
 
 async def _resolve_member(
@@ -99,7 +68,7 @@ async def _resolve_member(
                 "delayed envelope hash missing for ID member — removing",
                 extra={"member": member},
             )
-            await r.zrem(_DELAYED_KEY, member)
+            await r.zrem(DELAYED_MESSAGES_KEY, member)
             _record_success(member)
             return None
         try:
@@ -110,7 +79,7 @@ async def _resolve_member(
                 "corrupt delayed envelope hash — removing",
                 extra={"error": str(exc), "member": member},
             )
-            await r.zrem(_DELAYED_KEY, member)
+            await r.zrem(DELAYED_MESSAGES_KEY, member)
             await r.delete(f"delayed:envelope:{member}")
             _record_success(member)
             return None
@@ -121,16 +90,52 @@ async def _resolve_member(
             return MessageEnvelope.from_redis_fields(fields)
         except (json.JSONDecodeError, KeyError, ValueError) as exc:
             log.error("corrupt delayed member — removing", extra={"error": str(exc)})
-            await r.zrem(_DELAYED_KEY, member)
+            await r.zrem(DELAYED_MESSAGES_KEY, member)
             _record_success(member)
             return None
+
+
+async def _dispatch_member(
+    r: aioredis.Redis,
+    member: str,
+    env: MessageEnvelope,
+    log: logging.Logger,
+) -> None:
+    """Dispatch a single resolved envelope via Lua and log the result."""
+    redis_fields = env.to_redis_fields()
+    ml = _maxlen_for_stream(env.source_stream)
+    flat_args: list[str] = [member, str(ml if ml is not None else 0)]
+    for k, v in redis_fields.items():
+        flat_args.append(str(k))
+        flat_args.append(str(v))
+    result = await r.eval(  # type: ignore[misc]
+        _DISPATCH_LUA,
+        2,
+        env.source_stream,
+        DELAYED_MESSAGES_KEY,
+        *flat_args,
+    )
+    _record_success(member)
+    # Clean up envelope hash for ID-based members (RDB-5)
+    if _is_envelope_id(member):
+        await r.delete(f"delayed:envelope:{member}")
+    if result == 0:
+        log.info(
+            "skipped duplicate dispatch — member already removed",
+            extra={"stream": env.source_stream, "id": env.id},
+        )
+    else:
+        log.info(
+            "dispatched delayed message",
+            extra={"stream": env.source_stream, "id": env.id},
+        )
 
 
 async def _tick(r: aioredis.Redis, log: logging.Logger) -> None:
     now_ms = int(time.time() * 1000)
     while True:
         members: list[Any] = await r.zrangebyscore(
-            _DELAYED_KEY,
+            DELAYED_MESSAGES_KEY,
             0,
             now_ms,
             start=0,
@@ -143,8 +148,10 @@ async def _tick(r: aioredis.Redis, log: logging.Logger) -> None:
         for member in members:
             if _is_circuit_open(member):
                 # Push member to future so it doesn't starve other ready messages.
+                from lol_delay_scheduler._circuit_breaker import _CIRCUIT_OPEN_TTL_S
+
                 future_ms = int(time.time() * 1000) + (_CIRCUIT_OPEN_TTL_S * 1000)
-                await r.zadd(_DELAYED_KEY, {member: future_ms}, xx=True)
+                await r.zadd(DELAYED_MESSAGES_KEY, {member: future_ms}, xx=True)
                 dispatched += 1
                 continue
             env = await _resolve_member(r, member, log)
@@ -152,35 +159,8 @@ async def _tick(r: aioredis.Redis, log: logging.Logger) -> None:
                 dispatched += 1
                 continue
             try:
-                # Atomic XADD + ZREM via Lua — no duplicate delivery on crash.
-                redis_fields = env.to_redis_fields()
-                ml = _maxlen_for_stream(env.source_stream)
-                flat_args: list[str] = [member, str(ml if ml is not None else 0)]
-                for k, v in redis_fields.items():
-                    flat_args.append(str(k))
-                    flat_args.append(str(v))
-                result = await r.eval(  # type: ignore[misc]
-                    _DISPATCH_LUA,
-                    2,
-                    env.source_stream,
-                    _DELAYED_KEY,
-                    *flat_args,
-                )
-                _record_success(member)
+                await _dispatch_member(r, member, env, log)
                 dispatched += 1
-                # Clean up envelope hash for ID-based members (RDB-5)
-                if _is_envelope_id(member):
-                    await r.delete(f"delayed:envelope:{member}")
-                if result == 0:
-                    log.info(
-                        "skipped duplicate dispatch — member already removed",
-                        extra={"stream": env.source_stream, "id": env.id},
-                    )
-                else:
-                    log.info(
-                        "dispatched delayed message",
-                        extra={"stream": env.source_stream, "id": env.id},
-                    )
             except (RedisError, OSError) as exc:
                 _record_failure(member, log)
                 log.error(
@@ -197,6 +177,7 @@ async def main() -> None:
 
     log = get_logger("delay-scheduler")
     cfg = Config()
+    _init_circuit_config(cfg)
     r = get_redis(cfg.redis_url)
 
     loop = asyncio.get_running_loop()

@@ -13,15 +13,16 @@ its own `pyproject.toml` and `Dockerfile`. Infrastructure files (`docker-compose
 | Repository                    | Type           | Contents                                       |
 |-------------------------------|----------------|------------------------------------------------|
 | `lol-pipeline-common`         | Library        | All shared infrastructure (see below)          |
-| `lol-pipeline-seed`           | Service        | Seed Service                                   |
 | `lol-pipeline-crawler`        | Service        | Crawler Service                                |
 | `lol-pipeline-fetcher`        | Service        | Fetcher + Riot API client                      |
 | `lol-pipeline-parser`         | Service        | Parser Service                                 |
-| `lol-pipeline-analyzer`       | Service        | Analyzer Service                               |
+| `lol-pipeline-player-stats`   | Service        | Player Stats Service — incremental per-player aggregates |
+| `lol-pipeline-champion-stats` | Service        | Champion Stats Service — ranked solo queue aggregates per champion/patch/role |
 | `lol-pipeline-recovery`       | Service        | Recovery Service                               |
 | `lol-pipeline-delay-scheduler`| Service        | Delay Scheduler Service                        |
-| `lol-pipeline-ui`             | Service        | Web UI (FastAPI, port 8080)                    |
+| `lol-pipeline-ui`             | Service        | Web UI (FastAPI, port 8080) — read-only        |
 | `lol-pipeline-admin`          | Service        | Admin CLI                                      |
+| `lol-pipeline-admin-ui`       | Service        | Admin UI (FastAPI, port 8081) — write operations; `tools` profile |
 | `lol-pipeline-discovery`      | Service        | Discovery Service — idle fan-out of co-players |
 
 ---
@@ -131,13 +132,14 @@ repo-root/
 ├── lol-pipeline-crawler/
 ├── lol-pipeline-fetcher/
 ├── lol-pipeline-parser/
-├── lol-pipeline-analyzer/
+├── lol-pipeline-player-stats/
+├── lol-pipeline-champion-stats/
 ├── lol-pipeline-recovery/
 ├── lol-pipeline-delay-scheduler/
-├── lol-pipeline-seed/
 ├── lol-pipeline-admin/
+├── lol-pipeline-admin-ui/      ← write operations web interface (port 8081)
 ├── lol-pipeline-discovery/     ← idle fan-out; promotes discovered players
-├── lol-pipeline-ui/
+├── lol-pipeline-ui/            ← read-only web dashboard (port 8080)
 ├── scripts/                    # update_mocks.py, fixtures
 ├── tests/                      # e2e tests
 └── docs/                       # architecture, phases, standards
@@ -162,7 +164,7 @@ Changes to `lol-pipeline-common` are immediately visible without reinstalling.
 just setup          # copies .env.example → .env
 just build          # builds all container images
 just run            # start Redis + all service containers (podman compose up -d)
-just seed "Faker#KR1"
+just admin track "Faker#KR1" --region kr
 just ui             # open web UI at http://localhost:8080
 ```
 
@@ -218,5 +220,5 @@ Infrastructure files live at the repo root:
 | `docker-compose.yml`       | All services (dev mode with volume mounts)           |
 | `docker-compose.prod.yml`  | Prod overrides (no volume mounts, registry images)   |
 | `.env.example`             | All env vars with defaults and comments              |
-| `Justfile`                 | Developer commands (`just seed`, `just logs`, etc.)  |
+| `Justfile`                 | Developer commands (`just admin track`, `just logs`, etc.) |
 | `docs/`                    | Architecture, phases, standards documentation        |

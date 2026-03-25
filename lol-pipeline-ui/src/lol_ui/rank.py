@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 from lol_pipeline.i18n import label as _ilabel
 
-from lol_ui._helpers import _safe_int
+from lol_ui._helpers import _safe_int, _win_rate
 from lol_ui.constants import _RANK_WR_THRESHOLD
 from lol_ui.language import _current_lang
 from lol_ui.summoner_icon import _summoner_icon_html
@@ -25,7 +25,7 @@ def _rank_card_html(rank: dict[str, str]) -> str:
     wins = _safe_int(rank.get("wins"))
     losses = _safe_int(rank.get("losses"))
     total = wins + losses
-    wr = round(wins / total * 100) if total else 0
+    wr = round(_win_rate(wins, total))
     wr_color = "var(--color-win)" if wr >= _RANK_WR_THRESHOLD else "var(--color-loss)"
     return (
         f'<div class="card" style="display:flex;align-items:center;gap:var(--space-md)">'

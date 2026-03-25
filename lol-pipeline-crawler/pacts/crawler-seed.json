@@ -3,7 +3,7 @@
     "name": "lol-pipeline-crawler"
   },
   "provider": {
-    "name": "lol-pipeline-seed"
+    "name": "lol-pipeline-admin"
   },
   "messages": [
     {

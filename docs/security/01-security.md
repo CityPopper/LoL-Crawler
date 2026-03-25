@@ -24,7 +24,7 @@ When moving to bare-metal production, the threat model expands:
 | Unauthorized API access | Medium | Firewall rules; no public-facing ports except UI (if exposed) |
 | Host compromise | Medium | Non-root containers; read-only filesystems; dropped capabilities |
 | Log data leakage | Medium | Structured JSON logs may contain PUUIDs; restrict log access |
-| DDoS via seed endpoint | Medium | Rate-limit the UI/seed endpoint; authentication layer |
+| DDoS via track/UI endpoint | Medium | Rate-limit the UI track endpoint; authentication layer |
 
 ---
 
@@ -215,16 +215,34 @@ FROM python:3.12-slim@sha256:<digest>
 
 ---
 
+## Admin UI Authentication
+
+The Admin UI (`lol-pipeline-admin-ui`, port 8081) gates all write operations behind a shared secret.
+
+| Mechanism | Detail |
+|-----------|--------|
+| Header | `X-Admin-Secret: <value>` required on every request |
+| Config | `ADMIN_UI_SECRET` env var; must be set before starting the service |
+| Failure | Missing or incorrect secret → `403 Forbidden`; no operation performed |
+| Exception | `GET /health` does not require authentication |
+
+**Operations gated by this secret:** DLQ list, DLQ replay, DLQ clear, `system:halted` set/clear.
+
+**Deployment note:** The Admin UI uses the `tools` Docker profile and is not started by default. Expose it only on a private interface in production. The `X-Admin-Secret` value should be treated as a credential — store it in the same secrets manager as `RIOT_API_KEY`.
+
+---
+
 ## Input Validation
 
 ### User-Supplied Input
 
-The pipeline accepts user input at two entry points:
+The pipeline accepts user input at three entry points:
 
 | Entry Point | Input | Validation |
 |-------------|-------|------------|
-| Seed CLI / Web UI | Riot ID (`GameName#TagLine`) | Must contain `#`; split on first `#`; game_name and tag_line must be non-empty |
-| Seed CLI / Web UI | Region string | Must be a key in `PLATFORM_TO_REGION` dict; unknown regions raise `ValueError` |
+| `admin track` CLI | Riot ID (`GameName#TagLine`) | Must contain `#`; split on first `#`; game_name and tag_line must be non-empty |
+| `admin track` CLI | Region string | Must be a key in `PLATFORM_TO_REGION` dict; unknown regions raise `ValueError` |
+| Admin UI HTTP | `X-Admin-Secret` header | Must match `ADMIN_UI_SECRET` env var exactly; constant-time comparison recommended |
 
 ### Redis Key Construction
 
@@ -404,6 +422,8 @@ just scale fetcher 1
 - [ ] Enable Redis TLS (`rediss://` URL scheme)
 - [ ] Bind Redis to private interface only
 - [ ] Move `RIOT_API_KEY` to a secrets manager or systemd credentials
+- [ ] Move `ADMIN_UI_SECRET` to a secrets manager; use a strong random value (32+ bytes)
+- [ ] Bind Admin UI to a private/loopback interface; do not expose port 8081 publicly
 - [ ] Set `.env` file permissions to `600`
 - [ ] Run containers as non-root user
 - [ ] Drop all Linux capabilities (`cap_drop: ALL`)

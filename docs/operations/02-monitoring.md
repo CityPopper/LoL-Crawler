@@ -43,7 +43,7 @@ docker compose exec redis redis-cli ZCARD delayed:messages
 | `stream:puuid` | 0-5 | >20 (crawler not keeping up) | Growing continuously |
 | `stream:match_id` | 0-50 | >200 (fetcher bottleneck) | >1000 |
 | `stream:parse` | 0-10 | >50 (parser not keeping up) | Growing continuously |
-| `stream:analyze` | 0-20 | >100 (analyzer lock contention) | Growing continuously |
+| `stream:analyze` | 0-20 | >100 (player-stats lock contention or champion-stats backlog) | Growing continuously |
 | `stream:dlq` | 0 | >5 (failures accumulating) | >20 |
 | `delayed:messages` | 0-10 | >50 (rate limiting or errors) | >200 |
 
@@ -56,7 +56,8 @@ Messages delivered to a consumer but not yet ACKed. High counts indicate slow pr
 docker compose exec redis redis-cli XPENDING stream:puuid crawlers - + 10
 docker compose exec redis redis-cli XPENDING stream:match_id fetchers - + 10
 docker compose exec redis redis-cli XPENDING stream:parse parsers - + 10
-docker compose exec redis redis-cli XPENDING stream:analyze analyzers - + 10
+docker compose exec redis redis-cli XPENDING stream:analyze player-stats-workers - + 10
+docker compose exec redis redis-cli XPENDING stream:analyze champion-stats-workers - + 10
 docker compose exec redis redis-cli XPENDING stream:dlq recovery - + 10
 ```
 
@@ -111,7 +112,8 @@ docker compose exec redis redis-cli GET system:halted
 | **crawler** | `stream:puuid` drains; `stream:match_id` grows during active crawl | `stream:puuid` grows; no match_id output; CRITICAL in logs |
 | **fetcher** | `stream:match_id` drains; `stream:parse` grows | `stream:match_id` grows; excessive DLQ entries; 403/429 logs |
 | **parser** | `stream:parse` drains; `stream:analyze` grows | `stream:parse` grows; `parse_error` in DLQ |
-| **analyzer** | `stream:analyze` drains; `player:stats:*` keys updated | `stream:analyze` grows; lock contention warnings |
+| **player-stats** | `stream:analyze` drains; `player:stats:*` keys updated | `stream:analyze` grows; lock contention warnings |
+| **champion-stats** | `stream:analyze` drains; `champion:stats:*` keys updated | `stream:analyze` grows; errors in logs |
 | **recovery** | `stream:dlq` drains or stable; delayed messages requeued | `stream:dlq` grows; `stream:dlq:archive` growing rapidly |
 | **delay-scheduler** | `delayed:messages` count stays low; past-due messages moved promptly | `delayed:messages` grows with past-due entries |
 | **discovery** | `discover:players` sorted set shrinks during idle periods | Discovery log shows repeated failures |
@@ -170,7 +172,7 @@ docker compose logs --no-log-prefix fetcher 2>&1 | jq -r 'select(.level == "ERRO
 |---------|---------|--------|
 | `"level": "CRITICAL"` + `system halted` | 403 received; pipeline stopped | Rotate API key; `admin system-resume` |
 | `"level": "ERROR"` + `rate limited` | 429 from Riot API | Normal — check if excessive |
-| `"level": "WARNING"` + `lock contention` | Analyzer could not acquire PUUID lock | Normal — another worker holds the lock |
+| `"level": "WARNING"` + `lock contention` | Player Stats could not acquire PUUID lock | Normal — another worker holds the lock |
 | `"level": "ERROR"` + `parse_error` | Parser failed on a match | Check raw blob; may need parser fix |
 | `"level": "ERROR"` + `nack_to_dlq` | Message routed to DLQ after max attempts | Check DLQ for details |
 | `"level": "INFO"` + `crawl complete` | Crawler finished a PUUID | Normal operation |

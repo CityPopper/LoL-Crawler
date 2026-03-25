@@ -6,7 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
-from lol_pipeline.helpers import is_system_halted
+from lol_pipeline._helpers import is_system_halted
 
 from lol_ui.constants import (
     _HALT_BANNER,

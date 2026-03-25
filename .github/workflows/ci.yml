@@ -65,14 +65,16 @@ jobs:
       matrix:
         service:
           - lol-pipeline-common
-          - lol-pipeline-seed
+
           - lol-pipeline-crawler
           - lol-pipeline-fetcher
           - lol-pipeline-parser
           - lol-pipeline-recovery
           - lol-pipeline-delay-scheduler
-          - lol-pipeline-analyzer
+          - lol-pipeline-player-stats
+          - lol-pipeline-champion-stats
           - lol-pipeline-admin
+          - lol-pipeline-admin-ui
           - lol-pipeline-discovery
           - lol-pipeline-ui
     steps:
@@ -104,13 +106,14 @@ jobs:
       matrix:
         service:
           - lol-pipeline-common
-          - lol-pipeline-seed
+
           - lol-pipeline-crawler
           - lol-pipeline-fetcher
           - lol-pipeline-parser
           - lol-pipeline-recovery
           - lol-pipeline-delay-scheduler
-          - lol-pipeline-analyzer
+          - lol-pipeline-player-stats
+          - lol-pipeline-champion-stats
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -184,14 +187,16 @@ jobs:
       matrix:
         service:
           - lol-pipeline-admin
-          - lol-pipeline-analyzer
+          - lol-pipeline-admin-ui
+          - lol-pipeline-champion-stats
           - lol-pipeline-crawler
           - lol-pipeline-delay-scheduler
           - lol-pipeline-discovery
           - lol-pipeline-fetcher
           - lol-pipeline-parser
+          - lol-pipeline-player-stats
           - lol-pipeline-recovery
-          - lol-pipeline-seed
+
           - lol-pipeline-ui
     steps:
       - uses: actions/checkout@v4

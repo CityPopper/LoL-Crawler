@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import html
 
-from lol_ui._helpers import _safe_int
+from lol_ui._helpers import _kda, _safe_int
 from lol_ui.rendering import _champion_icon_html
 from lol_ui.strings import t
 
@@ -109,7 +109,7 @@ def _player_raw_stats(
     dmg = _safe_int(p.get("total_damage_dealt_to_champions", "0"))
     gold = _safe_int(p.get("gold_earned", "0"))
     return {
-        "kda": (k + a) / max(d, 1),
+        "kda": _kda(k, d, a),
         "damage_share": dmg / max(team_damage.get(tid, 1), 1),
         "gold_share": gold / max(team_gold.get(tid, 1), 1),
         "cs_per_min": (cs + neutral) / duration_min,

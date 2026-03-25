@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 from hypothesis import given, settings
@@ -20,6 +21,13 @@ _match_id = st.text(
 ).filter(lambda s: "\t" not in s and "\n" not in s)
 
 _data_str = st.text(max_size=200).filter(lambda s: "\n" not in s)
+
+# Variant excluding \r for file round-trip tests.  Python's text-mode
+# universal-newline translation silently converts \r\n → \n, which
+# corrupts payloads containing \r when written to a file and read back.
+_data_str_file_safe = st.text(max_size=200).filter(
+    lambda s: "\n" not in s and "\r" not in s
+)
 
 _random_line = st.text(max_size=200).filter(lambda s: "\n" not in s)
 
@@ -140,25 +148,27 @@ class TestSearchBundleFileFuzz:
     @given(match_id=_match_id)
     @settings(max_examples=50)
     def test_search_bundle_file__empty_file__returns_none(
-        self, match_id: str, tmp_path: Path
+        self, match_id: str
     ) -> None:
         """Empty file always returns None."""
-        bundle = tmp_path / "empty.jsonl"
-        bundle.write_text("", encoding="utf-8")
-        assert RawStore._search_bundle_file(bundle, match_id) is None
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            bundle = Path(tmp_dir) / "empty.jsonl"
+            bundle.write_text("", encoding="utf-8")
+            assert RawStore._search_bundle_file(bundle, match_id) is None
 
     @given(data=st.data())
     @settings(max_examples=50)
     def test_search_bundle_file__matching_entry__returns_data(
-        self, data: st.DataObject, tmp_path: Path
+        self, data: st.DataObject
     ) -> None:
         """File containing match_id entry returns the data."""
         match_id = data.draw(_match_id)
-        payload = data.draw(_data_str)
-        bundle = tmp_path / "test.jsonl"
-        bundle.write_text(f"{match_id}\t{payload}\n", encoding="utf-8")
-        result = RawStore._search_bundle_file(bundle, match_id)
-        assert result == payload
+        payload = data.draw(_data_str_file_safe)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            bundle = Path(tmp_dir) / "test.jsonl"
+            bundle.write_text(f"{match_id}\t{payload}\n", encoding="utf-8")
+            result = RawStore._search_bundle_file(bundle, match_id)
+            assert result == payload
 
     @given(
         lines=st.lists(
@@ -170,13 +180,14 @@ class TestSearchBundleFileFuzz:
     )
     @settings(max_examples=50)
     def test_search_bundle_file__corrupted_lines__no_crash(
-        self, lines: list[str], match_id: str, tmp_path: Path
+        self, lines: list[str], match_id: str
     ) -> None:
         """Files with arbitrary corrupted lines never crash, return str or None."""
-        bundle = tmp_path / "corrupt.jsonl"
-        bundle.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        result = RawStore._search_bundle_file(bundle, match_id)
-        assert result is None or isinstance(result, str)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            bundle = Path(tmp_dir) / "corrupt.jsonl"
+            bundle.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            result = RawStore._search_bundle_file(bundle, match_id)
+            assert result is None or isinstance(result, str)
 
     @given(
         noise=st.lists(
@@ -185,16 +196,17 @@ class TestSearchBundleFileFuzz:
             max_size=5,
         ),
         match_id=_match_id,
-        payload=_data_str,
+        payload=_data_str_file_safe,
     )
     @settings(max_examples=50)
     def test_search_bundle_file__mixed_lines__finds_target(
-        self, noise: list[str], match_id: str, payload: str, tmp_path: Path
+        self, noise: list[str], match_id: str, payload: str
     ) -> None:
         """Target entry is found among noise lines."""
         target = f"{match_id}\t{payload}"
         all_lines = noise + [target]
-        bundle = tmp_path / "mixed.jsonl"
-        bundle.write_text("\n".join(all_lines) + "\n", encoding="utf-8")
-        result = RawStore._search_bundle_file(bundle, match_id)
-        assert result == payload
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            bundle = Path(tmp_dir) / "mixed.jsonl"
+            bundle.write_text("\n".join(all_lines) + "\n", encoding="utf-8")
+            result = RawStore._search_bundle_file(bundle, match_id)
+            assert result == payload

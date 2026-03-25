@@ -25,6 +25,7 @@ from lol_ui.routes.language import router as language_router
 from lol_ui.routes.logs import router as logs_router
 from lol_ui.routes.matchups import router as matchups_router
 from lol_ui.routes.players import router as players_router
+from lol_ui.routes.stats import _init_cache_ttl
 from lol_ui.routes.stats import router as stats_router
 from lol_ui.routes.streams import router as streams_router
 from lol_ui.routes.theme import router as theme_router
@@ -45,6 +46,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.cfg = cfg
     app.state.r = get_redis(cfg.redis_url)
     app.state.riot = RiotClient(cfg.riot_api_key, r=app.state.r)
+    _init_cache_ttl()
 
     yield
 

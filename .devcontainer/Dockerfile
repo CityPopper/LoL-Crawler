@@ -37,31 +37,33 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY lol-pipeline-common/pyproject.toml /tmp/common/pyproject.toml
 COPY lol-pipeline-common/src/           /tmp/common/src/
 COPY lol-pipeline-admin/pyproject.toml            /tmp/admin/pyproject.toml
-COPY lol-pipeline-analyzer/pyproject.toml         /tmp/analyzer/pyproject.toml
+COPY lol-pipeline-admin-ui/pyproject.toml        /tmp/admin-ui/pyproject.toml
+COPY lol-pipeline-champion-stats/pyproject.toml    /tmp/champion-stats/pyproject.toml
 COPY lol-pipeline-crawler/pyproject.toml          /tmp/crawler/pyproject.toml
 COPY lol-pipeline-delay-scheduler/pyproject.toml  /tmp/delay-scheduler/pyproject.toml
 COPY lol-pipeline-discovery/pyproject.toml        /tmp/discovery/pyproject.toml
 COPY lol-pipeline-fetcher/pyproject.toml          /tmp/fetcher/pyproject.toml
 COPY lol-pipeline-parser/pyproject.toml           /tmp/parser/pyproject.toml
+COPY lol-pipeline-player-stats/pyproject.toml     /tmp/player-stats/pyproject.toml
 COPY lol-pipeline-recovery/pyproject.toml         /tmp/recovery/pyproject.toml
-COPY lol-pipeline-seed/pyproject.toml             /tmp/seed/pyproject.toml
 COPY lol-pipeline-ui/pyproject.toml               /tmp/ui/pyproject.toml
 RUN --mount=type=cache,target=/root/.cache/uv \
-    for d in admin analyzer crawler delay-scheduler discovery fetcher parser recovery seed ui; do \
+    for d in admin admin-ui champion-stats crawler delay-scheduler discovery fetcher parser player-stats recovery ui; do \
       pkg="lol_$(echo $d | tr - _)"; \
       mkdir -p "/tmp/$d/src/$pkg" && touch "/tmp/$d/src/$pkg/__init__.py"; \
     done \
     && uv pip install --system \
          -e "/tmp/common/[dev]" \
          -e /tmp/admin \
-         -e /tmp/analyzer \
+         -e /tmp/admin-ui \
+         -e /tmp/champion-stats \
          -e /tmp/crawler \
          -e /tmp/delay-scheduler \
          -e /tmp/discovery \
          -e /tmp/fetcher \
          -e /tmp/parser \
+         -e /tmp/player-stats \
          -e /tmp/recovery \
-         -e /tmp/seed \
          -e /tmp/ui
 
 # 5. Precompile bytecode (all cores) + dev user

@@ -9,52 +9,57 @@ from datetime import UTC, datetime
 from typing import Any
 
 import redis.asyncio as aioredis
-from pydantic import ValidationError
-
+from lol_pipeline._helpers import consumer_id, handle_riot_api_error, is_system_halted
 from lol_pipeline.config import Config
-from lol_pipeline.helpers import consumer_id, handle_riot_api_error, is_system_halted
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
+from lol_pipeline.opgg_client import OpggClient
 from lol_pipeline.rate_limiter import wait_for_token
 from lol_pipeline.raw_store import RawStore
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.riot_api import AuthError, NotFoundError, RateLimitError, RiotClient, ServerError
 from lol_pipeline.service import run_consumer
-from lol_pipeline.opgg_client import OpggClient, OpggParseError, OpggRateLimitError
 from lol_pipeline.streams import ack, publish
+from pydantic import ValidationError
 
 _IN_STREAM = "stream:match_id"
 _OUT_STREAM = "stream:parse"
 _GROUP = "fetchers"
-_log = logging.getLogger("fetcher")
+_log = get_logger("fetcher")
 
 
-async def _store_and_publish(
+async def _publish_and_ack(
     r: aioredis.Redis,
-    riot: RiotClient,
-    raw_store: RawStore,
     cfg: Config,
     msg_id: str,
     envelope: MessageEnvelope,
-    data: dict[str, Any],
 ) -> None:
-    """Store fetched match data, update metadata, and publish to parse stream.
-
-    Redis metadata writes (match status, TTL, seen:matches) are batched into a
-    single pipeline round-trip.  ``raw_store.set()`` stays sequential because it
-    checks its return value (SET NX) to gate disk writes and has rollback logic.
-    ``publish()`` and ``ack()`` stay sequential because ack must not run if
-    publish fails (otherwise the message is lost).
-    """
+    """Build a parse envelope, publish to stream:parse, and ACK the inbound message."""
     match_id: str = envelope.payload["match_id"]
     region: str = envelope.payload["region"]
-    puuid: str = envelope.payload.get("puuid", "")
+    out = MessageEnvelope(
+        source_stream=_OUT_STREAM,
+        type="parse",
+        payload={"match_id": match_id, "region": region},
+        max_attempts=cfg.max_attempts,
+        priority=envelope.priority,
+        correlation_id=envelope.correlation_id,
+    )
+    await publish(r, _OUT_STREAM, out)
+    await ack(r, _IN_STREAM, _GROUP, msg_id)
 
-    await raw_store.set(match_id, json.dumps(data))
 
-    # RDB-1: Daily-bucketed seen:matches sets.  Each bucket covers one UTC day
-    # and expires after 8 days.  The crawler checks today's and yesterday's buckets
-    # to decide whether a match has already been fetched.
+async def _write_seen_match(
+    r: aioredis.Redis,
+    cfg: Config,
+    match_id: str,
+) -> None:
+    """Add match_id to the daily-bucketed seen:matches set and set metadata.
+
+    RDB-1: Each bucket covers one UTC day and expires after
+    ``cfg.seen_matches_ttl_seconds``.  The crawler checks today's and
+    yesterday's buckets to decide whether a match has already been fetched.
+    """
     today = datetime.now(tz=UTC).strftime("%Y-%m-%d")
     seen_key = f"seen:matches:{today}"
     match_key = f"match:{match_id}"
@@ -68,36 +73,59 @@ async def _store_and_publish(
     # Only set TTL when none exists (ttl < 0) to avoid resetting expiry on every write.
     seen_ttl: int = results[3]
     if seen_ttl < 0:
-        await r.expire(seen_key, 8 * 86400)  # 8 days
+        await r.expire(seen_key, cfg.seen_matches_ttl_seconds)
 
-    # Timeline fetch (non-critical, doubles API usage)
-    if cfg.fetch_timeline:
-        try:
-            await wait_for_token(
-                r,
-                limit_per_second=cfg.api_rate_limit_per_second,
-                region=region,
-            )
-            timeline = await riot.get_match_timeline(match_id, region)
-            timeline_json = json.dumps(timeline)
-            await r.set(f"raw:timeline:{match_id}", timeline_json, ex=cfg.match_data_ttl_seconds)
-        except Exception:
-            _log.debug(
-                "timeline fetch failed — non-critical",
-                extra={"match_id": match_id},
-                exc_info=True,
-            )
 
-    out = MessageEnvelope(
-        source_stream=_OUT_STREAM,
-        type="parse",
-        payload={"match_id": match_id, "region": region},
-        max_attempts=cfg.max_attempts,
-        priority=envelope.priority,
-        correlation_id=envelope.correlation_id,
-    )
-    await publish(r, _OUT_STREAM, out)
-    await ack(r, _IN_STREAM, _GROUP, msg_id)
+async def _fetch_timeline_if_needed(
+    r: aioredis.Redis,
+    riot: RiotClient,
+    cfg: Config,
+    match_id: str,
+    region: str,
+) -> None:
+    """Fetch and store the match timeline when enabled (non-critical)."""
+    if not cfg.fetch_timeline:
+        return
+    try:
+        await wait_for_token(
+            r,
+            limit_per_second=cfg.api_rate_limit_per_second,
+            region=region,
+        )
+        timeline = await riot.get_match_timeline(match_id, region)
+        timeline_json = json.dumps(timeline)
+        await r.set(f"raw:timeline:{match_id}", timeline_json, ex=cfg.match_data_ttl_seconds)
+    except Exception:
+        _log.debug(
+            "timeline fetch failed — non-critical",
+            extra={"match_id": match_id},
+            exc_info=True,
+        )
+
+
+async def _store_and_publish(
+    r: aioredis.Redis,
+    riot: RiotClient,
+    raw_store: RawStore,
+    cfg: Config,
+    msg_id: str,
+    envelope: MessageEnvelope,
+    data: dict[str, Any],
+) -> None:
+    """Store fetched match data, update metadata, and publish to parse stream.
+
+    ``raw_store.set()`` stays sequential because it checks its return value
+    (SET NX) to gate disk writes and has rollback logic.  ``_publish_and_ack``
+    stays sequential because ack must not run if publish fails.
+    """
+    match_id: str = envelope.payload["match_id"]
+    region: str = envelope.payload["region"]
+    puuid: str = envelope.payload.get("puuid", "")
+
+    await raw_store.set(match_id, json.dumps(data))
+    await _write_seen_match(r, cfg, match_id)
+    await _fetch_timeline_if_needed(r, riot, cfg, match_id, region)
+    await _publish_and_ack(r, cfg, msg_id, envelope)
     _log.info("fetched and stored", extra={"match_id": match_id, "region": region, "puuid": puuid})
 
 
@@ -115,7 +143,7 @@ async def _try_opgg(
         existing = await raw_store.get(match_id)
         if existing is not None:
             return json.loads(existing)
-    except (OpggParseError, OpggRateLimitError, json.JSONDecodeError, Exception) as exc:
+    except Exception as exc:
         log.warning(
             "op.gg fetch failed — falling through to Riot API",
             extra={"match_id": match_id, "error": str(exc)},
@@ -155,16 +183,7 @@ async def _fetch_match(  # noqa: PLR0913
     if await active_store.exists(match_id):
         extras = {"match_id": match_id, "puuid": puuid}
         log.info("raw blob already stored — skipping fetch", extra=extras)
-        out = MessageEnvelope(
-            source_stream=_OUT_STREAM,
-            type="parse",
-            payload={"match_id": match_id, "region": region},
-            max_attempts=cfg.max_attempts,
-            priority=envelope.priority,
-            correlation_id=envelope.correlation_id,
-        )
-        await publish(r, _OUT_STREAM, out)
-        await ack(r, _IN_STREAM, _GROUP, msg_id)
+        await _publish_and_ack(r, cfg, msg_id, envelope)
         log.info("idempotent re-delivery — raw blob exists", extra=extras)
         return
 
@@ -174,7 +193,10 @@ async def _fetch_match(  # noqa: PLR0913
         if opgg_data is not None:
             await _store_and_publish(r, riot, opgg_raw_store, cfg, msg_id, envelope, opgg_data)
             return
-        log.warning("op.gg source failed — falling through to Riot API", extra={"match_id": match_id})
+        log.warning(
+            "op.gg source failed — falling through to Riot API",
+            extra={"match_id": match_id},
+        )
 
     try:
         await wait_for_token(

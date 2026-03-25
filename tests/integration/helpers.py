@@ -16,11 +16,12 @@ import redis.asyncio as aioredis
 _ROOT = Path(__file__).parent.parent.parent
 for name in [
     "lol-pipeline-common",
-    "lol-pipeline-seed",
+    "lol-pipeline-admin",
     "lol-pipeline-crawler",
     "lol-pipeline-fetcher",
     "lol-pipeline-parser",
-    "lol-pipeline-analyzer",
+    "lol-pipeline-player-stats",
+    "lol-pipeline-champion-stats",
     "lol-pipeline-recovery",
     "lol-pipeline-delay-scheduler",
     "lol-pipeline-discovery",

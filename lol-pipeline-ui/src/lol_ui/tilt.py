@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import html
 
-from lol_ui._helpers import _safe_int
+from lol_ui._helpers import _kda, _safe_int
 from lol_ui.constants import (
     _TILT_KDA_THRESHOLD,
     _TILT_MIN_STREAK_DISPLAY,
@@ -58,7 +58,7 @@ def _streak_indicator(matches: list[dict[str, str]]) -> dict[str, object]:
             k = _safe_int(m.get("kills", "0"))
             d = _safe_int(m.get("deaths", "0"))
             a = _safe_int(m.get("assists", "0"))
-            total += (k + a) / max(d, 1)
+            total += _kda(k, d, a)
         return total / len(group)
 
     recent_kda = _avg_kda(matches[:_TILT_RECENT_KDA_COUNT])

@@ -60,16 +60,17 @@ Healthchecks are defined in `docker-compose.yml` (workers use Redis ping, UI use
 
 | Service           | Image Name                          | Module Entry Point               |
 |-------------------|-------------------------------------|----------------------------------|
-| Seed              | `lol-pipeline/seed`                 | `python -m lol_seed`             |
 | Crawler           | `lol-pipeline/crawler`              | `python -m lol_crawler`          |
 | Fetcher           | `lol-pipeline/fetcher`              | `python -m lol_fetcher`          |
 | Parser            | `lol-pipeline/parser`               | `python -m lol_parser`           |
-| Analyzer          | `lol-pipeline/analyzer`             | `python -m lol_analyzer`         |
+| Player Stats      | `lol-pipeline/player-stats`         | `python -m lol_player_stats`     |
+| Champion Stats    | `lol-pipeline/champion-stats`       | `python -m lol_champion_stats`   |
 | Recovery          | `lol-pipeline/recovery`             | `python -m lol_recovery`         |
 | Delay Scheduler   | `lol-pipeline/delay-scheduler`      | `python -m lol_delay_scheduler`  |
 | Discovery         | `lol-pipeline/discovery`            | `python -m lol_discovery`        |
 | Admin CLI         | `lol-pipeline/admin`                | `python -m lol_admin`            |
 | Web UI            | `lol-pipeline/ui`                   | `python -m lol_ui` (port 8080)   |
+| Admin UI          | `lol-pipeline/admin-ui`             | `python -m lol_admin_ui` (port 8081; profile: `tools`) |
 
 ---
 
@@ -140,14 +141,16 @@ In prod, `REDIS_URL` points at the managed instance. Everything else is the same
 
 ---
 
-## Running the Seed (one-shot)
+## Tracking a Player (one-shot)
+
+Player seeding is handled by the `admin track` sub-command. `just seed` is a deprecated alias.
 
 ```bash
 # Via Justfile (uses Podman by default)
-just seed "Faker#KR1"
+just admin track "Faker#KR1" --region kr
 
-# Directly with podman compose
-podman compose run --rm seed "Faker#KR1"
+# Deprecated alias (delegates to admin track with a deprecation notice)
+just seed "Faker#KR1" kr
 ```
 
 ## Running Admin Commands

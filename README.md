@@ -7,24 +7,28 @@ A streaming data pipeline that collects League of Legends match history via the 
 ## Pipeline
 
 ```
-Seed → Crawler → Fetcher → Parser → Analyzer
-                    ↑                    ↕
-               Discovery        Recovery + Delay Scheduler
-                                         ↕
-                                   Web UI (port 8080)
+just admin track "GameName#TagLine"
+         ↓
+stream:puuid → Crawler → Fetcher → Parser → Player Stats
+                  ↑                    ↕         ↕
+             Discovery        Recovery + Delay Scheduler
+                              ↕           Champion Stats
+                        Web UI (port 8080)
 ```
 
 | Service         | Role                                                   |
 |-----------------|--------------------------------------------------------|
-| Seed            | Resolves a Riot ID to PUUID, enqueues the player       |
+| Admin           | CLI tool; `track` sub-command seeds players into the pipeline |
 | Crawler         | Fetches all match IDs for a player, deduplicates       |
 | Fetcher         | Downloads raw match JSON from Riot API                 |
 | Parser          | Transforms raw JSON into structured Redis records      |
-| Analyzer        | Builds incremental per-player aggregate stats          |
+| Player Stats    | Builds incremental per-player aggregate stats          |
+| Champion Stats  | Aggregates ranked solo queue stats per champion, patch, and role |
 | Recovery        | Retries failed messages from the DLQ                   |
 | Delay Scheduler | Moves rate-limit-delayed messages into target streams  |
 | Discovery       | Promotes discovered players into the pipeline when idle |
-| Web UI          | Seed players and view stats at http://localhost:8080   |
+| Web UI          | Read-only dashboard: player stats, pipeline status — http://localhost:8080 |
+| Admin UI        | Write operations: DLQ replay/clear, halt/resume — http://localhost:8081 (opt-in; `--profile tools`) |
 
 ## Screenshots
 
@@ -65,8 +69,8 @@ just up             # setup + build + run (hot reload enabled)
 Podman is the default runtime. To use Docker instead: `RUNTIME=docker just <cmd>`
 
 ```bash
-just up                         # setup + build + run in one step
-just seed "Faker#KR1" kr        # seed a player
+just up                                         # setup + build + run in one step
+just admin track "Faker#KR1" --region kr        # track a player (seed into pipeline)
 just logs fetcher               # tail logs for a service
 just streams                    # inspect Redis stream depths
 just stop                       # pause containers (data preserved)
@@ -92,6 +96,7 @@ Language switcher (EN | 中文) and theme switcher (Default | Art Pop) included.
 ## Admin CLI
 
 ```bash
+just admin track "Faker#KR1" --region kr   # resolve Riot ID, check cooldown, enqueue
 just admin stats "Faker#KR1" --region kr
 just admin dlq list
 just admin dlq replay --all

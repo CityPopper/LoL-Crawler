@@ -3,30 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
 import os
 
 import redis.asyncio as aioredis
 from lol_pipeline.config import Config
 
-from lol_admin._helpers import _print_info, _print_ok
-
-
-def _data_dir_size_mb(data_dir: str) -> float:
-    """Compute the total size of *data_dir* in megabytes.
-
-    Returns 0.0 if the directory does not exist.
-    """
-    if not data_dir or not os.path.isdir(data_dir):
-        return 0.0
-    total = 0
-    for dirpath, _dirnames, filenames in os.walk(data_dir):
-        for fname in filenames:
-            fpath = os.path.join(dirpath, fname)
-            with contextlib.suppress(OSError):
-                total += os.path.getsize(fpath)
-    return round(total / (1024 * 1024), 2)
+from lol_admin._helpers import _data_dir_size_mb, _print_info, _print_ok
 
 
 async def cmd_opgg_status(

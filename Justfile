@@ -37,8 +37,8 @@ setup:
 # 2. Build all Docker images (including one-shot tools)
 build:
     {{DC}} build
-    {{RUNTIME}} build -f Dockerfile.service --build-arg SERVICE_NAME=seed  --build-arg MODULE_NAME=lol_seed  -t {{PROJECT}}-seed:latest  .
     {{RUNTIME}} build -f Dockerfile.service --build-arg SERVICE_NAME=admin --build-arg MODULE_NAME=lol_admin -t {{PROJECT}}-admin:latest .
+    {{RUNTIME}} build -f Dockerfile.service --build-arg SERVICE_NAME=admin-ui --build-arg MODULE_NAME=lol_admin_ui -t {{PROJECT}}-admin-ui:latest .
 
 # 3. Start all services (Redis + workers); idempotent
 run:
@@ -65,15 +65,9 @@ _ensure_up:
 
 # Seed a player into the pipeline (auto-starts stack if needed)
 # e.g. just seed "Faker#KR1" kr
-seed riot_id region="na1": _ensure_up
-    #!/usr/bin/env bash
-    set -euo pipefail
-    # Run directly from image — packages are baked in; avoids compose profile limitations
-    {{RUNTIME}} run --rm \
-        --network "{{PROJECT}}_default" \
-        --env-file .env \
-        {{_image_prefix}}{{PROJECT}}-seed:latest \
-        python -m lol_seed "{{riot_id}}" "{{region}}"
+seed riot_id region="na1":
+    @echo "DEPRECATED: use 'just admin track {{riot_id}} --region {{region}}' instead"
+    just admin track "{{riot_id}}" --region "{{region}}"
 
 # Stop all services (containers paused, data preserved)
 stop:
@@ -222,7 +216,7 @@ status:
 
     echo ""
     echo "=== Last 3 log lines per service ==="
-    for svc in crawler fetcher parser analyzer recovery delay-scheduler discovery ui; do
+    for svc in crawler fetcher parser player-stats champion-stats recovery delay-scheduler discovery ui; do
         echo "--- $svc ---"
         $DC logs --tail=3 "$svc" 2>/dev/null || true
     done
@@ -372,14 +366,15 @@ _reinstall-workspace:
     uv pip install --system -q \
         -e "lol-pipeline-common/[dev]" \
         -e lol-pipeline-admin \
-        -e lol-pipeline-analyzer \
+        -e lol-pipeline-admin-ui \
+        -e lol-pipeline-player-stats \
+        -e lol-pipeline-champion-stats \
         -e lol-pipeline-crawler \
         -e lol-pipeline-delay-scheduler \
         -e lol-pipeline-discovery \
         -e lol-pipeline-fetcher \
         -e lol-pipeline-parser \
         -e lol-pipeline-recovery \
-        -e lol-pipeline-seed \
         -e lol-pipeline-ui
 
 # Run all unit tests inside the dev container (services tested in parallel)

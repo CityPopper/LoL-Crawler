@@ -9,7 +9,7 @@ Detailed documentation lives in `docs/`. Start here for orientation, then follow
 | Doc | Contents |
 |-----|----------|
 | [01 — Overview & 12-Factor](docs/architecture/01-overview.md) | Technology stack, service summary, 12-factor table, env vars |
-| [02 — Service Contracts](docs/architecture/02-services.md) | Input/output contracts for all 10 services |
+| [02 — Service Contracts](docs/architecture/02-services.md) | Input/output contracts for all services |
 | [03 — Streams & Messaging](docs/architecture/03-streams.md) | Stream registry, message envelope, DLQ envelope, delayed message pattern |
 | [04 — Storage](docs/architecture/04-storage.md) | Redis key schema, RawStore abstraction, match status lifecycle |
 | [05 — Rate Limiting](docs/architecture/05-rate-limiting.md) | Dual-window Lua script, acquire_token(), backoff |
@@ -57,17 +57,20 @@ Detailed documentation lives in `docs/`. Start here for orientation, then follow
 ## Data Flow (Summary)
 
 ```
-CLI Input
-    │
+just admin track "GameName#TagLine"   ←── Admin UI (POST /system/halt, /system/resume, /dlq/*)
+    │                                       (port 8081; X-Admin-Secret auth; profile: tools)
     ▼
-Seed ──stream:puuid──► Crawler ──stream:match_id──► Fetcher ──stream:parse──► Parser ──stream:analyze──► Analyzer
-                                                       │                         │
-                                                  RawStore                 Redis (match/
-                                                 (raw blob)                participant/
-                                                                           player data)
+stream:puuid ──► Crawler ──stream:match_id──► Fetcher ──stream:parse──► Parser ──stream:analyze──► Player Stats
+                                                                                                         └──────────────────────────────────────────────────────────────────► Champion Stats
+                                                 │                         │
+                                            RawStore                 Redis (match/
+                                           (raw blob)                participant/
+                                                                      player data)
 Any service failure
     │
     ▼
 stream:dlq ──► Recovery ──► delayed:messages ──► Delay Scheduler ──► source stream (retry)
                         └──► stream:dlq:archive  (exhausted)
+
+Web UI (port 8080) — read-only: reads Redis, streams, logs; no write calls
 ```

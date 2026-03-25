@@ -9,7 +9,7 @@ import pytest
 import redis.asyncio as aioredis
 
 from helpers import PUUID, make_match, tlog
-from lol_analyzer.main import _analyze_player
+from lol_player_stats.main import handle_player_stats
 from lol_parser.main import _parse_match
 from lol_pipeline.config import Config
 from lol_pipeline.models import MessageEnvelope
@@ -59,7 +59,7 @@ async def _analyzer_loop(
             continue
         idle = 0
         for mid, env in msgs:
-            await _analyze_player(r, cfg, worker_id, mid, env, log)
+            await handle_player_stats(r, cfg, worker_id, mid, env, log)
             processed += 1
     return processed
 

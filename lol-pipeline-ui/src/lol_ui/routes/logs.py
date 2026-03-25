@@ -9,41 +9,18 @@ from pathlib import Path
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
+from lol_pipeline._helpers import is_system_halted
 from lol_pipeline.config import Config
-from lol_pipeline.helpers import is_system_halted
 
 from lol_ui.constants import _HALT_BANNER, _LOG_LINES
-from lol_ui.log_helpers import _merged_log_lines, _render_log_lines
+from lol_ui.log_helpers import _merged_log_lines, _render_log_lines, _service_filter_html
 from lol_ui.rendering import _empty_state, _page
 from lol_ui.strings import t
 
 router = APIRouter()
 
-_SERVICE_NAMES = [
-    "crawler",
-    "fetcher",
-    "parser",
-    "analyzer",
-    "recovery",
-    "delay-scheduler",
-    "discovery",
-    "ui",
-]
-
 # Only allow safe service name chars to prevent path traversal
 _SAFE_SERVICE_RE = re.compile(r"^[a-z][a-z0-9-]{0,30}$")
-
-
-def _service_filter_html(selected: str) -> str:
-    """Render a <select> dropdown for service filtering."""
-    options = f'<option value="">{t("logs_all_services")}</option>'
-    for svc in _SERVICE_NAMES:
-        sel = " selected" if svc == selected else ""
-        options += f'<option value="{html.escape(svc)}"{sel}>{html.escape(svc)}</option>'
-    return (
-        f'<label for="svc-filter">{t("logs_service_label")}</label>'
-        f'<select id="svc-filter">{options}</select>'
-    )
 
 
 @router.get("/logs/fragment", response_class=HTMLResponse)

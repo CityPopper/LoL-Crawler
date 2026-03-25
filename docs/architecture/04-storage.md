@@ -10,8 +10,8 @@ All application state lives in Redis. No other database.
 | `player:{puuid}`                     | Hash       | 30d (`PLAYER_DATA_TTL_SECONDS`) | `game_name`, `tag_line`, `region`, `seeded_at` (ISO 8601 string), `last_crawled_at` (ISO 8601 string); TTL refreshed on each crawl/seed |
 | `player:matches:{puuid}`             | Sorted Set | 30d (`PLAYER_DATA_TTL_SECONDS`) | member=`match_id`, score=`game_start` epoch ms; capped at `PLAYER_MATCHES_MAX` entries |
 | `player:stats:{puuid}`               | Hash       | 30d (`PLAYER_DATA_TTL_SECONDS`) | Raw totals: `total_games`, `total_wins`, `total_kills`, `total_deaths`, `total_assists`; Derived: `win_rate`, `avg_kills`, `avg_deaths`, `avg_assists`, `kda` |
-| `player:stats:cursor:{puuid}`        | String     | 30d (`PLAYER_DATA_TTL_SECONDS`) | `game_start` epoch ms of last match processed by Analyzer   |
-| `player:stats:lock:{puuid}`          | String     | 300s (`ANALYZER_LOCK_TTL_SECONDS`) | Worker ID; distributed lock for Analyzer              |
+| `player:stats:cursor:{puuid}`        | String     | 30d (`PLAYER_DATA_TTL_SECONDS`) | `game_start` epoch ms of last match processed by Player Stats   |
+| `player:stats:lock:{puuid}`          | String     | 300s (`ANALYZER_LOCK_TTL_SECONDS`) | Worker ID; distributed lock for Player Stats              |
 | `player:champions:{puuid}`           | Sorted Set | 30d (`PLAYER_DATA_TTL_SECONDS`) | member=`champion_name`, score=games played on that champion |
 | `player:roles:{puuid}`               | Sorted Set | 30d (`PLAYER_DATA_TTL_SECONDS`) | member=`role`, score=games played in that role              |
 | `match:{match_id}`                   | Hash       | 7d (`MATCH_DATA_TTL_SECONDS`)   | `queue_id`, `game_mode`, `game_type`, `game_version`, `patch`, `game_duration`, `game_start`, `platform_id`, `region`, `status` |
@@ -41,17 +41,20 @@ All application state lives in Redis. No other database.
 
 ## Champion Analytics Keys
 
+Written by the Champion Stats service (`lol-pipeline-champion-stats`). Only ranked solo queue matches (`queue_id == "420"`) are aggregated.
+
 | Key Pattern | Type | TTL | Purpose |
 |-------------|------|-----|---------|
-| `champion:stats:{name}:{patch}:{role}` | Hash | 90d (`CHAMPION_STATS_TTL_SECONDS`) | Per-champion aggregate stats (games, wins, kills, deaths, assists, gold, cs, damage, vision, multikills) |
-| `champion:index:{patch}` | Sorted Set | 90d (`CHAMPION_STATS_TTL_SECONDS`) | Champions per patch index; member=`{name}:{role}`, score=games played |
-| `champion:bans:{patch}` | Hash | 90d (`CHAMPION_STATS_TTL_SECONDS`) | Ban counts per champion per patch |
-| `matchup:{A}:{B}:{position}:{patch}` | Hash | 90d (`CHAMPION_STATS_TTL_SECONDS`) | Head-to-head matchup stats between two champions in a lane |
-| `matchup:index:{champ}:{position}:{patch}` | Set | 90d (`CHAMPION_STATS_TTL_SECONDS`) | Matchup index: all opponents faced by a champion in a position |
+| `champion:stats:{champion}:{patch}:{role}` | Hash | 90d (`CHAMPION_STATS_TTL_SECONDS`) | Per-champion aggregate stats (games, wins, kills, deaths, assists, gold, cs, damage, vision, multikills) |
+| `champion:builds:{champion}:{patch}:{role}` | Sorted Set | 90d (`CHAMPION_STATS_TTL_SECONDS`) | Item builds by play count; member=build fingerprint, score=count |
+| `champion:runes:{champion}:{patch}:{role}` | Sorted Set | 90d (`CHAMPION_STATS_TTL_SECONDS`) | Rune configurations by play count; member=rune fingerprint, score=count |
+| `champion:index` | Sorted Set | 90d (`CHAMPION_STATS_TTL_SECONDS`) | Global champion index; member=`{champion}:{patch}:{role}`, score=games played |
+| `matchup:{a}:{b}:{role}:{patch}` | Hash | 90d (`CHAMPION_STATS_TTL_SECONDS`) | Head-to-head matchup stats between champion `a` and champion `b` in a role |
+| `patch:list` | Sorted Set | 90d (`CHAMPION_STATS_TTL_SECONDS`) | Known patches; member=patch string, score=earliest game_start epoch ms |
 | `player:rank:{puuid}` | Hash | 24h (hardcoded) | Player rank data (`tier`, `division`, `lp`, `wins`, `losses`) from league-v4 |
 | `player:rank:history:{puuid}` | Sorted Set | 30d (`PLAYER_DATA_TTL_SECONDS`) | Rank history timeline; member=`{tier}:{division}:{lp}`, score=epoch ms; capped at 500 entries |
 | `crawl:cursor:{puuid}` | String | 10m (hardcoded) | Pagination resume cursor for crawler match-list API calls |
-| `seen:matches` | Set | 7d (`SEEN_MATCHES_TTL_SECONDS`) | Global match dedup set; prevents re-fetching already-known matches |
+| `seen:matches:{YYYY-MM-DD}` | Set | 8d (`SEEN_MATCHES_TTL_SECONDS`) | Daily-bucketed match dedup set; Crawler checks today + yesterday; Fetcher writes to today's bucket on successful fetch; prevents re-fetching already-known matches |
 | `patch:list` | Sorted Set | 90d (`CHAMPION_STATS_TTL_SECONDS`) | Known game patches; member=patch string, score=earliest game_start epoch |
 | `build:{match_id}:{puuid}` | String | 7d (`MATCH_DATA_TTL_SECONDS`) | Item build order from match timeline (when `FETCH_TIMELINE=true`) |
 | `skills:{match_id}:{puuid}` | String | 7d (`MATCH_DATA_TTL_SECONDS`) | Skill order from match timeline (when `FETCH_TIMELINE=true`) |

@@ -15,6 +15,7 @@ _MATCH_ID_RE = re.compile(r"^[A-Z]{2,4}\d?_\d{1,15}$")
 _CHAMPION_NAME_RE = re.compile(r"^[a-zA-Z0-9 '.&-]{1,50}$")
 _PATCH_RE = re.compile(r"^\d{1,2}\.\d{1,2}$")
 _MATCHUP_ROLES = frozenset({"TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"})
+VALID_ROLES = _MATCHUP_ROLES  # canonical name; re-exported for stats_helpers, matchups, etc.
 _STREAM_ENTRY_ID_RE = re.compile(r"^\d+-\d+$")
 
 # ---------------------------------------------------------------------------

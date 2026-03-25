@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from lol_pipeline.i18n import label
 
-from lol_ui._helpers import _safe_int
+from lol_ui._helpers import _champion_datalist, _role_options, _safe_int, _win_rate
 from lol_ui.constants import _CHAMPION_NAME_RE, _MATCHUP_ROLES, _PATCH_RE
 from lol_ui.ddragon import get_champion_name_map, localize_champion_name
 from lol_ui.language import _current_lang
@@ -17,25 +17,6 @@ from lol_ui.rendering import _empty_state, _page
 from lol_ui.strings import t
 
 router = APIRouter()
-
-
-def _champion_datalist(name_map: dict[str, str]) -> str:
-    """Render a ``<datalist>`` element with champion names for autocomplete."""
-    if not name_map:
-        return ""
-    options = "\n".join(
-        f'<option value="{html.escape(display_name)}">'
-        for display_name in sorted(name_map.values())
-    )
-    return f'<datalist id="champion-list">\n{options}\n</datalist>'
-
-
-def _role_options(lang: str) -> str:
-    """Render localized ``<option>`` elements for the role dropdown."""
-    roles = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]
-    return "\n    ".join(
-        f'<option value="{key}">{html.escape(label("role", key, lang))}</option>' for key in roles
-    )
 
 
 @router.get("/matchups", response_class=HTMLResponse)
@@ -117,7 +98,7 @@ async def show_matchups(request: Request) -> HTMLResponse:
 
     games = _safe_int(data.get("games", "0"))
     wins = _safe_int(data.get("wins", "0"))
-    win_rate = (wins / games * 100) if games > 0 else 0.0
+    win_rate = _win_rate(wins, games)
     safe_patch = html.escape(patch)
     wr_a = f"{win_rate:.1f}%"
     wr_b = f"{100 - win_rate:.1f}%"

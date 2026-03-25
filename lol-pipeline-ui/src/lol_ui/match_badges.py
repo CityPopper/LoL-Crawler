@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 
+from lol_ui._helpers import _kda
 from lol_ui.constants import (
     _BADGE_CS_MIN_TIME_PLAYED,
     _BADGE_CS_PER_MIN_THRESHOLD,
@@ -42,7 +43,7 @@ def _match_badges(participant: dict[str, str]) -> list[tuple[str, str]]:
         badges.append(("PENTA", "red"))
 
     # High KDA: (kills + assists) / max(deaths, 1) >= threshold
-    kda = (kills + assists) / max(deaths, 1)
+    kda = _kda(kills, deaths, assists)
     if kda >= _BADGE_KDA_THRESHOLD:
         badges.append(("KDA 5+", "green"))
 

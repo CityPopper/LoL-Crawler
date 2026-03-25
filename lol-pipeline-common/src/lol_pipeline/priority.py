@@ -16,7 +16,8 @@ import redis.asyncio as aioredis
 _PRIORITY_KEY_PREFIX = "player:priority:"
 PRIORITY_ACTIVE_SET = "priority:active"
 
-PRIORITY_KEY_TTL_SECONDS = int(os.getenv("PRIORITY_KEY_TTL", "86400"))
+# Env: PRIORITY_KEY_TTL_SECONDS (matches Config.priority_key_ttl_seconds).
+PRIORITY_KEY_TTL_SECONDS = int(os.environ.get("PRIORITY_KEY_TTL_SECONDS", "86400"))
 # TTL for the priority:active SET itself — slightly longer than individual keys
 # so the SET expires after all member keys have expired naturally.
 PRIORITY_ACTIVE_SET_TTL_SECONDS = PRIORITY_KEY_TTL_SECONDS + 3600  # +1h buffer

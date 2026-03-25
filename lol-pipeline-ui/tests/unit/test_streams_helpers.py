@@ -16,11 +16,10 @@ class TestFormatGroupCells:
         assert "&mdash;" in result
         assert ">0<" in result
 
-    def test_null_lag_returns_zero(self):
-        """When lag is None (null from Redis), display '0', not '?'."""
+    def test_null_lag_returns_question_mark(self):
+        """When lag is None (null from Redis), display '?' — semantically unknown."""
         result = _format_group_cells([{"name": "crawlers", "pending": 0, "lag": None}])
-        assert ">0<" in result
-        assert ">?<" not in result
+        assert ">?<" in result
 
     def test_positive_lag_returns_value(self):
         """When lag is a positive integer, display that value."""

@@ -7,7 +7,7 @@ from urllib.parse import quote as _url_quote
 
 import redis.asyncio as aioredis
 
-from lol_ui._helpers import _safe_int
+from lol_ui._helpers import _kda, _safe_int, _win_rate
 from lol_ui.constants import (
     _CHAMPION_ROLE_LABELS,
     _DELTA_DISPLAY_THRESHOLD,
@@ -279,8 +279,8 @@ async def _build_champion_rows(
         kills = _safe_int(stats.get("kills"))
         deaths = _safe_int(stats.get("deaths"))
         assists = _safe_int(stats.get("assists"))
-        wr = (wins / games * 100) if games > 0 else 0.0
-        avg_kda = (kills + assists) / max(deaths, 1) if games > 0 else 0.0
+        wr = _win_rate(wins, games)
+        avg_kda = _kda(kills, deaths, assists) if games > 0 else 0.0
         avg_cs = _safe_int(stats.get("cs")) / max(games, 1)
         pr = (games / total_all * 100) if total_all > 0 else 0.0
         # Ban rate: look up champion numeric ID, then count from ban hash
@@ -323,11 +323,11 @@ def _champion_detail_html(  # noqa: PLR0913
     icon = _champion_icon_html(name, version)
     games = _safe_int(stats.get("games"))
     wins = _safe_int(stats.get("wins"))
-    wr = (wins / games * 100) if games > 0 else 0.0
+    wr = _win_rate(wins, games)
     kills = _safe_int(stats.get("kills"))
     deaths = _safe_int(stats.get("deaths"))
     assists = _safe_int(stats.get("assists"))
-    kda = (kills + assists) / max(deaths, 1) if games > 0 else 0.0
+    kda = _kda(kills, deaths, assists) if games > 0 else 0.0
     gold = _safe_int(stats.get("gold"))
     cs = _safe_int(stats.get("cs"))
     damage = _safe_int(stats.get("damage"))
@@ -362,11 +362,11 @@ def _champion_detail_html(  # noqa: PLR0913
     for ph_patch, ph_stats in patch_history:
         ph_games = _safe_int(ph_stats.get("games"))
         ph_wins = _safe_int(ph_stats.get("wins"))
-        ph_wr = (ph_wins / ph_games * 100) if ph_games > 0 else 0.0
+        ph_wr = _win_rate(ph_wins, ph_games)
         ph_k = _safe_int(ph_stats.get("kills"))
         ph_d = _safe_int(ph_stats.get("deaths"))
         ph_a = _safe_int(ph_stats.get("assists"))
-        ph_kda = (ph_k + ph_a) / max(ph_d, 1) if ph_games > 0 else 0.0
+        ph_kda = _kda(ph_k, ph_d, ph_a) if ph_games > 0 else 0.0
         ph_rows += (
             f"<tr><td>{html.escape(ph_patch)}</td>"
             f"<td>{ph_games}</td>"
@@ -548,7 +548,7 @@ async def _fetch_champion_matchups(
             continue
         mg = _safe_int(mdata.get("games"))
         mw = _safe_int(mdata.get("wins"))
-        mwr = (mw / mg * 100) if mg > 0 else 0.0
+        mwr = _win_rate(mw, mg)
         matchups.append((opp, mg, mwr))
     matchups.sort(key=lambda x: x[1], reverse=True)
     return matchups

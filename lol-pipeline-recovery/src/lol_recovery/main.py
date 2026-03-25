@@ -6,31 +6,29 @@ import asyncio
 import contextlib
 import json
 import logging
-import os
 import random
 import signal
-import socket
 import time
 
 import redis.asyncio as aioredis
+from lol_pipeline._helpers import consumer_id, is_system_halted
 from lol_pipeline.config import Config
+from lol_pipeline.constants import DELAYED_MESSAGES_KEY
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import DLQEnvelope, MessageEnvelope
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.streams import consume_typed
 from redis.exceptions import RedisError
 
-from lol_recovery._data import (
+from lol_recovery._constants import (
     _ARCHIVE_STREAM,
-    _BACKOFF_MS,
-    _DELAYED_KEY,
     _GROUP,
     _IN_STREAM,
-    _STATUS_TTL,
 )
-from lol_recovery._data import (
-    _CLAIM_IDLE_MS as _CLAIM_IDLE_MS,
-)
+
+# Re-export default so tests can import _CLAIM_IDLE_MS from main.
+# Runtime code uses cfg.recovery_claim_idle_ms instead.
+_CLAIM_IDLE_MS: int = 60_000
 
 
 async def _consume_dlq(
@@ -38,6 +36,8 @@ async def _consume_dlq(
     consumer: str,
     count: int = 10,
     block: int = 5000,
+    *,
+    claim_idle_ms: int = _CLAIM_IDLE_MS,
 ) -> list[tuple[str, DLQEnvelope]]:
     """Read DLQ entries as DLQEnvelopes via consume_typed()."""
     return await consume_typed(
@@ -48,7 +48,21 @@ async def _consume_dlq(
         deserializer=DLQEnvelope.from_redis_fields,
         count=count,
         block=block,
-        autoclaim_min_idle_ms=_CLAIM_IDLE_MS,
+        autoclaim_min_idle_ms=claim_idle_ms,
+    )
+
+
+async def _write_archive(
+    r: aioredis.Redis,
+    dlq: DLQEnvelope,
+    cfg: Config,
+) -> None:
+    """Write a single DLQ entry to the archive stream (capped)."""
+    await r.xadd(
+        _ARCHIVE_STREAM,
+        dlq.to_redis_fields(),  # type: ignore[arg-type]
+        maxlen=cfg.recovery_archive_maxlen,
+        approximate=True,
     )
 
 
@@ -65,7 +79,7 @@ async def _archive(
             pipe.xadd(
                 _ARCHIVE_STREAM,
                 dlq.to_redis_fields(),  # type: ignore[arg-type]
-                maxlen=50_000,
+                maxlen=cfg.recovery_archive_maxlen,
                 approximate=True,
             )
             pipe.hset(match_key, mapping={"status": "failed"})
@@ -76,14 +90,9 @@ async def _archive(
         # Only set TTL when none exists (ttl < 0) — same guard as parser
         failed_ttl: int = results[4]
         if failed_ttl < 0:
-            await r.expire("match:status:failed", _STATUS_TTL)
+            await r.expire("match:status:failed", cfg.match_data_ttl_seconds)
     else:
-        await r.xadd(
-            _ARCHIVE_STREAM,
-            dlq.to_redis_fields(),  # type: ignore[arg-type]
-            maxlen=50_000,
-            approximate=True,
-        )
+        await _write_archive(r, dlq, cfg)
     log.warning(
         "archived exhausted DLQ entry",
         extra={"id": dlq.id, "failure_code": dlq.failure_code, "dlq_attempts": dlq.dlq_attempts},
@@ -120,15 +129,22 @@ async def _requeue_delayed(
     envelope_data = json.dumps(env.to_redis_fields())
     envelope_key = f"delayed:envelope:{env.id}"
     async with r.pipeline(transaction=True) as pipe:
-        await pipe.zadd(_DELAYED_KEY, {env.id: ready_ms})
+        await pipe.zadd(DELAYED_MESSAGES_KEY, {env.id: ready_ms})
         await pipe.hset(envelope_key, "data", envelope_data)
         await pipe.xack(_IN_STREAM, _GROUP, msg_id)
         await pipe.execute()
 
 
-def _backoff_ms(dlq_attempts: int) -> int:
-    idx = min(dlq_attempts, len(_BACKOFF_MS) - 1)
-    base = _BACKOFF_MS[idx]
+_DEFAULT_BACKOFF_MS: list[int] = [5_000, 15_000, 60_000, 300_000]
+
+
+def _backoff_ms(
+    dlq_attempts: int,
+    cfg: Config | None = None,
+) -> int:
+    backoff_schedule = cfg.recovery_backoff_ms if cfg is not None else _DEFAULT_BACKOFF_MS
+    idx = min(dlq_attempts, len(backoff_schedule) - 1)
+    base = backoff_schedule[idx]
     # R3: Jitter — multiply by 0.5..1.5 to avoid thundering herd
     return int(base * (0.5 + random.random()))  # noqa: S311
 
@@ -148,7 +164,7 @@ async def _handle_transient(
         delay = (
             dlq.retry_after_ms
             if fc == "http_429" and dlq.retry_after_ms
-            else _backoff_ms(dlq.dlq_attempts)
+            else _backoff_ms(dlq.dlq_attempts, cfg)
         )
         await _requeue_delayed(r, dlq, delay, msg_id)
         log.info(
@@ -216,7 +232,7 @@ async def _process(
         await r.xack(_IN_STREAM, _GROUP, msg_id)
         return True
 
-    if await r.get("system:halted"):
+    if await is_system_halted(r):
         log.info(
             "system halted — leaving DLQ entry in PEL",
             extra={"id": dlq.id, "failure_code": fc},
@@ -236,9 +252,6 @@ async def _process(
     return True
 
 
-_HALT_SLEEP_S = 5.0
-
-
 async def main() -> None:
     """Recovery worker loop — continues even when system:halted."""
     shutdown_event = asyncio.Event()
@@ -246,7 +259,7 @@ async def main() -> None:
     log = get_logger("recovery")
     cfg = Config()
     r = get_redis(cfg.redis_url)
-    consumer = f"{socket.gethostname()}-{os.getpid()}"
+    consumer = consumer_id()
 
     loop = asyncio.get_running_loop()
     with contextlib.suppress(NotImplementedError, OSError):
@@ -257,11 +270,13 @@ async def main() -> None:
         while not shutdown_event.is_set():
             try:
                 any_handled = False
-                for msg_id, dlq in await _consume_dlq(r, consumer):
+                for msg_id, dlq in await _consume_dlq(
+                    r, consumer, claim_idle_ms=cfg.recovery_claim_idle_ms
+                ):
                     handled = await _process(r, cfg, consumer, msg_id, dlq, log)
                     any_handled = any_handled or handled
-                if not any_handled and await r.get("system:halted"):
-                    await asyncio.sleep(_HALT_SLEEP_S)
+                if not any_handled and await is_system_halted(r):
+                    await asyncio.sleep(cfg.recovery_halt_sleep_s)
             except (RedisError, OSError):
                 log.exception("consume error — retrying in 1s")
                 await asyncio.sleep(1)

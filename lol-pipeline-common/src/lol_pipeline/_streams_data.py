@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 _DEFAULT_MAXLEN = 10_000
+DEFAULT_STREAM_MAXLEN: int = _DEFAULT_MAXLEN
 
 # Per-stream maxlen overrides.  Import these from consuming services to keep
 # the policy in one place.

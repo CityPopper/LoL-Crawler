@@ -7,20 +7,14 @@ import contextlib
 import html
 import json
 import time
-import uuid
-from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
+from lol_pipeline._helpers import is_system_halted, name_cache_key
 from lol_pipeline.config import Config
-from lol_pipeline.constants import PLAYER_DATA_TTL_SECONDS
-from lol_pipeline.helpers import is_system_halted, name_cache_key
 from lol_pipeline.log import get_logger
-from lol_pipeline.models import MessageEnvelope
-from lol_pipeline.priority import PRIORITY_MANUAL_20, set_priority
 from lol_pipeline.rate_limiter import wait_for_token
-from lol_pipeline.resolve import CACHE_TTL_S
 from lol_pipeline.riot_api import (
     AuthError,
     NotFoundError,
@@ -28,23 +22,18 @@ from lol_pipeline.riot_api import (
     RiotClient,
     ServerError,
 )
-from lol_pipeline.streams import publish
 
 from lol_ui.build_display import _build_tab_html
 from lol_ui.charts.gold_chart import _gold_chart_svg
 from lol_ui.charts.minimap import _minimap_html
 from lol_ui.constants import (
-    _AUTOSEED_COOLDOWN_S,
     _BREAKDOWN_MATCH_COUNT,
     _HALT_BANNER,
     _MATCH_ID_RE,
     _MATCH_PAGE_SIZE,
-    _NAME_CACHE_INDEX,
-    _NAME_CACHE_MAX,
     _PUUID_RE,
     _REGIONS_SET,
     _SPLIT_MATCH_LIMIT,
-    _STREAM_PUUID,
     _TILT_RECENT_COUNT,
 )
 from lol_ui.ddragon import _get_ddragon_version, get_champion_name_map
@@ -63,9 +52,13 @@ from lol_ui.scoring.ai_score import _ai_score_tab_html, _compute_ai_score
 from lol_ui.sparkline import _sparkline_html
 from lol_ui.spell_display import _get_summoner_spell_map
 from lol_ui.stats_helpers import (
+    _build_minimap_events,
+    _build_participant_list,
     _compute_champion_breakdown,
     _compute_role_breakdown,
     _current_split,
+    _group_participants,
+    _has_timeline_data,
     _stats_table,
 )
 from lol_ui.strings import t, t_raw
@@ -77,61 +70,34 @@ _log = get_logger("ui")
 
 router = APIRouter()
 
-_TeamEntry = tuple[str, dict[str, str], dict[str, str], list[str]]
-
-# Fragment cache — version bumped on deploys for cache busting
+# Fragment cache — in-memory with TTL (version bumped on deploys for cache busting)
 _CACHE_VERSION = "v1"
-_CACHE_TTL_S = 6 * 3600  # 6 hours
+_CACHE_TTL_S = 6 * 3600  # default; overridden at startup via _init_cache_ttl()
+_fragment_cache: dict[str, tuple[str, float]] = {}
 
 
-# ---------------------------------------------------------------------------
-# Match-detail helpers
-# ---------------------------------------------------------------------------
+def _init_cache_ttl() -> None:
+    """Override ``_CACHE_TTL_S`` from Config (called once at app startup)."""
+    global _CACHE_TTL_S
+    with contextlib.suppress(Exception):
+        _CACHE_TTL_S = Config().stats_fragment_cache_ttl_s
 
 
-def _build_participant_list(
-    blue_team: list[_TeamEntry],
-    red_team: list[_TeamEntry],
-) -> list[dict[str, str]]:
-    """Flatten blue + red team entries into participant dicts with puuid added."""
-    result: list[dict[str, str]] = []
-    for p, part, _player, _build in blue_team:
-        entry = dict(part)
-        entry["puuid"] = p
-        result.append(entry)
-    for p, part, _player, _build in red_team:
-        entry = dict(part)
-        entry["puuid"] = p
-        result.append(entry)
-    return result
+def _fragment_get(key: str) -> str | None:
+    """Read from the in-memory fragment cache, returning None if missing or expired."""
+    entry = _fragment_cache.get(key)
+    if entry is None:
+        return None
+    data, expiry = entry
+    if time.monotonic() > expiry:
+        _fragment_cache.pop(key, None)
+        return None
+    return data
 
 
-def _build_minimap_events(
-    kill_events: list[dict[str, object]],
-    gold_data: dict[str, dict[str, object]],
-) -> list[dict[str, object]]:
-    """Map kill events to minimap-ready dicts with killer_team resolved."""
-    champ_team: dict[str, str] = {}
-    for info in gold_data.values():
-        cname = str(info.get("champion_name", ""))
-        tid = str(info.get("team_id", "100"))
-        if cname:
-            champ_team[cname] = tid
-
-    result: list[dict[str, object]] = []
-    for event in kill_events:
-        killer_name = str(event.get("killer", ""))
-        result.append(
-            {
-                "x": event.get("x", 0),
-                "y": event.get("y", 0),
-                "t": event.get("t", 0),
-                "killer": killer_name,
-                "victim": str(event.get("victim", "")),
-                "killer_team": champ_team.get(killer_name, "100"),
-            }
-        )
-    return result
+def _fragment_put(key: str, data: str) -> None:
+    """Store data in the in-memory fragment cache with the standard TTL."""
+    _fragment_cache[key] = (data, time.monotonic() + _CACHE_TTL_S)
 
 
 async def _build_timeline_tab(
@@ -213,7 +179,7 @@ async def _build_timeline_tab(
 # ---------------------------------------------------------------------------
 
 
-async def _resolve_and_cache_puuid(
+async def _resolve_puuid(
     r: Any,
     riot: RiotClient,
     riot_id: str,
@@ -222,7 +188,7 @@ async def _resolve_and_cache_puuid(
     region: str,
     cfg: Config,
 ) -> str | HTMLResponse:
-    """Look up PUUID from cache or Riot API.
+    """Look up PUUID from cache or Riot API (read-only — no Redis writes).
 
     Returns the PUUID string on success, or an HTMLResponse on error.
     """
@@ -274,96 +240,23 @@ async def _resolve_and_cache_puuid(
             )
         )
     puuid: str = account["puuid"]
-    now_ts = datetime.now(tz=UTC).timestamp()
-    async with r.pipeline(transaction=False) as pipe:
-        pipe.set(cache_key, puuid, ex=CACHE_TTL_S)
-        pipe.zadd(_NAME_CACHE_INDEX, {cache_key: now_ts})
-        pipe.zremrangebyrank(_NAME_CACHE_INDEX, 0, -(_NAME_CACHE_MAX + 1))
-        await pipe.execute()
     return puuid
 
 
-async def _auto_seed_player(
-    r: Any,
-    puuid: str,
+def _not_seeded_response(
     game_name: str,
     tag_line: str,
     region: str,
-    cfg: Config,
 ) -> HTMLResponse:
-    """Auto-seed a player if not yet seeded, returning an appropriate status page."""
+    """Return a read-only 'not seeded' indicator (no Redis writes)."""
     riot_id = f"{game_name}#{tag_line}"
     safe_id = html.escape(riot_id)
-    cooldown_key = f"autoseed:cooldown:{puuid}"
-    async with r.pipeline(transaction=False) as pipe:
-        pipe.get("system:halted")
-        pipe.get(cooldown_key)
-        pipe.hget(f"player:{puuid}", "seeded_at")
-        halted, cooldown, existing_seeded = await pipe.execute()
-    if halted:
-        return HTMLResponse(
-            _stats_form(
-                f"System halted. No stats yet for {safe_id}.",
-                "error",
-                selected_region=region,
-                value=riot_id,
-            )
-        )
-    if cooldown:
-        return HTMLResponse(
-            _stats_form(
-                f"{safe_id} was seeded recently — pipeline processing. Check back soon.",
-                "warning",
-                selected_region=region,
-                value=riot_id,
-            )
-        )
-    if existing_seeded:
-        return HTMLResponse(
-            _stats_form(
-                f"{safe_id} was seeded recently — pipeline processing. Check back soon.",
-                "warning",
-                selected_region=region,
-                value=riot_id,
-            )
-        )
-    envelope = MessageEnvelope(
-        source_stream=_STREAM_PUUID,
-        type="puuid",
-        payload={
-            "puuid": puuid,
-            "game_name": game_name,
-            "tag_line": tag_line,
-            "region": region,
-        },
-        max_attempts=cfg.max_attempts,
-        priority=PRIORITY_MANUAL_20,
-        correlation_id=str(uuid.uuid4()),
-    )
-    # Set priority before publishing so clear_priority() by downstream
-    # services cannot race against a not-yet-set priority key.
-    await set_priority(r, puuid)
-    now_ts = time.time()
-    await r.zadd("players:all", {puuid: now_ts})
-    await r.zremrangebyrank("players:all", 0, -(cfg.players_all_max + 1))
-    await publish(r, _STREAM_PUUID, envelope)
-    now_iso = datetime.now(tz=UTC).isoformat()
-    await r.hset(
-        f"player:{puuid}",
-        mapping={
-            "game_name": game_name,
-            "tag_line": tag_line,
-            "region": region,
-            "seeded_at": now_iso,
-        },
-    )
-    await r.expire(f"player:{puuid}", PLAYER_DATA_TTL_SECONDS)
-    await r.set(cooldown_key, "1", ex=_AUTOSEED_COOLDOWN_S)
-    _log.info("auto-seeded via stats lookup", extra={"puuid": puuid})
     return HTMLResponse(
         _stats_form(
-            f"&#10003; Auto-seeded {safe_id} — pipeline processing. Refresh in a minute.",
-            "success",
+            f"No stats available for {safe_id}. "
+            "Use the admin CLI to seed this player: "
+            f"<code>just admin seed {safe_id} --region {html.escape(region)}</code>",
+            "warning",
             selected_region=region,
             value=riot_id,
         )
@@ -540,7 +433,7 @@ async def show_stats(request: Request) -> HTMLResponse:
     cfg: Config = request.app.state.cfg
     riot: RiotClient = request.app.state.riot
 
-    result = await _resolve_and_cache_puuid(r, riot, riot_id, game_name, tag_line, region, cfg)
+    result = await _resolve_puuid(r, riot, riot_id, game_name, tag_line, region, cfg)
     if isinstance(result, HTMLResponse):
         return result
     puuid = result
@@ -548,7 +441,7 @@ async def show_stats(request: Request) -> HTMLResponse:
     stats: dict[str, str] = await r.hgetall(f"player:stats:{puuid}")
 
     if not stats:
-        return await _auto_seed_player(r, puuid, game_name, tag_line, region, cfg)
+        return _not_seeded_response(game_name, tag_line, region)
 
     return await _build_stats_response(r, puuid, game_name, tag_line, region, riot_id, stats)
 
@@ -606,45 +499,6 @@ async def stats_matches(request: Request) -> HTMLResponse:
             results, puuid, region, riot_id, page, has_more, version, name_map=champ_name_map
         )
     )
-
-
-def _group_participants(
-    sorted_puuids: list[str],
-    pipe_results: list[Any],
-) -> tuple[list[_TeamEntry], list[_TeamEntry], dict[str, list[str]], int]:
-    """Group pipeline results into blue/red teams, skill orders, and max damage."""
-    blue_team: list[_TeamEntry] = []
-    red_team: list[_TeamEntry] = []
-    skill_orders: dict[str, list[str]] = {}
-    max_damage = 1
-    for i, p in enumerate(sorted_puuids):
-        participant_data: dict[str, str] = pipe_results[i * 4]
-        player_data: dict[str, str] = pipe_results[i * 4 + 1]
-        build_raw: str | None = pipe_results[i * 4 + 2]
-        skills_raw: str | None = pipe_results[i * 4 + 3]
-        if not participant_data:
-            continue
-        try:
-            dmg = int(participant_data.get("total_damage_dealt_to_champions", "0"))
-        except ValueError:
-            dmg = 0
-        max_damage = max(max_damage, dmg)
-        build_order: list[str] = []
-        if build_raw:
-            with contextlib.suppress(json.JSONDecodeError, TypeError):
-                build_order = [str(x) for x in json.loads(build_raw)]
-        if skills_raw:
-            with contextlib.suppress(json.JSONDecodeError, TypeError):
-                parsed = json.loads(skills_raw)
-                if isinstance(parsed, list):
-                    skill_orders[p] = [str(x) for x in parsed]
-        team_id = participant_data.get("team_id", "")
-        entry: _TeamEntry = (p, participant_data, player_data, build_order)
-        if team_id == "200":
-            red_team.append(entry)
-        else:
-            blue_team.append(entry)
-    return blue_team, red_team, skill_orders, max_damage
 
 
 async def _render_match_detail(
@@ -749,23 +603,11 @@ async def _render_match_detail(
     return tabbed + _tab_js()
 
 
-def _has_timeline_data(html_content: str) -> bool:
-    """Check if the rendered HTML has real content worth caching.
-
-    Returns False for placeholder/error responses that should not be cached:
-    - "Match details not available" (empty match:participants)
-    - "Timeline data unavailable" (FETCH_TIMELINE=false)
-    """
-    if "Match details not available" in html_content:
-        return False
-    return "Timeline data unavailable" not in html_content
-
-
 @router.get("/stats/match-detail", response_class=HTMLResponse)
 async def match_detail(request: Request) -> HTMLResponse:
     """Return expanded match detail HTML showing all participants.
 
-    Fragment caching: results are cached in Redis with a 6h TTL.
+    Fragment caching: results are cached in-memory with a 6h TTL.
     ``?nocache=1`` skips both cache read AND write.
     Only caches when timeline data is present (avoids caching placeholder state).
     """
@@ -784,16 +626,16 @@ async def match_detail(request: Request) -> HTMLResponse:
 
     cache_key = f"ui:match-detail:{_CACHE_VERSION}:{match_id}:{puuid}"
 
-    # Check cache first (unless nocache)
+    # Check in-memory cache first (unless nocache)
     if not nocache:
-        cached: str | None = await r.get(cache_key)
+        cached = _fragment_get(cache_key)
         if cached:
             return HTMLResponse(cached)
 
     result_html = await _render_match_detail(r, match_id, puuid, cfg)
 
-    # Cache the result if timeline data is present and nocache not set
+    # Cache the result in memory if timeline data is present and nocache not set
     if not nocache and _has_timeline_data(result_html):
-        await r.set(cache_key, result_html, ex=_CACHE_TTL_S)
+        _fragment_put(cache_key, result_html)
 
     return HTMLResponse(result_html)

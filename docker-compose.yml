@@ -104,18 +104,31 @@ services:
       - ./logs:/logs
     command: ["python", "-m", "lol_parser"]
 
-  analyzer:
+  player-stats:
     <<: *worker-defaults
     build:
       <<: *service-build
       args:
-        SERVICE_NAME: analyzer
-        MODULE_NAME: lol_analyzer
+        SERVICE_NAME: player-stats
+        MODULE_NAME: lol_player_stats
     volumes:
       - ./lol-pipeline-common:/common
-      - ./lol-pipeline-analyzer:/svc
+      - ./lol-pipeline-player-stats:/svc
       - ./logs:/logs
-    command: ["python", "-m", "lol_analyzer"]
+    command: ["python", "-m", "lol_player_stats"]
+
+  champion-stats:
+    <<: *worker-defaults
+    build:
+      <<: *service-build
+      args:
+        SERVICE_NAME: champion-stats
+        MODULE_NAME: lol_champion_stats
+    volumes:
+      - ./lol-pipeline-common:/common
+      - ./lol-pipeline-champion-stats:/svc
+      - ./logs:/logs
+    command: ["python", "-m", "lol_champion_stats"]
 
   recovery:
     <<: *worker-defaults
@@ -178,22 +191,6 @@ services:
     command: ["python", "-m", "lol_discovery"]
 
   # One-shot tools — not started by default; use `docker compose run`
-  seed:
-    <<: *service-defaults
-    build:
-      <<: *service-build
-      args:
-        SERVICE_NAME: seed
-        MODULE_NAME: lol_seed
-    volumes:
-      - ./lol-pipeline-common:/common
-      - ./lol-pipeline-seed:/svc
-    profiles: ["tools"]
-    restart: "no"
-    user: root  # pip install at startup needs write access
-    # entrypoint (not command) so `docker compose run seed <args>` passes args via $@
-    entrypoint: ["sh", "-c", "pip install -q -e /common && pip install -q -e /svc && exec python -m lol_seed \"$@\"", "--"]
-
   admin:
     <<: *service-defaults
     build:
@@ -209,4 +206,28 @@ services:
     user: root  # pip install at startup needs write access
     # entrypoint (not command) so `docker compose run admin <args>` passes args via $@
     entrypoint: ["sh", "-c", "pip install -q -e /common && pip install -q -e /svc && exec python -m lol_admin \"$@\"", "--"]
+
+  admin-ui:
+    <<: *service-defaults
+    build:
+      <<: *service-build
+      args:
+        SERVICE_NAME: admin-ui
+        MODULE_NAME: lol_admin_ui
+    volumes:
+      - ./lol-pipeline-common:/common
+      - ./lol-pipeline-admin-ui:/svc
+      - ./logs:/logs
+    ports:
+      - "127.0.0.1:8081:8081"
+    command: ["python", "-m", "lol_admin_ui"]
+    environment:
+      ADMIN_UI_SECRET: ${ADMIN_UI_SECRET:-}
+    profiles: ["tools"]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8081/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
 

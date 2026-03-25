@@ -1,20 +1,15 @@
-"""DLQ routes — GET /dlq, POST /dlq/replay/{entry_id}."""
+"""DLQ routes — GET /dlq (read-only view)."""
 
 from __future__ import annotations
 
 import html
 import json
-from urllib.parse import quote as _url_quote
 
-from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
-from lol_pipeline.config import Config
-from lol_pipeline.constants import VALID_REPLAY_STREAMS
-from lol_pipeline.helpers import is_system_halted
+from fastapi import APIRouter, Request
+from fastapi.responses import HTMLResponse
+from lol_pipeline._helpers import is_system_halted
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import DLQEnvelope
-from lol_pipeline.streams import replay_from_dlq
-from starlette.responses import Response
 
 from lol_ui.constants import (
     _DLQ_DEFAULT_PER_PAGE,
@@ -22,7 +17,7 @@ from lol_ui.constants import (
     _HALT_BANNER,
     _STREAM_ENTRY_ID_RE,
 )
-from lol_ui.dlq_helpers import _dlq_summary_html, _make_replay_envelope
+from lol_ui.dlq_helpers import _dlq_summary_html
 from lol_ui.rendering import _badge, _empty_state, _page
 from lol_ui.strings import t
 
@@ -33,7 +28,7 @@ router = APIRouter()
 
 @router.get("/dlq", response_class=HTMLResponse)
 async def show_dlq(request: Request) -> HTMLResponse:
-    """Display dead-letter queue entries with cursor-based pagination."""
+    """Display dead-letter queue entries with cursor-based pagination (read-only)."""
     r = request.app.state.r
     halted = await is_system_halted(r)
     halt_html = _HALT_BANNER if halted else ""
@@ -86,12 +81,9 @@ async def show_dlq(request: Request) -> HTMLResponse:
         if len(raw_payload) > 80:
             payload_preview += "..."
         orig_stream = html.escape(dlq.original_stream or "?")
-        replay_form = (
-            f'<form method="post" action="/dlq/replay/{_url_quote(entry_id)}"'
-            f' style="display:inline">'
-            f'<button type="submit" class="btn-sm"'
-            f' aria-label="{t("dlq_replay")} {safe_id}">'
-            f"{t('dlq_replay')}</button></form>"
+        # Replay is now handled by admin-ui; show entry ID for reference
+        action_cell = (
+            f'<span class="muted" title="Use admin-ui to replay">{safe_id}</span>'
         )
         # Full envelope JSON for detail expansion
         full_json = json.dumps(dlq.payload, indent=2)
@@ -102,7 +94,7 @@ async def show_dlq(request: Request) -> HTMLResponse:
             f"<td>{safe_id}</td><td>{fc_badge}</td>"
             f"<td>{orig_stream}</td><td>{service}</td><td>{attempts}</td>"
             f'<td class="cell-wrap"><code>{payload_preview}</code></td>'
-            f"<td>{replay_form}</td></tr>"
+            f"<td>{action_cell}</td></tr>"
             f'<tr class="dlq-detail"><td colspan="7">'
             f'<div class="dlq-detail__body">'
             f"<p><strong>{t('dlq_failure_reason')}</strong> {reason}</p>"
@@ -141,52 +133,3 @@ async def show_dlq(request: Request) -> HTMLResponse:
 {pagination}
 """
     return HTMLResponse(_page(t("page_dlq"), body, path="/dlq"))
-
-
-@router.post("/dlq/replay/{entry_id:path}")
-async def dlq_replay(request: Request, entry_id: str) -> Response:
-    """Replay a single DLQ entry back to its original stream."""
-    if not _STREAM_ENTRY_ID_RE.match(entry_id):
-        raise HTTPException(status_code=400, detail="Invalid entry ID format")
-    r = request.app.state.r
-    cfg: Config = request.app.state.cfg
-    entries: list[tuple[str, dict[str, str]]] = await r.xrange(
-        "stream:dlq", min=entry_id, max=entry_id, count=1
-    )
-    if not entries:
-        safe_id = html.escape(entry_id)
-        body = (
-            f"<h2>{t('page_dlq_replay_failed')}</h2>"
-            f'<div class="banner banner--error">{safe_id} {t("dlq_entry_not_found")}</div>'
-            f'<p><a href="/dlq">&larr; {t("dlq_back")}</a></p>'
-        )
-        return HTMLResponse(_page(t("page_dlq_replay_failed"), body, path="/dlq"), status_code=404)
-    _eid, fields = entries[0]
-    try:
-        dlq = DLQEnvelope.from_redis_fields(fields)
-    except Exception:
-        _log.warning("corrupt DLQ entry during replay", extra={"entry_id": entry_id})
-        safe_id = html.escape(entry_id)
-        body = (
-            f"<h2>{t('page_dlq_replay_failed')}</h2>"
-            f'<div class="banner banner--error">{safe_id} {t("dlq_entry_corrupt")}'
-            f" {t('dlq_remove_hint')}"
-            f" <code>just admin dlq clear --all</code>.</div>"
-            f'<p><a href="/dlq">&larr; {t("dlq_back")}</a></p>'
-        )
-        return HTMLResponse(_page(t("page_dlq_replay_failed"), body, path="/dlq"), status_code=422)
-    if dlq.original_stream not in VALID_REPLAY_STREAMS:
-        safe_id = html.escape(entry_id)
-        safe_stream = html.escape(dlq.original_stream)
-        body = (
-            f"<h2>{t('page_dlq_replay_failed')}</h2>"
-            f'<div class="banner banner--error">{safe_id} {t("dlq_invalid_stream")}'
-            f" <code>{safe_stream}</code> \u2014 {t('dlq_replay_refused')}"
-            f" {t('dlq_remove_hint')}"
-            f" <code>just admin dlq clear --all</code>.</div>"
-            f'<p><a href="/dlq">&larr; {t("dlq_back")}</a></p>'
-        )
-        return HTMLResponse(_page(t("page_dlq_replay_failed"), body, path="/dlq"), status_code=422)
-    envelope = _make_replay_envelope(dlq, cfg.max_attempts)
-    await replay_from_dlq(r, entry_id, dlq.original_stream, envelope)
-    return RedirectResponse("/dlq", status_code=303)
