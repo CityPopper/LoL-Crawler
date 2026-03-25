@@ -19,9 +19,11 @@ import re
 import sys
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 import zstandard as zstd
+from dotenv import load_dotenv
 
 # ---------------------------------------------------------------------------
 # Import anonymize_and_upload.py from scripts/ (not a package)
@@ -424,7 +426,11 @@ class TestTokenLoading:
         original_root = _mod.PROJECT_ROOT
         _mod.PROJECT_ROOT = tmp_path
         try:
-            token = _mod._load_env_token()
+            # Patch load_dotenv to read from tmp .env instead of real project .env
+            with patch.object(
+                _mod, "load_dotenv", lambda: load_dotenv(env_file, override=True)
+            ):
+                token = _mod._load_env_token()
             assert token == "hf_from_dotenv_456"
         finally:
             _mod.PROJECT_ROOT = original_root
@@ -435,8 +441,10 @@ class TestTokenLoading:
         original_root = _mod.PROJECT_ROOT
         _mod.PROJECT_ROOT = tmp_path  # no .env file
         try:
-            with pytest.raises(SystemExit) as exc_info:
-                _mod._load_env_token()
+            # Patch load_dotenv to no-op so real .env doesn't leak a token
+            with patch.object(_mod, "load_dotenv", lambda: None):
+                with pytest.raises(SystemExit) as exc_info:
+                    _mod._load_env_token()
             assert exc_info.value.code == 1
         finally:
             _mod.PROJECT_ROOT = original_root
@@ -449,7 +457,11 @@ class TestTokenLoading:
         original_root = _mod.PROJECT_ROOT
         _mod.PROJECT_ROOT = tmp_path
         try:
-            token = _mod._load_env_token()
+            # Patch load_dotenv to read from tmp .env instead of real project .env
+            with patch.object(
+                _mod, "load_dotenv", lambda: load_dotenv(env_file, override=True)
+            ):
+                token = _mod._load_env_token()
             assert token == "hf_quoted_789"
         finally:
             _mod.PROJECT_ROOT = original_root
