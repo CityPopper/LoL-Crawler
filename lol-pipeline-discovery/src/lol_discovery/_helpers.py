@@ -7,24 +7,15 @@ from typing import Any
 import redis.asyncio as aioredis
 from redis.exceptions import ResponseError
 
-# Default region fallback — overridden by Config at startup via init_default_region().
-_DEFAULT_REGION: str = "na1"
 
-
-def init_default_region(region: str) -> None:
-    """Seed module-level default region from Config."""
-    global _DEFAULT_REGION
-    _DEFAULT_REGION = region
-
-
-def _parse_member(member: str) -> tuple[str, str]:
+def _parse_member(member: str, *, default_region: str) -> tuple[str, str]:
     """Split 'puuid:region' member into (puuid, region). Region has no colons."""
     idx = member.rfind(":")
     if idx == -1:
-        return member, _DEFAULT_REGION
+        return member, default_region
     puuid, region = member[:idx], member[idx + 1 :]
     if not puuid:
-        return member, _DEFAULT_REGION
+        return member, default_region
     return puuid, region
 
 

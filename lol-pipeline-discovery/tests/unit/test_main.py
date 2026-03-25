@@ -278,24 +278,24 @@ class TestPromoteBatchNames:
 
 class TestParseMember:
     def test_puuid_with_region(self):
-        puuid, region = _parse_member("abc-def-123:na1")
+        puuid, region = _parse_member("abc-def-123:na1", default_region="na1")
         assert puuid == "abc-def-123"
         assert region == "na1"
 
     def test_puuid_without_region(self):
-        puuid, region = _parse_member("abc-def-123")
+        puuid, region = _parse_member("abc-def-123", default_region="na1")
         assert puuid == "abc-def-123"
         assert region == "na1"  # default
 
     def test_puuid_with_colons(self):
         """PUUIDs can contain colons — rfind ensures last colon is the separator."""
-        puuid, region = _parse_member("some:complex:puuid:euw1")
+        puuid, region = _parse_member("some:complex:puuid:euw1", default_region="na1")
         assert puuid == "some:complex:puuid"
         assert region == "euw1"
 
     def test_empty_puuid_falls_back(self):
         """':region' with empty puuid treats whole string as puuid with default region."""
-        puuid, region = _parse_member(":na1")
+        puuid, region = _parse_member(":na1", default_region="na1")
         assert puuid == ":na1"
         assert region == "na1"
 

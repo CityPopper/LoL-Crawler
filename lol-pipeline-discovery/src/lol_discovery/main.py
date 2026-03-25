@@ -14,7 +14,13 @@ from typing import Any
 import redis.asyncio as aioredis
 from lol_pipeline._helpers import is_system_halted, register_player
 from lol_pipeline.config import Config
-from lol_pipeline.constants import DELAYED_MESSAGES_KEY, PLAYER_DATA_TTL_SECONDS, STREAM_PUUID
+from lol_pipeline.constants import (
+    DELAYED_MESSAGES_KEY,
+    PLAYER_DATA_TTL_SECONDS,
+    PLAYERS_ALL_KEY,
+    STREAM_PUUID,
+    SYSTEM_HALTED_KEY,
+)
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.priority import PRIORITY_AUTO_20, has_priority_players
@@ -32,16 +38,12 @@ from lol_discovery._constants import (
     _PIPELINE_STREAMS as _PIPELINE_STREAMS,
 )
 from lol_discovery._helpers import (
-    _parse_member as _parse_member,  # noqa: F401 — re-export for tests
+    _parse_member as _parse_member,
+)
+from lol_discovery._helpers import (
     _should_skip_seeded,
     _xinfo_groups_safe,
-    init_default_region,
 )
-
-
-def _init_config(cfg: Config) -> None:
-    """Seed module-level defaults from Config."""
-    init_default_region(cfg.default_region)
 
 
 async def _is_idle(r: aioredis.Redis) -> bool:
@@ -161,11 +163,13 @@ async def _publish_and_commit(
 async def _fetch_member_state(
     r: aioredis.Redis,
     members: list[Any],
+    *,
+    default_region: str,
 ) -> tuple[list[bool], list[str | None]]:
     """Batch-fetch seeded/recrawl state for all members."""
     async with r.pipeline(transaction=False) as hex_pipe:
         for member in members:
-            puuid_check, _ = _parse_member(str(member))
+            puuid_check, _ = _parse_member(str(member), default_region=default_region)
             hex_pipe.hexists(f"player:{puuid_check}", "seeded_at")
             hex_pipe.hget(f"player:{puuid_check}", "recrawl_after")
         pipe_results: list[Any] = await hex_pipe.execute()
@@ -185,7 +189,7 @@ async def _try_promote_member(  # noqa: PLR0913
     now: float,
 ) -> int | None:
     """Try to promote one member. Return 1 on success, 0 on skip, None on halt."""
-    puuid, region = _parse_member(str(member))
+    puuid, region = _parse_member(str(member), default_region=cfg.default_region)
     if already_seeded:
         skip = _should_skip_seeded(recrawl_after, now)
         if skip:
@@ -197,7 +201,7 @@ async def _try_promote_member(  # noqa: PLR0913
         names = await _resolve_names(r, riot, puuid, region, log)
     except AuthError:
         log.critical("auth error — halt", extra={"puuid": puuid})
-        await r.set("system:halted", "1")
+        await r.set(SYSTEM_HALTED_KEY, "1")
         return None
     except RiotAPIError:
         log.error("transient api error", extra={"puuid": puuid})
@@ -227,7 +231,7 @@ async def _promote_batch(
     if await is_system_halted(r):
         return 0
     cutoff = time.time() - PLAYER_DATA_TTL_SECONDS
-    removed = await r.zremrangebyscore("players:all", "-inf", cutoff)
+    removed = await r.zremrangebyscore(PLAYERS_ALL_KEY, "-inf", cutoff)
     if removed:
         log.info("trimmed stale entries", extra={"removed": removed})
     members: list[Any] = await r.zrevrange(
@@ -238,7 +242,9 @@ async def _promote_batch(
     if not members:
         return 0
 
-    seeded_results, recrawl_values = await _fetch_member_state(r, members)
+    seeded_results, recrawl_values = await _fetch_member_state(
+        r, members, default_region=cfg.default_region
+    )
     promoted = 0
     now = time.time()
     for member, already_seeded, recrawl_after in zip(
@@ -276,7 +282,6 @@ async def main() -> None:
             file=sys.stderr,
         )
         sys.exit(1)
-    _init_config(cfg)
     r = get_redis(cfg.redis_url)
     riot = RiotClient(cfg.riot_api_key, r=r)
 
