@@ -34,6 +34,7 @@ Platform: macOS. Container runtime: Podman (default) — switch with `RUNTIME=do
 - Use `run_in_background: true` when results aren't needed immediately
 - Only go sequential when a later step genuinely depends on an earlier one
 - Research agents (`architect`, `optimizer`, `security`, etc.) can always run in parallel with each other
+- `developer` and `tester` agents MUST be spawned concurrently whenever their tasks are independent — never run them sequentially unless a later task genuinely depends on the output of an earlier one
 - `doc-keeper` is the exception — always sequential (see `docs/workflows/doc-bookend.md`)
 
 ## Quality Bar
