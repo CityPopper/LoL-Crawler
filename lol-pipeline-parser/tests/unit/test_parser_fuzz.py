@@ -87,9 +87,7 @@ def _valid_match_data(draw: st.DrawFn) -> dict[str, Any]:
 class TestValidateFuzz:
     @given(data=_random_dict)
     @settings(max_examples=200)
-    def test_validate__random_dict__only_raises_key_error(
-        self, data: dict[str, Any]
-    ) -> None:
+    def test_validate__random_dict__only_raises_key_error(self, data: dict[str, Any]) -> None:
         """_validate with random dicts only raises KeyError — no other exception types."""
         try:
             result = _validate(data)
@@ -108,9 +106,7 @@ class TestValidateFuzz:
         )
     )
     @settings(max_examples=50)
-    def test_validate__missing_info_key__raises_key_error(
-        self, data: dict[str, Any]
-    ) -> None:
+    def test_validate__missing_info_key__raises_key_error(self, data: dict[str, Any]) -> None:
         """Missing 'info' key always raises KeyError."""
         try:
             _validate(data)
@@ -122,9 +118,7 @@ class TestValidateFuzz:
         metadata=_random_dict,
     )
     @settings(max_examples=50)
-    def test_validate__empty_participants__raises_key_error(
-        self, metadata: dict[str, Any]
-    ) -> None:
+    def test_validate__empty_participants__raises_key_error(self, metadata: dict[str, Any]) -> None:
         """Empty participants list always raises KeyError."""
         data = {"info": {"participants": [], "gameStartTimestamp": 0}, "metadata": metadata}
         try:
@@ -181,9 +175,7 @@ class TestValidateFuzz:
 class TestNormalizePatchFuzz:
     @given(version=_version_str)
     @settings(max_examples=200)
-    def test_normalize_patch__random_strings__always_returns_str(
-        self, version: str
-    ) -> None:
+    def test_normalize_patch__random_strings__always_returns_str(self, version: str) -> None:
         """_normalize_patch always returns a string, never raises."""
         result = _normalize_patch(version)
         assert isinstance(result, str)
@@ -214,9 +206,7 @@ class TestNormalizePatchFuzz:
 
     @given(version=_adversarial_str)
     @settings(max_examples=200)
-    def test_normalize_patch__adversarial_inputs__never_crashes(
-        self, version: str
-    ) -> None:
+    def test_normalize_patch__adversarial_inputs__never_crashes(self, version: str) -> None:
         """Adversarial inputs (unicode, null bytes, very long) never crash."""
         result = _normalize_patch(version)
         assert isinstance(result, str)
@@ -226,9 +216,7 @@ class TestNormalizePatchFuzz:
         minor=st.text(max_size=20),
     )
     @settings(max_examples=200)
-    def test_normalize_patch__two_parts__returns_both(
-        self, major: str, minor: str
-    ) -> None:
+    def test_normalize_patch__two_parts__returns_both(self, major: str, minor: str) -> None:
         """Version with exactly one dot returns 'part0.part1'."""
         # Only test cases where neither part contains a dot
         from hypothesis import assume

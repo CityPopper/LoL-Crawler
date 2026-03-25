@@ -22,10 +22,26 @@ from lol_pipeline.service import run_consumer
 from lol_pipeline.streams import ack, publish
 from pydantic import ValidationError
 
-_IN_STREAM = "stream:match_id"
-_OUT_STREAM = "stream:parse"
-_GROUP = "fetchers"
+from lol_fetcher._constants import GROUP, IN_STREAM, OUT_STREAM
+
+_IN_STREAM = IN_STREAM
+_OUT_STREAM = OUT_STREAM
+_GROUP = GROUP
 _log = get_logger("fetcher")
+
+
+async def _set_match_status(
+    r: aioredis.Redis,
+    match_id: str,
+    status: str,
+    ttl: int,
+) -> None:
+    """Set match:{match_id} status field and apply TTL."""
+    match_key = f"match:{match_id}"
+    async with r.pipeline(transaction=False) as pipe:
+        pipe.hset(match_key, mapping={"status": status})
+        pipe.expire(match_key, ttl)
+        await pipe.execute()
 
 
 async def _publish_and_ack(
@@ -62,16 +78,14 @@ async def _write_seen_match(
     """
     today = datetime.now(tz=UTC).strftime("%Y-%m-%d")
     seen_key = f"seen:matches:{today}"
-    match_key = f"match:{match_id}"
+    await _set_match_status(r, match_id, "fetched", cfg.match_data_ttl_seconds)
     async with r.pipeline(transaction=False) as pipe:
-        pipe.hset(match_key, mapping={"status": "fetched"})
-        pipe.expire(match_key, cfg.match_data_ttl_seconds)
         pipe.sadd(seen_key, match_id)
         pipe.ttl(seen_key)
         results = await pipe.execute()
 
     # Only set TTL when none exists (ttl < 0) to avoid resetting expiry on every write.
-    seen_ttl: int = results[3]
+    seen_ttl: int = results[1]
     if seen_ttl < 0:
         await r.expire(seen_key, cfg.seen_matches_ttl_seconds)
 
@@ -212,8 +226,7 @@ async def _fetch_match(  # noqa: PLR0913
         )
         return
     except NotFoundError:
-        await r.hset(f"match:{match_id}", mapping={"status": "not_found"})  # type: ignore[misc]
-        await r.expire(f"match:{match_id}", cfg.match_data_ttl_seconds)
+        await _set_match_status(r, match_id, "not_found", cfg.match_data_ttl_seconds)
         await ack(r, _IN_STREAM, _GROUP, msg_id)
         log.info("match not found — discarding", extra={"match_id": match_id})
         return

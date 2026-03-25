@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from lol_parser._constants import _TEAM_ID_BLUE, _TEAM_ID_MAP, _TEAM_ID_RED
 from lol_parser._data import _GOLD_TIMELINE_MAX_FRAMES, _KILL_EVENTS_MAX
 
 
@@ -89,11 +90,11 @@ def _extract_team_objectives(info: dict[str, Any]) -> dict[str, str]:
     team_map: dict[int, dict[str, Any]] = {}
     for team in teams:
         tid = team.get("teamId", 0)
-        if tid in (100, 200):
+        if tid in (_TEAM_ID_BLUE, _TEAM_ID_RED):
             team_map[tid] = team.get("objectives", {})
 
     result: dict[str, str] = {}
-    for tid, prefix in ((100, "team_blue"), (200, "team_red")):
+    for tid, prefix in _TEAM_ID_MAP.items():
         obj = team_map.get(tid, {})
         result[f"{prefix}_dragons"] = str(obj.get("dragon", {}).get("kills", 0))
         result[f"{prefix}_barons"] = str(obj.get("baron", {}).get("kills", 0))

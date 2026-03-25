@@ -644,7 +644,7 @@ class TestSeenMatchesTTLNotReset:
 
     @pytest.mark.asyncio
     async def test_seen_matches_ttl__expire_not_called_when_ttl_exists(self, r, cfg, log):
-        """TCG-3: When seen:matches:{today} already has a TTL (>= 0), r.expire() is NOT called again.
+        """TCG-3: seen:matches TTL already set — r.expire() NOT called again.
 
         The fetcher checks `ttl < 0` before calling expire. When a TTL already
         exists (ttl >= 0), the false-branch skips the expire call entirely.
@@ -692,8 +692,9 @@ class TestSeenMatchesTTLNotReset:
 
         # expire("seen:matches", ...) must NOT have been called
         assert len(seen_expire_calls) == 0, (
-            f"Expected 0 expire calls for seen:matches when TTL exists, got {len(seen_expire_calls)}"
+            f"Expected 0 expire calls for seen:matches, got {len(seen_expire_calls)}"
         )
+
 
 class TestOpggIntegration:
     """OPGG-5: When opgg_enabled, fetcher tries OpggClient first, falls back to Riot."""

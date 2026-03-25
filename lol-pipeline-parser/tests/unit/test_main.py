@@ -2364,7 +2364,7 @@ class TestFullPerksStoredAsJson:
         assert len(shards) == 3
 
 
-class TestRDB4_DiscoverPlayersTTL:
+class TestRdb4DiscoverPlayersTtl:
     """RDB-4: discover:players ZSET must get a 30-day safety-net TTL."""
 
     @pytest.mark.asyncio
@@ -2411,7 +2411,7 @@ class TestRDB4_DiscoverPlayersTTL:
         assert ttl <= 1000, "TTL must not be reset when it already exists"
 
 
-class TestRDB2_NoGlobalParsedSet:
+class TestRdb2NoGlobalParsedSet:
     """RDB-2: Parser must NOT use global match:status:parsed SET.
 
     Idempotency is enforced via the per-match hash field `match:{id}.status`

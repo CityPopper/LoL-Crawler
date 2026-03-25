@@ -26,10 +26,18 @@ from lol_parser._data import (
     _RANKED_QUEUE_ID,
 )
 from lol_parser._extract import (
-    _extract_full_perks as _extract_full_perks,  # noqa: F401 — re-export for tests
-    _extract_gold_timelines as _extract_gold_timelines,  # noqa: F401
-    _extract_kill_events as _extract_kill_events,  # noqa: F401
-    _extract_perks as _extract_perks,  # noqa: F401
+    _extract_full_perks as _extract_full_perks,
+)
+from lol_parser._extract import (
+    _extract_gold_timelines as _extract_gold_timelines,
+)
+from lol_parser._extract import (
+    _extract_kill_events as _extract_kill_events,
+)
+from lol_parser._extract import (
+    _extract_perks as _extract_perks,
+)
+from lol_parser._extract import (
     _extract_team_objectives,
     _extract_timeline_events,
     _normalize_patch,
@@ -37,6 +45,8 @@ from lol_parser._extract import (
 from lol_parser._helpers import (
     _find_shared_positions,
     _group_by_team_position,
+    _key_player,
+    _key_player_matches,
     _queue_matchup_cmds,
     _queue_participant,
     _queue_pid_json,
@@ -45,8 +55,33 @@ from lol_parser._helpers import (
 )
 
 # Re-export for tests that import from lol_parser.main
-_normalize_patch = _normalize_patch  # noqa: PLW0127
-_validate = _validate  # noqa: PLW0127
+_normalize_patch = _normalize_patch
+_validate = _validate
+
+
+def _build_pid_mappings(
+    participants: list[dict[str, Any]],
+) -> tuple[dict[int, str], dict[int, str]]:
+    """Build participantId -> puuid and participantId -> championName mappings."""
+    pid_to_puuid: dict[int, str] = {}
+    pid_to_champ: dict[int, str] = {}
+    for p in participants:
+        pid = p.get("participantId", 0)
+        pid_to_puuid[pid] = p.get("puuid", "")
+        pid_to_champ[pid] = p.get("championName", "Unknown")
+    return pid_to_puuid, pid_to_champ
+
+
+def _queue_player_matches_trim(
+    pipe: aioredis.client.Pipeline,
+    puuids: set[str],
+    cfg: Config,
+) -> None:
+    """Queue ZREMRANGEBYRANK + EXPIRE for player:matches trim onto *pipe*."""
+    for puuid in puuids:
+        pm_key = _key_player_matches(puuid)
+        pipe.zremrangebyrank(pm_key, 0, -(cfg.player_matches_max + 1))
+        pipe.expire(pm_key, PLAYER_DATA_TTL_SECONDS)
 
 
 async def _write_participants(
@@ -78,13 +113,7 @@ async def _write_participants(
             seen.add(puuid)
         # P10-CR-6: Cap player:matches per player to prevent unbounded growth.
         # Merged into same pipeline (2 RTTs -> 1).
-        for puuid in seen:
-            pipe.zremrangebyrank(
-                f"player:matches:{puuid}",
-                0,
-                -(cfg.player_matches_max + 1),
-            )
-            pipe.expire(f"player:matches:{puuid}", PLAYER_DATA_TTL_SECONDS)  # 30 days
+        _queue_player_matches_trim(pipe, seen, cfg)
         if seen:
             await pipe.execute()
     return seen
@@ -155,12 +184,7 @@ async def _store_timeline_data(
     frames = info.get("frames", [])
     build_orders, skill_orders = _extract_timeline_events(frames)
 
-    pid_to_puuid: dict[int, str] = {}
-    pid_to_champ: dict[int, str] = {}
-    for p in info.get("participants", []):
-        pid = p.get("participantId", 0)
-        pid_to_puuid[pid] = p.get("puuid", "")
-        pid_to_champ[pid] = p.get("championName", "Unknown")
+    pid_to_puuid, pid_to_champ = _build_pid_mappings(info.get("participants", []))
 
     gold_timelines = _extract_gold_timelines(frames)
     kill_events = _extract_kill_events(frames, pid_to_champ)
@@ -209,7 +233,7 @@ async def _discover_co_players(
     puuid_list = sorted(seen_puuids)
     async with r.pipeline(transaction=False) as pipe:
         for puuid in puuid_list:
-            await pipe.hexists(f"player:{puuid}", "seeded_at")  # type: ignore[misc]
+            await pipe.hexists(_key_player(puuid), "seeded_at")  # type: ignore[misc]
         seeded_results: list[bool] = await pipe.execute()
     discover_scores: dict[str, float] = {}
     for puuid, already_seeded in zip(
@@ -249,8 +273,11 @@ async def _load_and_validate(
     if raw is None:
         log.error("raw blob missing", extra={"match_id": match_id})
         await nack_to_dlq(
-            r, envelope, failure_code="parse_error",
-            failed_by="parser", original_message_id=msg_id,
+            r,
+            envelope,
+            failure_code="parse_error",
+            failed_by="parser",
+            original_message_id=msg_id,
         )
         await ack(r, _IN_STREAM, _GROUP, msg_id)
         return None
@@ -261,8 +288,11 @@ async def _load_and_validate(
     except (KeyError, json.JSONDecodeError, TypeError) as exc:
         log.error("parse error", extra={"match_id": match_id, "error": str(exc)})
         await nack_to_dlq(
-            r, envelope, failure_code="parse_error",
-            failed_by="parser", original_message_id=msg_id,
+            r,
+            envelope,
+            failure_code="parse_error",
+            failed_by="parser",
+            original_message_id=msg_id,
         )
         await ack(r, _IN_STREAM, _GROUP, msg_id)
         return None
@@ -351,7 +381,12 @@ async def _parse_match(
     game_start: int = info["gameStartTimestamp"]
     first_parse = await _write_match_metadata(r, match_id, info, region, cfg)
     seen_puuids = await _write_participants(
-        r, match_id, game_start, info["participants"], log, cfg,
+        r,
+        match_id,
+        game_start,
+        info["participants"],
+        log,
+        cfg,
     )
 
     # Ban/matchup tracking + timeline parsing run concurrently.

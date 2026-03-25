@@ -7,11 +7,26 @@ import logging
 from typing import Any
 
 import redis.asyncio as aioredis
-
 from lol_pipeline.constants import CHAMPION_STATS_TTL_SECONDS
 
+from lol_parser._constants import _PARTICIPANT_FIELD_MAP
 from lol_parser._data import _ITEM_KEYS
 from lol_parser._extract import _extract_all_perks
+
+
+def _key_player_matches(puuid: str) -> str:
+    """Build Redis key for player:matches:{puuid}."""
+    return f"player:matches:{puuid}"
+
+
+def _key_match_participants(match_id: str) -> str:
+    """Build Redis key for match:participants:{match_id}."""
+    return f"match:participants:{match_id}"
+
+
+def _key_player(puuid: str) -> str:
+    """Build Redis key for player:{puuid}."""
+    return f"player:{puuid}"
 
 
 def _validate(data: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -28,41 +43,10 @@ def _participant_fields(p: dict[str, Any]) -> dict[str, str]:
     """Build the Redis hash mapping for one participant."""
     keystone, primary_id, sub_id, primary_sel, sub_sel, stat_shards = _extract_all_perks(p)
     items = json.dumps([p.get(k, 0) for k in _ITEM_KEYS])
-    return {
-        "champion_id": str(p.get("championId", "")),
+    fields: dict[str, str] = {
         "champion_name": p.get("championName", ""),
-        "team_id": str(p.get("teamId", "")),
-        "team_position": p.get("teamPosition", ""),
-        "role": p.get("role", ""),
         "win": "1" if p.get("win") else "0",
-        "kills": str(p.get("kills", 0)),
-        "deaths": str(p.get("deaths", 0)),
-        "assists": str(p.get("assists", 0)),
-        "gold_earned": str(p.get("goldEarned", 0)),
-        "total_damage_dealt_to_champions": str(p.get("totalDamageDealtToChampions", 0)),
-        "total_minions_killed": str(p.get("totalMinionsKilled", 0)),
-        "vision_score": str(p.get("visionScore", 0)),
         "items": items,
-        "summoner1_id": str(p.get("summoner1Id", 0)),
-        "summoner2_id": str(p.get("summoner2Id", 0)),
-        "champion_level": str(p.get("champLevel", 0)),
-        "gold_spent": str(p.get("goldSpent", 0)),
-        "physical_damage": str(p.get("physicalDamageDealtToChampions", 0)),
-        "magic_damage": str(p.get("magicDamageDealtToChampions", 0)),
-        "true_damage": str(p.get("trueDamageDealtToChampions", 0)),
-        "damage_taken": str(p.get("totalDamageTaken", 0)),
-        "damage_mitigated": str(p.get("damageSelfMitigated", 0)),
-        "healing_done": str(p.get("totalHeal", 0)),
-        "wards_placed": str(p.get("wardsPlaced", 0)),
-        "wards_killed": str(p.get("wardsKilled", 0)),
-        "detector_wards": str(p.get("detectorWardsPlaced", 0)),
-        "neutral_minions": str(p.get("neutralMinionsKilled", 0)),
-        "turret_kills": str(p.get("turretKills", 0)),
-        "double_kills": str(p.get("doubleKills", 0)),
-        "triple_kills": str(p.get("tripleKills", 0)),
-        "quadra_kills": str(p.get("quadraKills", 0)),
-        "penta_kills": str(p.get("pentaKills", 0)),
-        "time_played": str(p.get("timePlayed", 0)),
         "perk_keystone": str(keystone),
         "perk_primary_style": str(primary_id),
         "perk_sub_style": str(sub_id),
@@ -70,6 +54,9 @@ def _participant_fields(p: dict[str, Any]) -> dict[str, str]:
         "perk_sub_selections": json.dumps(sub_sel),
         "perk_stat_shards": json.dumps(stat_shards),
     }
+    for redis_field, (riot_field, default) in _PARTICIPANT_FIELD_MAP.items():
+        fields[redis_field] = str(p.get(riot_field, default))
+    return fields
 
 
 def _queue_participant(
@@ -87,14 +74,16 @@ def _queue_participant(
     participant_key = f"participant:{match_id}:{puuid}"
     pipe.hset(participant_key, mapping=_participant_fields(p))
     pipe.expire(participant_key, match_data_ttl)
-    pipe.sadd(f"match:participants:{match_id}", puuid)
-    pipe.expire(f"match:participants:{match_id}", match_data_ttl)
-    pipe.zadd(f"player:matches:{puuid}", {match_id: float(game_start)})
+    mp_key = _key_match_participants(match_id)
+    pipe.sadd(mp_key, puuid)
+    pipe.expire(mp_key, match_data_ttl)
+    pipe.zadd(_key_player_matches(puuid), {match_id: float(game_start)})
     riot_name = p.get("riotIdGameName", "")
     riot_tag = p.get("riotIdTagline", "")
     if riot_name and riot_tag:
-        pipe.hsetnx(f"player:{puuid}", "game_name", riot_name)
-        pipe.hsetnx(f"player:{puuid}", "tag_line", riot_tag)
+        player_key = _key_player(puuid)
+        pipe.hsetnx(player_key, "game_name", riot_name)
+        pipe.hsetnx(player_key, "tag_line", riot_tag)
     return puuid
 
 
