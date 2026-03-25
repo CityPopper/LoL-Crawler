@@ -1,15 +1,21 @@
-"""Tests for stats route — fragment caching (T5-5)."""
+"""Tests for stats route — fragment caching (T5-5) and player refresh."""
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import fakeredis.aioredis
 import pytest
+from httpx import ASGITransport, AsyncClient
+from lol_pipeline._helpers import name_cache_key
 
+from lol_ui.main import app
 from lol_ui.routes.stats import (  # type: ignore[attr-defined]
     _CACHE_TTL_S,
     _CACHE_VERSION,
     _has_timeline_data,
+    player_refresh,
     stats_matches,
 )
 
@@ -117,3 +123,93 @@ class TestStatsUsesIsSystemHalted:
         with patch("lol_ui.routes.stats.is_system_halted", mock_halted):
             await stats_matches(request)
         mock_halted.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# POST /player/refresh
+# ---------------------------------------------------------------------------
+
+
+class TestPlayerRefresh:
+    """POST /player/refresh — re-seed a player by clearing cooldowns and enqueuing."""
+
+    @pytest.fixture
+    async def client(self):
+        """ASGI test client with fakeredis wired into app.state."""
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        app.state.r = r
+        app.state.cfg = MagicMock(max_attempts=3)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            yield c, r
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_refresh__valid_riot_id__returns_queued(self, client) -> None:
+        """PUUID found in cache -> hdel, set_priority, publish, returns queued."""
+        c, r = client
+        puuid = "fake-puuid-" + "a" * 66
+        cache_key = name_cache_key("GameName", "TAG")
+        await r.set(cache_key, puuid)
+        # Pre-populate player hash so hdel has something to clear
+        await r.hset(f"player:{puuid}", mapping={"seeded_at": "x", "last_crawled_at": "y", "region": "na1"})
+
+        with patch("lol_ui.routes.stats.publish", new_callable=AsyncMock) as mock_pub:
+            resp = await c.post(
+                "/player/refresh",
+                json={"riot_id": "GameName#TAG", "region": "na1"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body == {"queued": True}
+
+        # Verify hdel cleared seeded_at and last_crawled_at
+        seeded = await r.hget(f"player:{puuid}", "seeded_at")
+        last_crawled = await r.hget(f"player:{puuid}", "last_crawled_at")
+        assert seeded is None
+        assert last_crawled is None
+        # region should still be intact
+        assert await r.hget(f"player:{puuid}", "region") == "na1"
+
+        # Verify set_priority was called (check the priority key exists)
+        assert await r.exists(f"player:priority:{puuid}")
+
+        # Verify publish was called with correct stream and envelope
+        mock_pub.assert_called_once()
+        call_args = mock_pub.call_args
+        assert call_args[0][1] == "stream:puuid"
+        envelope = call_args[0][2]
+        assert envelope.type == "puuid"
+        assert envelope.payload["puuid"] == puuid
+        assert envelope.payload["game_name"] == "GameName"
+        assert envelope.payload["tag_line"] == "TAG"
+        assert envelope.priority == "manual_20"
+
+    @pytest.mark.asyncio
+    async def test_refresh__puuid_not_in_cache__returns_404(self, client) -> None:
+        """PUUID not in cache -> 404 with descriptive error."""
+        c, r = client
+
+        resp = await c.post(
+            "/player/refresh",
+            json={"riot_id": "Unknown#PLAYER", "region": "na1"},
+        )
+
+        assert resp.status_code == 404
+        body = resp.json()
+        assert body["error"] == "player not found \u2014 search for them first"
+
+    @pytest.mark.asyncio
+    async def test_refresh__invalid_riot_id_no_hash__returns_400(self, client) -> None:
+        """riot_id without '#' -> 400 invalid riot_id."""
+        c, _r = client
+
+        resp = await c.post(
+            "/player/refresh",
+            json={"riot_id": "NoHashHere", "region": "na1"},
+        )
+
+        assert resp.status_code == 400
+        body = resp.json()
+        assert "invalid" in body["error"].lower()

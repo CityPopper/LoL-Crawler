@@ -7,13 +7,16 @@ import contextlib
 import html
 import json
 import time
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from lol_pipeline._helpers import is_system_halted, name_cache_key
 from lol_pipeline.config import Config
 from lol_pipeline.log import get_logger
+from lol_pipeline.models import MessageEnvelope
+from lol_pipeline.priority import PRIORITY_MANUAL_20, set_priority
 from lol_pipeline.rate_limiter import wait_for_token
 from lol_pipeline.riot_api import (
     AuthError,
@@ -22,6 +25,7 @@ from lol_pipeline.riot_api import (
     RiotClient,
     ServerError,
 )
+from lol_pipeline.streams import publish
 
 from lol_ui.build_display import _build_tab_html
 from lol_ui.charts.gold_chart import _gold_chart_svg
@@ -444,6 +448,45 @@ async def show_stats(request: Request) -> HTMLResponse:
         return _not_seeded_response(game_name, tag_line, region)
 
     return await _build_stats_response(r, puuid, game_name, tag_line, region, riot_id, stats)
+
+
+@router.post("/player/refresh")
+async def player_refresh(request: Request) -> JSONResponse:
+    """Re-seed a player: clear cooldowns and enqueue to stream:puuid."""
+    body: dict[str, Any] = await request.json()
+    riot_id: str = body.get("riot_id", "")
+    region: str = body.get("region", "na1")
+
+    if "#" not in riot_id:
+        return JSONResponse({"error": "invalid riot_id"}, status_code=400)
+
+    game_name, tag_line = riot_id.split("#", 1)
+    r = request.app.state.r
+    puuid: str | None = await r.get(name_cache_key(game_name, tag_line))
+
+    if not puuid:
+        return JSONResponse({"error": "player not found — search for them first"}, status_code=404)
+
+    await r.hdel(f"player:{puuid}", "seeded_at", "last_crawled_at")
+    await set_priority(r, puuid)
+
+    cfg: Config = request.app.state.cfg
+    envelope = MessageEnvelope(
+        source_stream="stream:puuid",
+        type="puuid",
+        payload={
+            "puuid": puuid,
+            "game_name": game_name,
+            "tag_line": tag_line,
+            "region": region,
+        },
+        max_attempts=cfg.max_attempts,
+        priority=PRIORITY_MANUAL_20,
+        correlation_id=str(uuid.uuid4()),
+    )
+    await publish(r, "stream:puuid", envelope)
+
+    return JSONResponse({"queued": True})
 
 
 @router.get("/stats/matches", response_class=HTMLResponse)

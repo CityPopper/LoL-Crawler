@@ -245,9 +245,33 @@ def _stats_form(
 </form>
 {hash_encode_js}
 {
-            '<button class="btn btn--refresh"'
-            ' onclick="document.querySelector(&apos;.form-inline&apos;).submit()"'
-            ">&#8635; Refresh</button>"
+            '''<button class="btn btn--refresh" id="btn-player-refresh">&#8635; Refresh</button>
+<script>
+(function() {
+  var btn = document.getElementById("btn-player-refresh");
+  if (!btn) return;
+  btn.addEventListener("click", async function() {
+    var f = document.querySelector(".form-inline");
+    var riotId = f.querySelector("[name=riot_id]").value;
+    var region = f.querySelector("[name=region]").value;
+    btn.disabled = true;
+    var orig = btn.innerHTML;
+    try {
+      var resp = await fetch("/player/refresh", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({riot_id: riotId, region: region})
+      });
+      var data = await resp.json();
+      btn.textContent = data.queued
+        ? "\\u2713 Queued for refresh!" : "Error: " + (data.error || "unknown");
+    } catch(e) {
+      btn.textContent = "Error";
+    }
+    setTimeout(function() { btn.disabled = false; btn.innerHTML = orig; }, 3000);
+  });
+})();
+</script>'''
             if stats_html
             else ""
         }
