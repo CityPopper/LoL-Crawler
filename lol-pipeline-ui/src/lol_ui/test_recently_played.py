@@ -6,7 +6,10 @@ from collections import Counter
 
 import pytest
 
-from lol_ui.recently_played import _count_co_players, _recently_played_html
+from lol_ui.recently_played import (  # type: ignore[attr-defined]
+    _count_co_players,
+    _recently_played_html,
+)
 
 # ---------------------------------------------------------------------------
 # _count_co_players

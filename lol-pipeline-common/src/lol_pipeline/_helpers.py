@@ -9,6 +9,7 @@ import re
 import socket
 import time
 from datetime import UTC, datetime
+from typing import Any
 
 import redis.asyncio as aioredis
 
@@ -90,7 +91,7 @@ async def register_player(  # noqa: PLR0913
     tag_line: str,
     players_all_max: int,
     transaction: bool = False,
-    extra_ops: collections.abc.Callable[[aioredis.client.Pipeline], None] | None = None,
+    extra_ops: collections.abc.Callable[[aioredis.client.Pipeline], Any] | None = None,
 ) -> None:
     """Write player hash, set TTL, add to players:all ZSET, and trim.
 
@@ -122,7 +123,7 @@ async def register_player(  # noqa: PLR0913
         await pipe.execute()
 
 
-async def handle_riot_api_error(
+async def handle_riot_api_error(  # noqa: PLR0913
     r: aioredis.Redis,
     *,
     exc: NotFoundError | AuthError | RateLimitError | ServerError,

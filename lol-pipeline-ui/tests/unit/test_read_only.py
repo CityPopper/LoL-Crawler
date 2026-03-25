@@ -14,8 +14,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import pytest
-
 # Root of the lol-pipeline-ui production source
 _SRC_ROOT = Path(__file__).resolve().parents[2] / "src" / "lol_ui"
 
@@ -72,9 +70,7 @@ def _is_test_file(path: Path) -> bool:
 def _production_source_files() -> list[Path]:
     """Collect all non-test .py source files under src/lol_ui/."""
     assert _SRC_ROOT.is_dir(), f"Source root not found: {_SRC_ROOT}"
-    return sorted(
-        p for p in _SRC_ROOT.rglob("*.py") if not _is_test_file(p)
-    )
+    return sorted(p for p in _SRC_ROOT.rglob("*.py") if not _is_test_file(p))
 
 
 def _scan_file_for_patterns(
@@ -104,9 +100,7 @@ class TestUiHasNoRedisWriteMethods:
             violations = _scan_file_for_patterns(src_file, _WRITE_METHOD_PATTERNS)
             for lineno, pattern, line in violations:
                 rel = src_file.relative_to(_SRC_ROOT)
-                all_violations.append(
-                    f"  {rel}:{lineno}  pattern={pattern!r}\n    {line}"
-                )
+                all_violations.append(f"  {rel}:{lineno}  pattern={pattern!r}\n    {line}")
         assert not all_violations, (
             f"Found {len(all_violations)} Redis write method call(s) in read-only UI:\n"
             + "\n".join(all_violations)
@@ -119,9 +113,7 @@ class TestUiHasNoRedisWriteMethods:
             violations = _scan_file_for_patterns(src_file, _WRITE_IMPORT_PATTERNS)
             for lineno, pattern, line in violations:
                 rel = src_file.relative_to(_SRC_ROOT)
-                all_violations.append(
-                    f"  {rel}:{lineno}  pattern={pattern!r}\n    {line}"
-                )
+                all_violations.append(f"  {rel}:{lineno}  pattern={pattern!r}\n    {line}")
         assert not all_violations, (
             f"Found {len(all_violations)} write-function import(s) in read-only UI:\n"
             + "\n".join(all_violations)
@@ -134,9 +126,7 @@ class TestUiHasNoRedisWriteMethods:
             violations = _scan_file_for_patterns(src_file, _WRITE_CALL_PATTERNS)
             for lineno, pattern, line in violations:
                 rel = src_file.relative_to(_SRC_ROOT)
-                all_violations.append(
-                    f"  {rel}:{lineno}  pattern={pattern!r}\n    {line}"
-                )
+                all_violations.append(f"  {rel}:{lineno}  pattern={pattern!r}\n    {line}")
         assert not all_violations, (
             f"Found {len(all_violations)} write-function call(s) in read-only UI:\n"
             + "\n".join(all_violations)
@@ -145,6 +135,4 @@ class TestUiHasNoRedisWriteMethods:
     def test_source_root_exists_and_has_files(self) -> None:
         """Sanity check: the source root exists and contains Python files."""
         files = _production_source_files()
-        assert len(files) > 10, (
-            f"Expected at least 10 production source files, found {len(files)}"
-        )
+        assert len(files) > 10, f"Expected at least 10 production source files, found {len(files)}"

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from lol_ui.routes.matchups import _champion_datalist, _role_options
+from lol_ui.routes.matchups import _champion_datalist, _role_options  # type: ignore[attr-defined]
 
 
 class TestChampionDatalist:

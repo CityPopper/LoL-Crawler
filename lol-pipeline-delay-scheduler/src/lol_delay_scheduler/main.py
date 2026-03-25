@@ -75,7 +75,7 @@ async def _resolve_member(
     Returns ``None`` when the member is corrupt and has been removed.
     """
     if _is_envelope_id(member):
-        data: str | None = await r.hget(f"delayed:envelope:{member}", "data")
+        data: str | None = await r.hget(f"delayed:envelope:{member}", "data")  # type: ignore[misc]
         if data is None:
             log.error(
                 "delayed envelope hash missing for ID member — removing",

@@ -9,7 +9,7 @@ import httpx
 import pytest
 import respx
 
-from lol_ui.ddragon import (
+from lol_ui.ddragon import (  # type: ignore[attr-defined]
     _DDRAGON_CHAMPION_IDS_KEY,
     _DDRAGON_CHAMPION_NAMES_KEY_PREFIX,
     _DDRAGON_MAX_RESPONSE_BYTES,
@@ -311,7 +311,7 @@ class TestDdragonFetchErrorLogging:
 
         # Ensure propagation is enabled so caplog (root handler) captures records,
         # even when the structured JSON logger has set propagate=False on parent "ui".
-        logger = logging.getLogger("ui.ddragon")
+        logging.getLogger("ui.ddragon")
         parent = logging.getLogger("ui")
         orig_propagate = parent.propagate
         parent.propagate = True

@@ -25,9 +25,7 @@ _data_str = st.text(max_size=200).filter(lambda s: "\n" not in s)
 # Variant excluding \r for file round-trip tests.  Python's text-mode
 # universal-newline translation silently converts \r\n → \n, which
 # corrupts payloads containing \r when written to a file and read back.
-_data_str_file_safe = st.text(max_size=200).filter(
-    lambda s: "\n" not in s and "\r" not in s
-)
+_data_str_file_safe = st.text(max_size=200).filter(lambda s: "\n" not in s and "\r" not in s)
 
 _random_line = st.text(max_size=200).filter(lambda s: "\n" not in s)
 
@@ -44,7 +42,7 @@ def _lines_with_match(draw: st.DrawFn) -> tuple[list[str], str, str]:
     # Add some noise lines before and after
     prefix_lines = draw(st.lists(_random_line, min_size=0, max_size=5))
     suffix_lines = draw(st.lists(_random_line, min_size=0, max_size=5))
-    all_lines = prefix_lines + [target_line] + suffix_lines
+    all_lines = [*prefix_lines, target_line, *suffix_lines]
     return all_lines, match_id, data
 
 
@@ -62,9 +60,7 @@ class TestFindInLinesFuzz:
 
     @given(lines=st.lists(_random_line, min_size=1, max_size=20), match_id=_match_id)
     @settings(max_examples=200)
-    def test_find_in_lines__no_tab__returns_none(
-        self, lines: list[str], match_id: str
-    ) -> None:
+    def test_find_in_lines__no_tab__returns_none(self, lines: list[str], match_id: str) -> None:
         """Lines without the match_id tab prefix return None."""
         # Filter out any lines that accidentally match
         filtered = [ln for ln in lines if not ln.startswith(match_id + "\t")]
@@ -89,9 +85,7 @@ class TestFindInLinesFuzz:
 
     @given(data=st.data())
     @settings(max_examples=200)
-    def test_find_in_lines__matching_line__returns_data(
-        self, data: st.DataObject
-    ) -> None:
+    def test_find_in_lines__matching_line__returns_data(self, data: st.DataObject) -> None:
         """A line formatted as 'match_id\\tdata' returns data after the tab."""
         lines, match_id, expected_data = data.draw(_lines_with_match())
         result = RawStore._find_in_lines(lines, match_id)
@@ -99,9 +93,7 @@ class TestFindInLinesFuzz:
 
     @given(match_id=_match_id, payload=_data_str)
     @settings(max_examples=200)
-    def test_find_in_lines__round_trip__write_then_find(
-        self, match_id: str, payload: str
-    ) -> None:
+    def test_find_in_lines__round_trip__write_then_find(self, match_id: str, payload: str) -> None:
         """Writing 'match_id\\tdata\\n' then searching for match_id returns data."""
         line = f"{match_id}\t{payload}\n"
         result = RawStore._find_in_lines([line], match_id)
@@ -147,9 +139,7 @@ class TestFindInLinesFuzz:
 class TestSearchBundleFileFuzz:
     @given(match_id=_match_id)
     @settings(max_examples=50)
-    def test_search_bundle_file__empty_file__returns_none(
-        self, match_id: str
-    ) -> None:
+    def test_search_bundle_file__empty_file__returns_none(self, match_id: str) -> None:
         """Empty file always returns None."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             bundle = Path(tmp_dir) / "empty.jsonl"
@@ -158,9 +148,7 @@ class TestSearchBundleFileFuzz:
 
     @given(data=st.data())
     @settings(max_examples=50)
-    def test_search_bundle_file__matching_entry__returns_data(
-        self, data: st.DataObject
-    ) -> None:
+    def test_search_bundle_file__matching_entry__returns_data(self, data: st.DataObject) -> None:
         """File containing match_id entry returns the data."""
         match_id = data.draw(_match_id)
         payload = data.draw(_data_str_file_safe)
@@ -204,7 +192,7 @@ class TestSearchBundleFileFuzz:
     ) -> None:
         """Target entry is found among noise lines."""
         target = f"{match_id}\t{payload}"
-        all_lines = noise + [target]
+        all_lines = [*noise, target]
         with tempfile.TemporaryDirectory() as tmp_dir:
             bundle = Path(tmp_dir) / "mixed.jsonl"
             bundle.write_text("\n".join(all_lines) + "\n", encoding="utf-8")

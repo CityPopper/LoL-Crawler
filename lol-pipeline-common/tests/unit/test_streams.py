@@ -756,9 +756,7 @@ class TestConsumeTypedThreePhaseOrdering:
         # Phase 1: PEL drain returns one message (non-empty)
         mock_r.xreadgroup.return_value = [["stream:test", [("pel-1", valid_fields)]]]
 
-        msgs = await consume(
-            mock_r, "stream:test", "g", "c", block=0, autoclaim_min_idle_ms=5000
-        )
+        msgs = await consume(mock_r, "stream:test", "g", "c", block=0, autoclaim_min_idle_ms=5000)
 
         # PEL message returned
         assert len(msgs) == 1
@@ -780,9 +778,7 @@ class TestConsumeTypedThreePhaseOrdering:
         # Phase 2: XAUTOCLAIM returns a claimed message
         mock_r.xautoclaim.return_value = ["0-0", [("autoclaimed-1", valid_fields)]]
 
-        msgs = await consume(
-            mock_r, "stream:test", "g", "c", block=0, autoclaim_min_idle_ms=5000
-        )
+        msgs = await consume(mock_r, "stream:test", "g", "c", block=0, autoclaim_min_idle_ms=5000)
 
         # XAUTOCLAIM was invoked (phase 2 reached because PEL was empty)
         mock_r.xautoclaim.assert_called_once()

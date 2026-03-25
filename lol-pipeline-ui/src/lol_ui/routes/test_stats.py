@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from lol_ui.routes.stats import (
+from lol_ui.routes.stats import (  # type: ignore[attr-defined]
     _CACHE_TTL_S,
     _CACHE_VERSION,
     _has_timeline_data,
@@ -107,7 +107,7 @@ class TestStatsUsesIsSystemHalted:
     """DRY-5: Stats route uses is_system_halted() instead of raw r.get."""
 
     @pytest.mark.asyncio
-    async def test_stats_matches__calls_is_system_halted(self, r) -> None:
+    async def test_stats_matches__calls_is_system_halted(self, r: object) -> None:
         """stats_matches uses is_system_halted() for halt check."""
         request = MagicMock()
         request.app.state.r = r

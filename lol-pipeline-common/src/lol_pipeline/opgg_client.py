@@ -7,15 +7,16 @@ Note: op.gg responses do NOT contain Riot matchIds. The normalized match_id
 uses the format ``OPGG_{PLATFORM}_{opgg_internal_id}`` and cannot be
 directly cross-referenced with Riot API without a separate lookup.
 """
+
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import httpx
 import redis.asyncio as aioredis
 
 from lol_pipeline._opgg_etl import normalize_game
-from lol_pipeline._rate_limiter_data import _LONG_LIMIT, _SHORT_LIMIT
 from lol_pipeline.rate_limiter import wait_for_token
 
 _log = logging.getLogger("opgg_client")
@@ -124,9 +125,7 @@ class OpggClient:
             data = resp.json()
             return str(data["data"]["summoner_id"])
         except (KeyError, TypeError, ValueError) as exc:
-            raise OpggParseError(
-                f"unexpected response from summoner lookup: {exc}"
-            ) from exc
+            raise OpggParseError(f"unexpected response from summoner lookup: {exc}") from exc
 
     async def get_match_history(
         self,
@@ -135,7 +134,7 @@ class OpggClient:
         limit: int = 20,
         game_type: str = "total",
         ended_at: str = "",
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """Fetch match history for a summoner_id.
 
         Returns a list of match-v5-shaped dicts (normalized via ETL layer).
@@ -154,15 +153,13 @@ class OpggClient:
         self._check_status(resp)
         try:
             body = resp.json()
-            games: list[dict] | None = body.get("data")
+            games: list[dict[str, Any]] | None = body.get("data")
             if games is None:
-                raise OpggParseError(
-                    f"unexpected response: missing 'data' key in {list(body)}"
-                )
+                raise OpggParseError(f"unexpected response: missing 'data' key in {list(body)}")
         except (TypeError, ValueError) as exc:
             raise OpggParseError(f"unexpected response: {exc}") from exc
 
-        results: list[dict] = []
+        results: list[dict[str, Any]] = []
         for raw_game in games:
             try:
                 results.append(normalize_game(raw_game, region))

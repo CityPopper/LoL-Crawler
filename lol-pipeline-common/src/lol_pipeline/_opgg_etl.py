@@ -1,8 +1,9 @@
 """ETL: transform op.gg game response to match-v5-shaped dicts."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
-
+from typing import Any
 
 _OPGG_REGION_MAP = {
     "na": "NA1",
@@ -21,7 +22,7 @@ _OPGG_REGION_MAP = {
 _DROPPED_PARTICIPANT_FIELDS = {"op_score", "lane_score", "clips", "keyword"}
 
 
-def _normalize_participant(raw: dict) -> dict:
+def _normalize_participant(raw: dict[str, Any]) -> dict[str, Any]:
     """Map a single op.gg participant dict to match-v5 participant shape."""
     summoner = raw.get("summoner", {})
     stats = raw.get("stats", {})
@@ -29,7 +30,7 @@ def _normalize_participant(raw: dict) -> dict:
     # Pad/trim to 7 items
     while len(items) < 7:
         items.append(0)
-    p: dict = {
+    p: dict[str, Any] = {
         "puuid": summoner.get("puuid", ""),
         "summonerId": summoner.get("summoner_id", ""),
         "championId": raw.get("champion_id", 0),
@@ -51,7 +52,7 @@ def _normalize_participant(raw: dict) -> dict:
     return p
 
 
-def _normalize_team(raw_team: dict, team_id: int) -> dict:
+def _normalize_team(raw_team: dict[str, Any], team_id: int) -> dict[str, Any]:
     """Map op.gg team to match-v5 team shape."""
     stat = raw_team.get("game_stat", {})
     return {
@@ -65,7 +66,7 @@ def _normalize_team(raw_team: dict, team_id: int) -> dict:
     }
 
 
-def normalize_game(raw_game: dict, region: str = "") -> dict:
+def normalize_game(raw_game: dict[str, Any], region: str = "") -> dict[str, Any]:
     """Transform a single op.gg game dict to match-v5-shaped dict.
 
     Raises ``KeyError`` if required top-level fields are missing.
@@ -82,9 +83,9 @@ def normalize_game(raw_game: dict, region: str = "") -> dict:
     platform = _OPGG_REGION_MAP.get(region.lower(), region.upper())
     match_id = f"OPGG_{platform}_{game_id}"
 
-    teams_raw: list[dict] = raw_game.get("teams", [])
-    participants: list[dict] = []
-    teams: list[dict] = []
+    teams_raw: list[dict[str, Any]] = raw_game.get("teams", [])
+    participants: list[dict[str, Any]] = []
+    teams: list[dict[str, Any]] = []
     team_ids = [100, 200]
     for i, team_raw in enumerate(teams_raw):
         team_id = team_ids[i] if i < len(team_ids) else (i + 1) * 100

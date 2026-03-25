@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 
 import fakeredis.aioredis
 import pytest
@@ -9,7 +9,7 @@ from lol_ui.ddragon import _mem_cache
 
 
 @pytest.fixture(autouse=True)
-def _clear_ddragon_mem_cache():
+def _clear_ddragon_mem_cache() -> Iterator[None]:
     """Clear the ddragon module-level in-memory cache before each test."""
     _mem_cache.clear()
     yield

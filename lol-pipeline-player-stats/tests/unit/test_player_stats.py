@@ -66,7 +66,7 @@ async def _setup_message(r, envelope):
     return msgs[0][0]
 
 
-async def _add_participant(
+async def _add_participant(  # noqa: PLR0913
     r,
     match_id,
     puuid,
@@ -96,6 +96,7 @@ async def _add_participant(
 # ---------------------------------------------------------------------------
 # Player KDA Aggregation
 # ---------------------------------------------------------------------------
+
 
 class TestPlayerKdaAggregation:
     """Player stats handler aggregates kills, deaths, assists across matches."""
@@ -159,6 +160,7 @@ class TestPlayerKdaAggregation:
 # Win Rate Calculation
 # ---------------------------------------------------------------------------
 
+
 class TestPlayerWinRate:
     """Win rate derived from total_wins / total_games."""
 
@@ -205,6 +207,7 @@ class TestPlayerWinRate:
 # ---------------------------------------------------------------------------
 # Cursor-Based Processing
 # ---------------------------------------------------------------------------
+
 
 class TestPlayerStatsCursor:
     """Cursor tracks last-processed match; only new matches are processed."""
@@ -286,6 +289,7 @@ class TestPlayerStatsCursor:
 # Distributed Lock
 # ---------------------------------------------------------------------------
 
+
 class TestPlayerStatsLock:
     """Distributed lock prevents concurrent processing of the same player."""
 
@@ -327,6 +331,7 @@ class TestPlayerStatsLock:
 # player:stats:{puuid} Hash Fields
 # ---------------------------------------------------------------------------
 
+
 class TestPlayerStatsHash:
     """player:stats:{puuid} hash contains correct accumulated and derived fields."""
 
@@ -343,9 +348,16 @@ class TestPlayerStatsHash:
 
         stats = await r.hgetall(f"player:stats:{puuid}")
         required_fields = {
-            "total_games", "total_wins", "total_kills", "total_deaths",
-            "total_assists", "win_rate", "avg_kills", "avg_deaths",
-            "avg_assists", "kda",
+            "total_games",
+            "total_wins",
+            "total_kills",
+            "total_deaths",
+            "total_assists",
+            "win_rate",
+            "avg_kills",
+            "avg_deaths",
+            "avg_assists",
+            "kda",
         }
         assert required_fields.issubset(set(stats.keys())), (
             f"Missing fields: {required_fields - set(stats.keys())}"
@@ -384,13 +396,14 @@ class TestPlayerStatsHash:
         await handle_player_stats(r, cfg, "worker-1", msg_id, env, log)
 
         ttl = await r.ttl(f"player:stats:{puuid}")
-        _30_DAYS = 30 * 24 * 3600
-        assert 0 < ttl <= _30_DAYS
+        _30_days = 30 * 24 * 3600
+        assert 0 < ttl <= _30_days
 
 
 # ---------------------------------------------------------------------------
 # player:champions:{puuid} Sorted Set
 # ---------------------------------------------------------------------------
+
 
 class TestPlayerChampionsSortedSet:
     """player:champions:{puuid} sorted set tracks champion play counts."""
@@ -422,13 +435,14 @@ class TestPlayerChampionsSortedSet:
         await handle_player_stats(r, cfg, "worker-1", msg_id, env, log)
 
         ttl = await r.ttl(f"player:champions:{puuid}")
-        _30_DAYS = 30 * 24 * 3600
-        assert 0 < ttl <= _30_DAYS
+        _30_days = 30 * 24 * 3600
+        assert 0 < ttl <= _30_days
 
 
 # ---------------------------------------------------------------------------
 # player:roles:{puuid} Sorted Set
 # ---------------------------------------------------------------------------
+
 
 class TestPlayerRolesSortedSet:
     """player:roles:{puuid} sorted set tracks role play counts."""
@@ -460,13 +474,14 @@ class TestPlayerRolesSortedSet:
         await handle_player_stats(r, cfg, "worker-1", msg_id, env, log)
 
         ttl = await r.ttl(f"player:roles:{puuid}")
-        _30_DAYS = 30 * 24 * 3600
-        assert 0 < ttl <= _30_DAYS
+        _30_days = 30 * 24 * 3600
+        assert 0 < ttl <= _30_days
 
 
 # ---------------------------------------------------------------------------
 # system:halted Check
 # ---------------------------------------------------------------------------
+
 
 class TestPlayerStatsSystemHalted:
     """system:halted flag stops processing; message stays in PEL."""
@@ -500,6 +515,7 @@ class TestPlayerStatsSystemHalted:
 # ---------------------------------------------------------------------------
 # Proper Ack After Processing
 # ---------------------------------------------------------------------------
+
 
 class TestPlayerStatsAck:
     """Message is ACKed after successful processing or lock-discard."""

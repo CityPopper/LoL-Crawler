@@ -1,12 +1,12 @@
 """Unit tests for OpggClient — op.gg internal API client."""
+
 from __future__ import annotations
 
+import httpx
 import pytest
 import respx
-import httpx
 
 from lol_pipeline.opgg_client import OpggClient, OpggParseError
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -40,8 +40,11 @@ SAMPLE_GAMES_RESPONSE = {
                             "champion_id": 157,
                             "position": "ADC",
                             "stats": {
-                                "kill": 8, "death": 3, "assist": 5,
-                                "cs": 180, "damage_dealt_to_champions": 28000,
+                                "kill": 8,
+                                "death": 3,
+                                "assist": 5,
+                                "cs": 180,
+                                "damage_dealt_to_champions": 28000,
                             },
                             "items": [3031, 3094, 3086, 0, 0, 0, 3363],
                             "op_score": 8.7,
@@ -56,8 +59,11 @@ SAMPLE_GAMES_RESPONSE = {
                             "champion_id": 92,
                             "position": "TOP",
                             "stats": {
-                                "kill": 4, "death": 8, "assist": 2,
-                                "cs": 150, "damage_dealt_to_champions": 18000,
+                                "kill": 4,
+                                "death": 8,
+                                "assist": 2,
+                                "cs": 150,
+                                "damage_dealt_to_champions": 18000,
                             },
                             "items": [3071, 0, 0, 0, 0, 0, 3340],
                             "op_score": 4.2,
@@ -82,6 +88,7 @@ def client():
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
+
 
 class TestOpggClientSummonerLookup:
     @pytest.mark.asyncio
@@ -191,8 +198,9 @@ class TestOpggClientRateLimiting:
     @respx.mock
     async def test_get_summoner_id_calls_wait_for_token(self):
         """get_summoner_id acquires a rate limit token before the HTTP call."""
-        import fakeredis.aioredis
         from unittest.mock import AsyncMock, patch
+
+        import fakeredis.aioredis
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         respx.get("https://lol-api-summoner.op.gg/api/v3/na/summoners").mock(
@@ -217,13 +225,14 @@ class TestOpggClientRateLimiting:
     @respx.mock
     async def test_get_match_history_calls_wait_for_token(self):
         """get_match_history acquires a rate limit token before the HTTP call."""
-        import fakeredis.aioredis
         from unittest.mock import AsyncMock, patch
 
+        import fakeredis.aioredis
+
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        respx.get(
-            "https://lol-api-summoner.op.gg/api/na/summoners/xAmCbJxxx/games"
-        ).mock(return_value=httpx.Response(200, json=SAMPLE_GAMES_RESPONSE))
+        respx.get("https://lol-api-summoner.op.gg/api/na/summoners/xAmCbJxxx/games").mock(
+            return_value=httpx.Response(200, json=SAMPLE_GAMES_RESPONSE)
+        )
 
         http = httpx.AsyncClient()
         c = OpggClient(http, r=r)
@@ -262,16 +271,17 @@ class TestOpggClientRateLimiting:
     @respx.mock
     async def test_summoner_and_games_use_different_key_prefixes(self):
         """Summoner lookup and match history use endpoint-scoped key prefixes."""
+        from unittest.mock import patch
+
         import fakeredis.aioredis
-        from unittest.mock import AsyncMock, patch
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         respx.get("https://lol-api-summoner.op.gg/api/v3/na/summoners").mock(
             return_value=httpx.Response(200, json=SAMPLE_SUMMONER_RESPONSE)
         )
-        respx.get(
-            "https://lol-api-summoner.op.gg/api/na/summoners/xAmCbJxxx/games"
-        ).mock(return_value=httpx.Response(200, json=SAMPLE_GAMES_RESPONSE))
+        respx.get("https://lol-api-summoner.op.gg/api/na/summoners/xAmCbJxxx/games").mock(
+            return_value=httpx.Response(200, json=SAMPLE_GAMES_RESPONSE)
+        )
 
         http = httpx.AsyncClient()
         c = OpggClient(http, r=r)
@@ -298,13 +308,14 @@ class TestOpggClientRateLimiting:
     @respx.mock
     async def test_rate_limit_config_forwarded(self):
         """Custom rate limit config is forwarded to wait_for_token."""
-        import fakeredis.aioredis
         from unittest.mock import AsyncMock, patch
 
+        import fakeredis.aioredis
+
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        respx.get(
-            "https://lol-api-summoner.op.gg/api/na/summoners/xAmCbJxxx/games"
-        ).mock(return_value=httpx.Response(200, json=SAMPLE_GAMES_RESPONSE))
+        respx.get("https://lol-api-summoner.op.gg/api/na/summoners/xAmCbJxxx/games").mock(
+            return_value=httpx.Response(200, json=SAMPLE_GAMES_RESPONSE)
+        )
 
         http = httpx.AsyncClient()
         c = OpggClient(http, r=r, rate_limit_per_second=5, rate_limit_long=60)

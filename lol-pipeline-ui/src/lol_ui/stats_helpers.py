@@ -11,12 +11,12 @@ from typing import Any
 
 from lol_ui._helpers import _kda, _safe_int, _win_rate
 from lol_ui.constants import (
-    VALID_ROLES,
     _DIVERSITY_LABELS,
     _DIVERSITY_MIN_GAMES,
     _RANKED_SPLIT_STARTS,
     _STATS_ORDER,
     _STATS_ORDER_SET,
+    VALID_ROLES,
 )
 
 

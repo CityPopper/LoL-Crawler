@@ -140,7 +140,7 @@ async def _requeue_delayed(
     envelope_key = f"delayed:envelope:{env.id}"
     async with r.pipeline(transaction=True) as pipe:
         await pipe.zadd(DELAYED_MESSAGES_KEY, {env.id: ready_ms})
-        await pipe.hset(envelope_key, "data", envelope_data)
+        await pipe.hset(envelope_key, "data", envelope_data)  # type: ignore[misc]
         await pipe.xack(_IN_STREAM, _GROUP, msg_id)
         await pipe.execute()
 

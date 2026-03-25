@@ -308,7 +308,7 @@ async def _write_match_metadata(
 ) -> int:
     """Write match-level fields and return first_parse flag (1 = first, 0 = re-parse)."""
     match_key = f"match:{match_id}"
-    first_parse: int = await r.hsetnx(match_key, "status", "parsed")
+    first_parse: int = await r.hsetnx(match_key, "status", "parsed")  # type: ignore[misc]
     game_start = info["gameStartTimestamp"]
     match_fields: dict[str, str] = {
         "queue_id": str(info.get("queueId", "")),

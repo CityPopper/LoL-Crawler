@@ -143,13 +143,13 @@ async def _get_champion_id_map(r: aioredis.Redis) -> dict[str, str]:
     """
     mem = _mem_get(_DDRAGON_CHAMPION_IDS_KEY)
     if mem is not None and isinstance(mem, dict):
-        return mem
+        return dict(mem)
     cached = await r.get(_DDRAGON_CHAMPION_IDS_KEY)
     if cached:
         try:
-            mapping = json.loads(str(cached))
-            _mem_put(_DDRAGON_CHAMPION_IDS_KEY, mapping)
-            return mapping  # type: ignore[no-any-return]
+            cached_mapping: dict[str, str] = json.loads(str(cached))
+            _mem_put(_DDRAGON_CHAMPION_IDS_KEY, cached_mapping)
+            return cached_mapping
         except (json.JSONDecodeError, TypeError):
             pass
     version = await _get_ddragon_version(r)
@@ -184,13 +184,13 @@ async def get_champion_name_map(
     cache_key = f"{_DDRAGON_CHAMPION_NAMES_KEY_PREFIX}:{ddragon_locale}"
     mem = _mem_get(cache_key)
     if mem is not None and isinstance(mem, dict):
-        return mem
+        return dict(mem)
     cached = await r.get(cache_key)
     if cached:
         try:
-            mapping = json.loads(str(cached))
-            _mem_put(cache_key, mapping)
-            return mapping  # type: ignore[no-any-return]
+            cached_mapping: dict[str, str] = json.loads(str(cached))
+            _mem_put(cache_key, cached_mapping)
+            return cached_mapping
         except (json.JSONDecodeError, TypeError):
             pass
     version = await _get_ddragon_version(r)

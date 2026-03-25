@@ -32,6 +32,7 @@ STREAM_DLQ_ARCHIVE: str = "stream:dlq:archive"
 DISCOVER_PLAYERS_KEY: str = "discover:players"
 SYSTEM_HALTED_KEY: str = "system:halted"
 DELAYED_MESSAGES_KEY: str = "delayed:messages"
+PLAYERS_ALL_KEY: str = "players:all"
 
 # Streams that DLQ replay is allowed to target. Prevents corrupt or malicious
 # DLQ entries from replaying to arbitrary Redis streams.

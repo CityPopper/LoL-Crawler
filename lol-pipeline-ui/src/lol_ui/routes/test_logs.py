@@ -8,7 +8,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import fakeredis.aioredis
 import pytest
 
-from lol_ui.routes.logs import _service_filter_html, logs_fragment, show_logs
+from lol_ui.routes.logs import (  # type: ignore[attr-defined]
+    _service_filter_html,
+    logs_fragment,
+    show_logs,
+)
 
 
 class TestServiceFilterHtml:

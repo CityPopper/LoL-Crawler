@@ -1,4 +1,5 @@
 """Unit tests for match_id_payload.json contract schema."""
+
 from __future__ import annotations
 
 import json
@@ -8,8 +9,7 @@ import jsonschema
 import pytest
 
 SCHEMA_PATH = (
-    Path(__file__).parent.parent.parent
-    / "contracts/schemas/payloads/match_id_payload.json"
+    Path(__file__).parent.parent.parent / "contracts/schemas/payloads/match_id_payload.json"
 )
 
 

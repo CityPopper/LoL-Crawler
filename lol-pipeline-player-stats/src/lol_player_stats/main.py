@@ -177,8 +177,13 @@ async def handle_player_stats(
             participant_data: list[dict[str, str]] = raw_results
 
             lock_ok = await _process_matches(
-                r, puuid, new_matches, participant_data,
-                lock_key, worker_id, lock_ttl_ms,
+                r,
+                puuid,
+                new_matches,
+                participant_data,
+                lock_key,
+                worker_id,
+                lock_ttl_ms,
             )
             if not lock_ok:
                 await ack(r, _IN_STREAM, _GROUP, msg_id)

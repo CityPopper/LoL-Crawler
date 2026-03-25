@@ -389,7 +389,6 @@ class TestLuaAtomicity:
     @pytest.mark.asyncio
     async def test_all_four_keys_in_single_eval(self, r: fakeredis.aioredis.FakeRedis) -> None:
         """acquire_token passes KEYS[1..4] in one eval — no split calls."""
-        from lol_pipeline.rate_limiter import _LUA_RATE_LIMIT_SCRIPT
 
         eval_calls: list[tuple[int, list[str]]] = []
         original_eval = r.eval

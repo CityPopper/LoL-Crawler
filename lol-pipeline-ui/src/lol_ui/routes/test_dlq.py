@@ -148,7 +148,8 @@ class TestDlqXlenNotCalledTwice:
 
         async def tracking_xlen(key: str) -> int:
             xlen_calls.append(key)
-            return await original_xlen(key)
+            result: int = await original_xlen(key)
+            return result
 
         with patch.object(r, "xlen", side_effect=tracking_xlen):
             await show_dlq(request)

@@ -258,7 +258,7 @@ body.theme-artpop .site-footer,
 body.theme-artpop .theme-switcher {
   position: relative; z-index: 1;
 }
-/* UI-M3: do NOT set position:relative on .form-inline — it overrides position:sticky from base CSS */
+/* UI-M3: no position:relative on .form-inline — overrides position:sticky */
 body.theme-artpop .skip-link:focus { position: relative; z-index: 200; }
 
 /* UI-H1: hide decorative SVGs on mobile so they don't overlap interactive content */

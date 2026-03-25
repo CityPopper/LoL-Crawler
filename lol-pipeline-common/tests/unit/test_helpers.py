@@ -191,8 +191,12 @@ class TestRegisterPlayer:
         from lol_pipeline.helpers import register_player
 
         await register_player(
-            r, puuid="puuid-002", region="euw1",
-            game_name="Test", tag_line="EUW", players_all_max=100,
+            r,
+            puuid="puuid-002",
+            region="euw1",
+            game_name="Test",
+            tag_line="EUW",
+            players_all_max=100,
         )
         ttl = await r.ttl("player:puuid-002")
         assert ttl > 0
@@ -203,8 +207,12 @@ class TestRegisterPlayer:
         from lol_pipeline.helpers import register_player
 
         await register_player(
-            r, puuid="puuid-003", region="kr",
-            game_name="A", tag_line="B", players_all_max=100,
+            r,
+            puuid="puuid-003",
+            region="kr",
+            game_name="A",
+            tag_line="B",
+            players_all_max=100,
         )
         score = await r.zscore("players:all", "puuid-003")
         assert score is not None
@@ -220,8 +228,12 @@ class TestRegisterPlayer:
 
         # Register with max=3 — should trim to 3 entries
         await register_player(
-            r, puuid="puuid-new", region="na1",
-            game_name="New", tag_line="NA1", players_all_max=3,
+            r,
+            puuid="puuid-new",
+            region="na1",
+            game_name="New",
+            tag_line="NA1",
+            players_all_max=3,
         )
         count = await r.zcard("players:all")
         assert count <= 3
@@ -233,8 +245,12 @@ class TestRegisterPlayer:
 
         # Smoke test — verifying it completes without error and all side effects occur
         await register_player(
-            r, puuid="puuid-batch", region="na1",
-            game_name="Batch", tag_line="T1", players_all_max=100,
+            r,
+            puuid="puuid-batch",
+            region="na1",
+            game_name="Batch",
+            tag_line="T1",
+            players_all_max=100,
         )
         assert await r.hget("player:puuid-batch", "game_name") == "Batch"
         assert await r.zscore("players:all", "puuid-batch") is not None
@@ -266,7 +282,7 @@ class TestHandleRiotApiError:
 
         env = self._make_envelope()
         # Publish and consume so msg_id is in PEL
-        from lol_pipeline.streams import ack, consume, publish
+        from lol_pipeline.streams import consume, publish
 
         await publish(r, "stream:test", env)
         msgs = await consume(r, "stream:test", "test-group", "c1", block=0)
@@ -274,8 +290,13 @@ class TestHandleRiotApiError:
 
         exc = AuthError("forbidden")
         result = await handle_riot_api_error(
-            r, exc=exc, envelope=env, msg_id=msg_id,
-            failed_by="test-svc", in_stream="stream:test", group="test-group",
+            r,
+            exc=exc,
+            envelope=env,
+            msg_id=msg_id,
+            failed_by="test-svc",
+            in_stream="stream:test",
+            group="test-group",
         )
         assert await r.get("system:halted") == "1"
         # Should NOT ack — message stays in PEL
@@ -295,8 +316,13 @@ class TestHandleRiotApiError:
 
         exc = NotFoundError("not found")
         result = await handle_riot_api_error(
-            r, exc=exc, envelope=env, msg_id=msg_id,
-            failed_by="test-svc", in_stream="stream:test", group="test-group",
+            r,
+            exc=exc,
+            envelope=env,
+            msg_id=msg_id,
+            failed_by="test-svc",
+            in_stream="stream:test",
+            group="test-group",
         )
         assert result == "discarded"
         # Message should be ACK'd
@@ -317,8 +343,13 @@ class TestHandleRiotApiError:
 
         exc = RateLimitError(retry_after_ms=30000)
         result = await handle_riot_api_error(
-            r, exc=exc, envelope=env, msg_id=msg_id,
-            failed_by="test-svc", in_stream="stream:test", group="test-group",
+            r,
+            exc=exc,
+            envelope=env,
+            msg_id=msg_id,
+            failed_by="test-svc",
+            in_stream="stream:test",
+            group="test-group",
         )
         assert result == "dlq"
         assert await r.xlen("stream:dlq") == 1
@@ -340,8 +371,13 @@ class TestHandleRiotApiError:
 
         exc = ServerError("internal error", status_code=500)
         result = await handle_riot_api_error(
-            r, exc=exc, envelope=env, msg_id=msg_id,
-            failed_by="test-svc", in_stream="stream:test", group="test-group",
+            r,
+            exc=exc,
+            envelope=env,
+            msg_id=msg_id,
+            failed_by="test-svc",
+            in_stream="stream:test",
+            group="test-group",
         )
         assert result == "dlq"
         assert await r.xlen("stream:dlq") == 1
@@ -363,8 +399,13 @@ class TestHandleRiotApiError:
 
         exc = RateLimitError(retry_after_ms=5000)
         await handle_riot_api_error(
-            r, exc=exc, envelope=env, msg_id=msg_id,
-            failed_by="fetcher", in_stream="stream:test", group="test-group",
+            r,
+            exc=exc,
+            envelope=env,
+            msg_id=msg_id,
+            failed_by="fetcher",
+            in_stream="stream:test",
+            group="test-group",
         )
         entries = await r.xrange("stream:dlq")
         assert entries[0][1]["retry_after_ms"] == "5000"
@@ -383,8 +424,13 @@ class TestHandleRiotApiError:
 
         exc = ServerError("error", status_code=503)
         await handle_riot_api_error(
-            r, exc=exc, envelope=env, msg_id=msg_id,
-            failed_by="crawler", in_stream="stream:test", group="test-group",
+            r,
+            exc=exc,
+            envelope=env,
+            msg_id=msg_id,
+            failed_by="crawler",
+            in_stream="stream:test",
+            group="test-group",
         )
         entries = await r.xrange("stream:dlq")
         assert entries[0][1]["retry_after_ms"] == "null"
@@ -407,8 +453,13 @@ class TestHandleRiotApiError:
         exc = ServerError("internal error", status_code=500)
         with patch.object(log, "error") as mock_error:
             await handle_riot_api_error(
-                r, exc=exc, envelope=env, msg_id=msg_id,
-                failed_by="test-svc", in_stream="stream:test", group="test-group",
+                r,
+                exc=exc,
+                envelope=env,
+                msg_id=msg_id,
+                failed_by="test-svc",
+                in_stream="stream:test",
+                group="test-group",
                 log=log,
             )
             mock_error.assert_called_once()
@@ -433,8 +484,13 @@ class TestHandleRiotApiError:
         exc = RateLimitError(retry_after_ms=5000)
         with patch.object(log, "error") as mock_error:
             await handle_riot_api_error(
-                r, exc=exc, envelope=env, msg_id=msg_id,
-                failed_by="test-svc", in_stream="stream:test", group="test-group",
+                r,
+                exc=exc,
+                envelope=env,
+                msg_id=msg_id,
+                failed_by="test-svc",
+                in_stream="stream:test",
+                group="test-group",
                 log=log,
             )
             mock_error.assert_called_once()
@@ -468,6 +524,8 @@ class TestConsumerId:
 
     def test_format_hostname_dash_pid(self):
         """With mocked hostname and pid, result is exactly 'hostname-pid'."""
-        with patch("lol_pipeline.helpers.socket.gethostname", return_value="myhost"), \
-             patch("lol_pipeline.helpers.os.getpid", return_value=12345):
+        with (
+            patch("lol_pipeline.helpers.socket.gethostname", return_value="myhost"),
+            patch("lol_pipeline.helpers.os.getpid", return_value=12345),
+        ):
             assert consumer_id() == "myhost-12345"

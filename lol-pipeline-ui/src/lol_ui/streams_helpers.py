@@ -32,7 +32,10 @@ def _depth_bar_html(stream_name: str, depth: int) -> str:
             cls = "depth-bar__fill--busy"
         else:
             cls = "depth-bar__fill--ok"
-    return f'<div class="depth-bar"><div class="{cls} depth-bar__fill" style="width:{pct}%"></div></div>'
+    return (
+        f'<div class="depth-bar">'
+        f'<div class="{cls} depth-bar__fill" style="width:{pct}%"></div></div>'
+    )
 
 
 def _translate_group_name(raw_name: str) -> str:
@@ -121,10 +124,7 @@ async def _streams_fragment_html(r: Any) -> str:
         length_cell = f'<td class="text-right">{length}{depth_bar}</td>'
         if not groups:
             rows += (
-                f"<tr><td>{key_label}</td>"
-                f"{length_cell}"
-                f"{group_cells}"
-                f"<td>{status_badge}</td></tr>"
+                f"<tr><td>{key_label}</td>{length_cell}{group_cells}<td>{status_badge}</td></tr>"
             )
         else:
             for i, g in enumerate(groups):

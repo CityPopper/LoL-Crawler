@@ -462,7 +462,7 @@ def _champion_builds_html(
     if not top_builds and not top_keystones and not top_spells:
         return ""
 
-    parts: list[str] = ['<h3>Most Common Builds</h3>']
+    parts: list[str] = ["<h3>Most Common Builds</h3>"]
 
     # Item builds
     if top_builds:
@@ -482,43 +482,43 @@ def _champion_builds_html(
                 f'<div class="build-rec-row">'
                 f'<div class="build-rec-items">{icons}</div>'
                 f'<span class="build-rec-count">{int(count)}x</span>'
-                f'</div>'
+                f"</div>"
             )
-        parts.append('</div>')
+        parts.append("</div>")
 
     # Keystone runes
     if top_keystones:
-        parts.append('<h3>Most Common Keystone</h3>')
+        parts.append("<h3>Most Common Keystone</h3>")
         parts.append('<div class="build-recommendations">')
         for keystone_id, count in top_keystones:
             if version and keystone_id and keystone_id != "0":
                 # DDragon rune icons use the data-dragon CDN with perk images path
-                # We show the keystone ID and count since the icon path requires runesReforged lookup
+                # We show the keystone ID and count since the icon path
+                # requires runesReforged lookup
                 parts.append(
                     f'<div class="build-rec-row">'
                     f'<span class="build-rec-label">Keystone {html.escape(keystone_id)}</span>'
                     f'<span class="build-rec-count">{int(count)}x</span>'
-                    f'</div>'
+                    f"</div>"
                 )
-        parts.append('</div>')
+        parts.append("</div>")
 
     # Summoner spells
     if top_spells:
-        parts.append('<h3>Most Common Summoner Spells</h3>')
+        parts.append("<h3>Most Common Summoner Spells</h3>")
         parts.append('<div class="build-recommendations">')
         for combo, count in top_spells:
             spell_ids = combo.split("+") if combo else []
             icons = "".join(
-                f'<span class="spell-id">{html.escape(sid)}</span>'
-                for sid in spell_ids
+                f'<span class="spell-id">{html.escape(sid)}</span>' for sid in spell_ids
             )
             parts.append(
                 f'<div class="build-rec-row">'
                 f'<div class="build-rec-spells">{icons}</div>'
                 f'<span class="build-rec-count">{int(count)}x</span>'
-                f'</div>'
+                f"</div>"
             )
-        parts.append('</div>')
+        parts.append("</div>")
 
     return "\n".join(parts)
 

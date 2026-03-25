@@ -257,7 +257,7 @@ class TestParseLogLineFuzz:
     @settings(max_examples=5)
     def test_parse_log_line__empty_string__fallback(self, line: str) -> None:
         """Empty string uses fallback: level='INFO', others empty."""
-        ts, level, logger, msg, extra = _parse_log_line(line)
+        ts, level, logger, _msg, extra = _parse_log_line(line)
         assert level == "INFO"
         assert ts == ""
         assert logger == ""

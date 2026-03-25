@@ -156,7 +156,8 @@ async def _try_opgg(
     try:
         existing = await raw_store.get(match_id)
         if existing is not None:
-            return json.loads(existing)
+            result: dict[str, Any] = json.loads(existing)
+            return result
     except Exception as exc:
         log.warning(
             "op.gg fetch failed — falling through to Riot API",
@@ -202,7 +203,7 @@ async def _fetch_match(  # noqa: PLR0913
         return
 
     # Try op.gg first when enabled and source is opgg
-    if is_opgg_source and opgg_raw_store is not None:
+    if is_opgg_source and opgg_raw_store is not None and opgg is not None:
         opgg_data = await _try_opgg(opgg, opgg_raw_store, match_id, log)
         if opgg_data is not None:
             await _store_and_publish(r, riot, opgg_raw_store, cfg, msg_id, envelope, opgg_data)
@@ -260,7 +261,15 @@ async def main() -> None:
     r = get_redis(cfg.redis_url)
     riot = RiotClient(cfg.riot_api_key, r=r)
     raw_store = RawStore(r, data_dir=cfg.match_data_dir)
-    opgg: OpggClient | None = OpggClient(cfg) if cfg.opgg_enabled else None
+    opgg: OpggClient | None = (
+        OpggClient(
+            r=r,
+            rate_limit_per_second=cfg.opgg_rate_limit_per_second,
+            rate_limit_long=cfg.opgg_rate_limit_long,
+        )
+        if cfg.opgg_enabled
+        else None
+    )
     consumer = consumer_id()
 
     async def _handler(msg_id: str, envelope: MessageEnvelope) -> None:

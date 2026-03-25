@@ -88,6 +88,7 @@ class TestConfig:
         cfg = Config(_env_file=None)  # type: ignore[call-arg]
         assert cfg.riot_api_key == "test"
 
+
 class TestOpggConfig:
     def test_opgg_config_defaults(self, monkeypatch):
         """op.gg config fields have correct defaults."""

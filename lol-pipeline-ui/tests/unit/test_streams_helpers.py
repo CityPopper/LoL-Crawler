@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from lol_ui.streams_helpers import _format_group_cells
 
 

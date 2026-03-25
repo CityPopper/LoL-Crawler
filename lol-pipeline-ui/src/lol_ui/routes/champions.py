@@ -139,7 +139,7 @@ async def show_champion_detail(request: Request, name: str) -> HTMLResponse:
     if not role or role not in all_roles:
         role = all_roles[0]
 
-    # Fetch current stats, patch history, DDragon version, matchups, builds, and name map concurrently
+    # Fetch stats, patch history, DDragon version, matchups, builds, names concurrently
     async def _get_stats() -> dict[str, str]:
         result: dict[str, str] = await r.hgetall(  # type: ignore[misc]
             f"champion:stats:{name}:{patch}:{role}"

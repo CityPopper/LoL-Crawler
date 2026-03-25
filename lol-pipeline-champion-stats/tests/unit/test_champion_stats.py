@@ -134,6 +134,7 @@ async def _add_ranked_participant(  # noqa: PLR0913
 # Per-Patch Per-Role Champion Win Rate
 # ---------------------------------------------------------------------------
 
+
 class TestChampionWinRate:
     """champion:stats:{champion}:{patch}:{role} tracks per-patch win rate."""
 
@@ -142,9 +143,17 @@ class TestChampionWinRate:
         """Single ranked win: games=1, wins=1 in champion:stats hash."""
         puuid = "test-puuid-cwr-1"
         await _add_ranked_participant(
-            r, "NA1_1", puuid, 1000,
-            champion="Annie", team_position="MID", patch="14.5",
-            kills=8, deaths=3, assists=5, win=True,
+            r,
+            "NA1_1",
+            puuid,
+            1000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
+            kills=8,
+            deaths=3,
+            assists=5,
+            win=True,
         )
         env = _champion_envelope(puuid)
         msg_id = await _setup_message(r, env)
@@ -160,20 +169,46 @@ class TestChampionWinRate:
         """Two ranked matches on same champion/patch/role: stats accumulate."""
         puuid = "test-puuid-cwr-2"
         await _add_ranked_participant(
-            r, "NA1_1", puuid, 1000,
-            champion="Annie", team_position="MID", patch="14.5",
-            kills=5, deaths=2, assists=3, win=True,
-            gold_earned=10000, total_minions_killed=150,
-            total_damage_dealt_to_champions=20000, vision_score=20,
-            double_kills=1, triple_kills=0, quadra_kills=0, penta_kills=0,
+            r,
+            "NA1_1",
+            puuid,
+            1000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
+            kills=5,
+            deaths=2,
+            assists=3,
+            win=True,
+            gold_earned=10000,
+            total_minions_killed=150,
+            total_damage_dealt_to_champions=20000,
+            vision_score=20,
+            double_kills=1,
+            triple_kills=0,
+            quadra_kills=0,
+            penta_kills=0,
         )
         await _add_ranked_participant(
-            r, "NA1_2", puuid, 2000,
-            champion="Annie", team_position="MID", patch="14.5",
-            kills=3, deaths=4, assists=7, win=False,
-            gold_earned=8000, total_minions_killed=120,
-            total_damage_dealt_to_champions=15000, vision_score=18,
-            double_kills=0, triple_kills=1, quadra_kills=0, penta_kills=0,
+            r,
+            "NA1_2",
+            puuid,
+            2000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
+            kills=3,
+            deaths=4,
+            assists=7,
+            win=False,
+            gold_earned=8000,
+            total_minions_killed=120,
+            total_damage_dealt_to_champions=15000,
+            vision_score=18,
+            double_kills=0,
+            triple_kills=1,
+            quadra_kills=0,
+            penta_kills=0,
         )
         env = _champion_envelope(puuid)
         msg_id = await _setup_message(r, env)
@@ -198,8 +233,13 @@ class TestChampionWinRate:
         """queue_id != 420 (ARAM etc.): no champion:stats key created."""
         puuid = "test-puuid-cwr-aram"
         await _add_ranked_participant(
-            r, "NA1_ARAM", puuid, 1000,
-            champion="Annie", team_position="MID", patch="14.5",
+            r,
+            "NA1_ARAM",
+            puuid,
+            1000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
             queue_id="450",
         )
         env = _champion_envelope(puuid)
@@ -214,8 +254,13 @@ class TestChampionWinRate:
         """Empty patch: no champion:stats key created."""
         puuid = "test-puuid-cwr-nop"
         await _add_ranked_participant(
-            r, "NA1_NP", puuid, 1000,
-            champion="Annie", team_position="MID", patch="",
+            r,
+            "NA1_NP",
+            puuid,
+            1000,
+            champion="Annie",
+            team_position="MID",
+            patch="",
         )
         env = _champion_envelope(puuid)
         msg_id = await _setup_message(r, env)
@@ -229,8 +274,13 @@ class TestChampionWinRate:
         """Empty team_position: no champion:stats key created."""
         puuid = "test-puuid-cwr-nopos"
         await _add_ranked_participant(
-            r, "NA1_NOPOS", puuid, 1000,
-            champion="Annie", team_position="", patch="14.5",
+            r,
+            "NA1_NOPOS",
+            puuid,
+            1000,
+            champion="Annie",
+            team_position="",
+            patch="14.5",
         )
         env = _champion_envelope(puuid)
         msg_id = await _setup_message(r, env)
@@ -244,6 +294,7 @@ class TestChampionWinRate:
 # Build Aggregation
 # ---------------------------------------------------------------------------
 
+
 class TestChampionBuilds:
     """champion:builds:{champion}:{patch}:{role} aggregates item build fingerprints."""
 
@@ -252,8 +303,13 @@ class TestChampionBuilds:
         """Item build fingerprint (sorted non-zero IDs) ZINCRBY'd in builds key."""
         puuid = "test-puuid-build-1"
         await _add_ranked_participant(
-            r, "NA1_B1", puuid, 1000,
-            champion="Annie", team_position="MID", patch="14.5",
+            r,
+            "NA1_B1",
+            puuid,
+            1000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
             items=[3157, 3089, 0, 3020, 0, 3116, 0],
         )
         env = _champion_envelope(puuid)
@@ -272,12 +328,24 @@ class TestChampionBuilds:
         puuid = "test-puuid-build-2"
         items = [3157, 3089, 3020]
         await _add_ranked_participant(
-            r, "NA1_B1", puuid, 1000,
-            champion="Annie", team_position="MID", patch="14.5", items=items,
+            r,
+            "NA1_B1",
+            puuid,
+            1000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
+            items=items,
         )
         await _add_ranked_participant(
-            r, "NA1_B2", puuid, 2000,
-            champion="Annie", team_position="MID", patch="14.5", items=items,
+            r,
+            "NA1_B2",
+            puuid,
+            2000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
+            items=items,
         )
         env = _champion_envelope(puuid)
         msg_id = await _setup_message(r, env)
@@ -293,8 +361,13 @@ class TestChampionBuilds:
         """All-zero items: no build fingerprint written."""
         puuid = "test-puuid-build-0"
         await _add_ranked_participant(
-            r, "NA1_B0", puuid, 1000,
-            champion="Annie", team_position="MID", patch="14.5",
+            r,
+            "NA1_B0",
+            puuid,
+            1000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
             items=[0, 0, 0, 0, 0, 0, 0],
         )
         env = _champion_envelope(puuid)
@@ -310,8 +383,13 @@ class TestChampionBuilds:
         """champion:builds key has CHAMPION_STATS_TTL_SECONDS TTL (90 days)."""
         puuid = "test-puuid-build-ttl"
         await _add_ranked_participant(
-            r, "NA1_BT", puuid, 1000,
-            champion="Annie", team_position="MID", patch="14.5",
+            r,
+            "NA1_BT",
+            puuid,
+            1000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
             items=[3157, 3089],
         )
         env = _champion_envelope(puuid)
@@ -319,14 +397,15 @@ class TestChampionBuilds:
 
         await handle_champion_stats(r, cfg, "worker-1", msg_id, env, log)
 
-        _90_DAYS = 90 * 24 * 3600
+        _90_days = 90 * 24 * 3600
         ttl = await r.ttl("champion:builds:Annie:14.5:MID")
-        assert 0 < ttl <= _90_DAYS
+        assert 0 < ttl <= _90_days
 
 
 # ---------------------------------------------------------------------------
 # Rune Aggregation
 # ---------------------------------------------------------------------------
+
 
 class TestChampionRunes:
     """champion:runes:{champion}:{patch}:{role} aggregates keystone rune usage."""
@@ -336,8 +415,13 @@ class TestChampionRunes:
         """Keystone rune ID ZINCRBY'd in runes key."""
         puuid = "test-puuid-rune-1"
         await _add_ranked_participant(
-            r, "NA1_R1", puuid, 1000,
-            champion="Annie", team_position="MID", patch="14.5",
+            r,
+            "NA1_R1",
+            puuid,
+            1000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
             perk_keystone="8229",
         )
         env = _champion_envelope(puuid)
@@ -354,8 +438,13 @@ class TestChampionRunes:
         """perk_keystone=0: no entry in runes sorted set."""
         puuid = "test-puuid-rune-0"
         await _add_ranked_participant(
-            r, "NA1_R0", puuid, 1000,
-            champion="Annie", team_position="MID", patch="14.5",
+            r,
+            "NA1_R0",
+            puuid,
+            1000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
             perk_keystone="0",
         )
         env = _champion_envelope(puuid)
@@ -371,13 +460,23 @@ class TestChampionRunes:
         """Same keystone across two matches: score = 2."""
         puuid = "test-puuid-rune-2"
         await _add_ranked_participant(
-            r, "NA1_R1", puuid, 1000,
-            champion="Annie", team_position="MID", patch="14.5",
+            r,
+            "NA1_R1",
+            puuid,
+            1000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
             perk_keystone="8229",
         )
         await _add_ranked_participant(
-            r, "NA1_R2", puuid, 2000,
-            champion="Annie", team_position="MID", patch="14.5",
+            r,
+            "NA1_R2",
+            puuid,
+            2000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
             perk_keystone="8229",
         )
         env = _champion_envelope(puuid)
@@ -394,8 +493,13 @@ class TestChampionRunes:
         """champion:runes key has 90-day TTL."""
         puuid = "test-puuid-rune-ttl"
         await _add_ranked_participant(
-            r, "NA1_RT", puuid, 1000,
-            champion="Annie", team_position="MID", patch="14.5",
+            r,
+            "NA1_RT",
+            puuid,
+            1000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
             perk_keystone="8229",
         )
         env = _champion_envelope(puuid)
@@ -403,14 +507,15 @@ class TestChampionRunes:
 
         await handle_champion_stats(r, cfg, "worker-1", msg_id, env, log)
 
-        _90_DAYS = 90 * 24 * 3600
+        _90_days = 90 * 24 * 3600
         ttl = await r.ttl("champion:runes:Annie:14.5:MID")
-        assert 0 < ttl <= _90_DAYS
+        assert 0 < ttl <= _90_days
 
 
 # ---------------------------------------------------------------------------
 # Matchup Aggregation
 # ---------------------------------------------------------------------------
+
 
 class TestChampionMatchups:
     """matchup:{champion_a}:{champion_b}:{role}:{patch} tracks head-to-head stats."""
@@ -421,9 +526,17 @@ class TestChampionMatchups:
         puuid = "test-puuid-mu-1"
         # Set up a match with Annie MID vs Zed MID
         await _add_ranked_participant(
-            r, "NA1_MU1", puuid, 1000,
-            champion="Annie", team_position="MID", patch="14.5",
-            kills=8, deaths=3, assists=5, win=True,
+            r,
+            "NA1_MU1",
+            puuid,
+            1000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
+            kills=8,
+            deaths=3,
+            assists=5,
+            win=True,
         )
         # Store opponent data for the match
         await r.hset(
@@ -448,9 +561,17 @@ class TestChampionMatchups:
         puuid = "test-puuid-mu-2"
         for i, (win, score) in enumerate([(True, 1000), (False, 2000)]):
             await _add_ranked_participant(
-                r, f"NA1_MU{i}", puuid, score,
-                champion="Annie", team_position="MID", patch="14.5",
-                kills=5, deaths=2, assists=3, win=win,
+                r,
+                f"NA1_MU{i}",
+                puuid,
+                score,
+                champion="Annie",
+                team_position="MID",
+                patch="14.5",
+                kills=5,
+                deaths=2,
+                assists=3,
+                win=win,
             )
             await r.hset(
                 f"opponent:{puuid}:NA1_MU{i}",
@@ -471,8 +592,13 @@ class TestChampionMatchups:
         """No opponent data for match: matchup not written."""
         puuid = "test-puuid-mu-skip"
         await _add_ranked_participant(
-            r, "NA1_SKIP", puuid, 1000,
-            champion="Annie", team_position="MID", patch="14.5",
+            r,
+            "NA1_SKIP",
+            puuid,
+            1000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
         )
         # No opponent:{puuid}:match_id key
         env = _champion_envelope(puuid)
@@ -489,6 +615,7 @@ class TestChampionMatchups:
 # champion:stats:{champion}:{patch}:{role} Hash Fields
 # ---------------------------------------------------------------------------
 
+
 class TestChampionStatsHash:
     """champion:stats hash contains all required aggregate fields."""
 
@@ -498,12 +625,25 @@ class TestChampionStatsHash:
         damage, vision, double/triple/quadra/penta_kills."""
         puuid = "test-puuid-ch-hash"
         await _add_ranked_participant(
-            r, "NA1_H1", puuid, 1000,
-            champion="Annie", team_position="MID", patch="14.5",
-            kills=8, deaths=3, assists=5, win=True,
-            gold_earned=14000, total_minions_killed=200,
-            total_damage_dealt_to_champions=30000, vision_score=25,
-            double_kills=2, triple_kills=1, quadra_kills=0, penta_kills=0,
+            r,
+            "NA1_H1",
+            puuid,
+            1000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
+            kills=8,
+            deaths=3,
+            assists=5,
+            win=True,
+            gold_earned=14000,
+            total_minions_killed=200,
+            total_damage_dealt_to_champions=30000,
+            vision_score=25,
+            double_kills=2,
+            triple_kills=1,
+            quadra_kills=0,
+            penta_kills=0,
         )
         env = _champion_envelope(puuid)
         msg_id = await _setup_message(r, env)
@@ -512,9 +652,19 @@ class TestChampionStatsHash:
 
         stats = await r.hgetall("champion:stats:Annie:14.5:MID")
         required_fields = {
-            "games", "wins", "kills", "deaths", "assists",
-            "gold", "cs", "damage", "vision",
-            "double_kills", "triple_kills", "quadra_kills", "penta_kills",
+            "games",
+            "wins",
+            "kills",
+            "deaths",
+            "assists",
+            "gold",
+            "cs",
+            "damage",
+            "vision",
+            "double_kills",
+            "triple_kills",
+            "quadra_kills",
+            "penta_kills",
         }
         assert required_fields.issubset(set(stats.keys())), (
             f"Missing fields: {required_fields - set(stats.keys())}"
@@ -538,33 +688,53 @@ class TestChampionStatsHash:
         """champion:stats key has 90-day TTL."""
         puuid = "test-puuid-ch-ttl"
         await _add_ranked_participant(
-            r, "NA1_T1", puuid, 1000,
-            champion="Annie", team_position="MID", patch="14.5",
+            r,
+            "NA1_T1",
+            puuid,
+            1000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
         )
         env = _champion_envelope(puuid)
         msg_id = await _setup_message(r, env)
 
         await handle_champion_stats(r, cfg, "worker-1", msg_id, env, log)
 
-        _90_DAYS = 90 * 24 * 3600
+        _90_days = 90 * 24 * 3600
         stats_ttl = await r.ttl("champion:stats:Annie:14.5:MID")
-        assert 0 < stats_ttl <= _90_DAYS
+        assert 0 < stats_ttl <= _90_days
 
     @pytest.mark.asyncio
     async def test_champion_stats__index_incremented(self, r, cfg, log):
         """champion:index:{patch} sorted set tracks champion:position combinations."""
         puuid = "test-puuid-ch-idx"
         await _add_ranked_participant(
-            r, "NA1_I1", puuid, 1000,
-            champion="Annie", team_position="MID", patch="14.5",
+            r,
+            "NA1_I1",
+            puuid,
+            1000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
         )
         await _add_ranked_participant(
-            r, "NA1_I2", puuid, 2000,
-            champion="Annie", team_position="MID", patch="14.5",
+            r,
+            "NA1_I2",
+            puuid,
+            2000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
         )
         await _add_ranked_participant(
-            r, "NA1_I3", puuid, 3000,
-            champion="Jinx", team_position="BOTTOM", patch="14.5",
+            r,
+            "NA1_I3",
+            puuid,
+            3000,
+            champion="Jinx",
+            team_position="BOTTOM",
+            patch="14.5",
         )
         env = _champion_envelope(puuid)
         msg_id = await _setup_message(r, env)
@@ -579,8 +749,13 @@ class TestChampionStatsHash:
         """patch:list ZADD NX records patch with game_start as score."""
         puuid = "test-puuid-ch-pl"
         await _add_ranked_participant(
-            r, "NA1_PL", puuid, 5000,
-            champion="Annie", team_position="MID", patch="14.5",
+            r,
+            "NA1_PL",
+            puuid,
+            5000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
         )
         env = _champion_envelope(puuid)
         msg_id = await _setup_message(r, env)
@@ -596,8 +771,13 @@ class TestChampionStatsHash:
         puuid = "test-puuid-ch-pnx"
         await r.zadd("patch:list", {"14.5": 1000.0})
         await _add_ranked_participant(
-            r, "NA1_PNX", puuid, 9000,
-            champion="Annie", team_position="MID", patch="14.5",
+            r,
+            "NA1_PNX",
+            puuid,
+            9000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
         )
         env = _champion_envelope(puuid)
         msg_id = await _setup_message(r, env)
@@ -612,6 +792,7 @@ class TestChampionStatsHash:
 # system:halted Check
 # ---------------------------------------------------------------------------
 
+
 class TestChampionStatsSystemHalted:
     """system:halted flag stops processing; message stays in PEL."""
 
@@ -621,8 +802,13 @@ class TestChampionStatsSystemHalted:
         puuid = "test-puuid-ch-halt"
         await r.set("system:halted", "1")
         await _add_ranked_participant(
-            r, "NA1_H", puuid, 1000,
-            champion="Annie", team_position="MID", patch="14.5",
+            r,
+            "NA1_H",
+            puuid,
+            1000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
         )
         env = _champion_envelope(puuid)
         msg_id = await _setup_message(r, env)
@@ -648,6 +834,7 @@ class TestChampionStatsSystemHalted:
 # Proper Ack After Processing
 # ---------------------------------------------------------------------------
 
+
 class TestChampionStatsAck:
     """Message is ACKed after successful champion stats processing."""
 
@@ -656,8 +843,13 @@ class TestChampionStatsAck:
         """After processing, message is removed from PEL."""
         puuid = "test-puuid-ch-ack"
         await _add_ranked_participant(
-            r, "NA1_ACK", puuid, 1000,
-            champion="Annie", team_position="MID", patch="14.5",
+            r,
+            "NA1_ACK",
+            puuid,
+            1000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
         )
         env = _champion_envelope(puuid)
         msg_id = await _setup_message(r, env)
@@ -672,8 +864,13 @@ class TestChampionStatsAck:
         """Non-ranked matches only (nothing to aggregate): still ACKed."""
         puuid = "test-puuid-ch-ack-nr"
         await _add_ranked_participant(
-            r, "NA1_NR", puuid, 1000,
-            champion="Annie", team_position="MID", patch="14.5",
+            r,
+            "NA1_NR",
+            puuid,
+            1000,
+            champion="Annie",
+            team_position="MID",
+            patch="14.5",
             queue_id="450",  # ARAM
         )
         env = _champion_envelope(puuid)

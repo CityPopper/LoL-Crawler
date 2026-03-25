@@ -28,13 +28,13 @@ async def _get_summoner_spell_map(
     """
     mem = _mem_get(_DDRAGON_SUMMONERS_KEY)
     if mem is not None and isinstance(mem, dict):
-        return mem
+        return dict(mem)
     cached_map = await r.get(_DDRAGON_SUMMONERS_KEY)
     if cached_map:
         try:
-            mapping = json.loads(str(cached_map))
-            _mem_put(_DDRAGON_SUMMONERS_KEY, mapping)
-            return mapping  # type: ignore[no-any-return]
+            cached_mapping: dict[str, str] = json.loads(str(cached_map))
+            _mem_put(_DDRAGON_SUMMONERS_KEY, cached_mapping)
+            return cached_mapping
         except (json.JSONDecodeError, TypeError):
             pass
     version = await _get_ddragon_version(r)
