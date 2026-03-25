@@ -2,82 +2,79 @@
 
 ---
 
-## LFS-1 — Anonymize seed data + upload to Hugging Face Datasets
-**Decisions**: D-11 (HF Datasets backend), D-12 (anonymize before upload). Data format: `{match_id}\t{json}` per line.
-**PII fields to strip from `info.participants[]`**: `puuid`, `summonerName`, `riotIdGameName`, `riotIdTagline`, `summonerId`. `metadata.participants[]` is a PUUID array — replace each with `anon_{sha256(puuid)[:16]}`. All `.zst` files stay gitignored (pipeline-data in HF Datasets, not git).
-**Fix**: New script `scripts/anonymize_and_upload.py` that:
-1. For each `.jsonl.zst` in `pipeline-data/riot-api/NA1/`, streaming-decompresses
-2. For each record: replace `puuid`, `metadata.participants` entries with `anon_{sha256(puuid)[:16]}`; strip `summonerName`, `riotIdGameName`, `riotIdTagline`, `summonerId` (remove keys entirely)
-3. Writes anonymized lines to a temp `.jsonl.zst` (same zstd level)
-4. Uploads each file to HF Datasets via `HfApi().upload_file(repo_type="dataset")`; derives repo_id from `HfApi().whoami()["name"] + "/lol-pipeline-seed"` — no `HUGGINGFACE_REPO_ID` env var needed
-5. After successful upload, overwrites local `.zst` with anonymized version (local disk no longer has raw PII)
-Also update `.gitignore` comment on lines 72-76 to note pipeline data lives in HF Datasets.
-Also remove stale line 82 (`lol-pipeline-fetcher/match-data/**/*.jsonl.zst`) — that directory was deleted from history.
-- [ ] **Red:** Unit test: given a record with real puuid, anonymized output has consistent `anon_` hash, no summonerName/riotId fields
-- [ ] **Green:** Implement; test against one file before bulk run
-- [ ] **Refactor:** Streaming (no full-file load into memory); idempotent (skip already-anonymized files)
+## SEED-1 — Run anonymize_and_upload.py (one-time data migration)
+**Decisions**: D-11, D-12. Script already implemented at `scripts/anonymize_and_upload.py`.
+**Fix**: Run the script against all 25 `.jsonl.zst` files in `pipeline-data/riot-api/NA1/`. Script streams each file, replaces PUUIDs with `anon_{sha256[:16]}`, strips summonerName/riotId/summonerId, re-compresses, uploads to `{username}/lol-pipeline-seed` on HF Datasets, overwrites local file. Idempotent (skips already-anonymized files).
+Also clean up `.gitignore`: remove stale line `lol-pipeline-fetcher/match-data/**/*.jsonl.zst` (directory deleted); update comment on the pipeline-data block to say files live in HF Datasets.
+- [ ] **Red:** Verify a file still has raw PUUIDs: `python scripts/anonymize_and_upload.py` would change it
+- [ ] **Green:** `python scripts/anonymize_and_upload.py` — watch logs; verify HF Datasets receives 25 files
+- [ ] **Refactor:** Spot-check one uploaded file on HF: no summonerName/riotIdGameName fields, puuid = `anon_*`
 
 ---
 
-## LFS-2 — Delete orphaned `lol-pipeline-fetcher/match-data/`
-**Decisions**: D-4 (pipeline-data is canonical; match-data is orphaned duplicate)
-**Fix**: Delete `lol-pipeline-fetcher/match-data/` directory. Update `.gitignore` line 82 (covered in LFS-1+3). Check for any hardcoded references to `match-data/` in code/docs/Justfile. Update `docs/architecture/04-storage.md` which still references the old path (architect Q4).
-- [ ] **Red:** Grep for `match-data` in all non-.gitignore files; confirm no live references
-- [ ] **Green:** `rm -rf lol-pipeline-fetcher/match-data/`; update stale refs in `04-storage.md`
-- [ ] **Refactor:** Confirm `cfg.match_data_dir` in fetcher still resolves to `pipeline-data/riot-api` via env var
-
----
-
-## LFS-4 — `just compact-data` recipe (compress all `.jsonl` → `.zst` before pushing)
-**Decisions**: D-5, D-8, D-9 (compress active month too, not just completed months)
+## SEED-2 — `just compact-data` recipe (compress active `.jsonl` → `.zst` before uploading)
+**Decisions**: D-5, D-8, D-9
 **Fix**: Add Justfile recipe that:
 1. Finds ALL `pipeline-data/riot-api/NA1/*.jsonl` files (including current active month)
 2. Compresses each with `zstd -19 --rm` (removes original after compression succeeds)
-3. Stages the new `.zst` files for LFS (`git add pipeline-data/`)
-4. Prints: "Compacted N files. Stage and commit when ready."
-Does NOT auto-commit (user reviews and commits manually).
-Use-case: run before `git push` when sharing data updates.
-- [ ] **Red:** Test: given a `.jsonl` file, `compact-data` produces a `.zst`, removes the `.jsonl`, and `zstd -d` can round-trip it
+3. Prints: "Compacted N files. Run `python scripts/anonymize_and_upload.py` to anonymize and push to HF."
+Does NOT auto-upload (user runs anonymize_and_upload.py separately).
+Use-case: run when you want to share a data update to HF Datasets.
+- [ ] **Red:** Given a `.jsonl` file, `compact-data` produces a `.zst`, removes the `.jsonl`, `zstd -d` round-trips it
 - [ ] **Green:** Implement recipe
 - [ ] **Refactor:** Confirm active-month `.zst` can be decompressed back by `just up`
 
 ---
 
-## LFS-5 — Internal seed-from-disk script (called by `just up`, not exposed)
-**Decisions**: D-1, D-2, D-3, D-10. **Prod fixes**: region lookup (arch Q2/opt Q2), throttled batching (opt Q3/Q5), LFS pointer guard (devops Q2), reverse-chronological `_search_bundles` fix (opt Q4).
-**Fix**: New script `scripts/seed_from_disk.py` that:
-1. Validates each `.zst` file is a real LFS object (check magic bytes `0x28 0xB5 0x2F 0xFD`); if pointer stub detected, abort with clear error ("run git lfs pull first")
-2. Connects to Redis; if DBSIZE > 0, exits immediately (no-op)
-3. Reads `.jsonl.zst` files sorted reverse-chronological (newest first), then active `*.jsonl` if present
-4. For each file, streaming-decompresses; extracts `match_id` (field 0) and `platform` (e.g. `NA1` from `NA1_12345`)
-5. Maps platform → routing region using lookup table: `NA1/BR1/LA1/LA2 → americas`, `EUW1/EUN1/TR1/RU → europe`, `KR/JP1 → asia`, `OC1 → sea`
-6. Publishes in **throttled batches of 200 messages**, sleeping 2s between batches to allow parser + analyzer to drain; monitors `stream:parse` length and pauses if > 5,000 pending
-7. `MessageEnvelope(type="match", payload={"match_id": match_id, "region": region}, priority=PRIORITY_LOW)`
-8. Logs progress per batch
-Also fix `lol-pipeline-common/src/lol_pipeline/raw_store.py:_search_bundles()` to sort bundles reverse-chronologically (newest first) so recent matches resolve in O(1) instead of O(M).
+## SEED-3 — `scripts/download_seed.py` (restore data on fresh clone)
+**Decisions**: D-2, D-3, D-10. New script — the "restore" side of the HF workflow.
+**Fix**: New script `scripts/download_seed.py` that:
+1. Checks if `pipeline-data/riot-api/NA1/` has any `.jsonl.zst` files; if yes, exits (no-op)
+2. Reads `HUGGINGFACE_TOKEN` from env (optional — public dataset, token only needed for rate limits)
+3. Downloads all `NA1/*.jsonl.zst` files from `{username}/lol-pipeline-seed` using `huggingface_hub.snapshot_download` or per-file `hf_hub_download`
+4. Repo ID: since the dataset is public, can hardcode `{username}/lol-pipeline-seed` or read from env var `HF_DATASET_REPO` (set in `.env.example`)
+5. Logs: `Downloading {filename}...` per file
 NOT exposed as a top-level `just` recipe.
-- [ ] **Red:** Unit test: platform→region mapping; LFS pointer detection; batch throttle triggers at > 5000 pending; empty Redis publishes newest-first; non-empty → no-ops
-- [ ] **Green:** Implement; test against real Redis container
-- [ ] **Refactor:** Streaming decompression (no full-file load into memory)
+- [ ] **Red:** On a system with empty `pipeline-data/`, script downloads files to correct path
+- [ ] **Green:** Implement; test against real HF repo (requires SEED-1 complete)
+- [ ] **Refactor:** Use `snapshot_download` with `allow_patterns=["NA1/*.jsonl.zst"]` for efficiency
 
 ---
 
-## LFS-6 — Extend `just up` with LFS pull + decompress + auto-seed + AOF cleanup
-**Decisions**: D-9, D-10. **Prod fixes**: AOF conflict (devops Q3), LFS pointer guard.
+## SEED-4 — Internal seed-from-disk script (called by `just up`, not exposed)
+**Decisions**: D-1, D-2, D-3, D-10. **Prod fixes**: region lookup, throttled batching, reverse-chronological `_search_bundles` fix.
+**Fix**: New script `scripts/seed_from_disk.py` that:
+1. Validates each `.zst` file starts with zstd magic bytes `0x28 0xB5 0x2F 0xFD`; if not, abort with clear error ("corrupt or missing file — run `python scripts/download_seed.py` first")
+2. Connects to Redis (from env vars); if DBSIZE > 0, exits immediately (no-op)
+3. Reads `.jsonl.zst` files sorted reverse-chronological (newest first), then active `*.jsonl` if present
+4. For each file, streaming-decompresses; extracts `match_id` and platform prefix
+5. Platform → routing region: `NA1/BR1/LA1/LA2 → americas`, `EUW1/EUN1/TR1/RU → europe`, `KR/JP1 → asia`, `OC1 → sea`
+6. Publishes in **throttled batches of 200**, pausing if `XLEN stream:parse > 5000`
+7. `MessageEnvelope(type="match", payload={"match_id": match_id, "region": region}, priority=PRIORITY_LOW)`
+Also fix `lol-pipeline-common/src/lol_pipeline/raw_store.py:_search_bundles()` to sort reverse-chronologically.
+NOT a top-level `just` recipe.
+- [ ] **Red:** Unit tests: platform→region mapping; corrupt file detected; throttle at >5000 pending; empty Redis → publish newest-first; non-empty → no-op
+- [ ] **Green:** Implement; test against real Redis container
+- [ ] **Refactor:** Streaming decompression (no full-file load)
+
+---
+
+## SEED-5 — Extend `just up` with download + decompress + auto-seed + AOF cleanup
+**Decisions**: D-9, D-10. **Prod fixes**: AOF conflict.
 **Fix**: Extend existing `just up` recipe in `Justfile` to:
-1. `git lfs pull` if `.git` exists (degrade gracefully if git-lfs not installed: warn, continue)
-2. Delete stale AOF: `rm -rf "${REDIS_DATA_DIR:-./redis-data}/appendonlydir"` — prevents AOF taking precedence over fresh-start RDB/empty Redis (survives `docker compose down -v` since it's a bind mount)
-3. Decompress current month's `.zst` → `.jsonl` if `.jsonl` doesn't exist: `zstd -d "pipeline-data/riot-api/NA1/$(date +%Y-%m).jsonl.zst" 2>/dev/null || true`
+1. Download seed data if `pipeline-data/` empty: `python scripts/download_seed.py` (fast no-op if files exist)
+2. Delete stale AOF: `rm -rf "${REDIS_DATA_DIR:-./redis-data}/appendonlydir"` (survives `docker compose down -v`)
+3. Decompress current month: `zstd -d "pipeline-data/riot-api/NA1/$(date +%Y-%m).jsonl.zst" 2>/dev/null || true`
 4. Start services: `{{DC}} up -d`
 5. Wait for Redis ready; if DBSIZE==0, run `python scripts/seed_from_disk.py &` (background)
-New user UX: `git clone ... && just up` — everything works.
-- [ ] **Red:** Test: missing `.jsonl` → decompressed; stale `appendonlydir/` → deleted; LFS pointer stubs → clear error
-- [ ] **Green:** Implement; integration-test on simulated fresh clone
-- [ ] **Refactor:** AOF deletion must respect `REDIS_DATA_DIR` env var
+New contributor UX: `git clone ... && just up` → everything works.
+- [ ] **Red:** Empty `pipeline-data/` → files downloaded; stale AOF → deleted; missing `.jsonl` → decompressed
+- [ ] **Green:** Implement; test on simulated fresh clone
+- [ ] **Refactor:** AOF deletion respects `REDIS_DATA_DIR` env var
 
 ---
 
-## LFS-7 — Fix `/player/refresh` missing region validation
+## SEED-6 — Fix `/player/refresh` missing region validation
 **Service**: lol-pipeline-ui
 **Security**: MINOR-3 from R2 security review
 **Fix**: In `lol-pipeline-ui/src/lol_ui/routes/stats.py`, add region validation to the `player_refresh` endpoint — same `_REGIONS_SET` check that `show_stats` uses at line 415.
