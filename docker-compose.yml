@@ -87,7 +87,11 @@ services:
       - ./lol-pipeline-common:/common
       - ./lol-pipeline-fetcher:/svc
       - ./pipeline-data:/pipeline-data
+      - ./blob-data:/blob-data
       - ./logs:/logs
+    environment:
+      BLOB_DATA_DIR: /blob-data
+      SOURCE_WATERFALL_ORDER: ${SOURCE_WATERFALL_ORDER:-riot}
     command: ["python", "-m", "lol_fetcher"]
 
   parser:
@@ -189,6 +193,26 @@ services:
       - ./lol-pipeline-discovery:/svc
       - ./logs:/logs
     command: ["python", "-m", "lol_discovery"]
+
+  rate-limiter:
+    <<: *service-defaults
+    build:
+      <<: *service-build
+      args:
+        SERVICE_NAME: rate-limiter
+        MODULE_NAME: lol_rate_limiter
+    volumes:
+      - ./lol-pipeline-rate-limiter:/svc
+      - ./logs:/logs
+    environment:
+      RATE_LIMITER_REDIS_URL: redis://redis:6379
+    command: ["python", "-m", "lol_rate_limiter"]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8079/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
 
   # One-shot tools — not started by default; use `docker compose run`
   admin:
