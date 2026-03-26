@@ -145,6 +145,20 @@ just up             # start stack — match-data/ still on disk
 
 ---
 
+## BlobStore
+
+BlobStore (`lol-pipeline-common/src/lol_pipeline/sources/blob_store.py`) is a per-blob disk cache that holds raw responses from external data sources before they are extracted and written to RawStore. It is distinct from RawStore: BlobStore holds intermediate, source-specific payloads; RawStore holds canonical, pipeline-ready match JSON backed by both Redis and JSONL.
+
+**Path layout:** `{BLOB_DATA_DIR}/{source_name}/{platform}/{match_id}.json` — for example, `blob-data/riot/NA1/NA1_1234567890.json`. The `source_name` segment is validated against `^[a-z0-9_]+$` at `SourceEntry` construction; the `platform` segment (derived from the `match_id` prefix) is validated against `^[A-Z0-9]+$`. After construction, `Path.resolve()` is called and the resolved path is asserted to remain within `BLOB_DATA_DIR` as a defense-in-depth path-traversal guard.
+
+**Write semantics:** Write-once and atomic. The writer opens a temporary file (`O_CREAT|O_EXCL`), writes bytes, calls `os.fsync()`, then calls `os.replace()` to atomically rename the temp file to the final path. If the final blob already exists the write is a no-op. Blobs larger than 2 MB (`MAX_BLOB_SIZE_BYTES`) are rejected by the coordinator before reaching `write()`.
+
+**Activation:** BlobStore is only active when the `BLOB_DATA_DIR` env var is set to a non-empty path. When empty (the default), all `exists()`, `read()`, `write()`, and `find_any()` calls return immediately without touching disk.
+
+**When to use BlobStore vs RawStore:** BlobStore is an intermediate cache for source-specific response payloads — useful for replaying extraction without re-fetching from a remote API. RawStore is the canonical store for parsed, pipeline-ready match JSON; it is the single source of truth consumed by the Parser and downstream services. A match moves from BlobStore to RawStore when the coordinator successfully extracts and writes the canonical JSON.
+
+---
+
 ## Redis Persistence Configuration
 
 Redis must be configured with both AOF and RDB for durability:

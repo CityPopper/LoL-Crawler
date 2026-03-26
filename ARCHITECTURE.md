@@ -17,6 +17,7 @@ Detailed documentation lives in `docs/`. Start here for orientation, then follow
 | [07 — Containers](docs/architecture/07-containers.md) | Docker image design, docker-compose, scaling |
 | [08 — Repo Structure](docs/architecture/08-repo-structure.md) | Monorepo layout, shared library, versioning, local dev workflow |
 | [09 — Design Comparison](docs/architecture/09-design-comparison.md) | Contrast with simple scripts, AWS pipeline, Scrapy-Redis, Kafka, CQRS, BFS crawl |
+| [10 — Source Waterfall](docs/architecture/10-source-waterfall.md) | WaterfallCoordinator, BlobStore, SourceRegistry, fetch algorithm, error semantics |
 
 ## Testing
 
@@ -61,6 +62,7 @@ just admin track "GameName#TagLine"   ←── Admin UI (POST /system/halt, /sy
     │                                       (port 8081; X-Admin-Secret auth; profile: tools)
     ▼
 stream:puuid ──► Crawler ──stream:match_id──► Fetcher ──stream:parse──► Parser ──stream:analyze──► Player Stats
+                                              (WaterfallCoordinator: Riot → BlobStore cache → op.gg; see docs/architecture/10-source-waterfall.md)
                                                                                                          └──────────────────────────────────────────────────────────────────► Champion Stats
                                                  │                         │
                                             RawStore                 Redis (match/

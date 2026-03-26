@@ -136,3 +136,9 @@ a production key (higher limits).
   cleanup mechanism during active use.
 - Workers check `system:halted` **before** calling `acquire_token()`. A halted worker does
   not consume rate-limit tokens.
+
+---
+
+## Waterfall Integration
+
+The source waterfall (see `docs/architecture/10-source-waterfall.md`) uses `try_token()` from `lol-pipeline-common/src/lol_pipeline/rate_limiter_client.py` rather than `wait_for_token()`. `try_token()` makes a single non-blocking HTTP call to the rate-limiter service and immediately returns `True` (granted) or `False` (denied) without sleeping. This is intentional: when the Riot rate limit is saturated the `WaterfallCoordinator` should fall through to the next source without stalling the worker. `RiotSource.fetch()` calls `try_token(source="riot", endpoint="match")` before each Riot API request; a `False` return maps to `FetchResult.THROTTLED` and causes the coordinator to move to the next registered source.

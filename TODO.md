@@ -116,7 +116,7 @@ OPGG_LIVE_TESTS=1 pytest tests/integration/test_opgg_live.py -v
 **Dependency**: WATERFALL-4 complete (OpggMatchExtractor and transformer must exist)
 - [x] **Green:** `tests/integration/test_opgg_live.py` written (352 lines, ruff clean); runs when `OPGG_LIVE_TESTS=1` — Human must verify with real network
 - [ ] **Verify:** Run before any release that touches the op.gg extractor or transformer — Human action required
-- [ ] **Commit:** `test(integration): add live op.gg validation tests (OPGG_LIVE_TESTS=1)`
+- [x] **Commit:** included in `fix(waterfall): Phase 6 prod review fixes + integration/live tests`
 
 ---
 
