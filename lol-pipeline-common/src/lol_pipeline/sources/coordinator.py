@@ -49,14 +49,10 @@ class WaterfallCoordinator:
         self._extractors = extractors
         # Index extractors by (source_name, data_type) for O(1) lookup.
         self._extractor_index: dict[tuple[str, DataType], Extractor] = {
-            (ext.source_name, dt): ext
-            for ext in extractors
-            for dt in ext.data_types
+            (ext.source_name, dt): ext for ext in extractors for dt in ext.data_types
         }
 
-    def _get_extractor(
-        self, source_name: str, data_type: DataType
-    ) -> Extractor | None:
+    def _get_extractor(self, source_name: str, data_type: DataType) -> Extractor | None:
         return self._extractor_index.get((source_name, data_type))
 
     async def fetch_match(
@@ -86,9 +82,7 @@ class WaterfallCoordinator:
         if self._blob_store is None:
             return None
 
-        found = await self._blob_store.find_any(
-            context.match_id, self._registry.source_names
-        )
+        found = await self._blob_store.find_any(context.match_id, self._registry.source_names)
         if found is None:
             return None
 
@@ -111,9 +105,7 @@ class WaterfallCoordinator:
             return None
 
         try:
-            extracted = extractor.extract(
-                blob_dict, context.match_id, context.region
-            )
+            extracted = extractor.extract(blob_dict, context.match_id, context.region)
         except ExtractionError:
             log.warning(
                 "cached blob from %s raised ExtractionError for %s, skipping cache hit",
@@ -124,9 +116,7 @@ class WaterfallCoordinator:
             return None
 
         await self._raw_store.set(context.match_id, json.dumps(extracted))
-        return WaterfallResult(
-            status="cached", data=extracted, source=source_name
-        )
+        return WaterfallResult(status="cached", data=extracted, source=source_name)
 
     async def _try_sources(  # noqa: C901
         self,
@@ -139,9 +129,7 @@ class WaterfallCoordinator:
 
         for entry in self._registry.sources_for(data_type):
             # Check required_context_keys before calling fetch().
-            missing_keys = entry.source.required_context_keys - set(
-                context.extra.keys()
-            )
+            missing_keys = entry.source.required_context_keys - set(context.extra.keys())
             if missing_keys:
                 log.warning(
                     "source %s requires context keys %s, skipping",
@@ -208,8 +196,16 @@ class WaterfallCoordinator:
         is True only when can_extract() returned False (not for oversized
         blobs or missing extractors).
         """
+        # Guard: raw_blob is None -- treat as validation failure.
+        if response.raw_blob is None:
+            log.warning(
+                "source %s returned SUCCESS with raw_blob=None, skipping",
+                source_name,
+            )
+            return None, True
+
         # Blob size guard -- treated as UNAVAILABLE, not blob_validation_failed.
-        if response.raw_blob and len(response.raw_blob) > MAX_BLOB_SIZE_BYTES:
+        if len(response.raw_blob) > MAX_BLOB_SIZE_BYTES:
             log.warning(
                 "source %s returned oversized blob (%d bytes), skipping",
                 source_name,
@@ -217,12 +213,10 @@ class WaterfallCoordinator:
             )
             return None, False
 
-        blob_dict: dict[str, str] = json.loads(response.raw_blob)  # type: ignore[arg-type]
+        blob_dict: dict[str, str] = json.loads(response.raw_blob)
         extractor = self._get_extractor(source_name, data_type)
         if extractor is None:
-            log.warning(
-                "no extractor for (%s, %s), skipping", source_name, data_type
-            )
+            log.warning("no extractor for (%s, %s), skipping", source_name, data_type)
             return None, False
 
         if not extractor.can_extract(blob_dict):
@@ -230,13 +224,18 @@ class WaterfallCoordinator:
 
         # Persist blob to blob_store before extraction.
         if self._blob_store is not None and response.raw_blob is not None:
-            await self._blob_store.write(
-                source_name, context.match_id, response.raw_blob
-            )
+            await self._blob_store.write(source_name, context.match_id, response.raw_blob)
 
-        extracted = extractor.extract(
-            blob_dict, context.match_id, context.region
-        )
+        try:
+            extracted = extractor.extract(blob_dict, context.match_id, context.region)
+        except ExtractionError:
+            log.warning(
+                "source %s raised ExtractionError during extraction, skipping",
+                source_name,
+                exc_info=True,
+            )
+            return None, True
+
         await self._raw_store.set(context.match_id, json.dumps(extracted))
         return WaterfallResult(
             status="success",

@@ -19,7 +19,8 @@ from lol_pipeline.raw_store import RawStore
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.riot_api import RiotClient
 from lol_pipeline.service import run_consumer
-from lol_pipeline.sources.base import MATCH, Extractor, FetchContext
+from lol_pipeline.sources.base import MATCH, DataType, Extractor, FetchContext
+from lol_pipeline.sources.blob_store import BlobStore
 from lol_pipeline.sources.coordinator import WaterfallCoordinator
 from lol_pipeline.sources.opgg.extractors import OpggMatchExtractor
 from lol_pipeline.sources.opgg.source import OpggSource
@@ -150,26 +151,61 @@ def _build_coordinator(
     opgg: OpggClient | None = None,
 ) -> WaterfallCoordinator:
     """Construct a WaterfallCoordinator from service dependencies."""
+    # Available source builders keyed by name.
+    source_builders: dict[str, tuple[SourceEntry, list[Extractor]] | None] = {}
+
+    # Riot is always available.
     riot_source = RiotSource(riot_client=riot)
     riot_extractor = RiotExtractor()
-
-    entries: list[SourceEntry] = [
+    source_builders["riot"] = (
         SourceEntry(name="riot", source=riot_source, priority=0, primary_for=frozenset({MATCH})),
-    ]
-    extractors: list[Extractor] = [riot_extractor]
+        [riot_extractor],
+    )
 
+    # Op.gg is available only when enabled and client is present.
     if cfg.opgg_enabled and opgg is not None:
         opgg_source = OpggSource(opgg_client=opgg)
         opgg_extractor = OpggMatchExtractor()
-        entries.append(SourceEntry(name="opgg", source=opgg_source, priority=10))
-        extractors.append(opgg_extractor)
+        source_builders["opgg"] = (
+            SourceEntry(name="opgg", source=opgg_source, priority=0),
+            [opgg_extractor],
+        )
+    else:
+        source_builders["opgg"] = None
 
-    # Skip startup cross-check: OpggSource declares BUILD support but no BUILD
-    # extractor exists yet. The coordinator only calls extractors for data types
-    # actually requested (MATCH), so the missing BUILD extractor is harmless.
-    registry = SourceRegistry(entries)
-    # BlobStore is None until WATERFALL-6 adds blob_data_dir to Config.
-    return WaterfallCoordinator(registry, None, raw_store, extractors)
+    # Parse source_waterfall_order to determine registration order and priorities.
+    order = [s.strip() for s in cfg.source_waterfall_order.split(",") if s.strip()]
+    entries: list[SourceEntry] = []
+    extractors: list[Extractor] = []
+
+    for idx, name in enumerate(order):
+        builder = source_builders.get(name)
+        if builder is None:
+            _log.warning(
+                "source %r in source_waterfall_order is not available, skipping",
+                name,
+            )
+            continue
+        entry, exts = builder
+        # Override priority based on position in the order list.
+        entries.append(
+            SourceEntry(
+                name=entry.name,
+                source=entry.source,
+                priority=idx * 10,
+                primary_for=entry.primary_for,
+            )
+        )
+        extractors.extend(exts)
+
+    # Build extractor index for startup cross-check.
+    extractor_index: dict[tuple[str, DataType], Extractor] = {
+        (ext.source_name, dt): ext for ext in extractors for dt in ext.data_types
+    }
+    registry = SourceRegistry(entries, extractor_index=extractor_index)
+
+    blob_store = BlobStore(cfg.blob_data_dir) if cfg.blob_data_dir else None
+    return WaterfallCoordinator(registry, blob_store, raw_store, extractors)
 
 
 async def _fetch_match(  # noqa: PLR0913
@@ -281,8 +317,15 @@ async def main() -> None:
 
     async def _handler(msg_id: str, envelope: MessageEnvelope) -> None:
         await _fetch_match(
-            r, riot, raw_store, cfg, msg_id, envelope, log,
-            opgg=opgg, coordinator=coordinator,
+            r,
+            riot,
+            raw_store,
+            cfg,
+            msg_id,
+            envelope,
+            log,
+            opgg=opgg,
+            coordinator=coordinator,
         )
 
     log.info("fetcher started", extra={"consumer": consumer})

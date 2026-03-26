@@ -128,8 +128,8 @@ class TestOpggSourceProperties:
         assert opgg_source.name == "opgg"
 
     def test_supported_data_types(self, opgg_source: OpggSource) -> None:
-        """OpggSource supports MATCH and BUILD data types."""
-        assert opgg_source.supported_data_types == frozenset({MATCH, BUILD})
+        """OpggSource supports MATCH data type only (no BUILD extractor exists)."""
+        assert opgg_source.supported_data_types == frozenset({MATCH})
 
     def test_required_context_keys(self, opgg_source: OpggSource) -> None:
         """OpggSource needs no extra context keys (only core fields)."""

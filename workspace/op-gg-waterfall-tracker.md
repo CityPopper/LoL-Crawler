@@ -4,7 +4,7 @@ _Last updated: 2026-03-25_
 
 ---
 
-## Overall Status: 🔄 Design Review Phase — R1 complete, architect revision done, R2 pending
+## Overall Status: ✅ Implementation Complete — WATERFALL-1 through WATERFALL-6 committed, Phase 5 (Integration Tests) pending
 
 ---
 
@@ -49,25 +49,25 @@ Stale PRIN-ANZ-01/02/03 removed (service no longer exists).
 
 | Reviewer | Round 1 | Round 2 | Round 3 | Final |
 |----------|---------|---------|---------|-------|
-| developer | ✅ Done | 🔄 Pending | — | — |
-| formal-verifier | ✅ Done | 🔄 Pending | — | — |
-| optimizer | ✅ Done | 🔄 Pending | — | — |
-| security | ✅ Done | 🔄 Pending | — | — |
-| ai-specialist | ✅ Done | 🔄 Pending | — | — |
+| developer | ✅ Done | ✅ Done | ✅ Done | — |
+| formal-verifier | ✅ Done | ✅ Done | ✅ Done | — |
+| optimizer | ✅ Done | ✅ Done | ✅ Done | — |
+| security | ✅ Done | ✅ Done | ✅ Done | — |
+| ai-specialist | ✅ Done | ✅ Done | ✅ Done | — |
 
-**Current iteration**: Round 2 (architect revision complete, awaiting reviewer re-review)
+**Current iteration**: Phase 5 — Integration & E2E Tests (WATERFALL-7 live tests, IT-WF-01 through IT-WF-04)
 
 ---
 
 ## Phase 3 — TODO Breakdown
 
-**Status**: ⏳ Blocked on Phase 2 completion
+**Status**: ✅ COMPLETE
 
 ---
 
 ## Phase 4 — Implementation
 
-**Status**: ⏳ Blocked on Phase 3
+**Status**: ✅ COMPLETE
 
 Each task requires:
 - Developer agent (implementation)
@@ -88,7 +88,7 @@ Each task requires:
 
 ## Phase 5 — Integration & E2E Tests
 
-**Status**: ⏳ Blocked on Phase 4
+**Status**: 🔄 IN PROGRESS — Live op.gg tests pending (WATERFALL-7)
 
 Tests to run after every batch:
 - Unit tests: `just test-svc fetcher`, `just test-svc common`
@@ -137,6 +137,14 @@ Each round appended to `workspace/design-source-waterfall.md`.
 | a584d75 | tester | Coverage gap review across PRIN changes | ✅ Done — 92 tests committed |
 | Review cycle agents | 5× reviewers | Design doc review round 1 | ✅ Done |
 | architect | system-architect | Revise design doc per R1 findings (12 issues) | ✅ Done |
+| architect | system-architect | Revise design doc per R2 findings (12 issues) | ✅ Done |
+| architect | system-architect | Final revision per R3 findings (4 items) | ✅ Done |
+| developer + tester | WATERFALL-1 | Generic foundation (sources/ subpackage) | ✅ Done |
+| developer + tester | WATERFALL-2 | WaterfallCoordinator + try_token() | ✅ Done |
+| developer + tester | WATERFALL-3 | RiotSource + RiotExtractor | ✅ Done |
+| developer + tester | WATERFALL-4 | OpggSource + transformer + extractor | ✅ Done |
+| developer + tester | WATERFALL-5 | Fetcher integration | ✅ Done |
+| developer | WATERFALL-6 | Config + Docker | ✅ Done |
 
 ---
 

@@ -55,14 +55,15 @@ class BlobStore:
         """O(1) stat call."""
         if self._data_dir is None:
             return False
-        return self._blob_path(source_name, match_id).exists()
+        path = self._blob_path(source_name, match_id)
+        return await asyncio.to_thread(path.exists)
 
     async def read(self, source_name: str, match_id: str) -> dict[str, str] | None:
         """Read and parse a blob. Returns parsed dict or None."""
         if self._data_dir is None:
             return None
         path = self._blob_path(source_name, match_id)
-        if not path.exists():
+        if not await asyncio.to_thread(path.exists):
             return None
         data = await asyncio.to_thread(path.read_bytes)
         return json.loads(data)  # type: ignore[no-any-return]
@@ -77,7 +78,7 @@ class BlobStore:
         if self._data_dir is None:
             return
         path = self._blob_path(source_name, match_id)
-        if path.exists():
+        if await asyncio.to_thread(path.exists):
             return
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(f".tmp_{match_id}_{os.getpid()}_{uuid4().hex}.json")
@@ -123,14 +124,26 @@ class BlobStore:
         except ValueError:
             return None
         for name in source_names:
-            blob_path = self._data_dir / name / platform / f"{match_id}.json"
-            if blob_path.exists():
-                data = await asyncio.to_thread(blob_path.read_bytes)
-                try:
-                    return (name, json.loads(data))
-                except json.JSONDecodeError:
-                    log.warning(
-                        "corrupt blob at %s, treating as cache miss", blob_path
-                    )
-                    continue
+            blob_path = (self._data_dir / name / platform / f"{match_id}.json").resolve()
+            if not blob_path.is_relative_to(self._data_dir):
+                raise ValueError(f"blob path escapes data dir: {blob_path}")
+            raw = await asyncio.to_thread(self._read_if_exists, blob_path)
+            if raw is None:
+                continue
+            try:
+                return (name, json.loads(raw))
+            except json.JSONDecodeError:
+                log.warning("corrupt blob at %s, treating as cache miss", blob_path)
+                continue
         return None
+
+    @staticmethod
+    def _read_if_exists(path: Path) -> bytes | None:
+        """Read file bytes if the file exists, otherwise return None.
+
+        Runs in a single thread dispatch to avoid two separate
+        ``asyncio.to_thread()`` calls for exists + read.
+        """
+        if not path.exists():
+            return None
+        return path.read_bytes()

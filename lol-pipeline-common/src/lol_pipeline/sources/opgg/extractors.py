@@ -48,6 +48,4 @@ class OpggMatchExtractor:
             normalized = normalize_game(blob, region)
             return patch_riot_shape(normalized)
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
-            raise ExtractionError(
-                f"failed to extract op.gg blob for {match_id}: {exc}"
-            ) from exc
+            raise ExtractionError(f"failed to extract op.gg blob for {match_id}: {exc}") from exc

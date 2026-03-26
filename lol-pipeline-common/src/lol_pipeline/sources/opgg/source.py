@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from lol_pipeline.opgg_client import OpggClient
 from lol_pipeline.sources.base import (
-    BUILD,
     MATCH,
     DataType,
     FetchContext,
@@ -30,15 +29,13 @@ class OpggSource:
     """
 
     name = "opgg"
-    supported_data_types: frozenset[DataType] = frozenset({MATCH, BUILD})
+    supported_data_types: frozenset[DataType] = frozenset({MATCH})
     required_context_keys: frozenset[str] = frozenset()
 
     def __init__(self, opgg_client: OpggClient) -> None:
         self._opgg = opgg_client
 
-    async def fetch(
-        self, context: FetchContext, data_type: DataType
-    ) -> FetchResponse:
+    async def fetch(self, context: FetchContext, data_type: DataType) -> FetchResponse:
         """Always returns UNAVAILABLE -- op.gg cannot fetch by match_id."""
         return FetchResponse(result=FetchResult.UNAVAILABLE)
 

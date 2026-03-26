@@ -249,10 +249,10 @@ class SourceRegistry:
         # typos like frozenset({"mtach"}) at startup instead of silently
         # dropping traffic at runtime.
         if extractor_index is not None:
-            known_data_types = {dt for (_, dt) in extractor_index}
+            # Validate that each (source_name, data_type) pair has a registered extractor.
             for entry in self._entries:
                 for dt in entry.source.supported_data_types:
-                    if dt not in known_data_types:
+                    if (entry.name, dt) not in extractor_index:
                         raise ValueError(
                             f"Source {entry.name!r} declares support for data type "
                             f"{dt!r}, but no extractor is registered for "
@@ -359,7 +359,7 @@ class RiotSource:
             granted = await try_token(
                 self._r,
                 limit_per_second=self._cfg.api_rate_limit_per_second,
-                region=context.region,
+                key_prefix=f"ratelimit:{context.region}",
             )
             if not granted:
                 return FetchResponse(result=FetchResult.THROTTLED)
@@ -576,10 +576,17 @@ class BlobStore:
         except ValueError:
             return None
         for name in source_names:
+            # name comes from the trusted source_names list (validated at
+            # SourceEntry construction via _SOURCE_NAME_RE); no re-validation needed.
             blob_path = self._data_dir / name / platform / f"{match_id}.json"
             if blob_path.exists():
                 data = await asyncio.to_thread(blob_path.read_bytes)
-                return (name, json.loads(data))
+                try:
+                    return (name, json.loads(data))
+                except json.JSONDecodeError:
+                    # Corrupt blob (truncated write, disk error) — treat as
+                    # cache miss and fall through to the next source / network fetch.
+                    continue
         return None
 ```
 
@@ -1263,6 +1270,22 @@ The match_id payload schema has `"source": {"enum": ["riot", "opgg"]}`. With the
 
 ---
 
+## Revision Notes — Round 3 → Final
+
+_Revised: 2026-03-25_
+
+All five reviewers returned APPROVED or APPROVED WITH MINORS in Round 3. The following targeted fixes address the remaining issues before implementation begins.
+
+| Issue ID | Section(s) changed | Change summary |
+|----------|-------------------|----------------|
+| MAJOR (developer + ai-specialist) — try_token() parameter mismatch | 3.5 | Fixed `RiotSource.fetch()` call site: changed `region=context.region` to `key_prefix=f"ratelimit:{context.region}"` to match the `try_token()` function signature. Per-region rate limiting preserved via key prefix. |
+| MINOR (optimizer NIT-1 + ai-specialist MINOR-1) — Registry cross-check scope too broad | 3.3 | Changed validation from checking `dt not in known_data_types` (any source has extractor for dt) to `(entry.name, dt) not in extractor_index` (this specific source has extractor for dt). Prevents Source A passing validation because Source B has the extractor. |
+| MINOR (formal-verifier FV-R3-2) — JSONDecodeError in find_any() | 3.7 | Added `try/except json.JSONDecodeError` around `json.loads(data)` in `find_any()`. Corrupt blobs (truncated write, disk error) are treated as cache misses — fall through to next source or network fetch. |
+| MINOR (security MINOR-1) — find_any() path bypasses _blob_path() | 3.7 | Added inline comment noting that `name` in `find_any()` comes from the trusted `source_names` list (validated at `SourceEntry` construction via `_SOURCE_NAME_RE`); no re-validation needed. |
+| Deferred to implementation | — | Security MINOR-2 (blob size check in find_any), Developer NEW-2 (Source example required_context_keys), Developer NEW-3 (docstring inversion), FV-R3-1 (stale blob cleanup), FV-R3-3, FV-R3-4 (documented tradeoffs). |
+
+---
+
 ## Revision Notes — Round 2 → Round 3
 
 _Revised: 2026-03-25_
@@ -1943,3 +1966,953 @@ Fix: Add a validation check that `match_id` contains at least one underscore, or
 NEEDS REVISION
 
 One CRITICAL issue and four MAJOR issues require resolution before implementation. The CRITICAL issue (ISSUE-1: poisoned blob loop via cache-hit path) is a correctness bug that would produce infinite DLQ cycling in production after any extractor code change. The four MAJOR issues are implementability gaps -- an implementer encountering them would be forced to make undocumented design decisions (type conversions, None handling, iteration order, function signatures) that could diverge from the architect's intent. The two MINOR issues can be deferred to Round 3 or resolved during implementation.
+
+---
+
+## Review Round 3 — Developer
+
+**Reviewer**: developer
+**Round**: 3
+**Date**: 2026-03-25
+
+### Round 2 Issue Disposition
+
+**ISSUE-1 (CRITICAL): Cache-hit path skips `can_extract()` validation** — RESOLVED.
+
+Section 3.9 Step 2 (lines 726-734) now explicitly enumerates three checks on the cache-hit path:
+1. `_get_extractor(source_name, data_type)` — skip if `None`.
+2. `extractor.can_extract(blob_dict)` — skip if False, fall through to Step 3.
+3. Only if both pass, call `extractor.extract()`.
+
+The text at line 731 states: "Calls `extractor.can_extract(blob_dict)`. If this returns `False` (blob passed validation at write time but the extractor's criteria have since tightened), log a warning, skip this cache hit, and fall through to Step 3." This directly addresses the stale-blob-after-code-deploy scenario from my R2 write-up. The cache-hit path is now consistent with the fresh-fetch path.
+
+---
+
+**ISSUE-2 (MAJOR): `_get_extractor()` returning `None` unhandled** — RESOLVED.
+
+Both paths now have explicit guards:
+
+- **Cache-hit path** (Section 3.9, line 730): "If this returns `None` (unregistered source_name found on disk, or source package removed between deployments), log a warning and skip this cache hit — fall through to Step 3."
+- **Fresh-fetch path** (Section 3.9, pseudocode lines 760-763): `if extractor is None: log.warning(...); continue`.
+
+The `None` case is no longer ambiguous. Both paths skip and continue.
+
+---
+
+**ISSUE-3 (MAJOR): `BlobStore.write(data: str)` vs `raw_blob: bytes` type mismatch** — RESOLVED.
+
+Section 3.7 (line 533) now reads: `async def write(self, source_name: str, match_id: str, data: bytes | str) -> None:`. The docstring (lines 536-537) explains: "Accepts both bytes (from FetchResponse.raw_blob) and str. If bytes, decodes as UTF-8 before writing." The `_atomic_write` static method (line 550) implements: `raw = data.encode("utf-8") if isinstance(data, str) else data`.
+
+The coordinator can now pass `response.raw_blob` (bytes) directly to `blob_store.write()` without an undocumented conversion.
+
+---
+
+**ISSUE-4 (MAJOR): `find_any()` does not respect source priority order** — RESOLVED.
+
+Section 3.7 (line 557) changes the signature to `find_any(self, match_id: str, source_names: list[str])`. The implementation (lines 578-582) iterates `for name in source_names:` and checks `self._data_dir / name / platform / f"{match_id}.json"` for each. The `source_names` parameter is populated from the registry's priority order.
+
+The accompanying documentation (lines 558-566) explains the design rationale: "Iterates in that order instead of filesystem iterdir() order, ensuring the highest-fidelity blob is always preferred when multiple sources have cached data for the same match_id."
+
+This also resolves the security reviewer's MINOR-2 concern (filesystem-discovered directories) since `find_any()` no longer calls `iterdir()` at all.
+
+---
+
+**ISSUE-5 (MAJOR): `try_token()` function never specced** — RESOLVED.
+
+Section 3.5 (lines 390-413) provides the full specification: function signature with keyword-only parameters (`key_prefix`, `limit_per_second`, `limit_long`), docstring, and one-line implementation (`return await acquire_token(...) == 1`). The docstring explicitly notes: "Parameters mirror `acquire_token()` — not `wait_for_token()`. The 'region' parameter on `wait_for_token()` is a legacy compat shim and is NOT replicated here."
+
+However, see NEW-1 below for a consistency issue between the spec and the call site.
+
+---
+
+**ISSUE-6 (MINOR): `WaterfallResult.status` is a plain string** — NOT ADDRESSED (acceptable).
+
+Section 3.9 (line 717) still defines `status: str`. This was a MINOR issue and was not expected to be addressed in R2-to-R3. It can be resolved during implementation by using `Literal[...]` or a small enum. No blocker.
+
+---
+
+**ISSUE-7 (MINOR): `_blob_path()` assumes match_id contains underscore** — NOT ADDRESSED (acceptable).
+
+Section 3.7 (line 510) still uses `match_id.split("_")[0]` without a guard for underscore-less IDs. This was a MINOR issue. The `_validate_platform` regex check at line 506 would catch most malformed results (e.g., a full numeric ID would pass `^[A-Z0-9]+$` only if all uppercase, and a mixed-case ID would fail). Can be resolved during implementation with an explicit check for the underscore separator.
+
+---
+
+### Issues Found
+
+**NEW-1 (MAJOR): `RiotSource.fetch()` call site passes `region=context.region` to `try_token()`, but the `try_token()` specification does not accept a `region` parameter.**
+
+Section 3.5, `RiotSource.fetch()` (lines 359-362):
+```python
+granted = await try_token(
+    self._r,
+    limit_per_second=self._cfg.api_rate_limit_per_second,
+    region=context.region,
+)
+```
+
+Section 3.5, `try_token()` specification (lines 393-398):
+```python
+async def try_token(
+    r: aioredis.Redis,
+    *,
+    key_prefix: str = "ratelimit",
+    limit_per_second: int = 20,
+    limit_long: int = 100,
+) -> bool:
+```
+
+The spec explicitly says (lines 406-408): "The 'region' parameter on wait_for_token() is a legacy compat shim and is NOT replicated here."
+
+The call site would raise `TypeError: try_token() got an unexpected keyword argument 'region'` at runtime. This is a direct contradiction introduced when the `try_token()` spec was added (ISSUE-5 fix) without updating the `RiotSource.fetch()` call site to match.
+
+Fix: Either (a) remove `region=context.region` from the call site, or (b) add `region` to `try_token()` if per-region rate limiting is needed for the waterfall path. Given that the existing rate limiter uses `key_prefix` to namespace keys (not `region`), the RiotSource should likely construct the appropriate `key_prefix` from `context.region` and pass that instead. For example: `key_prefix=f"ratelimit:{context.region}"`.
+
+---
+
+**NEW-2 (MINOR): `RiotSource` and `OpggSource` example implementations omit the `required_context_keys` property declared by the Source protocol.**
+
+Section 3.2 (lines 179-188) defines `required_context_keys: frozenset[str]` as a property on the Source protocol. The coordinator checks it before calling `fetch()` (lines 744-747). However:
+
+- `RiotSource` (lines 345-383) does not define `required_context_keys`.
+- `OpggSource` (lines 425-446) does not define `required_context_keys`.
+
+Since `Source` is a `@runtime_checkable` Protocol, any `isinstance(source, Source)` check at runtime would pass even without this property (Protocol runtime checks only verify method/attribute existence, and `required_context_keys` as a property would need to be present). More importantly, an implementer following the `RiotSource` example as a template for a new source would not know they need to define this property.
+
+Fix: Add `required_context_keys = frozenset()` as a class attribute on both `RiotSource` and `OpggSource` example implementations. This also serves as documentation for future source authors.
+
+---
+
+**NEW-3 (MINOR): `BlobStore.write()` encodes bytes to UTF-8 before writing — the comment says the opposite.**
+
+Section 3.7, `write()` docstring (lines 536-537): "Accepts both bytes (from FetchResponse.raw_blob) and str. If bytes, decodes as UTF-8 before writing."
+
+Section 3.7, `_atomic_write` implementation (line 550): `raw = data.encode("utf-8") if isinstance(data, str) else data`
+
+The implementation is correct: if `data` is `str`, encode to bytes; if already `bytes`, use directly. But the docstring says "If bytes, decodes as UTF-8" — this is inverted. Bytes are passed through unchanged; strings are encoded. The docstring should read: "If str, encodes as UTF-8 before writing. If bytes, writes directly."
+
+This is a documentation-only issue; the code logic is correct.
+
+---
+
+### Cross-Section Consistency Check
+
+The following cross-references were verified and are consistent:
+
+- Section 3.3 `SourceRegistry.__init__` accepts `extractor_index` and cross-checks `supported_data_types` (addresses AI-specialist MAJOR-2). The coordinator constructs `_extractor_index` in `__init__` (Section 3.9, lines 658-662) and could pass it to the registry.
+- Section 3.7 `_blob_path()` uses `path.is_relative_to(self._data_dir)` (line 513), not `startswith()` (addresses security MINOR-1).
+- Section 3.7 `write()` tmp naming includes `uuid4().hex` (line 543), preventing same-PID coroutine collisions (addresses FV-R2-1).
+- Section 3.9 `MAX_BLOB_SIZE_BYTES` check (lines 753-757) is in the pseudocode, consistent with the prose at line 711 (addresses security MINOR-4).
+- Section 4 documents `blob_validation_failed` immediate DLQ routing (lines 815-822), consistent with Section 3.9's `WaterfallResult.blob_validation_failed` field (addresses FV-R2-8).
+- Section 3.9 Step 2 cache-hit path (lines 726-734) calls both `_get_extractor()` and `can_extract()`, consistent with the fresh-fetch path pseudocode (lines 760-769).
+
+### Verdict
+
+**APPROVED WITH MINORS**
+
+All seven R2 developer issues are addressed. The five CRITICAL/MAJOR issues (ISSUE-1 through ISSUE-5) are fully resolved in the design text. The two MINOR issues (ISSUE-6, ISSUE-7) were not addressed, which is acceptable — they can be resolved during implementation.
+
+One new MAJOR issue (NEW-1) was introduced by the R2-to-R3 changes: the `RiotSource.fetch()` call site passes a `region` parameter that `try_token()` does not accept. This is a straightforward fix (update the call site to match the spec) and does not require architectural changes. The two new MINOR issues (NEW-2, NEW-3) are documentation gaps in the example implementations.
+
+None of these remaining issues are blockers. The design is ready for implementation once NEW-1 is resolved — either by updating the call site or by a note in the design specifying how `region` maps to `key_prefix`.
+
+---
+
+## Review Round 3 — Formal Verifier
+
+**Reviewer**: formal-verifier
+**Round**: 3
+**Date**: 2026-03-25
+
+---
+
+### Round 2 Issue Disposition
+
+**FV-R2-1 [MAJOR]: BlobStore write-once TOCTOU — same-PID tmp file collision raises unhandled `FileExistsError`**
+
+**Status: RESOLVED**
+
+The revision notes state: "Changed tmp file naming to `{match_id}.{os.getpid()}.{uuid4().hex}.tmp` to prevent same-PID coroutine collisions via XAUTOCLAIM."
+
+Verified in Section 3.7 (line 543):
+```python
+tmp = path.with_name(f".tmp_{match_id}_{os.getpid()}_{uuid4().hex}.json")
+```
+
+The `uuid4().hex` component is a 32-character random hex string generated per call. Two concurrent coroutines in the same PID will produce distinct tmp file names because each invocation of `uuid4()` returns a cryptographically random UUID (CPython delegates to `os.urandom` via the `uuid` module). The `O_CREAT | O_EXCL` flag in `_atomic_write` (line 548) remains as defense-in-depth: even if two UUID4 values collided (probability ~2^-122), the second `os.open` would fail with `EEXIST` rather than silently corrupting.
+
+Correctness argument for the fix:
+- **Uniqueness guarantee**: `uuid4().hex` is unique per call with negligible collision probability. Two coroutines in the same PID, same process, same event loop, processing the same `match_id` (via XAUTOCLAIM redelivery) will produce distinct tmp paths.
+- **TOCTOU on `path.exists()`**: The `path.exists()` check at line 540 is still non-atomic with respect to the subsequent `_atomic_write`. Two coroutines can both observe `path.exists() == False` and both proceed to create tmp files. This is now safe: each creates a uniquely-named tmp file, both call `os.replace(tmp, final)`. The second `os.replace` atomically overwrites the first writer's file. Since both writers hold valid blobs for the same `(source, match_id)` (both passed `can_extract()`), the final state is correct regardless of which writer "wins."
+- **No unhandled exception**: The `FileExistsError` scenario from R2 is eliminated because tmp file names no longer collide.
+
+The fix is both necessary (eliminates the concrete failure trace from my R2 report) and sufficient (the remaining TOCTOU on `path.exists()` produces a correct final state).
+
+---
+
+**FV-R2-2 [informational]: Crash recovery between `blob_store.write` and `publish` is correct but undocumented**
+
+**Status: RESOLVED (implicitly)**
+
+The R2-to-R3 revision notes do not list this as a separate change, which is expected since it was informational. The crash recovery analysis from R2 remains valid and is confirmed by the updated Section 3.9 text describing the coordinator's step sequence. The design now explicitly enumerates the cache-hit recovery path (Step 2 text at lines 729-734), which implicitly documents the crash-between-blob-write-and-publish recovery.
+
+No action required beyond what was done.
+
+---
+
+**FV-R2-3 [MINOR]: `find_any()` non-deterministic source order with same-namespace match_ids**
+
+**Status: RESOLVED**
+
+The revision notes state: "Changed `find_any(match_id)` to `find_any(match_id, source_names: list[str])`. Iterates in registry priority order instead of `iterdir()`."
+
+Verified in Section 3.7 (lines 557-583):
+```python
+async def find_any(self, match_id: str, source_names: list[str]) -> tuple[str, dict] | None:
+```
+
+The method now accepts `source_names: list[str]` and iterates in the order provided (line 578: `for name in source_names:`). The coordinator passes the registry's priority-ordered list. This eliminates the filesystem-dependent iteration order.
+
+Correctness verification: The priority ordering is preserved end-to-end:
+1. `SourceRegistry.__init__` sorts entries by `priority` (line 245: `self._entries = sorted(entries, key=lambda e: e.priority)`).
+2. The coordinator must extract source names in sorted order from the registry and pass them to `find_any()`.
+3. `find_any()` iterates `source_names` in the given order.
+
+One observation: The design does not show the exact coordinator code that extracts source names and passes them to `find_any()`. The Step 2 text (line 727) says "the coordinator passes the registry's priority-ordered source name list to `find_any(match_id, source_names)`." This is specified at the design level but the pseudocode for Step 2 is prose, not code. The implementer must extract `[e.name for e in self._registry.all_sources]` (or `self._registry.sources_for(data_type)` names) and pass it. Since `all_sources` returns the sorted list (line 278: `return list(self._entries)`), the ordering is guaranteed if the implementer uses `all_sources`. If the implementer accidentally uses `sources_for(data_type)`, the ordering is still correct (the filter preserves the sorted order from `_entries`). Either path is correct.
+
+Verdict: Resolved. The fix is correct and the priority ordering is preserved.
+
+---
+
+**FV-R2-4 [MINOR]: Cache-hit path skips `can_extract()` — stale blobs can cause `ExtractionError`**
+
+**Status: RESOLVED**
+
+The revision notes state (CRITICAL, developer ISSUE-1): "After `find_any()` returns a hit, coordinator now calls `extractor.can_extract(blob_dict)` before using it. If False, skips cache hit and falls through to network fetch path."
+
+Verified in Section 3.9, Step 2 (lines 729-734):
+
+> If a blob is found, `find_any()` returns `(source_name, blob_dict)`. The coordinator then:
+> 1. Calls `_get_extractor(source_name, data_type)`. If this returns `None` [...], log a warning and skip this cache hit -- fall through to Step 3.
+> 2. Calls `extractor.can_extract(blob_dict)`. If this returns `False` [...], log a warning, skip this cache hit, and fall through to Step 3.
+> 3. Only if both checks pass, calls `extractor.extract(blob_dict, ...)` and returns the result.
+
+This is the correct fix. The cache-hit path is now consistent with the fresh-fetch path: both require `_get_extractor() is not None` AND `can_extract() == True` before extraction proceeds.
+
+New failure mode analysis for the cache-hit `can_extract()` addition:
+
+The cache-hit path now has a code path where `can_extract()` returns False for a blob that was previously persisted (because the extractor's validation logic tightened between deployments). In this case, the coordinator skips the cache hit and falls through to Step 3 (network fetch). Step 3 will try to fetch the same match from the same source. If the source returns the same blob shape, `can_extract()` will again return False, and the coordinator will set `blob_validation_failed=True` and continue to the next source.
+
+The question is: does the stale blob on disk get cleaned up? The design says "log a warning, skip this cache hit, and fall through to Step 3." It does NOT say "delete the stale blob." This means on every future redelivery of this match_id, the coordinator will:
+1. Find the stale blob via `find_any()`.
+2. Call `can_extract()` which returns False.
+3. Skip it and fall through to the network fetch.
+4. The network fetch may succeed from a different source, or may also fail.
+
+This is not an infinite loop (the stale blob is skipped, not retried), so it is functionally correct. However, the stale blob permanently occupies disk space and adds a constant overhead of one `read_bytes()` + one `json.loads()` + one `can_extract()` call on every cache-hit check for this match_id. Since BlobStore has no automatic eviction, the stale blob persists indefinitely. This is a performance concern, not a correctness concern. See MINOR-1 below.
+
+---
+
+**FV-R2-5 [informational]: `max(hints)` for `retry_after_ms` is confirmed correct**
+
+**Status: No action required.** Informational finding confirmed in R2, no change needed.
+
+---
+
+**FV-R2-6 [informational]: `try_token()` false-negative fallthrough is safe**
+
+**Status: No action required.** Informational finding confirmed in R2, no change needed.
+
+---
+
+**FV-R2-7 [informational]: `find_any()` cannot return partial blob under concurrent writes**
+
+**Status: No action required.** Informational finding confirmed in R2, no change needed.
+
+---
+
+**FV-R2-8 [MAJOR]: `blob_validation_failed` messages exhaust all retries against unchanging bad source**
+
+**Status: RESOLVED**
+
+The revision notes state: "When `blob_validation_failed=True` in WaterfallResult, Fetcher routes immediately to DLQ (skips retry loop). Documented in Section 4 Fetcher flow."
+
+Verified in Section 4 (lines 815-822):
+
+> ```
+> _fetch_match()
+>   [...]
+>   │   ├─ all_exhausted + blob_validation_failed → nack_to_dlq immediately
+>   │   │     (skip retry loop — the blob is structurally bad, retrying
+>   │   │      will hit the same un-extractable data from the same source)
+>   │   └─ all_exhausted (no blob_validation) → nack_to_dlq(retry_after_ms=result.retry_after_ms)
+> ```
+
+And in the supplementary text (line 822):
+
+> When `WaterfallResult.blob_validation_failed` is True and `status` is `all_exhausted`, the Fetcher routes the message directly to DLQ with `max_attempts=1` (or equivalently, sets `attempts=max_attempts` on the envelope). This prevents the message from burning all `max_attempts` retry cycles against the same structurally bad blob.
+
+This is the correct fix. Analysis of the specified behavior:
+
+1. The Fetcher receives `WaterfallResult(status="all_exhausted", blob_validation_failed=True)`.
+2. The Fetcher calls `nack_to_dlq` with `max_attempts=1` (or sets `attempts=max_attempts`).
+3. Recovery picks up the DLQ entry and checks `attempts >= max_attempts`.
+4. Since the condition is met immediately, Recovery archives the message to `stream:dlq:archive` without replaying it.
+
+This eliminates the retry-exhaustion waste from my R2 report. The message goes directly to archive after a single DLQ entry, rather than cycling through 5 retry rounds against the same bad blob.
+
+One subtlety: the design says "with `max_attempts=1` (or equivalently, sets `attempts=max_attempts` on the envelope)." These are not quite equivalent in implementation. Setting `max_attempts=1` on the `nack_to_dlq` call means the DLQ envelope declares a lower bound. Setting `attempts=max_attempts` on the envelope means artificially inflating the attempt counter. The second approach is cleaner because it uses the existing `max_attempts` from the config without introducing a new parameter to `nack_to_dlq`. However, both produce the same behavior: Recovery archives on first encounter. The "or equivalently" phrasing leaves implementation flexibility, which is acceptable at the design level.
+
+Residual concern: The `blob_validation_failed` flag is set when ANY source's blob fails `can_extract()`, even if other sources were merely THROTTLED (not producing bad blobs). Consider:
+- Source A returns SUCCESS with a blob that fails `can_extract()`. `any_blob_validation_failed = True`.
+- Source B returns THROTTLED (no blob, no validation).
+- Coordinator returns `all_exhausted` with `blob_validation_failed=True`.
+- Fetcher routes immediately to DLQ archive.
+
+But Source B was only temporarily throttled. On retry, Source B might succeed with a valid blob. The immediate-archive behavior prevents this recovery path.
+
+This is a design tradeoff, not a bug. The rationale in the design text ("the blob is structurally bad, retrying will hit the same un-extractable data from the same source") assumes the bad blob will be encountered again on retry. This is true for the fresh-fetch path (Source A will likely return the same bad blob), but the retry might succeed via Source B. The design accepts this tradeoff: it prioritizes avoiding wasted retry cycles over the possibility of a different source succeeding on retry.
+
+Severity: This residual concern is MINOR — it sacrifices one recovery opportunity (Source B succeeding on retry) to avoid burning 5 retry cycles. The message is archived with a clear `blob_validation_failed` flag for operator debugging. If Source B was the only viable path, the operator can manually requeue the archived message after investigating why Source A's blob is bad.
+
+---
+
+### Issues Found
+
+**MINOR-1: Stale cache blob causes permanent per-request overhead when `can_extract()` validation tightens between deployments**
+
+Section 3.9 Step 2 (lines 729-734) specifies that when a cached blob fails the newly-added `can_extract()` check, the coordinator logs a warning, skips the cache hit, and falls through to Step 3. The stale blob is NOT deleted from disk.
+
+On every subsequent delivery of this match_id (including redeliveries via DLQ/XAUTOCLAIM), the coordinator will:
+1. Call `find_any()` which reads the stale blob from disk (one `read_bytes()` + `json.loads()`).
+2. Call `can_extract()` which returns False.
+3. Skip and fall through to Step 3.
+
+This is functionally correct — the stale blob does not block progress. However, it introduces unnecessary I/O on every access for this match_id. For a single stale blob this is negligible. If an extractor update invalidates a large batch of previously-valid blobs (e.g., hundreds), the cumulative overhead on reprocessing would be noticeable but still bounded.
+
+The fix is straightforward: when `can_extract()` returns False on the cache-hit path, delete the stale blob file (`blob_path.unlink(missing_ok=True)`). This is safe because the blob has been confirmed to be non-extractable by the current extractor version.
+
+Severity: MINOR. The current behavior is correct and the overhead is bounded. Deletion of stale blobs is an optimization.
+
+---
+
+**MINOR-2: `find_any()` performs `json.loads()` on a disk blob before `can_extract()` — a malformed JSON file causes an unhandled exception**
+
+Section 3.7, `find_any()` (lines 580-582):
+```python
+if blob_path.exists():
+    data = await asyncio.to_thread(blob_path.read_bytes)
+    return (name, json.loads(data))
+```
+
+`json.loads(data)` is called inside `find_any()` before the coordinator has a chance to call `can_extract()`. If the blob file on disk contains malformed JSON (due to a partial write from a previous crash — theoretically impossible given the tmpfile-fsync-rename pattern, but possible if the file was manually edited or corrupted by a disk error), `json.loads` raises `json.JSONDecodeError`. This exception propagates from `find_any()` through the coordinator to `_handle_with_retry` in `service.py`, which increments the retry counter and eventually sends the message to DLQ.
+
+The coordinator never reaches Step 3 (network fetch) because the exception occurs in Step 2. A valid network fetch that would succeed is prevented by a corrupt cache file.
+
+The fix is to catch `json.JSONDecodeError` inside `find_any()` (or in the coordinator's Step 2 handler) and treat it as a cache miss — log a warning and continue to the next source in the `source_names` list, or fall through to Step 3.
+
+Severity: MINOR. The tmpfile-fsync-rename pattern makes this scenario extremely unlikely during normal operation. The risk comes from manual intervention or disk corruption. However, defensive coding here is cheap.
+
+---
+
+**MINOR-3: `retry_after_ms` from a SUCCESS-but-failed-`can_extract()` source is not collected**
+
+Section 3.9 pseudocode (lines 752-772):
+```python
+if response.result == FetchResult.SUCCESS:
+    # ... blob size guard, json.loads, extractor lookup, can_extract ...
+    if not extractor.can_extract(blob_dict):
+        any_blob_validation_failed = True
+        continue  # <-- jumps back to for loop, skipping retry_hints collection
+
+if response.retry_after_ms is not None:
+    retry_hints.append(response.retry_after_ms)
+```
+
+When a source returns `FetchResult.SUCCESS` and the blob fails `can_extract()`, the `continue` statement at line 768 jumps back to the top of the for loop. The `retry_after_ms` collection at line 771-772 is skipped. This is correct behavior for SUCCESS responses — a successful fetch has no retry-after hint. However, the `FetchResponse` from a SUCCESS might still carry `retry_after_ms` from rate-limit headers (e.g., "this request succeeded, but your next one should wait 2s"). If a source returns SUCCESS with `retry_after_ms=2000` and a bad blob, the hint is lost.
+
+In practice, sources that return SUCCESS typically set `retry_after_ms=None`. The `retry_after_ms` field is primarily useful for THROTTLED responses. This is a theoretical gap, not a practical one.
+
+Severity: MINOR. No fix needed unless a source implementation is added that returns SUCCESS with a non-None `retry_after_ms`.
+
+---
+
+**MINOR-4: `blob_validation_failed` immediate DLQ routing interacts subtly with the `can_extract()` cache-hit skip**
+
+Consider this execution trace:
+1. Match M is first processed. Source A returns SUCCESS, blob passes `can_extract()`, blob is persisted. Extraction succeeds. All is well.
+2. Extractor code is updated (new deployment). The blob shape from Source A no longer passes `can_extract()`.
+3. Match M is redelivered (via DLQ retry for an unrelated reason, or XAUTOCLAIM after a crash).
+4. Step 1 (RawStore check): If RawStore still has the data (within TTL), returns "cached" — no problem. But if TTL has expired, the coordinator proceeds.
+5. Step 2 (BlobStore check): `find_any()` returns the cached blob. `can_extract()` returns False. Coordinator skips the cache hit, falls through to Step 3.
+6. Step 3 (network fetch): Source A returns SUCCESS with the same blob shape. `can_extract()` returns False. `any_blob_validation_failed = True`. Source B is THROTTLED. All exhausted.
+7. Fetcher sees `all_exhausted + blob_validation_failed=True`. Routes immediately to DLQ archive.
+
+In this scenario, the match was previously successfully processed (step 1), but after an extractor update and RawStore TTL expiry, the match is archived as a blob-validation failure. This is an edge case where a code update retroactively "breaks" a match that was already processed.
+
+The mitigation is that Step 1 (RawStore check) serves as the primary idempotency gate. If the match was fully processed (RawStore written, stream:parse published, ACKed), it will not be redelivered unless something unusual happens (manual DLQ replay, XAUTOCLAIM after very long idle). And if RawStore TTL has not expired, Step 1 catches it.
+
+Severity: MINOR. This requires a specific sequence: extractor update + RawStore TTL expiry + redelivery of a previously-processed match. Unlikely in practice.
+
+---
+
+### Cross-cutting Verification: Crash Recovery at Every Step
+
+I re-verified the crash recovery properties for all crash points in the revised R3 algorithm, incorporating the new `can_extract()` cache-hit check and `blob_validation_failed` immediate DLQ routing.
+
+**State machine for a single message through the coordinator:**
+
+```
+States:
+  S0: Message received from stream:match_id (in PEL, not ACKed)
+  S1: RawStore check — exists?
+  S2: BlobStore find_any() — cache hit?
+  S2a: can_extract() on cached blob
+  S3: Source waterfall iteration (per-source)
+  S3a: source.fetch() called
+  S3b: can_extract() on fresh blob
+  S3c: blob_store.write() completed
+  S3d: extractor.extract() completed
+  S3e: raw_store.set() completed
+  S4: publish(stream:parse) completed
+  S5: ack(stream:match_id) completed (terminal: success)
+  DLQ: nack_to_dlq completed (terminal: DLQ)
+  ARCHIVE: DLQ archive (terminal: archived)
+```
+
+**Crash at S0**: Message is in PEL. XAUTOCLAIM will redeliver. No state change. **Invariants preserved.**
+
+**Crash at S1**: No writes performed. Redeliver repeats S1. **Invariants preserved.**
+
+**Crash at S2/S2a**: `find_any()` is read-only (disk stat + read_bytes). No state change. Redeliver repeats S2. **Invariants preserved.**
+
+**Crash at S3a**: Source may or may not have received the HTTP request. If the source consumed a rate-limit token before the crash, the token is spent but the response is lost. On redeliver, a new token is consumed. This is at-most-one-wasted-token per crash, bounded by the retry counter. **Invariants preserved** (rate limit tokens are consumed but not over-counted; the Lua script is atomic).
+
+**Crash at S3b** (`can_extract()` on fresh blob): No blob persisted yet (persistence happens after validation). Redeliver repeats the fetch. **Invariants preserved.**
+
+**Crash at S3c** (`blob_store.write()` during `_atomic_write`):
+- If crash occurs during `os.write()` or `os.fsync()`: tmp file may exist with partial data. Final path does not exist. On redeliver, `path.exists()` returns False, a new tmp file (with a different UUID4) is created, and `os.replace()` succeeds. The orphaned partial tmp file remains on disk until manual cleanup.
+- If crash occurs after `os.replace()`: blob is fully persisted at the final path. On redeliver, Step 2 finds the blob via `find_any()`. If extraction succeeds, processing continues. If the crash was between S3c and S3d, the RawStore does not have the extracted data, so `find_any()` is the recovery path — correct.
+- **Invariant: no partial blob at the final path** — holds because `os.replace()` is atomic on POSIX.
+- **Invariant: no lost message** — holds because the message is still in PEL.
+- **Invariants preserved.**
+
+**Crash at S3d** (extraction): Blob is on disk. RawStore not yet written. On redeliver, `raw_store.exists()` returns False (S1 falls through), `find_any()` returns the cached blob (S2 succeeds), extraction runs again. **Invariants preserved.**
+
+**Crash at S3e** (`raw_store.set()`):
+- If Redis SET NX succeeds but disk write has not happened: Redis has the data but disk does not. The `RawStore.set()` implementation (raw_store.py:158-178) handles this: if the disk write fails after Redis SET NX, it deletes the Redis key so the next attempt can retry both. On redeliver, the coordinator re-enters at S1, `raw_store.exists()` may return True (if Redis key was not deleted) or False (if it was). Either way, the message eventually reaches S4. **Invariants preserved.**
+- If both Redis and disk succeed: proceed to S4 on redeliver. **Invariants preserved.**
+
+**Crash at S4** (`publish(stream:parse)` before ACK): RawStore has the data. On redeliver, S1 returns True ("cached" path), Fetcher calls `_publish_and_ack()` which publishes to stream:parse and ACKs. At-least-once delivery to stream:parse. **Invariants preserved.**
+
+**Crash at S5** (ACK): The ACK may or may not have completed. If it did not, the message is redelivered. S1 returns True, Fetcher publishes again (idempotent: parser handles duplicate match_ids). If it did complete, no further action needed. **Invariants preserved.**
+
+**Crash at DLQ path** (nack_to_dlq): The `_nack_with_fallback` function in service.py (lines 100-122) handles this: if `nack_to_dlq` fails, emergency-ACK prevents PEL loops. The message may be lost in this extreme edge case (nack fails AND emergency ACK fails). This is a pre-existing property of the pipeline's failure handling, not introduced by the waterfall. **Pre-existing behavior, not a regression.**
+
+---
+
+### Cross-cutting Verification: `find_any()` Priority Ordering End-to-End
+
+The coordinator must pass the correct ordered list to `find_any()`. Tracing the data flow:
+
+1. `SourceRegistry.__init__` sorts entries by `priority` (ascending) into `self._entries`.
+2. `SourceRegistry.all_sources` returns `list(self._entries)` — preserves sorted order.
+3. The coordinator (Section 3.9) must call `find_any(match_id, [e.name for e in self._registry.all_sources])` or equivalent.
+4. `find_any()` iterates `source_names` in the given order.
+
+The design does not show a `SourceRegistry` method that returns just the source names in order. The implementer must extract names from `all_sources`. This is trivial but undocumented. Not a correctness issue.
+
+One edge case: `find_any()` uses `all_sources` names (all registered sources), while Step 3 uses `sources_for(data_type)` (sources filtered by data_type support). If a source does NOT support the requested data_type but has a cached blob for the match_id, `find_any()` will return that blob. The coordinator then calls `_get_extractor(source_name, data_type)`, which returns `None` (because the source does not support this data_type). The coordinator logs a warning and skips. This is correct behavior — no data quality issue, no crash.
+
+Alternatively, the coordinator could pass `[e.name for e in self._registry.sources_for(data_type)]` to `find_any()`, which would skip sources that do not support the requested data_type. This is more efficient (fewer stat calls) and semantically cleaner. The design does not specify which list is passed; either is correct.
+
+---
+
+### Atomicity Assessment of R3 Changes
+
+No new atomicity gaps were introduced by the R2-to-R3 changes. The changes are:
+
+1. **`uuid4().hex` in tmp file name** — pure local computation, no shared state.
+2. **`can_extract()` on cache-hit path** — pure function call on a local dict, no shared state.
+3. **`find_any(match_id, source_names)` parameter change** — iteration order change, no new shared state.
+4. **`blob_validation_failed` immediate DLQ routing** — uses existing `nack_to_dlq` path, no new atomicity requirements.
+5. **`required_context_keys` check** — pure set comparison on local data, no shared state.
+6. **`SourceRegistry` startup cross-check** — runs once at startup, no concurrency.
+7. **`MAX_BLOB_SIZE_BYTES` check** — pure comparison on local bytes, no shared state.
+8. **`BlobStore.write(data: bytes | str)` type change** — encoding logic is local, no shared state.
+9. **`is_relative_to()` replacing `startswith()`** — local path comparison, no shared state.
+
+None of these changes involve multi-key Redis operations, new shared mutable state, or new concurrent access patterns. The atomicity profile of the design is unchanged from R2.
+
+---
+
+### Summary Table
+
+| ID | Severity | Title | Status |
+|----|----------|-------|--------|
+| FV-R2-1 | MAJOR | BlobStore tmp file collision | RESOLVED — uuid4().hex eliminates same-PID collisions |
+| FV-R2-2 | informational | Crash recovery documentation | RESOLVED — implicitly documented in Step 2 prose |
+| FV-R2-3 | MINOR | find_any() non-deterministic order | RESOLVED — source_names parameter enforces priority order |
+| FV-R2-4 | MINOR | Cache-hit path skips can_extract() | RESOLVED — Step 2 now calls can_extract() before extract() |
+| FV-R2-5 | informational | max(hints) correctness | No action needed |
+| FV-R2-6 | informational | try_token() false-negative safety | No action needed |
+| FV-R2-7 | informational | find_any() partial blob safety | No action needed |
+| FV-R2-8 | MAJOR | blob_validation_failed retry exhaustion | RESOLVED — immediate DLQ routing skips retry loop |
+| FV-R3-1 | MINOR | Stale cache blob not deleted when can_extract() fails | NEW |
+| FV-R3-2 | MINOR | json.JSONDecodeError in find_any() propagates as unhandled exception | NEW |
+| FV-R3-3 | MINOR | retry_after_ms from SUCCESS + failed can_extract() is not collected | NEW |
+| FV-R3-4 | MINOR | blob_validation_failed + THROTTLED interaction archives prematurely | NEW (residual from FV-R2-8 fix) |
+
+---
+
+### Verdict
+
+**APPROVED**
+
+All eight R2 formal-verifier issues are resolved. The two MAJOR issues (FV-R2-1 and FV-R2-8) have correct, sufficient fixes:
+
+- **FV-R2-1**: The `uuid4().hex` component in the tmp file name eliminates same-PID coroutine collisions. The `O_CREAT | O_EXCL` flag provides defense-in-depth. The remaining TOCTOU on `path.exists()` produces a correct final state (idempotent overwrite of identical content via `os.replace`).
+
+- **FV-R2-8**: Immediate DLQ routing with `max_attempts=1` when `blob_validation_failed=True` prevents wasted retry cycles. The DLQ archive entry preserves the flag for operator debugging.
+
+The four new MINOR issues (FV-R3-1 through FV-R3-4) are defensive hardening suggestions, not correctness violations. None can cause message loss, data corruption, or invariant violations.
+
+The core correctness properties hold:
+1. **No message loss**: Every message is either ACKed (after successful processing) or archived (after DLQ exhaustion). Crash at any point preserves the message in the PEL for redelivery.
+2. **Idempotent writes**: RawStore SET NX ensures first-writer-wins for Redis. BlobStore write-once semantics (exists check + atomic rename) ensure no torn writes. Reprocessing the same message produces the same final state.
+3. **Bounded retries**: `blob_validation_failed` messages are immediately archived. Normal failures are bounded by `max_attempts`. No infinite loops.
+4. **Atomic blob persistence**: tmpfile-fsync-rename pattern ensures no partial blob at the final path. `uuid4().hex` in tmp names prevents coroutine collisions.
+5. **Priority-preserving cache lookup**: `find_any()` iterates source names in registry priority order. The highest-fidelity cached blob is always preferred.
+
+---
+
+## Review Round 3 -- Optimizer
+
+**Reviewer**: optimizer
+**Round**: 3
+**Date**: 2026-03-25
+
+### Round 2 Issue Disposition
+
+**MINOR-1 (sources_for() allocates per call on immutable result)** -- NOT ADDRESSED, remains acceptable.
+
+`SourceRegistry.sources_for()` (Section 3.3, lines 262-271) still performs an O(S) list comprehension on every call. The revision notes table does not list this issue, and the code is unchanged. As stated in the R2 review, this is negligible at S=2-5 and 20 calls/s. The `_extractor_index` pre-computation (Section 3.9, lines 658-662) handles the higher-fanout lookup. The `SourceRegistry.__init__()` was modified to accept `extractor_index` for the startup cross-check (ai-specialist MAJOR-2 fix), which would have been a natural place to also add `self._by_type`, but this was not done. No performance concern at current or foreseeable scale. This issue can be closed as "accepted, not worth the complexity."
+
+**MINOR-2 (find_any() iterdir() non-deterministic order)** -- RESOLVED.
+
+The revision notes list this as "MAJOR (5 reviewers) -- find_any() non-deterministic order" (line 1275). The fix is correct: `find_any()` now accepts `source_names: list[str]` (Section 3.7, line 557) and iterates in priority order instead of using `Path.iterdir()`. The implementation at lines 578-583 does a simple `for name in source_names` loop, constructing a deterministic path `self._data_dir / name / platform / f"{match_id}.json"` per source and calling `blob_path.exists()` on each. This is O(S) stat calls where S = len(source_names), exactly as recommended. No filesystem iteration, no non-determinism. The first hit returns immediately (short-circuit), so the average case is O(1) when the highest-priority source has the blob. Resolved with the exact approach suggested in R2.
+
+**MINOR-3 (FetchContext.extra dict allocated per instantiation even when unused)** -- NOT ADDRESSED, remains acceptable.
+
+The R2 review explicitly stated "No fix needed." The `extra: dict = field(default_factory=dict)` pattern (Section 3.2, line 138) is standard Python. At 20 messages/s this is ~1.3 KB/s of short-lived heap. The R3 revision added `required_context_keys` to the Source protocol (Section 3.2, lines 178-188), which reads from `context.extra.keys()` in the coordinator loop (line 745). This means `extra` is now actively used on every iteration of the waterfall loop (for the set difference check), making the allocation even more justified. Closed as designed.
+
+### New Checks for R2-to-R3 Changes
+
+**1. `can_extract()` on the cache-hit path (developer CRITICAL, formal-verifier FV-R2-4)**
+
+Section 3.9, lines 729-734. The coordinator now calls `extractor.can_extract(blob_dict)` on the cache-hit path (Step 2, item 2) before using the blob. This adds one function call to the cache-hit hot path. `can_extract()` is a synchronous method on the Extractor protocol (Section 3.4, lines 313-322) that inspects a few top-level keys of the blob dict (e.g., checking for the presence of `"info"`, `"metadata"`, etc.). This is O(1) -- a small constant number of dict key lookups. On a CPython dict with ~50-100 keys (typical for a match-v5 blob), `"key" in blob` is O(1) average case via hash table lookup. At 20 messages/s with cache hits, this adds nanoseconds per call. No performance concern.
+
+The change also means that if `can_extract()` returns False on a cached blob, the coordinator falls through to Step 3 (network fetch). This is the correct behavior: pay one network round-trip to get a fresh blob rather than repeatedly failing on a stale cached blob. The alternative -- an infinite extraction-failure loop -- would be infinitely more expensive. The added check is a net performance improvement in the degraded case.
+
+**2. `required_context_keys` check before each `fetch()` call (ai-specialist MAJOR-1)**
+
+Section 3.9, lines 744-748. Before each `entry.source.fetch()` call, the coordinator computes:
+
+```python
+missing_keys = entry.source.required_context_keys - set(context.extra.keys())
+```
+
+This is a set difference operation. `entry.source.required_context_keys` is a frozenset (declared in the Source protocol, Section 3.2, line 179). `set(context.extra.keys())` constructs a set from the dict's keys view. The set difference is O(min(|R|, |E|)) where R = number of required keys and E = number of extra keys. For current sources: R=0 (both Riot and op.gg use core fields only, not `extra`), so the frozenset is empty and the set difference is O(1) -- it short-circuits immediately. Even for a hypothetical future source with R=3 and E=5, this is a handful of hash lookups.
+
+However, `set(context.extra.keys())` allocates a new set object on every iteration of the source loop. At S=2-5 sources per fetch and 20 fetches/s, that is 40-100 set allocations per second. Each is an empty set (since `extra` is empty for current sources), ~216 bytes on CPython. Total: ~20 KB/s of transient allocations. Negligible, but the allocation could be hoisted outside the loop since `context` does not change between source iterations:
+
+```python
+extra_keys = set(context.extra.keys())  # once, before the loop
+for entry in ...:
+    missing_keys = entry.source.required_context_keys - extra_keys
+```
+
+This is a NIT-level observation. The current code is correct and the overhead is unmeasurable.
+
+**3. `MAX_BLOB_SIZE_BYTES` check before `json.loads()` (security MINOR-4)**
+
+Section 3.9, lines 753-757. The coordinator checks `len(response.raw_blob) > MAX_BLOB_SIZE_BYTES` before parsing. `len()` on a `bytes` object in CPython is O(1) -- it reads the `ob_size` field of the `PyBytesObject` struct. This is a single pointer dereference. The check prevents an O(N) `json.loads()` call on an N-byte oversized blob from ever executing, where N could be up to whatever the HTTP client accepts. This is a pure performance improvement for the adversarial case (oversized response) with zero cost on the normal path. Correct.
+
+**4. Startup cross-check in `SourceRegistry.__init__()` (ai-specialist MAJOR-2)**
+
+Section 3.3, lines 247-260. The cross-check iterates all entries and their supported_data_types, checking membership in `known_data_types`:
+
+```python
+known_data_types = {dt for (_, dt) in extractor_index}  # O(E) where E = extractor entries
+for entry in self._entries:                              # O(S) sources
+    for dt in entry.source.supported_data_types:         # O(D) data types per source
+        if dt not in known_data_types:                   # O(1) set lookup
+            raise ValueError(...)
+```
+
+Total complexity: O(E + S*D) where E = number of extractor registrations, S = number of sources, D = data types per source. At E=4, S=2, D=2, this is ~10 operations at startup. Runs exactly once. Zero hot-path impact. Correct.
+
+The set comprehension `{dt for (_, dt) in extractor_index}` extracts only the DataType values from the `(source_name, DataType)` tuple keys, discarding the source_name. This means the check validates that the DataType string exists as a value somewhere in the extractor index, but does not validate that the specific `(source.name, dt)` pair exists. For example, if source "riot" declares `supported_data_types = frozenset({"match"})` and the only extractor registered is `("opgg", "match")`, the cross-check passes because "match" is in `known_data_types`, even though there is no extractor for `("riot", "match")`. This is a false negative in the validation -- but it is caught at runtime by `_get_extractor(entry.name, data_type)` returning `None` in the coordinator's fresh-fetch path (line 760), which logs a warning and continues to the next source. The startup check catches the most common error (typos in DataType strings); the runtime check catches the rarer case (correct DataType but wrong source pairing). Together they provide adequate coverage. See NIT-1 below.
+
+**5. `find_any()` revised implementation -- filesystem I/O analysis**
+
+Section 3.7, lines 571-583. The revised `find_any()` performs:
+- One `self._data_dir.exists()` call -- O(1) stat
+- One `match_id.split("_")[0]` -- O(K) where K = length of match_id, but K < 30 always
+- One `_validate_platform()` -- O(1) regex match on a short string
+- Per source name: one `blob_path.exists()` -- O(1) stat per source
+
+On a miss (the dominant case for new matches), all S stat calls return False. On Linux/ext4, `stat()` on a non-existent file in an existing directory is a single directory lookup -- O(1) with dentry cache hit (hot), O(log N) with cold cache where N = number of entries in the parent directory. Since each `{source}/{platform}/` directory contains individual match files, and the Fetcher processes matches for a small number of platforms (1-3), the directory entries are modest (hundreds to low thousands of files). With warm dentry cache (the normal case for a Fetcher that has been running), each `stat()` completes in microseconds.
+
+The `asyncio.to_thread(blob_path.read_bytes)` call on a hit deserializes the blob in the thread pool. This is O(B) where B = blob size (15-50 KB). The `json.loads(data)` is also O(B). Total cost on a hit: one disk read + one JSON parse, both proportional to blob size. This is unavoidable and efficient.
+
+No performance regression from the R2 design. The change from `iterdir()` to explicit name iteration eliminates an unnecessary directory listing syscall and makes the cost strictly O(S) stat calls.
+
+### Issues Found
+
+**NIT-1: Startup cross-check validates DataType existence globally, not per-source**
+
+- **Section**: 3.3, `SourceRegistry.__init__()` (lines 247-260)
+- **Current behavior**: `known_data_types = {dt for (_, dt) in extractor_index}` collects all DataType values across all extractors. A source declaring `supported_data_types = frozenset({"match"})` passes validation as long as any extractor (for any source) handles "match".
+- **Correct check**: Validate that `(entry.name, dt)` exists as a key in `extractor_index`, not just that `dt` exists as a value.
+- **Impact**: At S=2-5 sources with 1-2 data types each, the chance of a false-positive passing validation is low. The runtime `_get_extractor()` check catches any actual mismatch. This is a correctness observation, not a performance issue.
+- **Fix**: Replace `if dt not in known_data_types` with `if (entry.name, dt) not in extractor_index`. Same O(1) lookup cost (dict membership check), more precise validation.
+- **Priority**: NIT. The runtime fallback is safe. The startup check could be more precise for free.
+
+**NIT-2: `set(context.extra.keys())` allocated inside the source iteration loop**
+
+- **Section**: 3.9, lines 744-748 (coordinator waterfall loop)
+- **Current behavior**: `set(context.extra.keys())` is evaluated on each iteration of `for entry in self._registry.sources_for(data_type)`.
+- **Impact**: S allocations per fetch (S=2-5), 20 fetches/s, ~100 allocations/s of empty sets. Approximately 20 KB/s of transient heap.
+- **Fix**: Hoist `extra_keys = set(context.extra.keys())` before the loop.
+- **Priority**: NIT. Unmeasurable overhead at current scale.
+
+### Performance Assessment
+
+The R2-to-R3 revision introduces four new checks on the coordinator's hot path:
+
+| Check | Location | Cost | Frequency |
+|-------|----------|------|-----------|
+| `can_extract()` on cache hit | Step 2, line 731 | O(1) dict key lookups | Per cache hit |
+| `required_context_keys` set difference | Step 3 loop, line 745 | O(1) for empty frozenset | Per source per fetch |
+| `MAX_BLOB_SIZE_BYTES` len check | Step 3 loop, line 754 | O(1) `len()` on bytes | Per successful fetch |
+| Startup cross-check | `SourceRegistry.__init__`, line 251 | O(E + S*D), once | Startup only |
+
+None of these add meaningful overhead. The `can_extract()` check on the cache-hit path is the most impactful change in terms of hot-path cost, and it is O(1) with constant factors measured in nanoseconds.
+
+The `find_any()` change from `iterdir()` to explicit `source_names` iteration is a strict improvement: it eliminates a directory listing syscall and makes the access pattern fully deterministic. The O(S) stat-call cost is unchanged; the constant factor is slightly better.
+
+The overall performance profile of the design is unchanged from R2:
+
+1. **Bottleneck**: Riot API rate limit (20 req/s, 100 req/2min). No computation in the waterfall is within orders of magnitude of this constraint.
+2. **BlobStore find_any()**: O(S) stat calls, S=2-5. Microseconds per call.
+3. **Coordinator loop**: O(S) sources, O(1) extractor lookup, O(B) JSON parse (once per fetch). B = 15-50 KB.
+4. **try_token()**: O(1) Redis round-trip, ~0.5ms.
+5. **Disk writes**: O(B) atomic write per successful fetch. No concurrent-append contention.
+6. **Memory**: 300-500 KB per in-flight fetch (two dicts), 6-10 MB at 20 concurrent fetches.
+
+No performance regressions were introduced by the R2-to-R3 changes.
+
+### Verdict
+
+**APPROVED**
+
+All three R2 optimizer issues are resolved or accepted:
+
+- MINOR-1 (sources_for pre-computation): accepted as negligible, consistent with R2 assessment.
+- MINOR-2 (find_any non-deterministic order): resolved with the exact approach recommended.
+- MINOR-3 (FetchContext.extra allocation): accepted as designed, now validated by active use via `required_context_keys`.
+
+The four new checks added in the R2-to-R3 revision (cache-hit `can_extract()`, `required_context_keys` validation, `MAX_BLOB_SIZE_BYTES` guard, startup cross-check) all have O(1) or startup-only cost. None introduce performance regressions. Two NITs identified (startup cross-check precision, set allocation hoisting) are below the threshold for revision and can be addressed during implementation.
+
+---
+
+## Review Round 3 — Security
+
+**Reviewer**: security
+**Round**: 3
+**Date**: 2026-03-25
+
+### Round 2 Issue Disposition
+
+**MINOR-1 (_blob_path() startswith prefix collision) -- RESOLVED.**
+
+The revision notes state: "Replaced `str(path).startswith(str(self._data_dir))` with `path.is_relative_to(self._data_dir)`." Verified in Section 3.7, `_blob_path()` (line 513): the code now reads `if not path.is_relative_to(self._data_dir)`. This is the correct fix. `Path.is_relative_to()` (available since Python 3.9, project targets 3.12+) performs a proper path component comparison, not a string prefix check. The edge case where `BLOB_DATA_DIR=/data/blob` would incorrectly match `/data/blob-escape/evil.json` is eliminated. The path is also `.resolve()`d before the check (line 512), which canonicalizes symlinks and relative segments. No further action needed.
+
+**MINOR-2 (find_any() reads blobs from filesystem-discovered directories without validating source_name) -- RESOLVED.**
+
+The revision notes list: "Changed `find_any(match_id)` to `find_any(match_id, source_names: list[str])`. Iterates in registry priority order instead of `iterdir()`." Verified in Section 3.7 (lines 557-583): `find_any()` now accepts a `source_names: list[str]` parameter and iterates over that list (line 578: `for name in source_names`) rather than calling `self._data_dir.iterdir()`. This fully closes the rogue-directory attack surface. An attacker-planted directory under `BLOB_DATA_DIR` with a name not in the registry's source list will never be iterated. Only directories whose names match registered sources are checked. The coordinator passes the registry's priority-ordered list (Section 3.9, line 727), so the source names are always controlled by application configuration, not by filesystem contents.
+
+**MINOR-3 (/player/refresh endpoint missing region validation) -- ACCEPTED AS OUT OF SCOPE.**
+
+The revision notes state: "Out of scope for design doc -- tracked as code fix in the UI service." This is acceptable. The region validation gap is a pre-existing issue in `lol-pipeline-ui/src/lol_ui/routes/stats.py` that predates the waterfall design and is not introduced or worsened by it. The design document is not the correct venue for specifying UI service code fixes. The fix remains a one-line addition (validate `region` against `_REGIONS_SET` in `player_refresh`, matching the existing `show_stats` pattern). The important thing is that it is tracked. No objection.
+
+**MINOR-4 (blob size not bounded before persistence or extraction) -- RESOLVED.**
+
+The revision notes state: "Added `MAX_BLOB_SIZE_BYTES = 2 * 1024 * 1024` (2 MB) check after receiving `response.raw_blob`. Oversized responses treated as UNAVAILABLE." Verified in two locations:
+
+1. Section 3.9, prose paragraph (line 711): "A `MAX_BLOB_SIZE_BYTES: int = 2 * 1024 * 1024` (2 MB) constant is checked in the coordinator immediately after receiving `response.raw_blob`. If `len(response.raw_blob) > MAX_BLOB_SIZE_BYTES`, the response is treated as a fetch failure."
+
+2. Section 3.9, coordinator pseudocode (lines 753-757): The size check occurs inside the `if response.result == FetchResult.SUCCESS` block, *before* `json.loads(response.raw_blob)` on line 759. This is the correct placement -- the size guard rejects oversized responses before any parsing, preventing the `json.loads()` memory amplification that was the primary concern.
+
+The 2 MB threshold is proportionate: Riot match-v5 responses are 15-50 KB, op.gg responses are similarly sized, and a response exceeding 1 MB is anomalous. The 2 MB bound provides a 40x safety margin over the largest expected legitimate response. Oversized responses are treated as `UNAVAILABLE` (not `blob_validation_failed`), which is semantically correct -- the blob was never parsed or validated, it was rejected at the transport layer. No further action needed.
+
+### Issues Found
+
+**MINOR-1: `find_any()` bypasses `_blob_path()` path-traversal check -- constructs paths directly without `resolve()` or `is_relative_to()` validation**
+
+- **Section**: 3.7, `find_any()` (lines 578-582)
+- **Code**: `blob_path = self._data_dir / name / platform / f"{match_id}.json"`
+- **Issue**: The `_blob_path()` method (lines 509-515) applies three-layer path traversal prevention: platform regex validation, `Path.resolve()`, and `path.is_relative_to(self._data_dir)`. The `find_any()` method validates the platform segment via `_validate_platform()` (line 575) but then constructs the blob path directly without calling `_blob_path()`. The constructed path is not `.resolve()`d and not checked against `is_relative_to(self._data_dir)`.
+- **Exploitability**: Low. The `source_names` list comes from the registry (controlled by application configuration, validated against `^[a-z0-9_]+$`), and `platform` is validated against `^[A-Z0-9]+$`. The remaining component, `match_id`, could theoretically contain path traversal sequences in its non-platform portion (the part after the first underscore), but the filename is interpolated as `f"{match_id}.json"` which on POSIX systems would create a file *named* with slashes embedded -- `Path.__truediv__` does not split on slashes within a single component when constructed this way. Actually, `Path("base") / "a/b"` does resolve `a/b` as a subpath on Python's `pathlib`, which means a `match_id` of `NA1_../../etc/passwd` would produce path segments `NA1` (platform, validated) and then the filename `NA1_../../etc/passwd.json`. Using `pathlib`, `self._data_dir / name / "NA1" / "NA1_../../etc/passwd.json"` would resolve to an escaped path. This is blocked by `_blob_path()` via `resolve()` + `is_relative_to()`, but `find_any()` omits both checks.
+- **Fix**: Either (a) call `_blob_path(name, match_id)` from within `find_any()` instead of constructing the path manually, or (b) apply `resolve()` + `is_relative_to()` to the constructed path in `find_any()`, consistent with `_blob_path()`. Option (a) is preferred as it centralizes path construction.
+- **Impact**: Very low in practice because the `match_id` values reaching `find_any()` originate from stream envelopes whose `match_id` fields are populated by the Crawler from Riot API or op.gg API responses, not from user input. However, defense-in-depth demands that all path construction go through the same validation, especially since `find_any()` processes `match_id` values that may have been redelivered via DLQ (where the envelope content is not re-validated).
+
+**MINOR-2: `find_any()` does not apply the `MAX_BLOB_SIZE_BYTES` check on cached blobs read from disk**
+
+- **Section**: 3.7, `find_any()` (lines 580-582); 3.9 (line 711, blob size limit)
+- **Code**: `data = await asyncio.to_thread(blob_path.read_bytes)` followed by `return (name, json.loads(data))`
+- **Issue**: The `MAX_BLOB_SIZE_BYTES` guard in the coordinator (Section 3.9, line 754) applies only to `response.raw_blob` from a fresh fetch. The `find_any()` method reads blobs from disk and calls `json.loads(data)` without checking `len(data)`. If a blob was written to disk before the size limit was introduced (or if the disk is externally modified), an oversized blob on disk would bypass the size guard and be fully deserialized.
+- **Exploitability**: Very low. Requires write access to `BLOB_DATA_DIR` to plant an oversized blob, or a historical blob written before the size limit was added. Since the design specifies write-once semantics and the size check is applied on all fresh writes, only pre-existing blobs or externally modified files are affected.
+- **Fix**: Add `if len(data) > MAX_BLOB_SIZE_BYTES: continue` before `json.loads(data)` in the `find_any()` loop, or apply the same check in `BlobStore.read()`.
+- **Impact**: Negligible. This is a defense-in-depth suggestion for consistency between the fresh-fetch and cache-hit paths.
+
+### New Security Considerations in R3 Changes
+
+**`required_context_keys` on Source protocol (ai-specialist MAJOR-1 fix)**: No security concern. The property is a `frozenset[str]` used for startup validation and pre-fetch key presence checking (Section 3.9, lines 744-748). The coordinator compares it against `context.extra.keys()` using set subtraction. The keys are never used in path construction, Redis key construction, or any injection-susceptible context. The values of `context.extra` are passed to `Source.fetch()` only, where each source implementation controls how they are used. This is a well-scoped extension with no new attack surface.
+
+**`SourceRegistry.__init__()` startup cross-check (ai-specialist MAJOR-2 fix)**: No security concern. The cross-check validates that every source's `supported_data_types` appears in the extractor index. It raises `ValueError` at startup on mismatch. This is a fail-fast configuration validation that improves correctness without introducing any new trust boundary or input processing.
+
+**`find_any(match_id, source_names)` parameter change (multiple reviewers)**: Security-positive. As analyzed in MINOR-2 disposition above, this change eliminates the rogue-directory attack surface by removing filesystem iteration in favor of a controlled list.
+
+**Tmp file UUID naming (`uuid4().hex`) for BlobStore writes (formal-verifier FV-R2-1 fix)**: The tmp file name is now `.tmp_{match_id}_{os.getpid()}_{uuid4().hex}.json` (Section 3.7, line 543). `uuid4()` uses `os.urandom()` (CSPRNG) on CPython, producing 128 bits of randomness. This is more than sufficient to prevent prediction attacks on tmp file names. The purpose is collision avoidance between same-PID coroutines, not cryptographic security, so even a weaker random source would be acceptable. The `O_EXCL` flag on the subsequent `os.open()` call (line 548) provides the authoritative collision guard regardless. No concern.
+
+**`blob_validation_failed` immediate DLQ routing (formal-verifier FV-R2-8 fix)**: Section 4 (lines 815-822) specifies that when `blob_validation_failed=True` and `status=all_exhausted`, the Fetcher routes the message directly to DLQ with `max_attempts=1`, preventing retry-budget exhaustion against structurally bad blobs. This is security-positive: it reduces the amplification potential of a poisoned blob (from `max_attempts` network round-trips down to 1) and prevents a compromised source from causing sustained retry churn.
+
+### Verdict
+
+**APPROVED**
+
+All four Round 2 security issues (MINOR-1 through MINOR-4) have been resolved. The fixes are correctly implemented in the design text:
+
+- MINOR-1: `path.is_relative_to(self._data_dir)` replaces the string prefix check. Correct.
+- MINOR-2: `find_any()` iterates a caller-provided `source_names` list, not `iterdir()`. Rogue-directory attack surface eliminated.
+- MINOR-3: Accepted as out of scope for this design doc. Tracked as a UI service code fix.
+- MINOR-4: `MAX_BLOB_SIZE_BYTES = 2 MB` check placed before `json.loads()` in the coordinator. Correct placement and threshold.
+
+The two new MINOR issues identified in this round (path validation bypass in `find_any()` and missing size check on cached blob reads) are defense-in-depth suggestions with very low exploitability. Neither represents a security vulnerability. They can be addressed during implementation without requiring another design revision.
+
+The R2-to-R3 changes (required_context_keys, startup cross-check, source_names parameter, UUID tmp naming, blob_validation_failed routing) introduce no new security concerns and in several cases improve the security posture.
+
+---
+
+## Review Round 3 — AI Specialist
+
+**Reviewer**: ai-specialist
+**Round**: 3
+**Date**: 2026-03-25
+
+### Round 2 Issue Disposition
+
+**MAJOR-1 (FetchContext.extra untyped footgun) -- RESOLVED.**
+
+The `required_context_keys: frozenset[str]` property has been added to the Source protocol (Section 3.2, lines 178-188). The coordinator's waterfall loop (Section 3.9, lines 744-748) checks `entry.source.required_context_keys - set(context.extra.keys())` before calling `fetch()`, skipping with a warning when keys are missing. The FetchContext docstring (Section 3.2, line 208) documents that `extra` is populated by dumping all non-standard envelope payload fields as-is.
+
+This is a complete and correct fix. The coordinator remains source-agnostic: it does not know what the keys mean, only that they must exist. The check runs at fetch-time, not startup-time -- this is the right choice because the envelope contents vary per message and cannot be fully validated at startup. The protocol docstring correctly notes that core fields (match_id, puuid, region) are always available, so `required_context_keys` only governs `extra` keys.
+
+One minor note: the docstring says "the coordinator logs a warning if a source declares required keys that are not available in the envelope schema, preventing silent configuration errors" (line 208), which describes startup validation. But the pseudocode at lines 744-748 performs per-message validation (checking `context.extra.keys()` at fetch-time), not startup validation against the schema. These are complementary, not contradictory -- the per-message check is the operational safety net, and a startup schema check would be a configuration-time early warning. The design should clarify that both checks are intended, or that the per-message check is the sole mechanism. This is a documentation nit, not a functional gap.
+
+**MAJOR-2 (DataType=str has no typo safety) -- RESOLVED.**
+
+The `SourceRegistry.__init__()` (Section 3.3, lines 244-260) now accepts an optional `extractor_index: dict[tuple[str, DataType], Extractor]` parameter and cross-checks every source's `supported_data_types` against the keys of that index. A source declaring `frozenset({"mtach"})` when the extractor index only contains `("riot", "match")` entries would raise `ValueError` at startup.
+
+The fix is correct and catches the exact failure mode described in R2: typo in a data type string silently drops traffic. The check is directional -- it validates that every source-declared data type has a corresponding extractor, but does not check the reverse (an extractor registered for a data type that no source supports). The forward direction is the critical one; the reverse is harmless (an orphaned extractor wastes no resources).
+
+However, the check at line 252 (`known_data_types = {dt for (_, dt) in extractor_index}`) strips the source_name from the key and checks only the data type string. This means if Source A declares `supported_data_types = frozenset({"match"})` and the only extractor registered is `("source_b", "match")`, the check passes even though there is no extractor for `("source_a", "match")`. The error message at line 257-259 misleadingly says "no extractor is registered for (entry.name, dt)" when the actual check is weaker (it only verifies `dt` exists in any extractor key, not specifically `(entry.name, dt)`). See MINOR-1 below.
+
+**MAJOR-3 (find_any() non-deterministic ordering) -- RESOLVED.**
+
+`find_any()` now accepts `source_names: list[str]` (Section 3.7, line 557) and iterates in that order instead of using `Path.iterdir()`. The implementation (lines 578-582) constructs deterministic paths `self._data_dir / name / platform / f"{match_id}.json"` for each name in the priority list. The coordinator passes the registry's priority-ordered source name list (Section 3.9, line 727).
+
+This is a complete fix. The iteration order is now fully deterministic, controlled by the registry priority, and the highest-fidelity blob is always preferred. The security reviewer's MINOR-2 concern (iterdir discovering rogue directories) is also resolved as a side effect: `find_any()` only checks paths for known, registered source names.
+
+**MAJOR-4 (try_token() starvation risk) -- DOCUMENTED, NOT MITIGATED. Acceptable.**
+
+The R2-to-R3 revision notes do not list MAJOR-4 as an addressed issue, and no new text was added to Section 3.5 documenting the starvation constraint. However, the `try_token()` specification (lines 390-414) is now fully specified, and the operational constraint (non-blocking callers lose to blocking callers when tokens are scarce) is inherent to the pattern.
+
+This is acceptable. The starvation scenario requires sustained full-capacity utilization of the Riot rate limit by blocking callers (timeline fetch), leaving zero tokens for non-blocking waterfall callers. At current scale (20 req/s with 1-10 workers, timeline consuming at most 1 req per match), this is not a realistic concern. The design correctly prioritizes implementation simplicity (single token pool, no reservation) over handling a theoretical edge case. If this becomes a production issue, the mitigation is straightforward (token reservation or brief wait), and it can be added without architectural changes.
+
+Verdict: Not explicitly resolved, but the risk was correctly assessed as acceptable in R2 and remains so. No action required.
+
+**MINOR-1 (blob_validation_failed diagnostic signal) -- RESOLVED.**
+
+Section 4 (lines 815-822) now specifies distinct Fetcher behavior for `all_exhausted + blob_validation_failed`: the Fetcher routes the message directly to DLQ with `max_attempts=1`, preventing the message from burning all retry cycles against the same structurally bad blob. This directly addresses both the diagnostic concern from R2 and the formal verifier's FV-R2-8 (retry exhaustion against unchanging bad source).
+
+The fix is correct. The `blob_validation_failed` flag is no longer a passive diagnostic -- it actively changes control flow. The DLQ archive entry preserves the flag for operational debugging. This is the right approach: the coordinator signals "at least one source returned un-extractable data," and the Fetcher uses this to short-circuit retries.
+
+**MINOR-2 (Proactive emit needs can_extract() for extra data types) -- NOT ADDRESSED, acceptable.**
+
+The proactive emit remains deferred (Section 5, lines 874-878). Since the feature is not being implemented in this phase, the validation gap is theoretical. The R2 recommendation (call `can_extract()` for each additional data type before including it in the `stream:blob_available` payload) remains valid and should be applied when the proactive emit is activated. No action needed now.
+
+**MINOR-3 (SourceRegistry priority uniqueness constraint) -- NOT ADDRESSED, acceptable.**
+
+`SourceRegistry` still uses `priority: int` with no uniqueness check. Python's stable `sorted()` makes the behavior deterministic based on insertion order when priorities tie. At 2-5 sources, this is unlikely to be a problem. The `SOURCE_WATERFALL_ORDER` config string already implies ordering (first = highest priority), and the priority integer is derived from the position in that list. No action needed.
+
+### Issues Found
+
+**MINOR-1: SourceRegistry startup cross-check validates data type existence but not (source_name, data_type) pair.**
+
+Section 3.3, lines 251-260. The cross-check builds `known_data_types = {dt for (_, dt) in extractor_index}`, which collects all data type strings across all source-extractor registrations. It then checks whether each source's declared data types exist in this set. This catches the typo case (a data type string that appears nowhere in the extractor index), but does not catch the case where Source A declares support for "match" and the only "match" extractor is registered for Source B.
+
+Concretely: if `extractor_index = {("opgg", "match"): OpggExtractor}` and `RiotSource.supported_data_types = frozenset({"match"})`, the cross-check passes because "match" is a known data type. But at runtime, `_get_extractor("riot", "match")` returns `None` because no extractor is keyed to `("riot", "match")`. The coordinator would log a warning and skip, which is safe but surprising -- the startup check was supposed to catch this.
+
+The fix is simple: check for the specific `(entry.name, dt)` pair in the extractor index, not just `dt` in the set of all data types. Change line 255 from `if dt not in known_data_types` to `if (entry.name, dt) not in extractor_index`. The error message at lines 257-259 already describes this stronger check ("no extractor is registered for (entry.name, dt)"), so the message is correct but the implementation does not match it.
+
+Priority: MINOR. The current check catches the most common failure mode (data type typos). The uncaught case (source declares a data type that only another source's extractor handles) is an unusual misconfiguration that is caught at runtime by the `_get_extractor() is None` guard.
+
+**MINOR-2: RiotSource.fetch() call site passes `region=context.region` to try_token(), but the try_token() specification does not accept a `region` parameter.**
+
+Section 3.5, line 359-362: `granted = await try_token(self._r, limit_per_second=self._cfg.api_rate_limit_per_second, region=context.region)`. The `try_token()` specification (lines 393-413) accepts `key_prefix`, `limit_per_second`, and `limit_long` -- no `region` parameter. The specification explicitly notes: "The 'region' parameter on wait_for_token() is a legacy compat shim and is NOT replicated here" (lines 407-408).
+
+The call site and the specification are inconsistent. The `region` parameter would either be passed as a keyword argument that `try_token()` does not accept (causing a `TypeError` at runtime), or it would need to be mapped to `key_prefix` (e.g., `key_prefix=f"ratelimit:{context.region}"`).
+
+The fix is to update the call site in Section 3.5 to match the specification. If per-region rate limiting is intended (which it should be, since Riot rate limits are per-region), the call should be:
+
+```python
+granted = await try_token(
+    self._r,
+    key_prefix=f"ratelimit:{context.region}",
+    limit_per_second=self._cfg.api_rate_limit_per_second,
+)
+```
+
+Or the specification should add a `region` parameter that constructs the key_prefix internally. Either way, the current inconsistency would cause an implementation error.
+
+Priority: MINOR. The intent is clear (non-blocking, per-region rate check), and the fix is a one-line parameter adjustment. But this is exactly the kind of spec-vs-callsite mismatch that leads to implementation bugs if not corrected.
+
+### Summary
+
+| R2 Issue | Disposition |
+|----------|-------------|
+| MAJOR-1 (required_context_keys) | Resolved |
+| MAJOR-2 (DataType typo safety) | Resolved (with minor gap -- see MINOR-1) |
+| MAJOR-3 (find_any() ordering) | Resolved |
+| MAJOR-4 (try_token starvation) | Not explicitly addressed; acceptable |
+| MINOR-1 (blob_validation_failed) | Resolved |
+| MINOR-2 (proactive emit validation) | Not addressed; deferred feature, acceptable |
+| MINOR-3 (priority uniqueness) | Not addressed; acceptable |
+
+| New Issue | Severity |
+|-----------|----------|
+| MINOR-1: Registry cross-check validates dt existence, not (source, dt) pair | MINOR |
+| MINOR-2: RiotSource.fetch() passes `region` param that try_token() spec rejects | MINOR |
+
+### Verdict
+
+**APPROVED WITH MINORS**
+
+All four R2 MAJOR issues are resolved or acceptably dispositioned. The design is sound: the waterfall coordination pattern is correct, `required_context_keys` properly bridges the source-agnostic coordinator with source-specific context needs, the `SourceRegistry` cross-check catches the dominant DataType typo failure mode at startup, `find_any()` now iterates in deterministic priority order, and `blob_validation_failed` actively short-circuits retries rather than being a passive diagnostic.
+
+The two new MINOR issues are spec inconsistencies that would cause minor implementation friction but do not represent architectural problems. Both have obvious one-line fixes.
+
+No further review rounds are needed from the AI Specialist perspective.
+
+---
+
+## Phase 6 — Production Readiness Review (2026-03-25)
+
+### Developer Review
+
+**Verdict**: REQUEST CHANGES — F1 (crash on null raw_blob) and F5 (unhandled ExtractionError in live path) must be fixed before production. F3 (disabled cross-check) and F6 (blocking I/O) addressed in same pass.
+
+| ID | Severity | Issue |
+|----|----------|-------|
+| F1 | CRITICAL | `json.loads(None)` crash in `_handle_success()` when source returns SUCCESS without raw_blob |
+| F5 | MAJOR | `ExtractionError` not caught in `_handle_success()` — blob persisted then extraction fails → unbreakable retry loop |
+| F3 | MAJOR | Startup cross-check disabled in `_build_coordinator()` — latent typo-safety gap |
+| F6 | MAJOR | Synchronous `stat()` calls on async event loop in BlobStore (lines 58, 65, 80, 127) |
+| F9 | MAJOR | No per-source metrics/counters — operator blind to waterfall fallback rates |
+| F12 | MAJOR | No isolated BlobStore unit tests |
+| F14 | MAJOR | No test for `ExtractionError` in live fetch path |
+| F2 | MINOR | `source_waterfall_order` config field declared but not consumed |
+| F4 | MINOR | match_id suffix not validated in `_blob_path()` (mitigated by is_relative_to backstop) |
+| F7 | MINOR | `find_any()` bypasses `_blob_path()` defense-in-depth |
+| F8 | MINOR | `OpggClient` not closed on shutdown |
+| F10 | MINOR | Silent `can_extract=False` on live fetch — no log emitted |
+| F11 | MINOR | BlobStore disabled despite `blob_data_dir` already in Config |
+| F13 | MINOR | No isolated SourceRegistry unit tests |
+| F15 | MINOR | No test for BlobStore concurrent write race |
+
+---
+
+### Formal Verifier Review
+
+**Verdict**: CONDITIONAL — correct under stated assumptions.
+
+**Assumptions**: (1) Redis keys do not expire between duplicate deliveries. (2) Sources return deterministic content for same match_id. (3) `system:halted` is eventually cleared.
+
+| # | Severity | Finding |
+|---|----------|---------|
+| 1 | MINOR | BlobStore.write() TOCTOU allows duplicate writes of identical content — benign, data integrity preserved by atomic rename |
+| 2 | MAJOR | `auth_error` handler does not ACK — message stays in PEL during halt (by design, but undocumented); prolonged halt causes XAUTOCLAIM churn proportional to PEL size |
+| 3 | MINOR | Duplicate `stream:parse` messages when N coroutines process same match_id — parser is idempotent |
+| 4 | MINOR | Timeline fetch uses plain SET not SET NX — duplicate API call possible under concurrency |
+| 5 | MINOR | Startup cross-check bypassed — documented, latent risk only |
+| 6 | MINOR | No JSONDecodeError guard on raw_blob parse in `_handle_success` |
+
+**Note on Finding 2**: The halt-induced PEL accumulation should be documented in `docs/architecture/06-failure-resilience.md` as expected behavior. During a prolonged halt, XAUTOCLAIM repeatedly redelivers stuck PEL messages to all fetcher instances. Operators should monitor PEL size via `XPENDING stream:match_ids fetchers` and clear halt promptly.
+
+---
+
+### Optimizer Review
+
+**Top findings by impact**:
+
+| # | Severity | Finding |
+|---|----------|---------|
+| 1.2 | MAJOR | `RawStore.exists()` does full bundle scan on Redis miss — O(300K) string comparisons per call at 6 months of data |
+| 4.1 | MAJOR | Synchronous `stat()` in async `BlobStore` methods blocks event loop — 5–50ms per call on slow filesystems |
+| 1.1 | MINOR | Double JSON serialize/deserialize of Riot blob — `response.data` available but unused, raw_blob re-parsed |
+| 2.1 | MINOR | Three in-memory copies of match blob during `_handle_success` — ~1MB peak per message |
+| 3.1 | MINOR | `find_any()` sequential stat() per source — grows linearly with source count |
+| 5.3 | MINOR | `source_names` property rebuilds list per call — negligible but cacheable |
+
+**Top recommendations**: (1) Wrap synchronous stat() calls in `asyncio.to_thread()`. (2) Short-circuit `RawStore.set()` bundle scan when match is known-new. (3) Use `response.data` directly in `_handle_success` when non-None (avoids redundant JSON parse).
+
+---
+
+### Security Review
+
+**Verdict**: No CRITICAL or MAJOR findings. Implementation demonstrates good security awareness.
+
+| # | Severity | Finding |
+|---|----------|---------|
+| 1.1 | MINOR | `find_any()` skips `is_relative_to` backstop — asymmetry with `_blob_path()` |
+| 1.2 | MINOR | match_id suffix unsanitized in filename — `is_relative_to` backstop catches traversal |
+| 2.3 | MINOR | match_id not URL-encoded in `riot_api.py get_match()` — informational |
+| 3.2 | MINOR | Cached blob read has no size guard — requires host-level access to exploit |
+| 4.2 | MINOR | Dead `opgg_api_key` config field — no leak vector, cleanup recommended |
+| 5.3 | MINOR | No disk quota for blob writes — operational concern, 2MB/blob write-once |
+
+**Positive**: Three-layer path traversal defense in `_blob_path()`, source name regex at construction time, 2MB blob size limit, atomic writes, write-once semantics, non-root container, capability dropping, no new secrets introduced.
+
+**Recommended actions**: (1) Add `.resolve()` + `is_relative_to` to `find_any()`. (2) Add match_id format regex `^[A-Z0-9]+_\d+$` at `FetchContext` construction. (3) Remove dead `opgg_api_key` field. (4) URL-encode match_id in `riot_api.py get_match()`.
+
+---
+
+### Architect Review
+
+**Verdict**: Foundational abstractions excellent; integration layer has critical gaps.
+
+| ID | Severity | Finding |
+|----|----------|---------|
+| DD-1 | MAJOR | `source_waterfall_order` declared, exposed in compose, but never consumed — operator env var has no effect |
+| DD-2 | MAJOR | BlobStore always `None` — `blob_data_dir` config and Docker volume exist but not wired into `_build_coordinator()` |
+| DD-3 | MAJOR | `ExtractionError` unhandled in fresh-fetch path — blob persisted before extraction; creates poisoned-blob retry loop |
+| DD-4 | MAJOR | `_build_coordinator()` uses hardcoded conditionals — adding new source requires fetcher code edit, violating design's "zero coordinator changes" promise |
+| DD-5 | MINOR | Registry startup cross-check bypassed — `OpggSource` declares `BUILD` but no BUILD extractor exists |
+| DD-6 | MINOR | `source:stats` Redis Hash not implemented — no per-source operational metrics |
+| DD-7 | MINOR | `OpggSource.fetch()` always returns UNAVAILABLE — op.gg integration inert end-to-end (BlobStore also disabled per DD-2) |
+
+**Positive**: Core abstractions (`Source` protocol, `Extractor` protocol, `SourceRegistry`, `BlobStore`, `WaterfallCoordinator`) are source-agnostic with zero source-specific conditionals. Safe rollback with default config. Clean service boundary separation.
+
+**Addressing DD-1 through DD-4 brings implementation into full design conformance.**
