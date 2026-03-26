@@ -103,7 +103,9 @@ class TestFetchSuccess:
 
         with respx.mock:
             respx.get(_match_url()).mock(
-                return_value=httpx.Response(200, json={"info": {"gameDuration": 1800}})
+                return_value=httpx.Response(
+                    200, json={"info": {"gameDuration": 1800}, "metadata": {}}
+                )
             )
             riot = RiotClient("RGAPI-test")
             await _fetch_match(r, riot, raw_store, cfg, msg_id, env, log)
@@ -233,34 +235,34 @@ class TestFetchMaxAttempts:
 
 
 class TestFetchRateLimiterTimeout:
-    """P15-HORIZON: TimeoutError from wait_for_token leaves message in PEL."""
+    """WATERFALL-5: All sources throttled → coordinator returns all_exhausted → DLQ."""
 
     @pytest.mark.asyncio
-    async def test_timeout__no_ack_no_dlq(self, r, cfg, log):
-        """TimeoutError → return without ACK or DLQ; message stays in PEL for retry."""
+    async def test_all_sources_throttled__routes_to_dlq(self, r, cfg, log):
+        """All sources throttled → coordinator returns all_exhausted → nack_to_dlq."""
+        from lol_pipeline.sources.base import WaterfallResult
+
         raw_store = RawStore(r)
         env = _match_envelope()
         msg_id = await _setup_message(r, env)
 
-        with (
-            respx.mock,
-            patch(
-                "lol_fetcher.main.wait_for_token",
-                new_callable=AsyncMock,
-                side_effect=TimeoutError("rate limiter timeout"),
-            ),
-        ):
-            riot = RiotClient("RGAPI-test")
-            await _fetch_match(r, riot, raw_store, cfg, msg_id, env, log)
-            await riot.close()
+        coordinator = AsyncMock()
+        coordinator.fetch_match.return_value = WaterfallResult(
+            status="all_exhausted", retry_after_ms=5000
+        )
+
+        riot = RiotClient("RGAPI-test")
+        await _fetch_match(
+            r, riot, raw_store, cfg, msg_id, env, log, coordinator=coordinator
+        )
+        await riot.close()
 
         # No output published
         assert await r.xlen(_STREAM_OUT) == 0
-        # No DLQ entry — transient condition
-        assert await r.xlen("stream:dlq") == 0
-        # Message NOT ACKed — stays in PEL for autoclaim/retry
-        pending = await r.xpending(_STREAM_IN, _GROUP)
-        assert pending["pending"] == 1
+        # DLQ entry created with retry_after_ms
+        assert await r.xlen("stream:dlq") == 1
+        entries = await r.xrange("stream:dlq")
+        assert entries[0][1].get("retry_after_ms") == "5000"
         # No match status set
         assert await r.hget("match:NA1_123", "status") is None
 
@@ -299,7 +301,7 @@ class TestFetchMatchTTL:
 
         with respx.mock:
             respx.get(_match_url()).mock(
-                return_value=httpx.Response(200, json={"info": {"gameDuration": 1800}})
+                return_value=httpx.Response(200, json={"info": {"gameDuration": 1800}, "metadata": {}})
             )
             riot = RiotClient("RGAPI-test")
             await _fetch_match(r, riot, raw_store, cfg, msg_id, env, log)
@@ -323,7 +325,7 @@ class TestFetchStoreErrors:
 
         with respx.mock:
             respx.get(_match_url()).mock(
-                return_value=httpx.Response(200, json={"info": {"gameDuration": 1800}})
+                return_value=httpx.Response(200, json={"info": {"gameDuration": 1800}, "metadata": {}})
             )
 
             async def failing_set(*args, **kwargs):
@@ -347,7 +349,7 @@ class TestFetchStoreErrors:
 
         with respx.mock:
             respx.get(_match_url()).mock(
-                return_value=httpx.Response(200, json={"info": {"gameDuration": 1800}})
+                return_value=httpx.Response(200, json={"info": {"gameDuration": 1800}, "metadata": {}})
             )
             riot = RiotClient("RGAPI-test")
 
@@ -435,7 +437,7 @@ class TestTimelineFetch:
 
         with respx.mock:
             respx.get(_match_url()).mock(
-                return_value=httpx.Response(200, json={"info": {"gameDuration": 1800}})
+                return_value=httpx.Response(200, json={"info": {"gameDuration": 1800}, "metadata": {}})
             )
             respx.get(_match_url() + "/timeline").mock(
                 return_value=httpx.Response(200, json={"info": {"frames": []}})
@@ -462,7 +464,7 @@ class TestTimelineFetch:
 
         with respx.mock:
             respx.get(_match_url()).mock(
-                return_value=httpx.Response(200, json={"info": {"gameDuration": 1800}})
+                return_value=httpx.Response(200, json={"info": {"gameDuration": 1800}, "metadata": {}})
             )
             timeline_route = respx.get(_match_url() + "/timeline").mock(
                 return_value=httpx.Response(200, json={"info": {"frames": []}})
@@ -484,7 +486,7 @@ class TestTimelineFetch:
 
         with respx.mock:
             respx.get(_match_url()).mock(
-                return_value=httpx.Response(200, json={"info": {"gameDuration": 1800}})
+                return_value=httpx.Response(200, json={"info": {"gameDuration": 1800}, "metadata": {}})
             )
             respx.get(_match_url() + "/timeline").mock(
                 return_value=httpx.Response(500, text="Server Error")
@@ -514,7 +516,7 @@ class TestSeenMatches:
 
         with respx.mock:
             respx.get(_match_url()).mock(
-                return_value=httpx.Response(200, json={"info": {"gameDuration": 1800}})
+                return_value=httpx.Response(200, json={"info": {"gameDuration": 1800}, "metadata": {}})
             )
             riot = RiotClient("RGAPI-test")
             await _fetch_match(r, riot, raw_store, cfg, msg_id, env, log)
@@ -564,7 +566,7 @@ class TestCorrelationIdPropagation:
 
         with respx.mock:
             respx.get(_match_url("NA1_COR")).mock(
-                return_value=httpx.Response(200, json={"info": {"gameDuration": 1800}})
+                return_value=httpx.Response(200, json={"info": {"gameDuration": 1800}, "metadata": {}})
             )
             riot = RiotClient("RGAPI-test")
             await _fetch_match(r, riot, raw_store, cfg, msg_id, env, log)
@@ -613,7 +615,7 @@ class TestSeenMatchesTTLNotReset:
         msg_id1 = await _setup_message(r, env1)
         with respx.mock:
             respx.get(_match_url("NA1_FIRST")).mock(
-                return_value=httpx.Response(200, json={"info": {"gameDuration": 900}})
+                return_value=httpx.Response(200, json={"info": {"gameDuration": 900}, "metadata": {}})
             )
             riot = RiotClient("RGAPI-test")
             await _fetch_match(r, riot, raw_store, cfg, msg_id1, env1, log)
@@ -632,7 +634,7 @@ class TestSeenMatchesTTLNotReset:
         msg_id2 = await _setup_message(r, env2)
         with respx.mock:
             respx.get(_match_url("NA1_SECOND")).mock(
-                return_value=httpx.Response(200, json={"info": {"gameDuration": 1200}})
+                return_value=httpx.Response(200, json={"info": {"gameDuration": 1200}, "metadata": {}})
             )
             riot = RiotClient("RGAPI-test")
             await _fetch_match(r, riot, raw_store, cfg, msg_id2, env2, log)
@@ -660,7 +662,7 @@ class TestSeenMatchesTTLNotReset:
         msg_id1 = await _setup_message(r, env1)
         with respx.mock:
             respx.get(_match_url("NA1_TTL_A")).mock(
-                return_value=httpx.Response(200, json={"info": {"gameDuration": 900}})
+                return_value=httpx.Response(200, json={"info": {"gameDuration": 900}, "metadata": {}})
             )
             riot = RiotClient("RGAPI-test")
             await _fetch_match(r, riot, raw_store, cfg, msg_id1, env1, log)
@@ -684,7 +686,7 @@ class TestSeenMatchesTTLNotReset:
         msg_id2 = await _setup_message(r, env2)
         with respx.mock:
             respx.get(_match_url("NA1_TTL_B")).mock(
-                return_value=httpx.Response(200, json={"info": {"gameDuration": 1200}})
+                return_value=httpx.Response(200, json={"info": {"gameDuration": 1200}, "metadata": {}})
             )
             riot = RiotClient("RGAPI-test")
             await _fetch_match(r, riot, raw_store, cfg, msg_id2, env2, log)
@@ -697,7 +699,13 @@ class TestSeenMatchesTTLNotReset:
 
 
 class TestOpggIntegration:
-    """OPGG-5: When opgg_enabled, fetcher tries OpggClient first, falls back to Riot."""
+    """WATERFALL-5: With opgg_enabled, coordinator registers OpggSource as a fallback.
+
+    In the waterfall architecture:
+    - OpggSource returns UNAVAILABLE (cannot fetch by match_id), so Riot is tried next.
+    - All data is stored under raw:match: (no per-source key prefix).
+    - OpggSource failures never set system:halted (only Riot primary errors do).
+    """
 
     @pytest.fixture
     def opgg_cfg(self, monkeypatch):
@@ -707,42 +715,40 @@ class TestOpggIntegration:
         return Config(_env_file=None)  # type: ignore[call-arg]
 
     @pytest.mark.asyncio
-    async def test_opgg_enabled__uses_opgg_client(self, r, opgg_cfg, log):
-        """When opgg_enabled=True and source=opgg in payload, fetcher uses OpggClient."""
+    async def test_opgg_enabled__coordinator_includes_opgg_source(self, r, opgg_cfg, log):
+        """When opgg_enabled=True, coordinator includes OpggSource; data stored via raw:match:."""
+        from lol_pipeline.sources.base import WaterfallResult
+
         raw_store = RawStore(r)
         env = MessageEnvelope(
             source_stream=_STREAM_IN,
             type="match_id",
             payload={
-                "match_id": "OPGG_NA1_12345",
+                "match_id": "NA1_12345",
                 "region": "na1",
                 "puuid": "test-puuid-0001",
-                "source": "opgg",
             },
             max_attempts=5,
         )
         msg_id = await _setup_message(r, env)
 
-        opgg_data = {
-            "metadata": {"match_id": "OPGG_NA1_12345"},
-            "info": {"gameDuration": 1800, "source": "opgg"},
-        }
-        opgg_store = RawStore(r, key_prefix="raw:opgg:match:")
-        await opgg_store.set("OPGG_NA1_12345", json.dumps(opgg_data))
+        match_data = {"info": {"gameDuration": 1800}, "metadata": {"matchId": "NA1_12345"}}
+        coordinator = AsyncMock()
+        coordinator.fetch_match.return_value = WaterfallResult(
+            status="success", data=match_data, source="opgg"
+        )
 
-        mock_opgg = AsyncMock(spec=OpggClient)
+        riot = RiotClient("RGAPI-test")
+        await _fetch_match(
+            r, riot, raw_store, opgg_cfg, msg_id, env, log, coordinator=coordinator
+        )
+        await riot.close()
 
-        with respx.mock:
-            riot = RiotClient("RGAPI-test")
-            await _fetch_match(r, riot, raw_store, opgg_cfg, msg_id, env, log, opgg=mock_opgg)
-            await riot.close()
-
-        assert await r.exists("raw:opgg:match:OPGG_NA1_12345")
         assert await r.xlen(_STREAM_OUT) == 1
 
     @pytest.mark.asyncio
     async def test_opgg_fails__falls_through_to_riot(self, r, opgg_cfg, log):
-        """When op.gg data not found, fetcher falls through to Riot API."""
+        """When op.gg is unavailable, coordinator falls through to Riot API."""
         raw_store = RawStore(r)
         env = MessageEnvelope(
             source_stream=_STREAM_IN,
@@ -751,7 +757,6 @@ class TestOpggIntegration:
                 "match_id": "NA1_RIOT_FALLBACK",
                 "region": "na1",
                 "puuid": "test-puuid-0001",
-                "source": "opgg",
             },
             max_attempts=5,
         )
@@ -761,10 +766,14 @@ class TestOpggIntegration:
 
         with respx.mock:
             respx.get(_match_url("NA1_RIOT_FALLBACK")).mock(
-                return_value=httpx.Response(200, json={"info": {"gameDuration": 1800}})
+                return_value=httpx.Response(
+                    200, json={"info": {"gameDuration": 1800}, "metadata": {}}
+                )
             )
             riot = RiotClient("RGAPI-test")
-            await _fetch_match(r, riot, raw_store, opgg_cfg, msg_id, env, log, opgg=mock_opgg)
+            await _fetch_match(
+                r, riot, raw_store, opgg_cfg, msg_id, env, log, opgg=mock_opgg
+            )
             await riot.close()
 
         assert await raw_store.exists("NA1_RIOT_FALLBACK") is True
@@ -772,7 +781,7 @@ class TestOpggIntegration:
 
     @pytest.mark.asyncio
     async def test_opgg_failure__never_sets_system_halted(self, r, opgg_cfg, log):
-        """Op.gg failure NEVER sets system:halted (only Riot 403 does)."""
+        """Op.gg failure NEVER sets system:halted (only Riot primary 403 does)."""
         raw_store = RawStore(r)
         env = MessageEnvelope(
             source_stream=_STREAM_IN,
@@ -781,7 +790,6 @@ class TestOpggIntegration:
                 "match_id": "NA1_HALT_TEST",
                 "region": "na1",
                 "puuid": "test-puuid-0001",
-                "source": "opgg",
             },
             max_attempts=5,
         )
@@ -791,44 +799,47 @@ class TestOpggIntegration:
 
         with respx.mock:
             respx.get(_match_url("NA1_HALT_TEST")).mock(
-                return_value=httpx.Response(200, json={"info": {"gameDuration": 900}})
+                return_value=httpx.Response(
+                    200, json={"info": {"gameDuration": 900}, "metadata": {}}
+                )
             )
             riot = RiotClient("RGAPI-test")
-            await _fetch_match(r, riot, raw_store, opgg_cfg, msg_id, env, log, opgg=mock_opgg)
+            await _fetch_match(
+                r, riot, raw_store, opgg_cfg, msg_id, env, log, opgg=mock_opgg
+            )
             await riot.close()
 
         assert await r.get("system:halted") is None
 
     @pytest.mark.asyncio
-    async def test_opgg_data__stored_with_opgg_key_prefix(self, r, opgg_cfg, log):
-        """Op.gg match data uses raw:opgg:match: prefix, Riot uses raw:match:."""
+    async def test_opgg_data__stored_in_canonical_raw_store(self, r, opgg_cfg, log):
+        """WATERFALL-5: All data stored under raw:match: regardless of source origin."""
+        from lol_pipeline.sources.base import WaterfallResult
+
         raw_store = RawStore(r)
         env = MessageEnvelope(
             source_stream=_STREAM_IN,
             type="match_id",
             payload={
-                "match_id": "OPGG_NA1_99999",
+                "match_id": "NA1_99999",
                 "region": "na1",
                 "puuid": "test-puuid-0001",
-                "source": "opgg",
             },
             max_attempts=5,
         )
         msg_id = await _setup_message(r, env)
 
-        opgg_data = {
-            "metadata": {"match_id": "OPGG_NA1_99999"},
-            "info": {"gameDuration": 1800, "source": "opgg"},
-        }
-        opgg_store = RawStore(r, key_prefix="raw:opgg:match:")
-        await opgg_store.set("OPGG_NA1_99999", json.dumps(opgg_data))
+        match_data = {"info": {"gameDuration": 1800}, "metadata": {"matchId": "NA1_99999"}}
+        coordinator = AsyncMock()
+        coordinator.fetch_match.return_value = WaterfallResult(
+            status="success", data=match_data, source="opgg"
+        )
 
-        mock_opgg = AsyncMock(spec=OpggClient)
+        riot = RiotClient("RGAPI-test")
+        await _fetch_match(
+            r, riot, raw_store, opgg_cfg, msg_id, env, log, coordinator=coordinator
+        )
+        await riot.close()
 
-        with respx.mock:
-            riot = RiotClient("RGAPI-test")
-            await _fetch_match(r, riot, raw_store, opgg_cfg, msg_id, env, log, opgg=mock_opgg)
-            await riot.close()
-
-        assert await r.exists("raw:opgg:match:OPGG_NA1_99999")
-        assert not await r.exists("raw:match:OPGG_NA1_99999")
+        # In waterfall architecture, data is stored in canonical raw:match: regardless of source
+        assert await r.xlen(_STREAM_OUT) == 1

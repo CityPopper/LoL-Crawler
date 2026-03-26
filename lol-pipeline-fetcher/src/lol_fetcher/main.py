@@ -1,25 +1,31 @@
-"""Fetcher service — fetches raw match JSON from Riot API and stores it."""
+"""Fetcher service — fetches raw match JSON via WaterfallCoordinator."""
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import sys
 from datetime import UTC, datetime
-from typing import Any
 
 import redis.asyncio as aioredis
-from lol_pipeline._helpers import consumer_id, handle_riot_api_error, is_system_halted
+from lol_pipeline._helpers import consumer_id, is_system_halted
 from lol_pipeline.config import Config
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.opgg_client import OpggClient
-from lol_pipeline.rate_limiter import wait_for_token
+from lol_pipeline.rate_limiter_client import wait_for_token
 from lol_pipeline.raw_store import RawStore
 from lol_pipeline.redis_client import get_redis
-from lol_pipeline.riot_api import AuthError, NotFoundError, RateLimitError, RiotClient, ServerError
+from lol_pipeline.riot_api import RiotClient
 from lol_pipeline.service import run_consumer
-from lol_pipeline.streams import ack, publish
+from lol_pipeline.sources.base import MATCH, Extractor, FetchContext
+from lol_pipeline.sources.coordinator import WaterfallCoordinator
+from lol_pipeline.sources.opgg.extractors import OpggMatchExtractor
+from lol_pipeline.sources.opgg.source import OpggSource
+from lol_pipeline.sources.registry import SourceEntry, SourceRegistry
+from lol_pipeline.sources.riot.source import RiotExtractor, RiotSource
+from lol_pipeline.streams import ack, nack_to_dlq, publish
 from pydantic import ValidationError
 
 from lol_fetcher._constants import GROUP, IN_STREAM, OUT_STREAM
@@ -101,11 +107,7 @@ async def _fetch_timeline_if_needed(
     if not cfg.fetch_timeline:
         return
     try:
-        await wait_for_token(
-            r,
-            limit_per_second=cfg.api_rate_limit_per_second,
-            region=region,
-        )
+        await wait_for_token("riot", "timeline")
         timeline = await riot.get_match_timeline(match_id, region)
         timeline_json = json.dumps(timeline)
         await r.set(f"raw:timeline:{match_id}", timeline_json, ex=cfg.match_data_ttl_seconds)
@@ -117,53 +119,57 @@ async def _fetch_timeline_if_needed(
         )
 
 
-async def _store_and_publish(
+async def _after_fetch_success(
     r: aioredis.Redis,
     riot: RiotClient,
-    raw_store: RawStore,
     cfg: Config,
     msg_id: str,
     envelope: MessageEnvelope,
-    data: dict[str, Any],
 ) -> None:
-    """Store fetched match data, update metadata, and publish to parse stream.
+    """Post-fetch bookkeeping: update seen set, fetch timeline, publish, ack.
 
-    ``raw_store.set()`` stays sequential because it checks its return value
-    (SET NX) to gate disk writes and has rollback logic.  ``_publish_and_ack``
-    stays sequential because ack must not run if publish fails.
+    Called after the coordinator has already stored data via RawStore.
     """
     match_id: str = envelope.payload["match_id"]
     region: str = envelope.payload["region"]
     puuid: str = envelope.payload.get("puuid", "")
 
-    await raw_store.set(match_id, json.dumps(data))
     await _write_seen_match(r, cfg, match_id)
     await _fetch_timeline_if_needed(r, riot, cfg, match_id, region)
     await _publish_and_ack(r, cfg, msg_id, envelope)
-    _log.info("fetched and stored", extra={"match_id": match_id, "region": region, "puuid": puuid})
+    _log.info(
+        "fetched and stored",
+        extra={"match_id": match_id, "region": region, "puuid": puuid},
+    )
 
 
-async def _try_opgg(
-    opgg: OpggClient,
+def _build_coordinator(
+    riot: RiotClient,
     raw_store: RawStore,
-    match_id: str,
-    log: logging.Logger,
-) -> dict[str, Any] | None:
-    """Try fetching match data from op.gg. Returns data dict or None on failure.
+    cfg: Config,
+    opgg: OpggClient | None = None,
+) -> WaterfallCoordinator:
+    """Construct a WaterfallCoordinator from service dependencies."""
+    riot_source = RiotSource(riot_client=riot)
+    riot_extractor = RiotExtractor()
 
-    Op.gg failures are logged as warnings and never set system:halted.
-    """
-    try:
-        existing = await raw_store.get(match_id)
-        if existing is not None:
-            result: dict[str, Any] = json.loads(existing)
-            return result
-    except Exception as exc:
-        log.warning(
-            "op.gg fetch failed — falling through to Riot API",
-            extra={"match_id": match_id, "error": str(exc)},
-        )
-    return None
+    entries: list[SourceEntry] = [
+        SourceEntry(name="riot", source=riot_source, priority=0, primary_for=frozenset({MATCH})),
+    ]
+    extractors: list[Extractor] = [riot_extractor]
+
+    if cfg.opgg_enabled and opgg is not None:
+        opgg_source = OpggSource(opgg_client=opgg)
+        opgg_extractor = OpggMatchExtractor()
+        entries.append(SourceEntry(name="opgg", source=opgg_source, priority=10))
+        extractors.append(opgg_extractor)
+
+    # Skip startup cross-check: OpggSource declares BUILD support but no BUILD
+    # extractor exists yet. The coordinator only calls extractors for data types
+    # actually requested (MATCH), so the missing BUILD extractor is harmless.
+    registry = SourceRegistry(entries)
+    # BlobStore is None until WATERFALL-6 adds blob_data_dir to Config.
+    return WaterfallCoordinator(registry, None, raw_store, extractors)
 
 
 async def _fetch_match(  # noqa: PLR0913
@@ -175,7 +181,9 @@ async def _fetch_match(  # noqa: PLR0913
     envelope: MessageEnvelope,
     log: logging.Logger,
     opgg: OpggClient | None = None,
+    coordinator: WaterfallCoordinator | None = None,
 ) -> None:
+    """Fetch a match via WaterfallCoordinator and route the result."""
     if await is_system_halted(r):
         log.critical("system halted — skipping message")
         return
@@ -183,68 +191,66 @@ async def _fetch_match(  # noqa: PLR0913
     match_id: str = envelope.payload["match_id"]
     region: str = envelope.payload["region"]
     puuid: str = envelope.payload.get("puuid", "")
-    source: str = envelope.payload.get("source", "riot")
     log.info("processing match", extra={"match_id": match_id, "region": region, "puuid": puuid})
 
-    # Determine which RawStore to use based on source
-    is_opgg_source = cfg.opgg_enabled and source == "opgg" and opgg is not None
-    if is_opgg_source:
-        opgg_raw_store = RawStore(r, data_dir=cfg.opgg_match_data_dir, key_prefix="raw:opgg:match:")
-    else:
-        opgg_raw_store = None
+    wf = coordinator or _build_coordinator(riot, raw_store, cfg, opgg)
+    context = FetchContext(match_id=match_id, puuid=puuid, region=region)
+    result = await wf.fetch_match(context, MATCH)
 
-    # Idempotency: check the appropriate store
-    active_store = opgg_raw_store if opgg_raw_store is not None else raw_store
-    if await active_store.exists(match_id):
-        extras = {"match_id": match_id, "puuid": puuid}
-        log.info("raw blob already stored — skipping fetch", extra=extras)
+    if result.status == "cached":
         await _publish_and_ack(r, cfg, msg_id, envelope)
-        log.info("idempotent re-delivery — raw blob exists", extra=extras)
+        log.info("idempotent re-delivery — raw blob exists", extra={"match_id": match_id})
         return
 
-    # Try op.gg first when enabled and source is opgg
-    if is_opgg_source and opgg_raw_store is not None and opgg is not None:
-        opgg_data = await _try_opgg(opgg, opgg_raw_store, match_id, log)
-        if opgg_data is not None:
-            await _store_and_publish(r, riot, opgg_raw_store, cfg, msg_id, envelope, opgg_data)
-            return
-        log.warning(
-            "op.gg source failed — falling through to Riot API",
-            extra={"match_id": match_id},
-        )
-
-    try:
-        await wait_for_token(
-            r,
-            limit_per_second=cfg.api_rate_limit_per_second,
-            region=region,
-        )
-        data = await riot.get_match(match_id, region)
-    except TimeoutError:
-        log.warning(
-            "rate limiter timeout — leaving in PEL for retry",
-            extra={"match_id": match_id},
-        )
+    if result.status == "success":
+        await _after_fetch_success(r, riot, cfg, msg_id, envelope)
         return
-    except NotFoundError:
+
+    if result.status == "not_found":
         await _set_match_status(r, match_id, "not_found", cfg.match_data_ttl_seconds)
         await ack(r, _IN_STREAM, _GROUP, msg_id)
         log.info("match not found — discarding", extra={"match_id": match_id})
         return
-    except (AuthError, RateLimitError, ServerError) as exc:
-        await handle_riot_api_error(
+
+    if result.status == "auth_error":
+        await r.set("system:halted", "1")
+        log.critical("API key rejected (403) — system halted")
+        return
+
+    # all_exhausted
+    if result.blob_validation_failed:
+        # Force max_attempts=1 so recovery archives immediately (no retry cycles).
+        archive_env = dataclasses.replace(envelope, max_attempts=1)
+        await nack_to_dlq(
             r,
-            exc=exc,
-            envelope=envelope,
-            msg_id=msg_id,
+            archive_env,
+            failure_code="blob_validation_failed",
             failed_by="fetcher",
-            in_stream=_IN_STREAM,
-            group=_GROUP,
-            log=log,
+            original_message_id=msg_id,
+            failure_reason="blob failed can_extract — immediate archive",
+        )
+        await ack(r, _IN_STREAM, _GROUP, msg_id)
+        log.warning(
+            "blob validation failed — routing to DLQ for archive",
+            extra={"match_id": match_id},
         )
         return
 
-    await _store_and_publish(r, riot, raw_store, cfg, msg_id, envelope, data)
+    # Determine failure code from coordinator hints
+    failure_code = "http_429" if result.retry_after_ms else "http_5xx"
+    await nack_to_dlq(
+        r,
+        envelope,
+        failure_code=failure_code,
+        failed_by="fetcher",
+        original_message_id=msg_id,
+        retry_after_ms=result.retry_after_ms,
+    )
+    await ack(r, _IN_STREAM, _GROUP, msg_id)
+    log.error(
+        "all sources exhausted — routing to DLQ",
+        extra={"match_id": match_id, "failure_code": failure_code},
+    )
 
 
 async def main() -> None:
@@ -270,10 +276,14 @@ async def main() -> None:
         if cfg.opgg_enabled
         else None
     )
+    coordinator = _build_coordinator(riot, raw_store, cfg, opgg)
     consumer = consumer_id()
 
     async def _handler(msg_id: str, envelope: MessageEnvelope) -> None:
-        await _fetch_match(r, riot, raw_store, cfg, msg_id, envelope, log, opgg=opgg)
+        await _fetch_match(
+            r, riot, raw_store, cfg, msg_id, envelope, log,
+            opgg=opgg, coordinator=coordinator,
+        )
 
     log.info("fetcher started", extra={"consumer": consumer})
     try:
