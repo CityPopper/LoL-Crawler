@@ -559,14 +559,14 @@ class TestCorrelationIdPropagation:
         env = MessageEnvelope(
             source_stream=_STREAM_IN,
             type="match_id",
-            payload={"match_id": "NA1_COR", "region": "na1", "puuid": "p1"},
+            payload={"match_id": "NA1_2001", "region": "na1", "puuid": "p1"},
             max_attempts=5,
             correlation_id="trace-abc-123",
         )
         msg_id = await _setup_message(r, env)
 
         with respx.mock:
-            respx.get(_match_url("NA1_COR")).mock(
+            respx.get(_match_url("NA1_2001")).mock(
                 return_value=httpx.Response(200, json={"info": {"gameDuration": 1800}, "metadata": {}})
             )
             riot = RiotClient("RGAPI-test")
@@ -581,11 +581,11 @@ class TestCorrelationIdPropagation:
     async def test_fetch__propagates_correlation_id__idempotent_path(self, r, cfg, log):
         """Idempotent re-delivery (blob exists) still propagates correlation_id."""
         raw_store = RawStore(r)
-        await raw_store.set("NA1_COR2", '{"info":{}}')
+        await raw_store.set("NA1_2002", '{"info":{}}')
         env = MessageEnvelope(
             source_stream=_STREAM_IN,
             type="match_id",
-            payload={"match_id": "NA1_COR2", "region": "na1", "puuid": "p1"},
+            payload={"match_id": "NA1_2002", "region": "na1", "puuid": "p1"},
             max_attempts=5,
             correlation_id="trace-xyz-789",
         )
@@ -612,10 +612,10 @@ class TestSeenMatchesTTLNotReset:
         seen_key = f"seen:matches:{today}"
 
         # First fetch — sets TTL on seen:matches:{today}
-        env1 = _match_envelope(match_id="NA1_FIRST")
+        env1 = _match_envelope(match_id="NA1_3001")
         msg_id1 = await _setup_message(r, env1)
         with respx.mock:
-            respx.get(_match_url("NA1_FIRST")).mock(
+            respx.get(_match_url("NA1_3001")).mock(
                 return_value=httpx.Response(200, json={"info": {"gameDuration": 900}, "metadata": {}})
             )
             riot = RiotClient("RGAPI-test")
@@ -631,10 +631,10 @@ class TestSeenMatchesTTLNotReset:
         assert ttl_lowered <= 1000
 
         # Second fetch — should NOT reset TTL (guard: ttl < 0 only)
-        env2 = _match_envelope(match_id="NA1_SECOND")
+        env2 = _match_envelope(match_id="NA1_3002")
         msg_id2 = await _setup_message(r, env2)
         with respx.mock:
-            respx.get(_match_url("NA1_SECOND")).mock(
+            respx.get(_match_url("NA1_3002")).mock(
                 return_value=httpx.Response(200, json={"info": {"gameDuration": 1200}, "metadata": {}})
             )
             riot = RiotClient("RGAPI-test")
@@ -659,10 +659,10 @@ class TestSeenMatchesTTLNotReset:
         seen_key = f"seen:matches:{today}"
 
         # First fetch — sets TTL on seen:matches:{today} (no TTL exists yet, ttl == -1)
-        env1 = _match_envelope(match_id="NA1_TTL_A")
+        env1 = _match_envelope(match_id="NA1_5001")
         msg_id1 = await _setup_message(r, env1)
         with respx.mock:
-            respx.get(_match_url("NA1_TTL_A")).mock(
+            respx.get(_match_url("NA1_5001")).mock(
                 return_value=httpx.Response(200, json={"info": {"gameDuration": 900}, "metadata": {}})
             )
             riot = RiotClient("RGAPI-test")
@@ -683,10 +683,10 @@ class TestSeenMatchesTTLNotReset:
         r.expire = tracking_expire
 
         # Second fetch — TTL already exists (>= 0), so expire should NOT be called
-        env2 = _match_envelope(match_id="NA1_TTL_B")
+        env2 = _match_envelope(match_id="NA1_5002")
         msg_id2 = await _setup_message(r, env2)
         with respx.mock:
-            respx.get(_match_url("NA1_TTL_B")).mock(
+            respx.get(_match_url("NA1_5002")).mock(
                 return_value=httpx.Response(200, json={"info": {"gameDuration": 1200}, "metadata": {}})
             )
             riot = RiotClient("RGAPI-test")
@@ -712,7 +712,7 @@ class TestOpggIntegration:
     def opgg_cfg(self, monkeypatch):
         monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
         monkeypatch.setenv("REDIS_URL", "redis://localhost")
-        monkeypatch.setenv("OPGG_ENABLED", "true")
+        monkeypatch.setenv("SOURCE_WATERFALL_ORDER", "riot,opgg")
         return Config(_env_file=None)  # type: ignore[call-arg]
 
     @pytest.mark.asyncio
@@ -755,7 +755,7 @@ class TestOpggIntegration:
             source_stream=_STREAM_IN,
             type="match_id",
             payload={
-                "match_id": "NA1_RIOT_FALLBACK",
+                "match_id": "NA1_4001",
                 "region": "na1",
                 "puuid": "test-puuid-0001",
             },
@@ -766,7 +766,7 @@ class TestOpggIntegration:
         mock_opgg = AsyncMock(spec=OpggClient)
 
         with respx.mock:
-            respx.get(_match_url("NA1_RIOT_FALLBACK")).mock(
+            respx.get(_match_url("NA1_4001")).mock(
                 return_value=httpx.Response(
                     200, json={"info": {"gameDuration": 1800}, "metadata": {}}
                 )
@@ -777,7 +777,7 @@ class TestOpggIntegration:
             )
             await riot.close()
 
-        assert await raw_store.exists("NA1_RIOT_FALLBACK") is True
+        assert await raw_store.exists("NA1_4001") is True
         assert await r.xlen(_STREAM_OUT) == 1
 
     @pytest.mark.asyncio
@@ -788,7 +788,7 @@ class TestOpggIntegration:
             source_stream=_STREAM_IN,
             type="match_id",
             payload={
-                "match_id": "NA1_HALT_TEST",
+                "match_id": "NA1_4002",
                 "region": "na1",
                 "puuid": "test-puuid-0001",
             },
@@ -799,7 +799,7 @@ class TestOpggIntegration:
         mock_opgg = AsyncMock(spec=OpggClient)
 
         with respx.mock:
-            respx.get(_match_url("NA1_HALT_TEST")).mock(
+            respx.get(_match_url("NA1_4002")).mock(
                 return_value=httpx.Response(
                     200, json={"info": {"gameDuration": 900}, "metadata": {}}
                 )
@@ -852,7 +852,7 @@ class TestBuildCoordinatorSourceInit:
     def test_opgg_init_failure__logs_warning_and_builds(self, cfg, log):
         """If OpggSource raises during init, coordinator still builds with warning."""
         riot = RiotClient("RGAPI-test")
-        cfg.opgg_enabled = True
+        cfg.source_waterfall_order = "riot,opgg"
         opgg = OpggClient.__new__(OpggClient)
 
         fetcher_log = logging.getLogger("fetcher")

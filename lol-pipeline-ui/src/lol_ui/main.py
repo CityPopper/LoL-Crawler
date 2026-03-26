@@ -11,8 +11,10 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from lol_pipeline.config import Config
 from lol_pipeline.log import get_logger
+from lol_pipeline.opgg_client import OpggClient
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.riot_api import RiotClient
+from lol_pipeline.sources.blob_store import BlobStore
 from starlette.responses import Response
 
 from lol_ui.health import _health_status
@@ -48,10 +50,27 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.riot = RiotClient(cfg.riot_api_key, r=app.state.r)
     _init_cache_ttl()
 
+    # op.gg pre-fetch support (optional)
+    opgg_client: OpggClient | None = None
+    blob_store: BlobStore | None = None
+    if cfg.opgg_enabled:
+        opgg_client = OpggClient(
+            r=app.state.r,
+            rate_limit_per_second=cfg.opgg_rate_limit_per_second,
+            rate_limit_long=cfg.opgg_rate_limit_long,
+            summoner_cache_ttl_seconds=cfg.opgg_summoner_cache_ttl_seconds,
+        )
+        if cfg.blob_data_dir:
+            blob_store = BlobStore(cfg.blob_data_dir)
+    app.state.opgg_client = opgg_client
+    app.state.blob_store = blob_store
+
     yield
 
     await app.state.r.aclose()
     await app.state.riot.close()
+    if opgg_client is not None:
+        await opgg_client.close()
 
 
 # ---------------------------------------------------------------------------

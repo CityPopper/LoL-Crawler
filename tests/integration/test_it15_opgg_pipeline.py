@@ -59,7 +59,7 @@ async def test_fixture_etl_field_level_output(r: aioredis.Redis) -> None:
     # --- metadata ---
     assert match["metadata"]["data_version"] == "2"
     assert match["metadata"]["match_id"].startswith("OPGG_NA1_")
-    assert match["metadata"]["match_id"] == "OPGG_NA1_opgg-game-hash-pwnerer-001"
+    assert match["metadata"]["match_id"] == "OPGG_NA1_7234567890"
     assert len(match["metadata"]["participants"]) == 10
 
     # --- info top-level ---
@@ -181,7 +181,7 @@ async def test_fixture_etl_normalize_game_directly() -> None:
     raw_game = _OPGG_MATCH["data"][0]
     result = normalize_game(raw_game, _REGION)
 
-    assert result["metadata"]["match_id"] == "OPGG_NA1_opgg-game-hash-pwnerer-001"
+    assert result["metadata"]["match_id"] == "OPGG_NA1_7234567890"
     assert result["info"]["source"] == "opgg"
     assert len(result["info"]["participants"]) == 10
     assert len(result["info"]["teams"]) == 2

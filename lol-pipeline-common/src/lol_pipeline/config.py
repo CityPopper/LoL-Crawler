@@ -47,10 +47,12 @@ class Config(BaseSettings):
     source_waterfall_order: str = "riot"  # comma-separated source priority
     blob_data_dir: str = ""  # disk directory for raw source blobs; empty = disabled
     # op.gg integration
-    opgg_enabled: bool = False  # try op.gg first, fall back to Riot on failure
     opgg_rate_limit_per_second: int = Field(default=2, ge=1)
     opgg_rate_limit_long: int = Field(default=30, ge=1)
     opgg_match_data_dir: str = ""
+    opgg_summoner_cache_ttl_seconds: int = Field(default=3600, ge=1)
+    opgg_fetch_game_limit: int = Field(default=5, ge=1)
+    opgg_prefetch_limit: int = Field(default=20, ge=1)  # for UI pre-fetch background task
     # PRIN-COM-1: formerly raw os.getenv() / hardcoded literals
     player_data_ttl_seconds: int = Field(default=2592000, ge=1)  # 30 days
     champion_stats_ttl_seconds: int = Field(default=7776000, ge=1)  # 90 days
@@ -102,6 +104,11 @@ class Config(BaseSettings):
         if not self.opgg_match_data_dir and self.match_data_dir:
             self.opgg_match_data_dir = os.path.join(self.match_data_dir, "opgg")
         return self
+
+    @property
+    def opgg_enabled(self) -> bool:
+        """Derived: True when 'opgg' appears in source_waterfall_order."""
+        return "opgg" in self.source_waterfall_order.split(",")
 
     def validate_for_riot_api(self) -> None:
         """Raise ValueError if RIOT_API_KEY is not configured."""

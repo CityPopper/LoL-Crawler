@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Literal, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 # ---------------------------------------------------------------------------
 # DataType -- open string alias
@@ -74,7 +74,7 @@ class FetchResult(Enum):
 class FetchResponse:
     result: FetchResult
     raw_blob: bytes | None = None
-    data: dict[str, str] | None = None
+    data: dict[str, Any] | None = None
     retry_after_ms: int | None = None
     available_data_types: frozenset[DataType] = field(default_factory=frozenset)
 
@@ -140,7 +140,7 @@ class Extractor(Protocol):
         """Data types this extractor can produce from a blob."""
         ...
 
-    def can_extract(self, blob: dict[str, str]) -> bool:
+    def can_extract(self, blob: dict[str, Any]) -> bool:
         """Return True if this blob contains extractable data.
 
         Called BEFORE persisting a blob to BlobStore. If False, the blob is
@@ -148,7 +148,7 @@ class Extractor(Protocol):
         """
         ...
 
-    def extract(self, blob: dict[str, str], match_id: str, region: str) -> dict[str, str]:
+    def extract(self, blob: dict[str, Any], match_id: str, region: str) -> dict[str, Any]:
         """Extract data from blob. Returns canonical Riot-shaped dict.
 
         Raises ExtractionError on failure.
@@ -166,7 +166,7 @@ WaterfallStatus = Literal["success", "not_found", "auth_error", "all_exhausted",
 @dataclass
 class WaterfallResult:
     status: WaterfallStatus
-    data: dict[str, str] | None = None
+    data: dict[str, Any] | None = None
     source: str = ""
     retry_after_ms: int | None = None
     available_data_types: frozenset[DataType] = field(default_factory=frozenset)

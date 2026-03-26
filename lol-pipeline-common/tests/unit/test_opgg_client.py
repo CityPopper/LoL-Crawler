@@ -27,49 +27,46 @@ SAMPLE_GAMES_RESPONSE = {
             "id": "abc123hash",
             "created_at": "2026-03-20T12:00:00+00:00",
             "game_type": "Ranked",
+            "queue_id": 0,
             "average_tier_info": {"tier": "GOLD", "division": "II"},
+            "participants": [
+                {
+                    "team_key": "BLUE",
+                    "summoner": {
+                        "summoner_id": "xAmCbJxxx",
+                        "puuid": "test-puuid-abc",
+                    },
+                    "champion_id": 157,
+                    "position": "ADC",
+                    "stats": {
+                        "kill": 8,
+                        "death": 3,
+                        "assist": 5,
+                        "cs": 180,
+                        "damage_dealt_to_champions": 28000,
+                    },
+                    "items": [3031, 3094, 3086, 0, 0, 0, 3363],
+                    "op_score": 8.7,
+                },
+                {
+                    "team_key": "RED",
+                    "summoner": {"summoner_id": "opp1", "puuid": "opp-puuid-1"},
+                    "champion_id": 92,
+                    "position": "TOP",
+                    "stats": {
+                        "kill": 4,
+                        "death": 8,
+                        "assist": 2,
+                        "cs": 150,
+                        "damage_dealt_to_champions": 18000,
+                    },
+                    "items": [3071, 0, 0, 0, 0, 0, 3340],
+                    "op_score": 4.2,
+                },
+            ],
             "teams": [
-                {
-                    "game_stat": {"is_win": True, "kill": 25, "death": 12, "assist": 30},
-                    "participants": [
-                        {
-                            "summoner": {
-                                "summoner_id": "xAmCbJxxx",
-                                "puuid": "test-puuid-abc",
-                            },
-                            "champion_id": 157,
-                            "position": "ADC",
-                            "stats": {
-                                "kill": 8,
-                                "death": 3,
-                                "assist": 5,
-                                "cs": 180,
-                                "damage_dealt_to_champions": 28000,
-                            },
-                            "items": [3031, 3094, 3086, 0, 0, 0, 3363],
-                            "op_score": 8.7,
-                        }
-                    ],
-                },
-                {
-                    "game_stat": {"is_win": False, "kill": 12, "death": 25, "assist": 20},
-                    "participants": [
-                        {
-                            "summoner": {"summoner_id": "opp1", "puuid": "opp-puuid-1"},
-                            "champion_id": 92,
-                            "position": "TOP",
-                            "stats": {
-                                "kill": 4,
-                                "death": 8,
-                                "assist": 2,
-                                "cs": 150,
-                                "damage_dealt_to_champions": 18000,
-                            },
-                            "items": [3071, 0, 0, 0, 0, 0, 3340],
-                            "op_score": 4.2,
-                        }
-                    ],
-                },
+                {"key": "BLUE", "game_stat": {"is_win": True, "kill": 25, "death": 12, "assist": 30}},
+                {"key": "RED", "game_stat": {"is_win": False, "kill": 12, "death": 25, "assist": 20}},
             ],
         }
     ],
@@ -394,4 +391,365 @@ class TestOpggClientRateLimitError:
         from lol_pipeline.riot_api import AuthError
 
         assert not isinstance(exc_info.value, AuthError)
+        await c.close()
+
+
+# ── Tests for get_summoner_id_by_puuid ────────────────────────────────────────
+
+
+VALID_PUUID = "abc123-def456-valid-puuid"
+SUMMONER_ID_RESPONSE = {
+    "data": {"summoner_id": "opgg-sid-999", "game_name": "TestPlayer", "tagline": "NA1"}
+}
+
+
+class TestGetSummonerIdByPuuid:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_blocking_false__tokens_available(self):
+        """blocking=False + try_token() grants → HTTP called → cached in Redis."""
+        from unittest.mock import AsyncMock, patch
+
+        import fakeredis.aioredis
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        respx.get("https://lol-api-summoner.op.gg/api/v3/na/summoners").mock(
+            return_value=httpx.Response(200, json=SUMMONER_ID_RESPONSE)
+        )
+
+        http = httpx.AsyncClient()
+        c = OpggClient(http, r=r)
+
+        with patch("lol_pipeline.opgg_client.try_token", new_callable=AsyncMock) as mock_try:
+            mock_try.return_value = True
+            result = await c.get_summoner_id_by_puuid(VALID_PUUID, "na", blocking=False)
+
+        assert result == "opgg-sid-999"
+        mock_try.assert_called_once_with("opgg", "summoner")
+        # Verify cached in Redis
+        cached = await r.get(f"opgg:summoner:{VALID_PUUID}:na")
+        assert cached == "opgg-sid-999"
+
+        await c.close()
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_blocking_false__tokens_unavailable(self):
+        """blocking=False + try_token() returns False → OpggRateLimitError, no HTTP."""
+        from unittest.mock import AsyncMock, patch
+
+        from lol_pipeline.opgg_client import OpggRateLimitError
+
+        http = httpx.AsyncClient()
+        c = OpggClient(http)
+
+        route = respx.get("https://lol-api-summoner.op.gg/api/v3/na/summoners").mock(
+            return_value=httpx.Response(200, json=SUMMONER_ID_RESPONSE)
+        )
+
+        with patch("lol_pipeline.opgg_client.try_token", new_callable=AsyncMock) as mock_try:
+            mock_try.return_value = False
+            with pytest.raises(OpggRateLimitError):
+                await c.get_summoner_id_by_puuid(VALID_PUUID, "na", blocking=False)
+
+        assert not route.called
+        await c.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_blocking_true__cache_hit(self):
+        """blocking=True + Redis has cached summoner_id → no HTTP call."""
+        import fakeredis.aioredis
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.set(f"opgg:summoner:{VALID_PUUID}:na", "cached-sid-111")
+
+        http = httpx.AsyncClient()
+        c = OpggClient(http, r=r)
+
+        route = respx.get("https://lol-api-summoner.op.gg/api/v3/na/summoners").mock(
+            return_value=httpx.Response(200, json=SUMMONER_ID_RESPONSE)
+        )
+
+        result = await c.get_summoner_id_by_puuid(VALID_PUUID, "na", blocking=True)
+        assert result == "cached-sid-111"
+        assert not route.called
+
+        await c.close()
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_blocking_true__cache_miss__writes_redis(self):
+        """blocking=True + cache miss → HTTP call → writes summoner_id to Redis with TTL."""
+        from unittest.mock import AsyncMock, patch
+
+        import fakeredis.aioredis
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        respx.get("https://lol-api-summoner.op.gg/api/v3/na/summoners").mock(
+            return_value=httpx.Response(200, json=SUMMONER_ID_RESPONSE)
+        )
+
+        http = httpx.AsyncClient()
+        c = OpggClient(http, r=r, summoner_cache_ttl_seconds=7200)
+
+        with patch("lol_pipeline.opgg_client.wait_for_token", new_callable=AsyncMock):
+            result = await c.get_summoner_id_by_puuid(VALID_PUUID, "na", blocking=True)
+
+        assert result == "opgg-sid-999"
+        cached = await r.get(f"opgg:summoner:{VALID_PUUID}:na")
+        assert cached == "opgg-sid-999"
+        ttl = await r.ttl(f"opgg:summoner:{VALID_PUUID}:na")
+        assert 0 < ttl <= 7200
+
+        await c.close()
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_no_redis__cache_skipped(self):
+        """self._r is None → no Redis access, HTTP call succeeds."""
+        respx.get("https://lol-api-summoner.op.gg/api/v3/na/summoners").mock(
+            return_value=httpx.Response(200, json=SUMMONER_ID_RESPONSE)
+        )
+
+        http = httpx.AsyncClient()
+        c = OpggClient(http)  # no r=
+
+        result = await c.get_summoner_id_by_puuid(VALID_PUUID, "na", blocking=True)
+        assert result == "opgg-sid-999"
+
+        await c.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_404__raises_parse_error(self):
+        """HTTP 404 → raises OpggParseError."""
+        respx.get("https://lol-api-summoner.op.gg/api/v3/na/summoners").mock(
+            return_value=httpx.Response(404, json={"message": "Not Found"})
+        )
+
+        http = httpx.AsyncClient()
+        c = OpggClient(http)
+
+        with pytest.raises(OpggParseError, match="Summoner not found"):
+            await c.get_summoner_id_by_puuid(VALID_PUUID, "na", blocking=True)
+
+        await c.close()
+
+    @pytest.mark.asyncio
+    async def test_invalid_puuid__raises_parse_error(self):
+        """PUUID with invalid chars → raises OpggParseError without HTTP call."""
+        http = httpx.AsyncClient()
+        c = OpggClient(http)
+
+        with pytest.raises(OpggParseError, match="Invalid PUUID"):
+            await c.get_summoner_id_by_puuid("../evil path!", "na", blocking=True)
+
+        await c.close()
+
+
+# ── Tests for get_raw_games ───────────────────────────────────────────────────
+
+RAW_GAMES_RESPONSE = {
+    "data": [
+        {"id": 7234567890, "created_at": "2026-03-20T12:00:00+00:00"},
+        {"id": 7234567891, "created_at": "2026-03-20T11:00:00+00:00"},
+    ]
+}
+
+
+class TestGetRawGames:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_blocking_false__tokens_unavailable__raises_rate_limit(self):
+        """blocking=False + try_token() False → OpggRateLimitError, no HTTP."""
+        from unittest.mock import AsyncMock, patch
+
+        from lol_pipeline.opgg_client import OpggRateLimitError
+
+        http = httpx.AsyncClient()
+        c = OpggClient(http)
+
+        route = respx.get(
+            "https://lol-api-summoner.op.gg/api/na/summoners/xAmCbJxxx/games"
+        ).mock(return_value=httpx.Response(200, json=RAW_GAMES_RESPONSE))
+
+        with patch("lol_pipeline.opgg_client.try_token", new_callable=AsyncMock) as mock_try:
+            mock_try.return_value = False
+            with pytest.raises(OpggRateLimitError):
+                await c.get_raw_games("xAmCbJxxx", "na", blocking=False)
+
+        assert not route.called
+        await c.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_blocking_false__success__returns_raw_list(self):
+        """blocking=False + tokens available → HTTP 200 → returns raw list."""
+        from unittest.mock import AsyncMock, patch
+
+        http = httpx.AsyncClient()
+        c = OpggClient(http)
+
+        respx.get(
+            "https://lol-api-summoner.op.gg/api/na/summoners/xAmCbJxxx/games",
+        ).mock(return_value=httpx.Response(200, json=RAW_GAMES_RESPONSE))
+
+        with patch("lol_pipeline.opgg_client.try_token", new_callable=AsyncMock) as mock_try:
+            mock_try.return_value = True
+            result = await c.get_raw_games("xAmCbJxxx", "na", blocking=False)
+
+        assert len(result) == 2
+        assert result[0]["id"] == 7234567890
+        await c.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_429__raises_rate_limit(self):
+        """HTTP 429 with Retry-After → OpggRateLimitError with retry_ms."""
+        from lol_pipeline.opgg_client import OpggRateLimitError
+
+        respx.get(
+            "https://lol-api-summoner.op.gg/api/na/summoners/xAmCbJxxx/games",
+        ).mock(
+            return_value=httpx.Response(
+                429, headers={"Retry-After": "30"}, json={"message": "rate limited"}
+            )
+        )
+
+        http = httpx.AsyncClient()
+        c = OpggClient(http)
+
+        with pytest.raises(OpggRateLimitError) as exc_info:
+            await c.get_raw_games("xAmCbJxxx", "na", blocking=True)
+        assert exc_info.value.retry_ms == 30000
+
+        await c.close()
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_missing_data_key__raises_parse_error(self):
+        """HTTP 200 but no 'data' key → OpggParseError."""
+        respx.get(
+            "https://lol-api-summoner.op.gg/api/na/summoners/xAmCbJxxx/games",
+        ).mock(return_value=httpx.Response(200, json={"meta": {}}))
+
+        http = httpx.AsyncClient()
+        c = OpggClient(http)
+
+        with pytest.raises(OpggParseError, match="No 'data' key"):
+            await c.get_raw_games("xAmCbJxxx", "na", blocking=True)
+
+        await c.close()
+
+    @pytest.mark.asyncio
+    async def test_invalid_summoner_id__raises_parse_error(self):
+        """summoner_id with path traversal or spaces → OpggParseError."""
+        http = httpx.AsyncClient()
+        c = OpggClient(http)
+
+        with pytest.raises(OpggParseError, match="Invalid summoner_id"):
+            await c.get_raw_games("../evil path", "na", blocking=True)
+
+        await c.close()
+
+
+# ── Tests for prefetch_player_games ───────────────────────────────────────────
+
+
+class TestPrefetchPlayerGames:
+    @pytest.mark.asyncio
+    async def test_success__writes_blobs(self):
+        """Valid response → blob_store.write() called per game, returns count."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        http = httpx.AsyncClient()
+        c = OpggClient(http)
+
+        mock_blob_store = MagicMock()
+        mock_blob_store.write = MagicMock()
+
+        raw_games = [
+            {"id": 7234567890, "data": "game1"},
+            {"id": 7234567891, "data": "game2"},
+        ]
+
+        with (
+            patch.object(
+                c,
+                "get_summoner_id_by_puuid",
+                new_callable=AsyncMock,
+                return_value="sid-123",
+            ),
+            patch.object(
+                c,
+                "get_raw_games",
+                new_callable=AsyncMock,
+                return_value=raw_games,
+            ),
+        ):
+            count = await c.prefetch_player_games(
+                VALID_PUUID, "na", mock_blob_store, limit=5
+            )
+
+        assert count == 2
+        assert mock_blob_store.write.call_count == 2
+        # Verify match_id format: NA1_{game_id} (na → NA1 via reverse map)
+        call_args_list = mock_blob_store.write.call_args_list
+        assert call_args_list[0][0][1] == "NA1_7234567890"
+        assert call_args_list[1][0][1] == "NA1_7234567891"
+
+        await c.close()
+
+    @pytest.mark.asyncio
+    async def test_opgg_parse_error__returns_zero(self):
+        """get_summoner_id_by_puuid raises OpggParseError → returns 0."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        http = httpx.AsyncClient()
+        c = OpggClient(http)
+
+        mock_blob_store = MagicMock()
+
+        with patch.object(
+            c,
+            "get_summoner_id_by_puuid",
+            new_callable=AsyncMock,
+            side_effect=OpggParseError("summoner not found"),
+        ):
+            count = await c.prefetch_player_games(
+                VALID_PUUID, "na", mock_blob_store
+            )
+
+        assert count == 0
+        mock_blob_store.write.assert_not_called()
+        await c.close()
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_error__returns_zero(self):
+        """OpggRateLimitError → returns 0, no crash."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from lol_pipeline.opgg_client import OpggRateLimitError
+
+        http = httpx.AsyncClient()
+        c = OpggClient(http)
+
+        mock_blob_store = MagicMock()
+
+        with patch.object(
+            c,
+            "get_summoner_id_by_puuid",
+            new_callable=AsyncMock,
+            side_effect=OpggRateLimitError("rate limited", retry_ms=5000),
+        ):
+            count = await c.prefetch_player_games(
+                VALID_PUUID, "na", mock_blob_store
+            )
+
+        assert count == 0
+        mock_blob_store.write.assert_not_called()
         await c.close()

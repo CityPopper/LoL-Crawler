@@ -76,7 +76,7 @@ def log():
     return logging.getLogger("test-fetcher-waterfall")
 
 
-def _match_envelope(match_id="NA1_W001", region="na1", puuid="test-puuid-w001"):
+def _match_envelope(match_id="NA1_1001", region="na1", puuid="test-puuid-w001"):
     return MessageEnvelope(
         source_stream=_STREAM_IN,
         type="match_id",
@@ -153,7 +153,7 @@ class TestFetchMatchSuccess:
         env = _match_envelope()
         msg_id = await _setup_message(r, env)
 
-        match_data = {"info": {"gameDuration": 1800}, "metadata": {"matchId": "NA1_W001"}}
+        match_data = {"info": {"gameDuration": 1800}, "metadata": {"matchId": "NA1_1001"}}
         coordinator = _mock_coordinator(
             WaterfallResult(status="success", data=match_data, source="riot")
         )
@@ -167,9 +167,9 @@ class TestFetchMatchSuccess:
         assert pending["pending"] == 0
         # seen:matches updated
         today = datetime.now(tz=UTC).strftime("%Y-%m-%d")
-        assert await r.sismember(f"seen:matches:{today}", "NA1_W001")
+        assert await r.sismember(f"seen:matches:{today}", "NA1_1001")
         # match status set to fetched
-        assert await r.hget("match:NA1_W001", "status") == "fetched"
+        assert await r.hget("match:NA1_1001", "status") == "fetched"
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +192,7 @@ class TestFetchMatchNotFound:
         pending = await r.xpending(_STREAM_IN, _GROUP)
         assert pending["pending"] == 0
         # match status set to not_found
-        assert await r.hget("match:NA1_W001", "status") == "not_found"
+        assert await r.hget("match:NA1_1001", "status") == "not_found"
 
 
 # ---------------------------------------------------------------------------
@@ -236,7 +236,7 @@ class TestFetchMatchAllExhausted:
     # Test 6: retry_after_ms propagation
     async def test_fetch_match_all_exhausted__propagates_retry_after_ms(self, r, cfg, log):
         """retry_after_ms=5000 in result -> nack_to_dlq receives it."""
-        env = _match_envelope(match_id="NA1_W002")
+        env = _match_envelope(match_id="NA1_1002")
         msg_id = await _setup_message(r, env)
         coordinator = _mock_coordinator(
             WaterfallResult(status="all_exhausted", retry_after_ms=5000)
@@ -262,7 +262,7 @@ class TestFetchMatchBlobValidationFailed:
         max_attempts=1 (or equivalent immediate-archive flag) so the message does not
         burn retry cycles against a structurally bad blob.
         """
-        env = _match_envelope(match_id="NA1_W003")
+        env = _match_envelope(match_id="NA1_1003")
         msg_id = await _setup_message(r, env)
         coordinator = _mock_coordinator(
             WaterfallResult(status="all_exhausted", blob_validation_failed=True)
@@ -310,7 +310,7 @@ class TestFetchMatchSystemHalted:
 class TestFetchContextFromEnvelope:
     async def test_fetch_match_builds_fetch_context_from_envelope(self, r, cfg, log):
         """Verify FetchContext is built with correct match_id, puuid, region from envelope."""
-        env = _match_envelope(match_id="NA1_CTX", region="euw1", puuid="ctx-puuid-42")
+        env = _match_envelope(match_id="NA1_1004", region="euw1", puuid="ctx-puuid-42")
         msg_id = await _setup_message(r, env)
 
         coordinator = _mock_coordinator(
@@ -328,7 +328,7 @@ class TestFetchContextFromEnvelope:
         call_args = coordinator.fetch_match.call_args
         context = call_args[0][0] if call_args[0] else call_args[1].get("context")
         assert isinstance(context, FetchContext)
-        assert context.match_id == "NA1_CTX"
+        assert context.match_id == "NA1_1004"
         assert context.region == "euw1"
         assert context.puuid == "ctx-puuid-42"
 
@@ -346,7 +346,7 @@ class TestTimelineFetchUnchanged:
         and runs after a successful waterfall result, using the Riot API directly.
         """
         cfg.fetch_timeline = True
-        env = _match_envelope(match_id="NA1_TL01", region="na1")
+        env = _match_envelope(match_id="NA1_1005", region="na1")
         msg_id = await _setup_message(r, env)
 
         coordinator = _mock_coordinator(
@@ -377,9 +377,167 @@ class TestTimelineFetchUnchanged:
         call_keyword = call_args[1] if call_args[1] else {}
         all_args = list(call_positional) + list(call_keyword.values())
         all_str_args = [str(a) for a in all_args]
-        assert any("NA1_TL01" in a for a in all_str_args), (
-            f"Expected match_id 'NA1_TL01' in timeline call args, got: {all_str_args}"
+        assert any("NA1_1005" in a for a in all_str_args), (
+            f"Expected match_id 'NA1_1005' in timeline call args, got: {all_str_args}"
         )
         assert any("na1" in a for a in all_str_args), (
             f"Expected region 'na1' in timeline call args, got: {all_str_args}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Test 11: End-to-end waterfall -- Riot throttled, op.gg fallback succeeds
+# ---------------------------------------------------------------------------
+
+
+class TestWaterfallRiotThrottledOpggFallback:
+    """FR001-13: Real WaterfallCoordinator + real OpggSource + mocked OpggClient.
+
+    Riot returns THROTTLED (try_token denied) -> coordinator falls through
+    to OpggSource -> OpggClient resolves summoner + fetches games -> game
+    found by integer ID -> coordinator extracts via OpggMatchExtractor ->
+    WaterfallResult status='success', source='opgg'.
+    """
+
+    async def test_waterfall__riot_throttled__opgg_fallback__success(self, r):
+        """End-to-end: Riot THROTTLED -> op.gg on-demand fetch -> SUCCESS."""
+        from unittest.mock import AsyncMock, patch
+
+        from lol_pipeline.opgg_client import OpggClient
+        from lol_pipeline.raw_store import RawStore
+        from lol_pipeline.riot_api import RiotClient
+        from lol_pipeline.sources.base import MATCH, FetchContext
+        from lol_pipeline.sources.coordinator import WaterfallCoordinator
+        from lol_pipeline.sources.opgg.extractors import OpggMatchExtractor
+        from lol_pipeline.sources.opgg.source import OpggSource
+        from lol_pipeline.sources.registry import SourceEntry, SourceRegistry
+        from lol_pipeline.sources.riot.source import RiotExtractor, RiotSource
+
+        # -- 1. Build RiotSource (real) -- try_token will be mocked to deny tokens
+        riot_client = RiotClient("RGAPI-test")
+        riot_source = RiotSource(riot_client=riot_client)
+
+        # -- 2. Build OpggSource (real) with an OpggClient whose HTTP methods
+        #        are replaced by AsyncMock. No Redis for rate-limit cache (r=None
+        #        in OpggClient means cache is skipped).
+        opgg_client = OpggClient(r=None)
+        opgg_source = OpggSource(opgg_client=opgg_client)
+
+        # -- 3. Build extractors and registry
+        riot_extractor = RiotExtractor()
+        opgg_extractor = OpggMatchExtractor()
+        extractors = [riot_extractor, opgg_extractor]
+        extractor_index = {
+            ("riot", MATCH): riot_extractor,
+            ("opgg", MATCH): opgg_extractor,
+        }
+
+        registry = SourceRegistry(
+            entries=[
+                SourceEntry(
+                    name="riot",
+                    source=riot_source,
+                    priority=0,
+                    primary_for=frozenset({MATCH}),
+                ),
+                SourceEntry(
+                    name="opgg",
+                    source=opgg_source,
+                    priority=10,
+                ),
+            ],
+            extractor_index=extractor_index,
+        )
+
+        # -- 4. Build coordinator with fakeredis RawStore, no BlobStore
+        raw_store = RawStore(r)
+        coordinator = WaterfallCoordinator(
+            registry=registry,
+            blob_store=None,
+            raw_store=raw_store,
+            extractors=extractors,
+        )
+
+        # -- 5. Minimal valid op.gg game blob (must pass can_extract + normalize_game)
+        opgg_game = {
+            "id": 7234567890,
+            "created_at": "2024-06-15T12:30:00+00:00",
+            "game_length_second": 1800,
+            "game_type": "CLASSIC",
+            "queue_id": 420,
+            "participants": [
+                {
+                    "summoner": {"puuid": "valid-puuid-here", "summoner_id": "sid-1"},
+                    "champion_id": 1,
+                    "team_key": "BLUE",
+                    "position": "TOP",
+                    "stats": {"kill": 5, "death": 2, "assist": 3},
+                    "items": [3071, 3006, 3053, 3065, 3075, 3143, 3340],
+                },
+            ],
+            "teams": [
+                {"key": "BLUE", "game_stat": {"is_win": True, "kill": 15, "death": 8}},
+                {"key": "RED", "game_stat": {"is_win": False, "kill": 8, "death": 15}},
+            ],
+        }
+
+        # -- 6. Mock: Riot try_token -> False (denied), opgg try_token -> True (granted)
+        async def mock_try_token(source, endpoint):
+            if source.startswith("riot"):
+                return False  # Riot throttled
+            return True  # opgg granted
+
+        # -- 7. Mock OpggClient HTTP methods
+        opgg_client.get_summoner_id_by_puuid = AsyncMock(return_value="sum123")
+        opgg_client.get_raw_games = AsyncMock(return_value=[opgg_game])
+
+        context = FetchContext(
+            match_id="NA1_7234567890",
+            puuid="valid-puuid-here",
+            region="na1",
+        )
+
+        # Patch try_token in both modules that import it
+        with (
+            patch(
+                "lol_pipeline.sources.riot.source.try_token",
+                side_effect=mock_try_token,
+            ),
+            patch(
+                "lol_pipeline.opgg_client.try_token",
+                side_effect=mock_try_token,
+            ),
+        ):
+            result = await coordinator.fetch_match(context)
+
+        # -- 8. Assertions
+        assert result.status == "success"
+        assert result.source == "opgg"
+        assert result.data is not None
+        # Extracted data must have canonical Riot match-v5 structure
+        assert "info" in result.data
+        assert "metadata" in result.data
+        # metadata.match_id uses Riot format (not OPGG_ prefix)
+        assert result.data["metadata"]["match_id"] == "NA1_7234567890"
+        # tried_sources shows riot was tried first and throttled
+        assert len(result.tried_sources) == 2
+        assert result.tried_sources[0][0] == "riot"
+        from lol_pipeline.sources.base import FetchResult
+
+        assert result.tried_sources[0][1] == FetchResult.THROTTLED
+        assert result.tried_sources[1][0] == "opgg"
+        assert result.tried_sources[1][1] == FetchResult.SUCCESS
+        # OpggClient was called with correct args (non-blocking)
+        opgg_client.get_summoner_id_by_puuid.assert_called_once_with(
+            "valid-puuid-here", "na", blocking=False
+        )
+        opgg_client.get_raw_games.assert_called_once_with(
+            "sum123", "na", limit=5, blocking=False
+        )
+        # Coordinator stored the extracted data to RawStore
+        stored = await raw_store.get("NA1_7234567890", redis_only=True)
+        assert stored is not None
+
+        # Cleanup
+        await riot_client.close()
+        await opgg_client.close()

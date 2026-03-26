@@ -3,9 +3,8 @@
 Uses the op.gg SPA internal endpoints to fetch match history and normalize
 to match-v5-shaped dicts via the ETL layer in _opgg_etl.py.
 
-Note: op.gg responses do NOT contain Riot matchIds. The normalized match_id
-uses the format ``OPGG_{PLATFORM}_{opgg_internal_id}`` and cannot be
-directly cross-referenced with Riot API without a separate lookup.
+op.gg ``game['id']`` is the Riot numeric game ID (e.g.,
+``game['id'] = 7234567890`` corresponds to Riot match ``NA1_7234567890``).
 """
 
 from __future__ import annotations
@@ -17,7 +16,7 @@ import httpx
 import redis.asyncio as aioredis
 
 from lol_pipeline._opgg_etl import normalize_game
-from lol_pipeline.rate_limiter_client import wait_for_token
+from lol_pipeline.rate_limiter_client import try_token, wait_for_token
 
 _log = logging.getLogger("opgg_client")
 
@@ -40,11 +39,11 @@ class OpggParseError(Exception):
 
 
 class OpggRateLimitError(Exception):
-    """Raised when op.gg returns HTTP 429 (rate limited)."""
+    """Raised when op.gg returns HTTP 429 or rate-limit tokens are unavailable."""
 
-    def __init__(self, retry_ms: int = 5000) -> None:
+    def __init__(self, message: str = "", *, retry_ms: int = 5000) -> None:
         self.retry_ms = retry_ms
-        super().__init__(f"op.gg rate limit — retry after {retry_ms}ms")
+        super().__init__(message or f"op.gg rate limit — retry after {retry_ms}ms")
 
 
 class OpggClient:
@@ -66,6 +65,7 @@ class OpggClient:
         r: aioredis.Redis | None = None,
         rate_limit_per_second: int = 2,
         rate_limit_long: int = 30,
+        summoner_cache_ttl_seconds: int = 3600,
     ) -> None:
         self._client = client or httpx.AsyncClient(
             headers=_DEFAULT_HEADERS,
@@ -75,6 +75,7 @@ class OpggClient:
         self._r = r
         self._rate_limit_per_second = rate_limit_per_second
         self._rate_limit_long = rate_limit_long
+        self._summoner_cache_ttl = summoner_cache_ttl_seconds
 
     @staticmethod
     def _check_status(resp: httpx.Response) -> None:
@@ -85,7 +86,7 @@ class OpggClient:
                 retry_ms = int(float(retry_after)) * 1000
             except (ValueError, TypeError):
                 retry_ms = 5000
-            raise OpggRateLimitError(retry_ms)
+            raise OpggRateLimitError("opgg 429", retry_ms=retry_ms)
         resp.raise_for_status()
 
     async def _acquire(self, endpoint: str) -> None:
@@ -159,6 +160,144 @@ class OpggClient:
                     extra={"game_id": raw_game.get("id", "?"), "error": str(exc)},
                 )
         return results
+
+    async def get_summoner_id_by_puuid(
+        self, puuid: str, region: str, *, blocking: bool = True
+    ) -> str:
+        """Return op.gg summoner ID for a PUUID, using Redis cache when available."""
+        import re
+
+        if not re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", puuid):
+            raise OpggParseError(f"Invalid PUUID format: {puuid!r}")
+
+        cache_key = f"opgg:summoner:{puuid}:{region}"
+        if self._r is not None:
+            cached = await self._r.get(cache_key)
+            if cached:
+                return cached.decode() if isinstance(cached, bytes) else cached
+
+        if blocking:
+            await self._acquire("summoner")
+        else:
+            granted = await try_token("opgg", "summoner")
+            if not granted:
+                raise OpggRateLimitError(
+                    "opgg summoner token unavailable", retry_ms=0
+                )
+
+        url = f"{_BASE_URL}/v3/{region}/summoners"
+        resp = await self._client.get(url, params={"puuid": puuid, "hl": "en_US"})
+        if resp.status_code == 404:
+            raise OpggParseError(
+                f"Summoner not found for PUUID {puuid!r} in {region!r}"
+            )
+        self._check_status(resp)
+
+        data = resp.json()
+        summoner_id = (
+            data.get("data", {}).get("summoner_id")
+            or data.get("summoner_id")
+            or data.get("id")
+        )
+        if not summoner_id:
+            raise OpggParseError(f"No summoner_id in response: {data!r}")
+        summoner_id = str(summoner_id)
+
+        if self._r is not None:
+            await self._r.set(cache_key, summoner_id, ex=self._summoner_cache_ttl)
+
+        return summoner_id
+
+    async def get_raw_games(
+        self,
+        summoner_id: str,
+        region: str,
+        *,
+        limit: int = 5,
+        blocking: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Return raw op.gg game dicts (un-normalized) for the given summoner."""
+        import re
+
+        if not re.fullmatch(r"[0-9a-zA-Z_-]+", summoner_id):
+            raise OpggParseError(f"Invalid summoner_id format: {summoner_id!r}")
+
+        if blocking:
+            await self._acquire("games")
+        else:
+            granted = await try_token("opgg", "games")
+            if not granted:
+                raise OpggRateLimitError(
+                    "opgg games token unavailable", retry_ms=0
+                )
+
+        url = (
+            f"{_BASE_URL}/{region}/summoners/{summoner_id}/games"
+            f"?limit={limit}&game_type=total&hl=en_US"
+        )
+        resp = await self._client.get(url)
+        self._check_status(resp)
+
+        payload = resp.json()
+        raw_games: list[dict[str, Any]] | None = payload.get("data")
+        if raw_games is None:
+            raise OpggParseError(f"No 'data' key in games response: {payload!r}")
+        return raw_games
+
+    async def prefetch_player_games(
+        self,
+        puuid: str,
+        opgg_region: str,
+        blob_store: object,
+        *,
+        limit: int = 20,
+    ) -> int:
+        """Pre-fetch player's recent games to BlobStore. Returns count written.
+
+        Non-fatal on errors -- logs warnings and returns 0.
+        """
+        import json
+
+        from lol_pipeline._opgg_etl import OPGG_REGION_MAP, RIOT_PLATFORM_TO_OPGG_REGION
+
+        # Build reverse map: opgg_region -> Riot platform (e.g., "na" -> "NA1")
+        opgg_to_platform = {v: k for k, v in RIOT_PLATFORM_TO_OPGG_REGION.items()}
+
+        try:
+            summoner_id = await self.get_summoner_id_by_puuid(
+                puuid, opgg_region, blocking=True
+            )
+            raw_games = await self.get_raw_games(
+                summoner_id, opgg_region, limit=limit, blocking=True
+            )
+        except Exception as exc:
+            _log.warning(
+                "opgg prefetch_player_games failed (puuid=%s, region=%s): %s",
+                puuid,
+                opgg_region,
+                exc,
+            )
+            return 0
+
+        platform = opgg_to_platform.get(opgg_region, opgg_region.upper())
+        count = 0
+        for game in raw_games:
+            game_id = game.get("id")
+            if game_id is None:
+                continue
+            match_id = f"{platform}_{game_id}"
+            raw_blob = json.dumps(game).encode()
+            try:
+                blob_store.write("opgg", match_id, raw_blob)  # type: ignore[attr-defined]
+                count += 1
+            except Exception as exc:
+                _log.warning(
+                    "opgg prefetch: blob_store.write failed (match_id=%s): %s",
+                    match_id,
+                    exc,
+                )
+
+        return count
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""

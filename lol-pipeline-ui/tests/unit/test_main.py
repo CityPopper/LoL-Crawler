@@ -597,8 +597,8 @@ except ImportError:
 
 class TestAutoSeedPriority:
     @pytest.mark.asyncio
-    async def test_show_stats__not_seeded_returns_warning(self):
-        """STRUCT-3: UI no longer auto-seeds; returns 'not seeded' warning."""
+    async def test_show_stats__not_seeded_auto_enqueues(self):
+        """Untracked player is auto-enqueued and shown an info message."""
         import fakeredis.aioredis
 
         from lol_ui.routes.stats import show_stats
@@ -625,11 +625,12 @@ class TestAutoSeedPriority:
         resp = await show_stats(request)
         body = resp.body.decode()
 
-        # No auto-seed, no stream publish
+        # Auto-enqueue: message published to stream:puuid
         entries = await r.xrange("stream:puuid")
-        assert len(entries) == 0
-        # Warning shown instead
-        assert "No stats available" in body
+        assert len(entries) == 1
+        # Info message shown (not warning)
+        assert "Tracking started" in body
+        assert "check back" in body
 
         await r.aclose()
 
@@ -658,35 +659,41 @@ class TestAutoSeedPriority:
 
 
 class TestAutoSeedOrdering:
-    """STRUCT-3: Auto-seed removed; UI is now read-only."""
+    """Auto-seed restored: UI auto-enqueues untracked players."""
 
     @pytest.mark.asyncio
-    async def test_no_auto_seed__returns_not_seeded_response(self):
-        """UI returns 'not seeded' message instead of auto-seeding."""
-        from unittest.mock import AsyncMock, MagicMock
+    async def test_auto_seed__enqueues_untracked_player(self):
+        """UI auto-enqueues untracked player and shows 'Tracking started'."""
+        import fakeredis.aioredis
 
         from lol_ui.routes.stats import show_stats
 
-        mock_r = AsyncMock()
-        mock_r.get.return_value = None  # no cached puuid
-        mock_r.hgetall.return_value = {}  # no stats
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
-        mock_riot = AsyncMock()
-        mock_riot.get_account_by_riot_id.return_value = {"puuid": "test-puuid-123"}
+        class FakeRiot:
+            async def get_account_by_riot_id(self, gn, tl, region):
+                return {"puuid": "test-puuid-123"}
 
-        mock_cfg = MagicMock()
-        mock_cfg.max_attempts = 5
-        mock_cfg.api_rate_limit_per_second = 20
+        class FakeCfg:
+            max_attempts = 5
+            api_rate_limit_per_second = 20
+
+        from unittest.mock import MagicMock
 
         request = MagicMock()
         request.query_params = {"riot_id": "Test#NA1", "region": "na1"}
-        request.app.state.r = mock_r
-        request.app.state.cfg = mock_cfg
-        request.app.state.riot = mock_riot
+        request.app.state.r = r
+        request.app.state.cfg = FakeCfg()
+        request.app.state.riot = FakeRiot()
 
         resp = await show_stats(request)
         body = resp.body.decode()
-        assert "No stats available" in body
+        assert "Tracking started" in body
+
+        entries = await r.xrange("stream:puuid")
+        assert len(entries) == 1
+
+        await r.aclose()
 
 
 class TestStatsOrder:
@@ -2465,11 +2472,11 @@ class TestRegionValidation400:
 
 
 class TestAutoSeedCooldown:
-    """STRUCT-3: Auto-seed removed — UI returns 'not seeded' message."""
+    """Auto-seed restored: UI auto-enqueues untracked players."""
 
     @pytest.mark.asyncio
-    async def test_no_stats__returns_not_seeded(self):
-        """When player has no stats, UI returns not-seeded warning."""
+    async def test_no_stats__auto_enqueues_player(self):
+        """When player has no stats and is untracked, UI auto-enqueues."""
         from unittest.mock import AsyncMock, MagicMock
 
         import fakeredis.aioredis
@@ -2497,60 +2504,92 @@ class TestAutoSeedCooldown:
             resp = await show_stats(request)
 
         body = resp.body.decode()
-        assert "No stats available" in body
-        # No cooldown key set (no writes)
-        cooldown = await r.get("autoseed:cooldown:cooldown-puuid-1")
-        assert cooldown is None
+        assert "Tracking started" in body
+
+        # Message published to stream:puuid
+        entries = await r.xrange("stream:puuid")
+        assert len(entries) == 1
 
         await r.aclose()
 
     @pytest.mark.asyncio
-    async def test_no_stats__no_stream_publish(self):
-        """When player has no stats, no messages are published to streams."""
+    async def test_no_stats__tracked_player_shows_computing(self):
+        """When player is tracked but stats not yet computed, show info."""
         from unittest.mock import AsyncMock, MagicMock
+
+        import fakeredis.aioredis
 
         from lol_ui.routes.stats import show_stats
 
-        mock_r = AsyncMock()
-        mock_r.get.side_effect = lambda key: {
-            "player:name:blocked#na1": "blocked-puuid-123",
-        }.get(key)
-        mock_r.hgetall.return_value = {}  # no stats
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        # Pre-populate player data so the player appears tracked
+        await r.hset("player:tracked-puuid-1", mapping={"region": "na1"})
+
+        class FakeRiot:
+            async def get_account_by_riot_id(self, gn, tl, region):
+                return {"puuid": "tracked-puuid-1"}
+
+        class FakeCfg:
+            max_attempts = 5
+            api_rate_limit_per_second = 20
+            players_all_max = 50000
 
         request = MagicMock()
-        request.query_params = {"riot_id": "Blocked#NA1", "region": "na1"}
-        request.app.state.r = mock_r
-        request.app.state.riot = MagicMock()
-        request.app.state.cfg = MagicMock()
+        request.query_params = {"riot_id": "Tracked#NA1", "region": "na1"}
+        request.app.state.r = r
+        request.app.state.cfg = FakeCfg()
+        request.app.state.riot = FakeRiot()
 
-        resp = await show_stats(request)
+        with patch("lol_ui.routes.stats.wait_for_token", new_callable=AsyncMock):
+            resp = await show_stats(request)
+
         body = resp.body.decode()
+        assert "being computed" in body
 
-        assert "No stats available" in body
+        # No message published — player is already tracked
+        entries = await r.xrange("stream:puuid")
+        assert len(entries) == 0
+
+        await r.aclose()
 
     @pytest.mark.asyncio
-    async def test_no_stats__read_only_response(self):
-        """When player has no stats, response suggests using admin CLI."""
+    async def test_no_stats__halted_system_shows_warning(self):
+        """When system is halted, untracked player sees maintenance warning."""
         from unittest.mock import AsyncMock, MagicMock
+
+        import fakeredis.aioredis
 
         from lol_ui.routes.stats import show_stats
 
-        mock_r = AsyncMock()
-        mock_r.get.side_effect = lambda key: {
-            "player:name:proceed#na1": "proceed-puuid-456",
-        }.get(key)
-        mock_r.hgetall.return_value = {}  # no stats
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await r.set("system:halted", "1")
+
+        class FakeRiot:
+            async def get_account_by_riot_id(self, gn, tl, region):
+                return {"puuid": "halted-puuid-1"}
+
+        class FakeCfg:
+            max_attempts = 5
+            api_rate_limit_per_second = 20
+            players_all_max = 50000
 
         request = MagicMock()
-        request.query_params = {"riot_id": "Proceed#NA1", "region": "na1"}
-        request.app.state.r = mock_r
-        request.app.state.riot = MagicMock()
-        request.app.state.cfg = MagicMock()
+        request.query_params = {"riot_id": "Halted#NA1", "region": "na1"}
+        request.app.state.r = r
+        request.app.state.cfg = FakeCfg()
+        request.app.state.riot = FakeRiot()
 
-        resp = await show_stats(request)
+        with patch("lol_ui.routes.stats.wait_for_token", new_callable=AsyncMock):
+            resp = await show_stats(request)
+
         body = resp.body.decode()
-        assert "No stats available" in body
-        assert "just admin seed" in body
+        assert "paused for maintenance" in body
+
+        # No message published when halted
+        entries = await r.xrange("stream:puuid")
+        assert len(entries) == 0
+
+        await r.aclose()
 
 
 # ---------------------------------------------------------------------------
@@ -6396,3 +6435,108 @@ class TestFormLabelCssFlexColumn:
         label_match = re.search(r"\.form-inline\s+label\s*\{([^}]+)\}", _CSS)
         assert label_match is not None, ".form-inline label rule must exist"
         assert "flex-direction: column" in label_match.group(1)
+
+
+# ---------------------------------------------------------------------------
+# RUN-004 regression — multiple '#' chars / oversized riot_id components
+# Bug: _resolve_puuid raised unhandled ValueError when tag_line exceeded
+# max length (e.g. riot_id with multiple '#' or very long components).
+# Fix: show_stats and player_refresh now validate lengths before calling
+# name_cache_key, returning 400 instead of letting ValueError propagate.
+# ---------------------------------------------------------------------------
+
+
+class TestRiotIdValidationRegression:
+    """RUN-004 regression: malformed riot_id must not cause unhandled 500."""
+
+    @pytest.mark.asyncio
+    async def test_stats_multiple_hash_in_riot_id(self):
+        """GET /stats with riot_id containing multiple '#' must not return 500."""
+        import fakeredis.aioredis
+        from unittest.mock import AsyncMock, MagicMock
+
+        from lol_ui.routes.stats import show_stats
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        class FakeRiot:
+            async def get_account_by_riot_id(self, gn, tl, region):
+                return {"puuid": "run004-puuid"}
+
+        class FakeCfg:
+            max_attempts = 5
+            api_rate_limit_per_second = 20
+            players_all_max = 50000
+
+        request = MagicMock()
+        request.query_params = {"riot_id": "Name#1337#extra", "region": "na1"}
+        request.app.state.r = r
+        request.app.state.cfg = FakeCfg()
+        request.app.state.riot = FakeRiot()
+
+        with patch("lol_ui.routes.stats.wait_for_token", new_callable=AsyncMock):
+            resp = await show_stats(request)
+
+        assert resp.status_code != 500, (
+            f"Multiple '#' in riot_id must not cause unhandled exception (got {resp.status_code})"
+        )
+
+        await r.aclose()
+
+    @pytest.mark.asyncio
+    async def test_stats_oversized_tag_line(self):
+        """GET /stats with tag_line > 16 chars must return 400, not 500."""
+        from unittest.mock import MagicMock
+
+        from lol_ui.routes.stats import show_stats
+
+        long_tag = "x" * 35
+        request = MagicMock()
+        request.query_params = {"riot_id": f"Name#{long_tag}", "region": "na1"}
+
+        resp = await show_stats(request)
+
+        assert resp.status_code == 400, (
+            f"Oversized tag_line must return 400, got {resp.status_code}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_stats_oversized_game_name(self):
+        """GET /stats with game_name > 64 chars must return 400, not 500."""
+        from unittest.mock import MagicMock
+
+        from lol_ui.routes.stats import show_stats
+
+        long_name = "x" * 65
+        request = MagicMock()
+        request.query_params = {"riot_id": f"{long_name}#1337", "region": "na1"}
+
+        resp = await show_stats(request)
+
+        assert resp.status_code == 400, (
+            f"Oversized game_name must return 400, got {resp.status_code}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_player_refresh_multiple_hash(self):
+        """POST /player/refresh with riot_id containing multiple '#' must not return 500."""
+        import fakeredis.aioredis
+        from unittest.mock import AsyncMock, MagicMock
+
+        from lol_ui.routes.stats import player_refresh
+
+        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+        request = MagicMock()
+        request.json = AsyncMock(
+            return_value={"riot_id": "Name#1337#extra", "region": "na1"}
+        )
+        request.app.state.r = r
+
+        resp = await player_refresh(request)
+
+        assert resp.status_code != 500, (
+            f"Multiple '#' in riot_id must not cause unhandled exception (got {resp.status_code})"
+        )
+
+        await r.aclose()

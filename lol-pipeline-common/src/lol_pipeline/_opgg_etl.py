@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-_OPGG_REGION_MAP = {
+OPGG_REGION_MAP = {
     "na": "NA1",
     "kr": "KR",
     "euw": "EUW1",
@@ -18,6 +18,8 @@ _OPGG_REGION_MAP = {
     "tr": "TR1",
     "ru": "RU",
 }
+
+RIOT_PLATFORM_TO_OPGG_REGION: dict[str, str] = {v: k for k, v in OPGG_REGION_MAP.items()}
 
 _DROPPED_PARTICIPANT_FIELDS = {"op_score", "lane_score", "clips", "keyword"}
 
@@ -71,7 +73,7 @@ def normalize_game(raw_game: dict[str, Any], region: str = "") -> dict[str, Any]
 
     Raises ``KeyError`` if required top-level fields are missing.
     """
-    game_id: str = raw_game["id"]
+    game_id: int | str = raw_game["id"]
     created_at: str = raw_game.get("created_at", "")
     # Convert ISO timestamp to epoch ms
     try:
@@ -80,21 +82,31 @@ def normalize_game(raw_game: dict[str, Any], region: str = "") -> dict[str, Any]
     except (ValueError, AttributeError):
         game_creation_ms = 0
 
-    platform = _OPGG_REGION_MAP.get(region.lower(), region.upper())
+    platform = OPGG_REGION_MAP.get(region.lower(), region.upper())
     match_id = f"OPGG_{platform}_{game_id}"
 
     teams_raw: list[dict[str, Any]] = raw_game.get("teams", [])
     participants: list[dict[str, Any]] = []
     teams: list[dict[str, Any]] = []
     team_ids = [100, 200]
+
+    # Build team key->id and key->win maps from teams
+    team_key_to_id: dict[str, int] = {}
+    team_key_to_win: dict[str, bool] = {}
     for i, team_raw in enumerate(teams_raw):
         team_id = team_ids[i] if i < len(team_ids) else (i + 1) * 100
+        key = team_raw.get("key", "")
+        team_key_to_id[key] = team_id
+        team_key_to_win[key] = bool(team_raw.get("game_stat", {}).get("is_win", False))
         teams.append(_normalize_team(team_raw, team_id))
-        for raw_p in team_raw.get("participants", []):
-            p = _normalize_participant(raw_p)
-            p["teamId"] = team_id
-            p["win"] = bool(team_raw.get("game_stat", {}).get("is_win", False))
-            participants.append(p)
+
+    # Participants are at the top level of the game blob
+    for raw_p in raw_game.get("participants", []):
+        p = _normalize_participant(raw_p)
+        team_key = raw_p.get("team_key", "")
+        p["teamId"] = team_key_to_id.get(team_key, 0)
+        p["win"] = team_key_to_win.get(team_key, False)
+        participants.append(p)
 
     return {
         "metadata": {
@@ -108,7 +120,7 @@ def normalize_game(raw_game: dict[str, Any], region: str = "") -> dict[str, Any]
             "gameMode": raw_game.get("game_type", "CLASSIC"),
             "gameType": raw_game.get("game_type", "MATCHED_GAME"),
             "platformId": platform,
-            "queueId": raw_game.get("queue_info", {}).get("queue_id", 0),
+            "queueId": raw_game.get("queue_id", 0),
             "participants": participants,
             "teams": teams,
             "source": "opgg",

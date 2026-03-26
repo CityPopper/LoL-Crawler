@@ -12,9 +12,17 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from lol_pipeline._helpers import is_system_halted, name_cache_key
+from lol_pipeline._helpers import (
+    _MAX_GAME_NAME_LEN,
+    _MAX_TAG_LINE_LEN,
+    is_system_halted,
+    name_cache_key,
+)
+from lol_pipeline._opgg_etl import OPGG_REGION_MAP, RIOT_PLATFORM_TO_OPGG_REGION
 from lol_pipeline.config import Config
 from lol_pipeline.log import get_logger
+from lol_pipeline.opgg_client import OpggClient
+from lol_pipeline.sources.blob_store import BlobStore
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.priority import PRIORITY_MANUAL_20, set_priority
 from lol_pipeline.rate_limiter_client import wait_for_token
@@ -196,7 +204,18 @@ async def _resolve_puuid(
 
     Returns the PUUID string on success, or an HTMLResponse on error.
     """
-    cache_key = name_cache_key(game_name, tag_line)
+    try:
+        cache_key = name_cache_key(game_name, tag_line)
+    except ValueError:
+        return HTMLResponse(
+            _stats_form(
+                t("stats_invalid_riot_id"),
+                "error",
+                selected_region=region,
+                value=riot_id,
+            ),
+            status_code=400,
+        )
     cached_puuid: str | None = await r.get(cache_key)
     if cached_puuid:
         return cached_puuid
@@ -243,23 +262,132 @@ async def _resolve_puuid(
     return puuid
 
 
-def _not_seeded_response(
+
+async def _auto_enqueue_or_wait(
+    r: Any,
+    cfg: Config,
+    puuid: str,
     game_name: str,
     tag_line: str,
     region: str,
+    riot_id: str,
 ) -> HTMLResponse:
-    """Return a read-only 'not seeded' indicator (no Redis writes)."""
-    riot_id = f"{game_name}#{tag_line}"
-    safe_id = html.escape(riot_id)
+    """Check tracking state and either enqueue the player or show a wait message."""
+    player_data = await r.hgetall(f"player:{puuid}")
+    matches_count: int = await r.zcard(f"player:matches:{puuid}")
+    riot_id_display = html.escape(f"{game_name}#{tag_line}")
+
+    poll_html = (
+        '<p class="info">\u27f3 Checking for stats automatically\u2026</p>'
+        '<p id="poll-countdown">Checking again in '
+        '<span id="poll-secs">10</span>s\u2026</p>'
+        "<script>"
+        "(function() {"
+        "  var secs = 10;"
+        "  var el = document.getElementById('poll-secs');"
+        "  var timer = setInterval(function() {"
+        "    secs--;"
+        "    if (el) el.textContent = secs;"
+        "    if (secs <= 0) {"
+        "      clearInterval(timer);"
+        "      window.location.reload();"
+        "    }"
+        "  }, 1000);"
+        "})();"
+        "</script>"
+    )
+
+    if player_data or matches_count > 0:
+        return HTMLResponse(
+            _stats_form(
+                f"Stats for {riot_id_display} are being computed — "
+                "check back in a few minutes.",
+                "info",
+                poll_html,
+                selected_region=region,
+                value=riot_id,
+            )
+        )
+
+    if await is_system_halted(r):
+        return HTMLResponse(
+            _stats_form(
+                "The pipeline is currently paused for maintenance. "
+                "Please try again later.",
+                "warning",
+                selected_region=region,
+                value=riot_id,
+            )
+        )
+
+    await set_priority(r, puuid)
+    envelope = MessageEnvelope(
+        source_stream="stream:puuid",
+        type="puuid",
+        payload={
+            "puuid": puuid,
+            "game_name": game_name,
+            "tag_line": tag_line,
+            "region": region,
+        },
+        max_attempts=cfg.max_attempts,
+        priority=PRIORITY_MANUAL_20,
+        correlation_id=str(uuid.uuid4()),
+    )
+    await publish(r, "stream:puuid", envelope)
+
     return HTMLResponse(
         _stats_form(
-            f"No stats available for {safe_id}. "
-            "Use the admin CLI to seed this player: "
-            f"<code>just admin seed {safe_id} --region {html.escape(region)}</code>",
-            "warning",
+            f"Tracking started for {riot_id_display} — "
+            "check back in a few minutes.",
+            "info",
+            poll_html,
             selected_region=region,
             value=riot_id,
         )
+    )
+
+
+async def _opgg_prefetch_bg(
+    opgg_client: OpggClient,
+    puuid: str,
+    opgg_region: str,
+    blob_store: BlobStore,
+    limit: int,
+) -> None:
+    """Background task: pre-fetch op.gg games into BlobStore. Errors are logged, never raised."""
+    try:
+        await opgg_client.prefetch_player_games(puuid, opgg_region, blob_store, limit=limit)
+    except Exception:
+        _log.warning(
+            "opgg background prefetch failed",
+            extra={"puuid": puuid, "region": opgg_region},
+            exc_info=True,
+        )
+
+
+def _maybe_start_opgg_prefetch(
+    request: Request,
+    puuid: str,
+    region: str,
+) -> None:
+    """Fire-and-forget op.gg pre-fetch if opgg is enabled and blob_store is available."""
+    cfg = request.app.state.cfg
+    if not getattr(cfg, "opgg_enabled", False) or not getattr(cfg, "blob_data_dir", ""):
+        return
+    opgg_client: OpggClient | None = getattr(request.app.state, "opgg_client", None)
+    blob_store: BlobStore | None = getattr(request.app.state, "blob_store", None)
+    if opgg_client is None or blob_store is None:
+        return
+    opgg_region = (
+        RIOT_PLATFORM_TO_OPGG_REGION.get(region.upper())
+        or OPGG_REGION_MAP.get(region.lower())
+    )
+    if not opgg_region:
+        return
+    limit: int = getattr(cfg, "opgg_prefetch_limit", 20)
+    asyncio.create_task(
+        _opgg_prefetch_bg(opgg_client, puuid, opgg_region, blob_store, limit)
     )
 
 
@@ -429,6 +557,16 @@ async def show_stats(request: Request) -> HTMLResponse:
         )
 
     game_name, tag_line = riot_id.split("#", 1)
+    if len(game_name) > _MAX_GAME_NAME_LEN or len(tag_line) > _MAX_TAG_LINE_LEN:
+        return HTMLResponse(
+            _stats_form(
+                t("stats_invalid_riot_id"),
+                "error",
+                selected_region=region,
+                value=riot_id,
+            ),
+            status_code=400,
+        )
     r = request.app.state.r
     cfg: Config = request.app.state.cfg
     riot: RiotClient = request.app.state.riot
@@ -441,7 +579,8 @@ async def show_stats(request: Request) -> HTMLResponse:
     stats: dict[str, str] = await r.hgetall(f"player:stats:{puuid}")
 
     if not stats:
-        return _not_seeded_response(game_name, tag_line, region)
+        _maybe_start_opgg_prefetch(request, puuid, region)
+        return await _auto_enqueue_or_wait(r, cfg, puuid, game_name, tag_line, region, riot_id)
 
     return await _build_stats_response(r, puuid, game_name, tag_line, region, riot_id, stats)
 
@@ -460,6 +599,8 @@ async def player_refresh(request: Request) -> JSONResponse:
         return JSONResponse({"error": "invalid riot_id"}, status_code=400)
 
     game_name, tag_line = riot_id.split("#", 1)
+    if len(game_name) > _MAX_GAME_NAME_LEN or len(tag_line) > _MAX_TAG_LINE_LEN:
+        return JSONResponse({"error": "invalid riot_id"}, status_code=400)
     r = request.app.state.r
     puuid: str | None = await r.get(name_cache_key(game_name, tag_line))
 

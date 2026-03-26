@@ -8,6 +8,7 @@ or when the op.gg ETL code changes.
 Environment variables:
     OPGG_LIVE_TESTS       -- set to "1" to enable these tests
     OPGG_TEST_SUMMONER_ID -- op.gg summoner_id to query (default: well-known test value)
+    OPGG_TEST_PUUID       -- PUUID for on-demand fetch test (default: resolved from summoner)
     OPGG_TEST_REGION      -- op.gg region slug (default: "na")
 """
 
@@ -34,6 +35,7 @@ pytestmark = pytest.mark.skipif(
 # Configuration -- override via env vars
 # ---------------------------------------------------------------------------
 _SUMMONER_ID = os.environ.get("OPGG_TEST_SUMMONER_ID", "")
+_PUUID = os.environ.get("OPGG_TEST_PUUID", "")
 _REGION = os.environ.get("OPGG_TEST_REGION", "na")
 
 _BASE_URL = "https://lol-api-summoner.op.gg/api"
@@ -70,7 +72,7 @@ async def _resolve_summoner_id(http: httpx.AsyncClient) -> str:
     params = {"riot_id": "Hide on bush#KR1", "hl": "en_US"}
     resp = await http.get(url, params=params)
     resp.raise_for_status()
-    return str(resp.json()["data"]["summoner_id"])
+    return str(resp.json()["data"][0]["summoner_id"])
 
 
 async def _fetch_raw_games(
@@ -128,6 +130,26 @@ def _effective_region() -> str:
     if _SUMMONER_ID:
         return _REGION
     return "kr"
+
+
+async def _resolve_puuid(http: httpx.AsyncClient, region: str) -> str:
+    """Return a PUUID for testing.
+
+    If OPGG_TEST_PUUID is set, use it directly.  Otherwise, fetch the
+    summoner's recent games and extract the PUUID of the first participant.
+    """
+    if _PUUID:
+        return _PUUID
+
+    summoner_id = await _resolve_summoner_id(http)
+    raw_games = await _fetch_raw_games(http, summoner_id, region)
+    # Extract a participant PUUID from the first game
+    participants = raw_games[0].get("participants", [])
+    for p in participants:
+        puuid = p.get("summoner", {}).get("puuid", "")
+        if puuid:
+            return puuid
+    pytest.skip("Could not resolve a test PUUID from game participants")
 
 
 # ---------------------------------------------------------------------------
@@ -271,7 +293,7 @@ async def test_real_canonical_output_matches_schema() -> None:
         await http.aclose()
 
     raw_game = raw_games[0]
-    game_id = str(raw_game["id"])
+    game_id = raw_game["id"]
     platform_map = {
         "na": "NA1",
         "kr": "KR",
@@ -282,7 +304,10 @@ async def test_real_canonical_output_matches_schema() -> None:
         "oce": "OC1",
     }
     platform = platform_map.get(region.lower(), region.upper())
-    match_id = f"OPGG_{platform}_{game_id}"
+
+    # Use Riot-format match_id (e.g. "NA1_7234567890") — the coordinator passes
+    # this to extract(), which must override the ETL-generated OPGG_ prefix.
+    match_id = f"{platform}_{game_id}"
 
     extractor = OpggMatchExtractor()
 
@@ -293,9 +318,13 @@ async def test_real_canonical_output_matches_schema() -> None:
     assert "metadata" in result
     assert "info" in result
 
-    # metadata
+    # metadata — regression guard: extract() must use the Riot-format match_id
+    # passed by the coordinator, NOT the OPGG_ prefix generated internally.
     meta = result["metadata"]
-    assert meta["match_id"] == match_id
+    assert meta["match_id"] == f"{platform}_{game_id}", (
+        f"metadata.match_id should be Riot-format '{platform}_{game_id}', "
+        f"got {meta['match_id']!r} — extract() override may have been removed"
+    )
     assert isinstance(meta.get("participants"), list)
     assert len(meta["participants"]) > 0
 
@@ -349,3 +378,78 @@ async def test_real_canonical_output_matches_schema() -> None:
     for team in teams:
         assert "teamId" in team
         assert "win" in team
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.asyncio
+async def test_real_on_demand_fetch_by_puuid() -> None:
+    """Validate the PUUID-based summoner lookup and raw games fetch.
+
+    This exercises the on-demand fetch path: resolve a summoner_id from a
+    PUUID, then fetch raw games and verify that game IDs are integers that
+    form valid Riot-format match IDs.
+    """
+    http = httpx.AsyncClient(headers=_DEFAULT_HEADERS, timeout=httpx.Timeout(15.0))
+    try:
+        region = _effective_region()
+        puuid = await _resolve_puuid(http, region)
+    finally:
+        await http.aclose()
+
+    # Use OpggClient (without Redis, without rate limiting) for the real calls
+    client = OpggClient(httpx.AsyncClient(
+        headers=_DEFAULT_HEADERS, timeout=httpx.Timeout(15.0),
+    ))
+    try:
+        # Step 1: Resolve summoner_id from PUUID
+        summoner_id = await client.get_summoner_id_by_puuid(
+            puuid, region, blocking=True
+        )
+        assert isinstance(summoner_id, str), (
+            f"Expected summoner_id to be str, got {type(summoner_id)}"
+        )
+        assert len(summoner_id) > 0, "summoner_id must be non-empty"
+
+        # Respect op.gg rate limit between calls
+        await asyncio.sleep(1.0)
+
+        # Step 2: Fetch raw games
+        raw_games = await client.get_raw_games(
+            summoner_id, region, limit=3, blocking=True
+        )
+        assert isinstance(raw_games, list), (
+            f"Expected list, got {type(raw_games)}"
+        )
+        assert len(raw_games) > 0, "Expected at least one raw game"
+
+        # Step 3: Validate game IDs are integers
+        platform_map = {
+            "na": "NA1",
+            "kr": "KR",
+            "euw": "EUW1",
+            "eune": "EUN1",
+            "br": "BR1",
+            "jp": "JP1",
+            "oce": "OC1",
+        }
+        platform = platform_map.get(region.lower(), region.upper())
+
+        for game in raw_games:
+            game_id = game["id"]
+            assert isinstance(game_id, int), (
+                f"Expected game['id'] to be int, got {type(game_id)}: {game_id!r}"
+            )
+            # Riot-format match_id: platform prefix + underscore + numeric suffix
+            riot_match_id = f"{platform}_{game_id}"
+            assert riot_match_id.count("_") == 1, (
+                f"Malformed match_id: {riot_match_id!r}"
+            )
+            prefix, suffix = riot_match_id.split("_", 1)
+            assert prefix.isalpha() or prefix[-1].isdigit(), (
+                f"Platform prefix should look like NA1/KR/EUW1, got {prefix!r}"
+            )
+            assert suffix.isdigit(), (
+                f"Numeric suffix should be all digits, got {suffix!r}"
+            )
+    finally:
+        await client.close()

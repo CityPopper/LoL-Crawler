@@ -190,7 +190,7 @@ def _build_coordinator(
     # Op.gg is available only when enabled and client is present.
     if cfg.opgg_enabled and opgg is not None:
         try:
-            opgg_source = OpggSource(opgg_client=opgg)
+            opgg_source = OpggSource(opgg_client=opgg, game_limit=cfg.opgg_fetch_game_limit)
             opgg_extractor = OpggMatchExtractor()
             source_builders["opgg"] = (
                 SourceEntry(name="opgg", source=opgg_source, priority=0),
@@ -346,6 +346,7 @@ async def main() -> None:
             r=r,
             rate_limit_per_second=cfg.opgg_rate_limit_per_second,
             rate_limit_long=cfg.opgg_rate_limit_long,
+            summoner_cache_ttl_seconds=cfg.opgg_summoner_cache_ttl_seconds,
         )
         if cfg.opgg_enabled
         else None
