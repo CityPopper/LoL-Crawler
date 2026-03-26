@@ -51,7 +51,6 @@ class Config(BaseSettings):
     opgg_rate_limit_per_second: int = Field(default=2, ge=1)
     opgg_rate_limit_long: int = Field(default=30, ge=1)
     opgg_match_data_dir: str = ""
-    opgg_api_key: str | None = Field(default=None, repr=False)
     # PRIN-COM-1: formerly raw os.getenv() / hardcoded literals
     player_data_ttl_seconds: int = Field(default=2592000, ge=1)  # 30 days
     champion_stats_ttl_seconds: int = Field(default=7776000, ge=1)  # 90 days

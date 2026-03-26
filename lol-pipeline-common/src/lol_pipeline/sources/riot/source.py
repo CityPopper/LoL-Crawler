@@ -11,6 +11,7 @@ from typing import Any
 
 from lol_pipeline.rate_limiter_client import try_token
 from lol_pipeline.riot_api import (
+    PLATFORM_TO_REGION,
     AuthError,
     NotFoundError,
     RateLimitError,
@@ -71,7 +72,8 @@ class RiotSource:
         3. Map exceptions to ``FetchResult`` values.
         """
         try:
-            granted = await try_token(source="riot", endpoint="match")
+            routing_region = PLATFORM_TO_REGION.get(context.region.lower(), "americas")
+            granted = await try_token(source=f"riot:{routing_region}", endpoint="match")
             if not granted:
                 return FetchResponse(result=FetchResult.THROTTLED)
 

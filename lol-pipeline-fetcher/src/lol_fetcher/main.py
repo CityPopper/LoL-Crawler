@@ -354,3 +354,5 @@ async def main() -> None:
     finally:
         await r.aclose()
         await riot.close()
+        if opgg is not None:
+            await opgg.close()

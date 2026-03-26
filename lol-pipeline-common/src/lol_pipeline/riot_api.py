@@ -380,7 +380,7 @@ class RiotClient:
     async def get_match(self, match_id: str, region: str) -> dict[str, Any]:
         """Fetch raw match JSON by match_id."""
         base = self._resolve_base(region)
-        url = f"{base}/lol/match/v5/matches/{match_id}"
+        url = f"{base}/lol/match/v5/matches/{quote(match_id, safe='')}"
         return cast(dict[str, Any], await self._get(url))
 
     async def get_match_with_raw(self, match_id: str, region: str) -> tuple[dict[str, Any], bytes]:
@@ -390,14 +390,14 @@ class RiotClient:
         without a redundant json.dumps() round-trip.
         """
         base = self._resolve_base(region)
-        url = f"{base}/lol/match/v5/matches/{match_id}"
+        url = f"{base}/lol/match/v5/matches/{quote(match_id, safe='')}"
         data, raw = await self._get_with_raw(url)
         return cast(dict[str, Any], data), raw
 
     async def get_match_timeline(self, match_id: str, region: str) -> dict[str, Any]:
         """Fetch match timeline JSON by match_id."""
         base = self._resolve_base(region)
-        url = f"{base}/lol/match/v5/matches/{match_id}/timeline"
+        url = f"{base}/lol/match/v5/matches/{quote(match_id, safe='')}/timeline"
         return cast(dict[str, Any], await self._get(url))
 
     async def get_summoner_by_puuid(self, puuid: str, region: str) -> dict[str, Any]:

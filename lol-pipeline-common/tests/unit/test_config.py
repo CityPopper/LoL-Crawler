@@ -102,7 +102,7 @@ class TestOpggConfig:
         assert cfg.opgg_rate_limit_per_second == 2
         assert cfg.opgg_rate_limit_long == 30
         assert cfg.opgg_match_data_dir == ""
-        assert cfg.opgg_api_key is None
+
 
 
 class TestConfigNumericValidation:

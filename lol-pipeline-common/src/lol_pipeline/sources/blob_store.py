@@ -101,6 +101,13 @@ class BlobStore:
             os.close(fd)
         os.replace(str(tmp), str(final))
 
+    async def delete(self, source_name: str, match_id: str) -> None:
+        """Delete a cached blob. Removes stale/corrupt blobs after can_extract() failure."""
+        if self._data_dir is None:
+            return
+        path = self._blob_path(source_name, match_id)
+        await asyncio.to_thread(path.unlink, missing_ok=True)
+
     async def find_any(
         self, match_id: str, source_names: list[str]
     ) -> tuple[str, dict[str, str]] | None:
@@ -129,6 +136,13 @@ class BlobStore:
                 raise ValueError(f"blob path escapes data dir: {blob_path}")
             raw = await asyncio.to_thread(self._read_if_exists, blob_path)
             if raw is None:
+                continue
+            if len(raw) > MAX_BLOB_SIZE_BYTES:
+                log.warning(
+                    "oversized blob at %s (%d bytes), treating as cache miss",
+                    blob_path,
+                    len(raw),
+                )
                 continue
             try:
                 return (name, json.loads(raw))

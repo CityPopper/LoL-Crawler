@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 # Env vars that may leak from other tests and pollute Config instantiation.
-_CLEAN_ENV_VARS = ("RIOT_API_KEY", "REDIS_URL", "OPGG_API_KEY")
+_CLEAN_ENV_VARS = ("RIOT_API_KEY", "REDIS_URL")
 
 
 def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -37,18 +37,6 @@ class TestConfigReprSecrets:
         cfg = Config(_env_file=None)  # type: ignore[call-arg]
         r = repr(cfg)
         assert "my-secret-redis" not in r
-
-    def test_repr_does_not_contain_opgg_api_key(self, monkeypatch):
-        """repr(Config()) must not contain the actual OPGG_API_KEY value."""
-        _clean_env(monkeypatch)
-        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
-        monkeypatch.setenv("REDIS_URL", "redis://localhost")
-        monkeypatch.setenv("OPGG_API_KEY", "opgg-secret-key-xyz")
-        from lol_pipeline.config import Config
-
-        cfg = Config(_env_file=None)  # type: ignore[call-arg]
-        r = repr(cfg)
-        assert "opgg-secret-key-xyz" not in r
 
     def test_non_secret_fields_still_in_repr(self, monkeypatch):
         """Non-secret config fields should remain in repr."""

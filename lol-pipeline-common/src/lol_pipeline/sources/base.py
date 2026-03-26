@@ -7,6 +7,7 @@ opaque key and never switches on its values.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Literal, Protocol, runtime_checkable
@@ -29,6 +30,8 @@ BUILD: DataType = "build"
 # FetchContext
 # ---------------------------------------------------------------------------
 
+_MATCH_ID_RE = re.compile(r"^[A-Z0-9]+_\d+$")
+
 
 @dataclass(frozen=True)
 class FetchContext:
@@ -46,6 +49,11 @@ class FetchContext:
     puuid: str
     region: str
     extra: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not _MATCH_ID_RE.match(self.match_id):
+            msg = f"Invalid match_id format: {self.match_id!r}"
+            raise ValueError(msg)
 
 
 # ---------------------------------------------------------------------------

@@ -45,7 +45,7 @@ def test_get_repo_id_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """Returns default repo when HF_DATASET_REPO is not set."""
     monkeypatch.delenv("HF_DATASET_REPO", raising=False)
     result = _get_repo_id()
-    assert result == "CityPopper/lol-pipeline-seed"
+    assert result == "CityPopper/LoL-Scraper"
 
 
 def test_get_repo_id_from_env(monkeypatch: pytest.MonkeyPatch) -> None:

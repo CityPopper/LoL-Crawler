@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 # Env vars that may leak from other tests and pollute Config instantiation.
-_CLEAN_ENV_VARS = ("RIOT_API_KEY", "REDIS_URL", "OPGG_API_KEY")
+_CLEAN_ENV_VARS = ("RIOT_API_KEY", "REDIS_URL")
 
 
 def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:

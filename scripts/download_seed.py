@@ -23,7 +23,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "pipeline-data" / "riot-api" / "NA1"
 REDIS_DIR = PROJECT_ROOT / "redis-data"
 DUMP_PATH = REDIS_DIR / "dump.rdb"
-DEFAULT_REPO = "CityPopper/lol-pipeline-seed"
+DEFAULT_REPO = "CityPopper/LoL-Scraper"
 
 
 def _load_env() -> None:

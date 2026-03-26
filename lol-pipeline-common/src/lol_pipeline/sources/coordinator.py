@@ -104,6 +104,7 @@ class WaterfallCoordinator:
                 source_name,
                 data_type,
             )
+            await self._blob_store.delete(source_name, context.match_id)
             return None
 
         try:

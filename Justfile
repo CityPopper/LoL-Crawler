@@ -99,20 +99,20 @@ compact-data:
     if [ "$count" -eq 0 ]; then
         echo "No .jsonl files to compact."
     else
-        echo "Compacted $count file(s). Run 'just upload' to anonymize and push to HF."
+        echo "Compacted $count file(s). Run 'just upload' to push to HF."
     fi
 
-# Download anonymized seed data from Hugging Face Datasets
+# Download seed data from Hugging Face Datasets
 download:
     python3 scripts/download_seed.py
 
-# Anonymize + upload seed data to Hugging Face Datasets (run `just compact-data` first)
+# Upload seed data to Hugging Face Datasets (run 'just compact-data' first)
 upload:
     #!/usr/bin/env bash
     set -euo pipefail
     echo "Step 1/2: Compacting active .jsonl files..."
     just compact-data
-    echo "Step 2/2: Anonymizing and uploading to Hugging Face..."
+    echo "Step 2/2: Uploading to Hugging Face..."
     python3 scripts/anonymize_and_upload.py
     echo ""
     echo "Upload complete. To regenerate dump.rdb, see workspace/design-seed-data.md SEED-7."

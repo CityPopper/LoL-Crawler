@@ -2,19 +2,18 @@
 
 ---
 
-## SEED-7 — Generate anonymized dump.rdb + upload to HF Datasets
-**Decisions**: D-1 (reversed), D-7. One-time workflow to create the anonymized Redis snapshot.
-**Dependency**: SEED-1 must complete first (local JSONL.ZST files must be anonymized before pipeline processes them).
-**Fix**: After SEED-1 completes:
+## SEED-7 — Generate dump.rdb + upload to HF Datasets
+**Decisions**: D-1 (reversed), D-7. One-time workflow to create the Redis snapshot.
+**Fix**:
 1. Start a fresh Redis with no data: `docker compose down -v && just up --no-seed`
-2. Run seed_from_disk.py with anonymized JSONL.ZST → pipeline processes all matches
+2. Run seed_from_disk.py with JSONL.ZST → pipeline processes all matches
 3. Wait for pipeline to drain (check `LLEN stream:parse == 0`, `LLEN stream:analyze == 0`)
 4. Take snapshot: `docker compose exec redis redis-cli BGSAVE && sleep 5`
 5. Copy dump: `cp redis-data/dump.rdb /tmp/seed-dump.rdb`
-6. Upload to HF: `HfApi().upload_file(path_or_fileobj="/tmp/seed-dump.rdb", path_in_repo="dump.rdb", repo_id=repo_id, repo_type="dataset")`
+6. Upload to HF: `HfApi().upload_file(path_or_fileobj="/tmp/seed-dump.rdb", path_in_repo="dump.rdb", repo_id="CityPopper/LoL-Scraper", repo_type="dataset", private=True)`
 7. Verify: check HF shows `dump.rdb` with expected size
 This is a manual/one-shot operation, not a script. Document steps in `workspace/design-seed-data.md`.
-- [ ] **Green:** Execute steps 1-7; HF Datasets contains both JSONL.ZST files + dump.rdb — Human action required
+- [ ] **Green:** Execute steps 1-7; Private HF dataset (CityPopper/LoL-Scraper) contains both JSONL.ZST files + dump.rdb — Human action required
 - [ ] **Refactor:** Confirm dump loads correctly: fresh Redis start + `DBSIZE` > 0 after mount — Human action required
 
 ---
