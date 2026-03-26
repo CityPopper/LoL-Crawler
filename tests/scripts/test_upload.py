@@ -1,21 +1,26 @@
-"""Tests for scripts/anonymize_and_upload.py (HFV-2).
+"""Tests for scripts/anonymize_and_upload.py (HFV-2 + HFV-3).
 
 Covers three functions:
   - _is_anomalous_date  (5 tests)
   - _upload_file         (2 tests)
   - _process_file        (4 tests)
+  - round-trip zst integrity (1 test, HFV-3)
 
 No network, no Docker — all use tmp_path + unittest.mock.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import zstandard as zstd
 
 from anonymize_and_upload import _is_anomalous_date, _process_file, _upload_file
+
+# cross-script import: validates that upload output is readable by the download pipeline
+from download_seed import _validate_zst
 
 
 # =========================================================================
@@ -147,3 +152,51 @@ def test_process_file__empty_file__returns_zero_upload_still_called(tmp_path: Pa
 
     assert count == 0
     mock_upload.assert_called_once()
+
+
+# =========================================================================
+# Round-trip zst integrity (HFV-3)
+# =========================================================================
+
+
+def test_round_trip_zst_integrity__upload_output_readable_by_download(tmp_path: Path) -> None:
+    """A zst file produced by the upload pipeline passes download's integrity check.
+
+    _validate_zst only checks magic bytes. The decompression + JSON parse step
+    confirms semantic correctness — both assertions are required.
+    """
+    # 1. Build a 2-record JSONL payload (tab-separated as download script expects)
+    records = [
+        {"match_id": "NA1_1234567890", "data": {"gameVersion": "14.12", "gameDuration": 1800}},
+        {"match_id": "NA1_9876543210", "data": {"gameVersion": "14.12", "gameDuration": 2100}},
+    ]
+    lines = [json.dumps(r) for r in records]
+    raw = "\n".join(lines).encode("utf-8") + b"\n"
+
+    # 2. Compress into a .jsonl.zst file
+    cctx = zstd.ZstdCompressor()
+    zst_path = tmp_path / "2024-06.jsonl.zst"
+    zst_path.write_bytes(cctx.compress(raw))
+
+    # 3. Run _process_file with mocked _upload_file (no real HF call)
+    with patch("anonymize_and_upload._upload_file"):
+        count = _process_file(zst_path, MagicMock(), repo_id="test/repo", token="tok")
+
+    assert count == 2
+
+    # 4. Validate zst magic bytes via download_seed's integrity check
+    assert _validate_zst(zst_path) is True
+
+    # 5. Decompress and parse each line as valid JSON
+    dctx = zstd.ZstdDecompressor()
+    decompressed = dctx.decompress(zst_path.read_bytes()).decode("utf-8")
+    non_empty_lines = [line for line in decompressed.splitlines() if line.strip()]
+
+    assert len(non_empty_lines) == 2
+
+    for line in non_empty_lines:
+        # Take last tab-separated field (handles both plain JSON and tab-prefixed formats)
+        payload = line.split("\t")[-1]
+        parsed = json.loads(payload)
+        assert "match_id" in parsed
+        assert "data" in parsed

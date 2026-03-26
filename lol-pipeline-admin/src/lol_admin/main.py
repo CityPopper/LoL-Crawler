@@ -43,6 +43,7 @@ from lol_admin._helpers import (  # noqa: F401
     _sanitize,
 )
 from lol_admin.cmd_backfill import cmd_backfill_champions  # noqa: F401
+from lol_admin.cmd_blob import cmd_blob_cleanup  # noqa: F401
 from lol_admin.cmd_delayed import cmd_delayed_flush, cmd_delayed_list  # noqa: F401
 from lol_admin.cmd_dlq import (  # noqa: F401
     cmd_dlq_archive_clear,
@@ -65,8 +66,12 @@ from lol_admin.cmd_replay import cmd_replay_fetch, cmd_replay_parse  # noqa: F40
 from lol_admin.cmd_stats import cmd_stats  # noqa: F401
 from lol_admin.cmd_system import cmd_system_halt, cmd_system_resume  # noqa: F401
 from lol_admin.cmd_track import cmd_track  # noqa: F401
+from lol_admin.cmd_waterfall import cmd_waterfall_stats  # noqa: F401
 
 _log = _get_log()
+
+# Commands that operate without Redis (filesystem-only).
+_NO_REDIS_COMMANDS: frozenset[str] = frozenset({"blob-cleanup"})
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +169,29 @@ def _build_parser() -> argparse.ArgumentParser:
         help="show OP.GG integration status (enabled, fetch count, data dir size)",
     )
 
+    sub.add_parser(
+        "waterfall-stats",
+        help="show per-source fetch/success/throttle counters from source:stats:*",
+    )
+
+    _add_blob_cleanup_parser(sub)
+
     return parser
+
+
+def _add_blob_cleanup_parser(sub: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+    """Register the ``blob-cleanup`` subcommand."""
+    p = sub.add_parser(
+        "blob-cleanup",
+        help="delete old blob JSON files from the blob data directory",
+    )
+    p.add_argument(
+        "--older-than",
+        required=True,
+        help="age threshold, e.g. 90d, 24h, 30m, 3600s",
+    )
+    p.add_argument("--dry-run", action="store_true", help="preview only, do not delete")
+    p.add_argument("--force", action="store_true", help="skip confirmation prompt")
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +205,11 @@ async def main(argv: list[str]) -> int:
     args = parser.parse_args(argv[1:])
 
     cfg = Config()
+
+    # Filesystem-only commands skip the Redis connection entirely.
+    if args.command in _NO_REDIS_COMMANDS:
+        return await _dispatch(None, None, cfg, args)
+
     try:
         r = get_redis(cfg.redis_url)
     except (RedisConnectionError, RedisError) as exc:

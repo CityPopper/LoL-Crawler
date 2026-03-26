@@ -59,6 +59,7 @@ Written by the Champion Stats service (`lol-pipeline-champion-stats`). Only rank
 | `build:{match_id}:{puuid}` | String | 7d (`MATCH_DATA_TTL_SECONDS`) | Item build order from match timeline (when `FETCH_TIMELINE=true`) |
 | `skills:{match_id}:{puuid}` | String | 7d (`MATCH_DATA_TTL_SECONDS`) | Skill order from match timeline (when `FETCH_TIMELINE=true`) |
 | `ratelimit:throttle` | String | 2s (hardcoded) | Near-capacity throttle hint; set when sliding window is >95% full (remaining capacity < 5%) |
+| `source:stats:{source_name}` | Hash | none | Per-source waterfall fetch counters: `fetch_count` (total attempts), `success_count` (FetchResult.SUCCESS), `throttle_count` (FetchResult.THROTTLED); incremented by Fetcher after each `coordinator.fetch_match()` call |
 
 ---
 

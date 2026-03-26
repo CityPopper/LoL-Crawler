@@ -129,6 +129,7 @@ class WaterfallCoordinator:
         """Iterate sources for data_type. Returns final WaterfallResult."""
         retry_hints: list[int] = []
         any_blob_validation_failed = False
+        tried: list[tuple[str, FetchResult]] = []
 
         for entry in self._registry.sources_for(data_type):
             # Check required_context_keys before calling fetch().
@@ -142,12 +143,14 @@ class WaterfallCoordinator:
                 continue
 
             response = await entry.source.fetch(context, data_type)
+            tried.append((entry.name, response.result))
 
             if response.result == FetchResult.SUCCESS:
                 result, validation_failed = await self._handle_success(
                     entry.name, context, data_type, response
                 )
                 if result is not None:
+                    result.tried_sources = tried
                     return result
                 if validation_failed:
                     any_blob_validation_failed = True
@@ -170,12 +173,12 @@ class WaterfallCoordinator:
 
             if response.result == FetchResult.NOT_FOUND:
                 if data_type in entry.primary_for:
-                    return WaterfallResult(status="not_found")
+                    return WaterfallResult(status="not_found", tried_sources=tried)
                 continue
 
             if response.result == FetchResult.AUTH_ERROR:
                 if data_type in entry.primary_for:
-                    return WaterfallResult(status="auth_error")
+                    return WaterfallResult(status="auth_error", tried_sources=tried)
                 continue
 
         # All sources exhausted.
@@ -183,6 +186,7 @@ class WaterfallCoordinator:
             status="all_exhausted",
             retry_after_ms=max(retry_hints) if retry_hints else None,
             blob_validation_failed=any_blob_validation_failed,
+            tried_sources=tried,
         )
 
     async def _handle_success(

@@ -19,7 +19,14 @@ from lol_pipeline.raw_store import RawStore
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.riot_api import RiotClient
 from lol_pipeline.service import run_consumer
-from lol_pipeline.sources.base import MATCH, DataType, Extractor, FetchContext
+from lol_pipeline.sources.base import (
+    MATCH,
+    DataType,
+    Extractor,
+    FetchContext,
+    FetchResult,
+    WaterfallResult,
+)
 from lol_pipeline.sources.blob_store import BlobStore
 from lol_pipeline.sources.coordinator import WaterfallCoordinator
 from lol_pipeline.sources.opgg.extractors import OpggMatchExtractor
@@ -95,6 +102,24 @@ async def _write_seen_match(
     seen_ttl: int = results[1]
     if seen_ttl < 0:
         await r.expire(seen_key, cfg.seen_matches_ttl_seconds)
+
+
+async def _record_source_stats(
+    r: aioredis.Redis,
+    result: WaterfallResult,
+) -> None:
+    """Increment per-source fetch/success/throttle counters from tried_sources."""
+    if not result.tried_sources:
+        return
+    async with r.pipeline(transaction=False) as pipe:
+        for name, fetch_result in result.tried_sources:
+            key = f"source:stats:{name}"
+            pipe.hincrby(key, "fetch_count", 1)
+            if fetch_result == FetchResult.SUCCESS:
+                pipe.hincrby(key, "success_count", 1)
+            elif fetch_result == FetchResult.THROTTLED:
+                pipe.hincrby(key, "throttle_count", 1)
+        await pipe.execute()
 
 
 async def _fetch_timeline_if_needed(
@@ -244,6 +269,8 @@ async def _fetch_match(  # noqa: PLR0913
     context = FetchContext(match_id=match_id, puuid=puuid, region=region)
     result = await wf.fetch_match(context, MATCH)
 
+    await _record_source_stats(r, result)
+
     if result.status == "cached":
         await _publish_and_ack(r, cfg, msg_id, envelope)
         log.info("idempotent re-delivery — raw blob exists", extra={"match_id": match_id})
@@ -323,6 +350,7 @@ async def main() -> None:
         if cfg.opgg_enabled
         else None
     )
+    logging.getLogger("lol_pipeline.sources.coordinator").setLevel(cfg.waterfall_log_level)
     coordinator = _build_coordinator(riot, raw_store, cfg, opgg)
     consumer = consumer_id()
 

@@ -9,6 +9,7 @@ from lol_pipeline.config import Config
 from lol_pipeline.riot_api import RiotClient
 
 from lol_admin.cmd_backfill import cmd_backfill_champions
+from lol_admin.cmd_blob import cmd_blob_cleanup
 from lol_admin.cmd_delayed import cmd_delayed_flush, cmd_delayed_list
 from lol_admin.cmd_dlq import (
     cmd_dlq_archive_clear,
@@ -31,6 +32,7 @@ from lol_admin.cmd_replay import cmd_replay_fetch, cmd_replay_parse
 from lol_admin.cmd_stats import cmd_stats
 from lol_admin.cmd_system import cmd_system_halt, cmd_system_resume
 from lol_admin.cmd_track import cmd_track
+from lol_admin.cmd_waterfall import cmd_waterfall_stats
 
 _DLQ_ARCHIVE_DISPATCH = {
     "list": lambda r, cfg, args: cmd_dlq_archive_list(r, args),
@@ -66,11 +68,13 @@ _CMD_DISPATCH = {
     "delayed-flush": lambda r, riot, cfg, args: cmd_delayed_flush(r, args),
     "backfill-champions": lambda r, riot, cfg, args: cmd_backfill_champions(r, cfg, args),
     "opgg-status": lambda r, riot, cfg, args: cmd_opgg_status(r, cfg, args),
+    "waterfall-stats": lambda r, riot, cfg, args: cmd_waterfall_stats(r, args),
+    "blob-cleanup": lambda r, riot, cfg, args: cmd_blob_cleanup(cfg, args),
 }
 
 
 async def _dispatch(
-    r: aioredis.Redis,
+    r: aioredis.Redis | None,
     riot: RiotClient | None,
     cfg: Config,
     args: argparse.Namespace,

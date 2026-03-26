@@ -1,0 +1,203 @@
+{
+  "id": "opgg-game-hash-pwnerer-001",
+  "created_at": "2026-03-15T22:30:00+00:00",
+  "game_type": "Ranked",
+  "game_length_second": 1945,
+  "queue_info": {
+    "queue_id": 420,
+    "game_type": "MATCHED_GAME"
+  },
+  "teams": [
+    {
+      "game_stat": {
+        "is_win": true,
+        "kill": 32,
+        "death": 15,
+        "assist": 55
+      },
+      "participants": [
+        {
+          "summoner": {
+            "summoner_id": "opgg-summoner-pwnerer-1337",
+            "puuid": "test-puuid-0001"
+          },
+          "champion_id": 236,
+          "position": "BOTTOM",
+          "stats": {
+            "kill": 14,
+            "death": 3,
+            "assist": 9,
+            "cs": 245,
+            "damage_dealt_to_champions": 38200
+          },
+          "items": [3031, 3094, 3036, 3046, 3072, 0, 3340],
+          "op_score": 9.2,
+          "lane_score": 78
+        },
+        {
+          "summoner": {
+            "summoner_id": "opgg-ally-support-id",
+            "puuid": "test-puuid-opgg-ally-sup"
+          },
+          "champion_id": 412,
+          "position": "SUPPORT",
+          "stats": {
+            "kill": 2,
+            "death": 4,
+            "assist": 18,
+            "cs": 35,
+            "damage_dealt_to_champions": 8500
+          },
+          "items": [3860, 3050, 3109, 3190, 0, 0, 3364],
+          "op_score": 7.1
+        },
+        {
+          "summoner": {
+            "summoner_id": "opgg-ally-mid-id",
+            "puuid": "test-puuid-opgg-ally-mid"
+          },
+          "champion_id": 103,
+          "position": "MID",
+          "stats": {
+            "kill": 8,
+            "death": 2,
+            "assist": 12,
+            "cs": 195,
+            "damage_dealt_to_champions": 29100
+          },
+          "items": [3285, 3116, 4645, 3089, 3135, 3157, 3340],
+          "op_score": 8.5
+        },
+        {
+          "summoner": {
+            "summoner_id": "opgg-ally-top-id",
+            "puuid": "test-puuid-opgg-ally-top"
+          },
+          "champion_id": 86,
+          "position": "TOP",
+          "stats": {
+            "kill": 5,
+            "death": 3,
+            "assist": 7,
+            "cs": 210,
+            "damage_dealt_to_champions": 18500
+          },
+          "items": [3078, 3053, 3742, 3143, 0, 0, 3340],
+          "op_score": 6.8
+        },
+        {
+          "summoner": {
+            "summoner_id": "opgg-ally-jg-id",
+            "puuid": "test-puuid-opgg-ally-jg"
+          },
+          "champion_id": 64,
+          "position": "JUNGLE",
+          "stats": {
+            "kill": 3,
+            "death": 3,
+            "assist": 9,
+            "cs": 155,
+            "damage_dealt_to_champions": 14200
+          },
+          "items": [6631, 3071, 3053, 0, 0, 0, 3340],
+          "op_score": 6.2
+        }
+      ]
+    },
+    {
+      "game_stat": {
+        "is_win": false,
+        "kill": 15,
+        "death": 32,
+        "assist": 25
+      },
+      "participants": [
+        {
+          "summoner": {
+            "summoner_id": "opgg-enemy-adc-id",
+            "puuid": "test-puuid-opgg-enemy-adc"
+          },
+          "champion_id": 222,
+          "position": "BOTTOM",
+          "stats": {
+            "kill": 5,
+            "death": 7,
+            "assist": 4,
+            "cs": 198,
+            "damage_dealt_to_champions": 21000
+          },
+          "items": [3031, 3094, 3036, 0, 0, 0, 3363],
+          "op_score": 4.5
+        },
+        {
+          "summoner": {
+            "summoner_id": "opgg-enemy-sup-id",
+            "puuid": "test-puuid-opgg-enemy-sup"
+          },
+          "champion_id": 111,
+          "position": "SUPPORT",
+          "stats": {
+            "kill": 1,
+            "death": 8,
+            "assist": 6,
+            "cs": 28,
+            "damage_dealt_to_champions": 6500
+          },
+          "items": [3860, 3050, 0, 0, 0, 0, 3364],
+          "op_score": 3.2
+        },
+        {
+          "summoner": {
+            "summoner_id": "opgg-enemy-mid-id",
+            "puuid": "test-puuid-opgg-enemy-mid"
+          },
+          "champion_id": 7,
+          "position": "MID",
+          "stats": {
+            "kill": 4,
+            "death": 6,
+            "assist": 5,
+            "cs": 175,
+            "damage_dealt_to_champions": 17800
+          },
+          "items": [3285, 3116, 4645, 0, 0, 0, 3340],
+          "op_score": 4.8
+        },
+        {
+          "summoner": {
+            "summoner_id": "opgg-enemy-top-id",
+            "puuid": "test-puuid-opgg-enemy-top"
+          },
+          "champion_id": 122,
+          "position": "TOP",
+          "stats": {
+            "kill": 3,
+            "death": 5,
+            "assist": 4,
+            "cs": 188,
+            "damage_dealt_to_champions": 15200
+          },
+          "items": [6631, 3053, 3742, 0, 0, 0, 3340],
+          "op_score": 4.1
+        },
+        {
+          "summoner": {
+            "summoner_id": "opgg-enemy-jg-id",
+            "puuid": "test-puuid-opgg-enemy-jg"
+          },
+          "champion_id": 121,
+          "position": "JUNGLE",
+          "stats": {
+            "kill": 2,
+            "death": 6,
+            "assist": 6,
+            "cs": 142,
+            "damage_dealt_to_champions": 11500
+          },
+          "items": [6692, 3071, 0, 0, 0, 0, 3340],
+          "op_score": 3.9
+        }
+      ]
+    }
+  ]
+}

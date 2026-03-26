@@ -58,6 +58,7 @@ class Config(BaseSettings):
     redis_socket_timeout: float = Field(default=30.0, gt=0)
     redis_connect_timeout: float = Field(default=10.0, gt=0)
     log_level: str = "INFO"
+    waterfall_log_level: str = "INFO"
     max_handler_retries: int = Field(default=3, ge=1)
     max_nack_attempts: int = Field(default=3, ge=1)
     retry_key_ttl: int = Field(default=604800, ge=1)  # 7 days

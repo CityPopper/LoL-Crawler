@@ -1,4 +1,4 @@
-"""IT-WF-01 through IT-WF-04 — Source waterfall integration tests.
+"""IT-WF-01 through IT-WF-05 — Source waterfall integration tests.
 
 Tests the WaterfallCoordinator integrated with the Fetcher handler,
 using real Redis (testcontainers) and mocked HTTP sources.
@@ -7,6 +7,7 @@ IT-WF-01: Single Riot source success -> stream:parse published
 IT-WF-02: Riot throttled -> all sources exhausted -> DLQ
 IT-WF-03: BlobStore cache hit -> stream:parse published without HTTP call
 IT-WF-04: blob_validation_failed -> immediate DLQ (no retry)
+IT-WF-05: ExtractionError in live fetch -> blob_validation_failed -> DLQ
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from lol_pipeline.raw_store import RawStore
 from lol_pipeline.riot_api import RiotClient
 from lol_pipeline.sources.base import (
     MATCH,
+    ExtractionError,
     FetchContext,
     FetchResponse,
     FetchResult,
@@ -114,12 +116,26 @@ class FakeSource:
         pass
 
 
+class FakeExtractor:
+    """A fake Extractor whose can_extract() returns True but extract() raises ExtractionError."""
+
+    source_name = "riot"
+    data_types: frozenset[str] = frozenset({MATCH})
+
+    def can_extract(self, blob: dict[str, str]) -> bool:
+        return True
+
+    def extract(self, blob: dict[str, str], match_id: str, region: str) -> dict[str, str]:
+        raise ExtractionError("simulated extraction failure")
+
+
 def _build_coordinator_with_fake(
     fake_source: FakeSource,
     raw_store: RawStore,
     blob_store: BlobStore | None = None,
+    extractors: list | None = None,
 ) -> WaterfallCoordinator:
-    """Build a WaterfallCoordinator backed by a single FakeSource + RiotExtractor."""
+    """Build a WaterfallCoordinator backed by a single FakeSource + configurable extractors."""
     entry = SourceEntry(
         name=fake_source.name,
         source=fake_source,
@@ -127,8 +143,9 @@ def _build_coordinator_with_fake(
         primary_for=frozenset({MATCH}),
     )
     registry = SourceRegistry([entry])
-    extractor = RiotExtractor()
-    return WaterfallCoordinator(registry, blob_store, raw_store, [extractor])
+    if extractors is None:
+        extractors = [RiotExtractor()]
+    return WaterfallCoordinator(registry, blob_store, raw_store, extractors)
 
 
 # ---------------------------------------------------------------------------
@@ -380,6 +397,81 @@ async def test_wf04__blob_validation_failed__immediate_dlq(
     assert dlq_env.payload["match_id"] == _MATCH_A
 
     # 4. raw:match:{match_id} does NOT exist (bad blob was not persisted)
+    assert await r.exists(f"raw:match:{_MATCH_A}") == 0
+
+    # 5. The inbound message was ACKed (not left in PEL)
+    pending_info = await r.xpending("stream:match_id", "fetchers")
+    assert pending_info["pending"] == 0
+
+
+# ---------------------------------------------------------------------------
+# IT-WF-05: ExtractionError in live fetch -> blob_validation_failed -> DLQ
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_wf05__extraction_error__routes_to_dlq(
+    r: aioredis.Redis,
+    cfg: Config,
+) -> None:
+    """Source returns SUCCESS with valid blob, can_extract() passes, but extract() raises
+    ExtractionError -> DLQ with max_attempts=1 and failure_code=blob_validation_failed.
+
+    Distinct from IT-WF-04 where can_extract() itself returns False.
+    """
+    log = tlog("it-wf-05")
+    raw_store = RawStore(r)
+
+    # The blob has valid structure (can_extract returns True via FakeExtractor),
+    # but FakeExtractor.extract() raises ExtractionError.
+    blob = _valid_riot_blob()
+    fake_riot = FakeSource(
+        name="riot",
+        response=FetchResponse(
+            result=FetchResult.SUCCESS,
+            raw_blob=json.dumps(blob).encode(),
+            data=blob,
+            available_data_types=frozenset({MATCH}),
+        ),
+    )
+    coordinator = _build_coordinator_with_fake(
+        fake_riot, raw_store, extractors=[FakeExtractor()]
+    )
+
+    # Seed stream:match_id
+    env = _make_envelope(_MATCH_A, cfg)
+    await publish(r, "stream:match_id", env)
+
+    # Consume and process
+    riot = RiotClient("test-api-key", r=r)
+    try:
+        msgs = await consume_all(r, "stream:match_id", "fetchers", "wf05")
+        assert len(msgs) == 1
+        msg_id, envelope = msgs[0]
+        await _fetch_match(
+            r, riot, raw_store, cfg, msg_id, envelope, log, coordinator=coordinator
+        )
+    finally:
+        await riot.close()
+
+    # --- Assertions ---
+    # 1. stream:parse has NO messages (extraction failed)
+    parse_msgs = await consume_all(r, "stream:parse", "parsers", "wf05")
+    assert len(parse_msgs) == 0
+
+    # 2. DLQ has a message
+    dlq_entries = await r.xrange("stream:dlq")
+    assert len(dlq_entries) >= 1
+
+    # 3. DLQ envelope has max_attempts=1 (immediate archive) and correct failure_code
+    dlq_fields = dlq_entries[-1][1]
+    dlq_env = DLQEnvelope.from_redis_fields(dlq_fields)
+    assert dlq_env.max_attempts == 1
+    assert dlq_env.failure_code == "blob_validation_failed"
+    assert dlq_env.payload["match_id"] == _MATCH_A
+
+    # 4. raw:match:{match_id} does NOT exist (extraction failed before persist)
     assert await r.exists(f"raw:match:{_MATCH_A}") == 0
 
     # 5. The inbound message was ACKed (not left in PEL)
