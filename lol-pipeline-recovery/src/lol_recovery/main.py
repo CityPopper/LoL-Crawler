@@ -114,12 +114,17 @@ async def _requeue_delayed(
     dlq: DLQEnvelope,
     delay_ms: int,
     msg_id: str,
+    *,
+    envelope_ttl: int = 86400,
 ) -> None:
     """Store a MessageEnvelope in delayed:messages and ACK the DLQ entry atomically.
 
     RDB-5: The ZSET member is the envelope ``id`` (~36 bytes) rather than the
     full JSON blob (~500 bytes).  The serialized envelope is stored separately
     in ``delayed:envelope:{id}`` so the Delay Scheduler can look it up.
+
+    IMP-066: The envelope hash gets a safety-net TTL so orphans are cleaned up
+    automatically if the delay scheduler crashes before deleting the hash.
     """
     # Restore to the original stream with its original type (strip "stream:" prefix)
     original_type = dlq.original_stream.removeprefix("stream:")
@@ -141,6 +146,7 @@ async def _requeue_delayed(
     async with r.pipeline(transaction=True) as pipe:
         await pipe.zadd(DELAYED_MESSAGES_KEY, {env.id: ready_ms})
         await pipe.hset(envelope_key, "data", envelope_data)  # type: ignore[misc]
+        await pipe.expire(envelope_key, envelope_ttl)
         await pipe.xack(_IN_STREAM, _GROUP, msg_id)
         await pipe.execute()
 
@@ -169,12 +175,16 @@ async def _handle_transient(
         await _archive(r, dlq, log, cfg)
         await r.xack(_IN_STREAM, _GROUP, msg_id)
     else:
-        delay = (
+        raw_delay = (
             dlq.retry_after_ms
             if fc == "http_429" and dlq.retry_after_ms
             else _backoff_ms(dlq.dlq_attempts, cfg)
         )
-        await _requeue_delayed(r, dlq, delay, msg_id)
+        # IMP-050: Clamp negative retry_after_ms to 0 to prevent immediate re-queue.
+        delay = max(0, raw_delay)
+        await _requeue_delayed(
+            r, dlq, delay, msg_id, envelope_ttl=cfg.delay_envelope_ttl_seconds
+        )
         log.info(
             "requeued with delay",
             extra={

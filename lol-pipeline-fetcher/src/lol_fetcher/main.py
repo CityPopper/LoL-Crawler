@@ -164,12 +164,16 @@ def _build_coordinator(
 
     # Op.gg is available only when enabled and client is present.
     if cfg.opgg_enabled and opgg is not None:
-        opgg_source = OpggSource(opgg_client=opgg)
-        opgg_extractor = OpggMatchExtractor()
-        source_builders["opgg"] = (
-            SourceEntry(name="opgg", source=opgg_source, priority=0),
-            [opgg_extractor],
-        )
+        try:
+            opgg_source = OpggSource(opgg_client=opgg)
+            opgg_extractor = OpggMatchExtractor()
+            source_builders["opgg"] = (
+                SourceEntry(name="opgg", source=opgg_source, priority=0),
+                [opgg_extractor],
+            )
+        except Exception:
+            _log.warning("source 'opgg' unavailable at startup, skipping", exc_info=True)
+            source_builders["opgg"] = None
     else:
         source_builders["opgg"] = None
 
@@ -204,7 +208,14 @@ def _build_coordinator(
     }
     registry = SourceRegistry(entries, extractor_index=extractor_index)
 
-    blob_store = BlobStore(cfg.blob_data_dir) if cfg.blob_data_dir else None
+    blob_store: BlobStore | None = None
+    if cfg.blob_data_dir:
+        try:
+            blob_store = BlobStore(cfg.blob_data_dir)
+        except Exception:
+            _log.warning(
+                "source 'blob_store' unavailable at startup, skipping", exc_info=True
+            )
     return WaterfallCoordinator(registry, blob_store, raw_store, extractors)
 
 

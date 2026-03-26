@@ -130,8 +130,8 @@ class DLQEnvelope:
                 "failure_code": fields["failure_code"],
                 "failure_reason": fields.get("failure_reason", ""),
                 "failed_by": fields.get("failed_by", ""),
-                "original_stream": fields.get("original_stream", ""),
-                "original_message_id": fields.get("original_message_id", ""),
+                "original_stream": fields["original_stream"],
+                "original_message_id": fields["original_message_id"],
                 "failed_at": fields["failed_at"],
                 "retry_after_ms": None if ram == "null" else int(ram),
             }

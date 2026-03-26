@@ -60,14 +60,16 @@ class TestConfig:
         assert cfg.max_attempts == 10
         assert cfg.seed_cooldown_minutes == 60
 
-    def test_empty_riot_api_key_rejected(self, monkeypatch):
-        """Config rejects empty string for riot_api_key."""
+    def test_empty_riot_api_key_accepted_but_validate_raises(self, monkeypatch):
+        """Config accepts empty riot_api_key; validate_for_riot_api() raises."""
         monkeypatch.setenv("RIOT_API_KEY", "")
         monkeypatch.setenv("REDIS_URL", "redis://localhost")
         from lol_pipeline.config import Config
 
-        with pytest.raises(ValidationError):
-            Config(_env_file=None)  # type: ignore[call-arg]
+        cfg = Config(_env_file=None)  # type: ignore[call-arg]
+        assert cfg.riot_api_key == ""
+        with pytest.raises(ValueError, match="RIOT_API_KEY is required"):
+            cfg.validate_for_riot_api()
 
     def test_empty_redis_url_rejected(self, monkeypatch):
         """Config rejects empty string for redis_url."""

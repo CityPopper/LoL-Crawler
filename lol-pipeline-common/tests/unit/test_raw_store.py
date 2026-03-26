@@ -281,17 +281,16 @@ class TestRawStoreBundleEdgeCases:
 
     @pytest.mark.asyncio
     async def test_unknown_platform_prefix(self, r, tmp_path):
-        """Match IDs without underscore get platform 'UNKNOWN'."""
+        """Match IDs without underscore are rejected by validation."""
         store = RawStore(r, data_dir=str(tmp_path))
-        await store.set("NOUNDERSCORE", '{"data": 1}')
-        # Should write to UNKNOWN directory
-        assert (tmp_path / "UNKNOWN").exists()
+        with pytest.raises(ValueError, match="invalid match_id"):
+            await store.set("NOUNDERSCORE", '{"data": 1}')
 
     @pytest.mark.asyncio
     async def test_exists_false_on_disk_when_not_stored(self, r, tmp_path):
         """exists() returns False when match is in neither Redis nor disk."""
         store = RawStore(r, data_dir=str(tmp_path))
-        assert await store.exists("NA1_nonexistent") is False
+        assert await store.exists("NA1_99999999") is False
 
 
 class TestRawStoreAsyncDiskIO:
@@ -301,8 +300,8 @@ class TestRawStoreAsyncDiskIO:
     async def test_exists_uses_to_thread_for_disk_fallback(self, r, tmp_path):
         """exists() delegates _exists_in_bundles to asyncio.to_thread."""
         store = RawStore(r, data_dir=str(tmp_path))
-        await store.set("NA1_T1", '{"data": 1}')
-        await r.delete("raw:match:NA1_T1")
+        await store.set("NA1_10001", '{"data": 1}')
+        await r.delete("raw:match:NA1_10001")
 
         calls = []
         original_to_thread = __import__("asyncio").to_thread
@@ -312,7 +311,7 @@ class TestRawStoreAsyncDiskIO:
             return await original_to_thread(fn, *args, **kwargs)
 
         with patch("lol_pipeline.raw_store.asyncio.to_thread", side_effect=tracking_to_thread):
-            result = await store.exists("NA1_T1")
+            result = await store.exists("NA1_10001")
 
         assert result is True
         assert "_exists_in_bundles" in calls
@@ -321,8 +320,8 @@ class TestRawStoreAsyncDiskIO:
     async def test_get_uses_to_thread_for_disk_fallback(self, r, tmp_path):
         """get() delegates _search_bundles to asyncio.to_thread."""
         store = RawStore(r, data_dir=str(tmp_path))
-        await store.set("NA1_T2", '{"data": 2}')
-        await r.delete("raw:match:NA1_T2")
+        await store.set("NA1_10002", '{"data": 2}')
+        await r.delete("raw:match:NA1_10002")
 
         calls = []
         original_to_thread = __import__("asyncio").to_thread
@@ -332,7 +331,7 @@ class TestRawStoreAsyncDiskIO:
             return await original_to_thread(fn, *args, **kwargs)
 
         with patch("lol_pipeline.raw_store.asyncio.to_thread", side_effect=tracking_to_thread):
-            result = await store.get("NA1_T2")
+            result = await store.get("NA1_10002")
 
         assert result == '{"data": 2}'
         assert "_search_bundles" in calls
@@ -350,7 +349,7 @@ class TestRawStoreAsyncDiskIO:
             return await original_to_thread(fn, *args, **kwargs)
 
         with patch("lol_pipeline.raw_store.asyncio.to_thread", side_effect=tracking_to_thread):
-            await store.set("NA1_T3", '{"data": 3}')
+            await store.set("NA1_10003", '{"data": 3}')
 
         assert "_exists_in_current_bundle" in calls
 
@@ -404,7 +403,7 @@ class TestRawStoreTtlConfigurable:
     @pytest.mark.asyncio
     async def test_get_writeback_uses_ttl_seconds(self, r, tmp_path):
         """get() Redis write-back uses a positive TTL."""
-        match_id = "NA1_TTL2"
+        match_id = "NA1_20002"
         bundle = tmp_path / "NA1" / "2099-01.jsonl"
         bundle.parent.mkdir(parents=True, exist_ok=True)
         bundle.write_text(f'{match_id}\t{{"data": 2}}\n', encoding="utf-8")
@@ -440,14 +439,14 @@ class TestRawStoreSetScopedDedup:
 
         # Write the match into an old month's bundle (simulating historical data)
         old_bundle = platform_dir / "2024-01.jsonl"
-        old_bundle.write_text('NA1_OLD\t{"old": true}\n')
+        old_bundle.write_text('NA1_30001\t{"old": true}\n')
 
         store = RawStore(r, data_dir=str(tmp_path))
         # Redis key does not exist (simulates Redis restart), match only on old disk
-        await store.set("NA1_OLD", '{"new": true}')
+        await store.set("NA1_30001", '{"new": true}')
 
         # The current month's bundle should have the new write because set()
-        # only checked the current bundle (where NA1_OLD was absent)
+        # only checked the current bundle (where NA1_30001 was absent)
         current_bundles = list(platform_dir.glob("202*.jsonl"))
         # Should have 2 bundles: the old one and the current month
         assert len(current_bundles) == 2
@@ -456,17 +455,17 @@ class TestRawStoreSetScopedDedup:
         current_month_bundles = [b for b in current_bundles if b.name != "2024-01.jsonl"]
         assert len(current_month_bundles) == 1
         content = current_month_bundles[0].read_text()
-        assert "NA1_OLD" in content
+        assert "NA1_30001" in content
 
     @pytest.mark.asyncio
     async def test_set_dedup_within_current_bundle(self, r, tmp_path):
         """set() still prevents duplicates within the current month's bundle."""
         store = RawStore(r, data_dir=str(tmp_path))
-        await store.set("NA1_DUP", '{"first": true}')
+        await store.set("NA1_30002", '{"first": true}')
 
         # Simulate Redis restart: delete the key, then try to write again
-        await r.delete("raw:match:NA1_DUP")
-        await store.set("NA1_DUP", '{"second": true}')
+        await r.delete("raw:match:NA1_30002")
+        await store.set("NA1_30002", '{"second": true}')
 
         # The current bundle should have exactly one entry
         jsonl_files = list((tmp_path / "NA1").glob("*.jsonl"))
@@ -481,7 +480,7 @@ class TestRawStoreSetScopedDedup:
         store = RawStore(r, data_dir=str(tmp_path))
 
         with patch.object(store, "_search_bundles", wraps=store._search_bundles) as mock_search:
-            await store.set("NA1_PERF", '{"data": 1}')
+            await store.set("NA1_30003", '{"data": 1}')
             mock_search.assert_not_called()
 
     def test_exists_in_current_bundle__missing_file__returns_false(self, tmp_path):
@@ -551,7 +550,7 @@ class TestRawStoreDiskWriteOffEventLoop:
             return await original_to_thread(fn, *args, **kwargs)
 
         with patch("lol_pipeline.raw_store.asyncio.to_thread", side_effect=tracking_to_thread):
-            await store.set("NA1_ASYNC2", '{"info": {"gameDuration": 100}}')
+            await store.set("NA1_40002", '{"info": {"gameDuration": 100}}')
 
         # Must call _write_to_disk via to_thread (in addition to _exists_in_current_bundle)
         assert "_write_to_disk" in calls, (
@@ -562,4 +561,4 @@ class TestRawStoreDiskWriteOffEventLoop:
         jsonl_files = list((tmp_path / "NA1").glob("*.jsonl"))
         assert len(jsonl_files) == 1
         content = jsonl_files[0].read_text()
-        assert "NA1_ASYNC2" in content
+        assert "NA1_40002" in content

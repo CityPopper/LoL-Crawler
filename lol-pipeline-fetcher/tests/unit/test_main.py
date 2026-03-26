@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import logging.handlers
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
@@ -18,7 +19,7 @@ from lol_pipeline.raw_store import RawStore
 from lol_pipeline.riot_api import RiotClient
 from lol_pipeline.streams import consume, publish
 
-from lol_fetcher.main import _fetch_match, main
+from lol_fetcher.main import _build_coordinator, _fetch_match, main
 
 _STREAM_IN = "stream:match_id"
 _STREAM_OUT = "stream:parse"
@@ -843,3 +844,50 @@ class TestOpggIntegration:
 
         # In waterfall architecture, data is stored in canonical raw:match: regardless of source
         assert await r.xlen(_STREAM_OUT) == 1
+
+
+class TestBuildCoordinatorSourceInit:
+    """IMP-074: _build_coordinator logs warning when a source raises during init."""
+
+    def test_opgg_init_failure__logs_warning_and_builds(self, cfg, log):
+        """If OpggSource raises during init, coordinator still builds with warning."""
+        riot = RiotClient("RGAPI-test")
+        cfg.opgg_enabled = True
+        opgg = OpggClient.__new__(OpggClient)
+
+        fetcher_log = logging.getLogger("fetcher")
+        handler = logging.handlers.MemoryHandler(capacity=100)
+        fetcher_log.addHandler(handler)
+        try:
+            with patch(
+                "lol_fetcher.main.OpggSource",
+                side_effect=RuntimeError("opgg init boom"),
+            ):
+                coordinator = _build_coordinator(riot, RawStore(None), cfg, opgg)
+
+            assert coordinator is not None
+            messages = [r.getMessage() for r in handler.buffer]
+            assert any("unavailable at startup" in m for m in messages)
+        finally:
+            fetcher_log.removeHandler(handler)
+
+    def test_blob_store_init_failure__logs_warning(self, cfg, log):
+        """If BlobStore raises during init, coordinator still builds with warning."""
+        riot = RiotClient("RGAPI-test")
+        cfg.blob_data_dir = "/some/bad/path"
+
+        fetcher_log = logging.getLogger("fetcher")
+        handler = logging.handlers.MemoryHandler(capacity=100)
+        fetcher_log.addHandler(handler)
+        try:
+            with patch(
+                "lol_fetcher.main.BlobStore",
+                side_effect=OSError("bad path"),
+            ):
+                coordinator = _build_coordinator(riot, RawStore(None), cfg)
+
+            assert coordinator is not None
+            messages = [r.getMessage() for r in handler.buffer]
+            assert any("unavailable at startup" in m for m in messages)
+        finally:
+            fetcher_log.removeHandler(handler)

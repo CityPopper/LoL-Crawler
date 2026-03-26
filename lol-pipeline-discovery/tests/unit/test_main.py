@@ -16,6 +16,7 @@ from redis.exceptions import RedisError, ResponseError
 
 from lol_discovery.main import (
     _PIPELINE_STREAMS,
+    _THROTTLED,
     _is_idle,
     _parse_member,
     _promote_batch,
@@ -1257,11 +1258,11 @@ class TestPromoteBatchAtomicOrdering:
 
 
 class TestResolveNamesRateLimiting:
-    """P10-CR-7: _resolve_names must call wait_for_token before Riot API calls."""
+    """P10-CR-7: _resolve_names must call try_token before Riot API calls."""
 
     @pytest.mark.asyncio
-    async def test_resolve_names__calls_wait_for_token_before_api(self, r, cfg, log):
-        """wait_for_token is called before riot.get_account_by_puuid."""
+    async def test_resolve_names__calls_try_token_before_api(self, r, cfg, log):
+        """try_token is called before riot.get_account_by_puuid."""
         call_order: list[str] = []
 
         with respx.mock:
@@ -1288,44 +1289,45 @@ class TestResolveNamesRateLimiting:
 
             riot.get_account_by_puuid = tracking_get
 
-            with patch("lol_discovery.main.wait_for_token", new_callable=AsyncMock) as mock_wft:
+            with patch("lol_discovery.main.try_token", new_callable=AsyncMock) as mock_tt:
 
-                async def tracking_wft(*args, **kwargs):
-                    call_order.append("wait_for_token")
+                async def tracking_tt(*args, **kwargs):
+                    call_order.append("try_token")
+                    return True
 
-                mock_wft.side_effect = tracking_wft
+                mock_tt.side_effect = tracking_tt
 
                 result = await _resolve_names(r, riot, "puuid-ratelim", "na1", log)
             await riot.close()
 
         assert result == ("RateLim", "001")
-        assert "wait_for_token" in call_order, "wait_for_token was never called"
+        assert "try_token" in call_order, "try_token was never called"
         assert "riot_api" in call_order, "riot API was never called"
-        wft_idx = call_order.index("wait_for_token")
+        tt_idx = call_order.index("try_token")
         riot_idx = call_order.index("riot_api")
-        assert wft_idx < riot_idx, (
-            f"wait_for_token (idx={wft_idx}) must be called before riot API (idx={riot_idx})"
+        assert tt_idx < riot_idx, (
+            f"try_token (idx={tt_idx}) must be called before riot API (idx={riot_idx})"
         )
 
     @pytest.mark.asyncio
-    async def test_resolve_names__skips_wait_for_token_when_cached(self, r, log):
-        """When names are in Redis, no API call and no wait_for_token needed."""
+    async def test_resolve_names__skips_try_token_when_cached(self, r, log):
+        """When names are in Redis, no API call and no try_token needed."""
         await r.hset(
             "player:puuid-cached",
             mapping={"game_name": "Cached", "tag_line": "001"},
         )
         riot = RiotClient("RGAPI-test")
 
-        with patch("lol_discovery.main.wait_for_token", new_callable=AsyncMock) as mock_wft:
+        with patch("lol_discovery.main.try_token", new_callable=AsyncMock) as mock_tt:
             result = await _resolve_names(r, riot, "puuid-cached", "na1", log)
         await riot.close()
 
         assert result == ("Cached", "001")
-        mock_wft.assert_not_called()
+        mock_tt.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_resolve_names__wait_for_token_receives_source_and_endpoint(self, r, log):
-        """wait_for_token is called with source='riot' and endpoint='account'."""
+    async def test_resolve_names__try_token_receives_source_and_endpoint(self, r, log):
+        """try_token is called with source='riot' and endpoint='account'."""
         with respx.mock:
             respx.get(
                 "https://americas.api.riotgames.com/riot/account/v1/accounts/by-puuid/puuid-args"
@@ -1341,11 +1343,12 @@ class TestResolveNamesRateLimiting:
             )
             riot = RiotClient("RGAPI-test")
 
-            with patch("lol_discovery.main.wait_for_token", new_callable=AsyncMock) as mock_wft:
+            with patch("lol_discovery.main.try_token", new_callable=AsyncMock) as mock_tt:
+                mock_tt.return_value = True
                 await _resolve_names(r, riot, "puuid-args", "na1", log)
             await riot.close()
 
-        mock_wft.assert_called_once_with("riot", "account")
+        mock_tt.assert_called_once_with("riot", "account")
 
 
 class TestPromoteBatchStaleCleanup:
@@ -1562,8 +1565,8 @@ class TestRecrawlAfterScheduling:
         # Player should NOT be promoted (recrawl_after has not passed)
         assert promoted == 0
         assert await r.xlen("stream:puuid") == 0
-        # Player removed from discover queue (will be re-added by parser later)
-        assert await r.zcard("discover:players") == 0
+        # Player kept in discover queue (not yet due — will be retried later)
+        assert await r.zcard("discover:players") == 1
 
     @pytest.mark.asyncio
     async def test_already_seeded__no_recrawl_after__skips(self, r, cfg, log):
@@ -1649,3 +1652,101 @@ class TestConfigValidationError:
         assert exc_info.value.code == 1
         captured = capsys.readouterr()
         assert ".env.example" in captured.err or ".env.example" in captured.out
+
+
+class TestPoisonedPuuidDeprioritized:
+    """IMP-035: Score decay has a floor of 0; at 0 the member is removed."""
+
+    @pytest.mark.asyncio
+    async def test_riot_api_error_reduces_member_score(self, r, cfg, log):
+        """Transient 500 error reduces discover:players score by 86_400_000."""
+        initial_score = 1_700_000_000_000.0
+        await r.zadd("discover:players", {"puuid-poison:na1": initial_score})
+
+        with (
+            respx.mock,
+            patch("lol_discovery.main.try_token", new_callable=AsyncMock),
+        ):
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-puuid/puuid-poison"
+            ).mock(return_value=httpx.Response(500, text="Internal Server Error"))
+            riot = RiotClient("RGAPI-test")
+            promoted = await _promote_batch(r, cfg, log, riot)
+            await riot.close()
+
+        assert promoted == 0
+        new_score = await r.zscore("discover:players", "puuid-poison:na1")
+        assert new_score is not None
+        assert new_score == initial_score - 86_400_000
+
+    @pytest.mark.asyncio
+    async def test_score_decay_has_floor_of_zero(self, r, cfg, log):
+        """Score cannot go below 0 — at floor, member is removed from ZSET."""
+        # Set score low enough that one decay would go negative
+        await r.zadd("discover:players", {"puuid-floor:na1": 50_000.0})
+
+        with (
+            respx.mock,
+            patch("lol_discovery.main.try_token", new_callable=AsyncMock),
+        ):
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-puuid/puuid-floor"
+            ).mock(return_value=httpx.Response(500, text="Internal Server Error"))
+            riot = RiotClient("RGAPI-test")
+            promoted = await _promote_batch(r, cfg, log, riot)
+            await riot.close()
+
+        assert promoted == 0
+        # Member should be removed (score would have gone to 0)
+        assert await r.zscore("discover:players", "puuid-floor:na1") is None
+        assert await r.zcard("discover:players") == 0
+
+    @pytest.mark.asyncio
+    async def test_score_exactly_at_decay_boundary_removed(self, r, cfg, log):
+        """Score exactly equal to 86_400_000 decays to 0 and member is removed."""
+        await r.zadd("discover:players", {"puuid-exact:na1": 86_400_000.0})
+
+        with (
+            respx.mock,
+            patch("lol_discovery.main.try_token", new_callable=AsyncMock),
+        ):
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-puuid/puuid-exact"
+            ).mock(return_value=httpx.Response(500, text="Internal Server Error"))
+            riot = RiotClient("RGAPI-test")
+            promoted = await _promote_batch(r, cfg, log, riot)
+            await riot.close()
+
+        assert promoted == 0
+        # Score 86_400_000 - 86_400_000 = 0 → removed
+        assert await r.zscore("discover:players", "puuid-exact:na1") is None
+
+
+class TestResolveNamesThrottled:
+    """IMP-069: try_token returning False skips gracefully instead of crashing."""
+
+    @pytest.mark.asyncio
+    async def test_resolve_names_throttled_skips_gracefully(self, r, log):
+        """When try_token returns False, _resolve_names returns _THROTTLED without raising."""
+        riot = RiotClient("RGAPI-test")
+        with patch("lol_discovery.main.try_token", new_callable=AsyncMock) as mock_tt:
+            mock_tt.return_value = False
+            result = await _resolve_names(r, riot, "puuid-throttled", "na1", log)
+        await riot.close()
+        assert result is _THROTTLED
+
+    @pytest.mark.asyncio
+    async def test_resolve_names_throttled_member_stays_in_queue(self, r, cfg, log):
+        """When throttled, the member is not promoted and not removed from queue."""
+        await r.zadd("discover:players", {"puuid-throttled:na1": 1700000000000.0})
+        riot = RiotClient("RGAPI-test")
+        with patch("lol_discovery.main.try_token", new_callable=AsyncMock) as mock_tt:
+            mock_tt.return_value = False
+            promoted = await _promote_batch(r, cfg, log, riot)
+        await riot.close()
+
+        assert promoted == 0
+        # Member must still be in the queue — not removed
+        assert await r.zcard("discover:players") == 1
+        score = await r.zscore("discover:players", "puuid-throttled:na1")
+        assert score == 1700000000000.0

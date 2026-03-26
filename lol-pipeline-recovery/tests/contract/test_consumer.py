@@ -13,7 +13,16 @@ from .conftest import load_pact, to_redis_format
 
 _PACT_FILE = "recovery-common.json"
 
-_FAILURE_CODES = ["http_429", "http_5xx", "http_404", "parse_error", "http_403"]
+_FAILURE_CODES = [
+    "http_429",
+    "http_5xx",
+    "http_404",
+    "parse_error",
+    "http_403",
+    "handler_crash",
+    "corrupt_message",
+    "blob_validation_failed",
+]
 
 
 def _messages_by_failure_code(pact: dict) -> dict:
@@ -79,7 +88,10 @@ def test_recovery__http_429__has_retry_after_ms():
     assert envelope.retry_after_ms > 0
 
 
-@pytest.mark.parametrize("failure_code", ["http_5xx", "http_404", "parse_error", "http_403"])
+@pytest.mark.parametrize(
+    "failure_code",
+    ["http_5xx", "http_404", "parse_error", "http_403", "handler_crash", "corrupt_message", "blob_validation_failed"],
+)
 def test_recovery__non_429__retry_after_ms_is_null(failure_code):
     pact = load_pact(_PACT_FILE)
     contents = _messages_by_failure_code(pact)[failure_code]

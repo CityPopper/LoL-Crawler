@@ -91,21 +91,32 @@ async def clear_priority(r: aioredis.Redis, puuid: str) -> None:
 async def has_priority_players(r: aioredis.Redis) -> bool:
     """Return True if any player has active priority.
 
-    Uses SCARD on the priority:active SET for an initial O(1) check, then
-    spot-checks one random member to verify its ``player:priority:{puuid}``
-    key still exists.  If the sampled key has expired (orphan), the member is
-    removed and SCARD is re-checked.  This prevents orphaned SET entries from
-    permanently blocking Discovery.
+    Fetches all members of the priority:active SET, checks each member's
+    ``player:priority:{puuid}`` key via a pipeline, and batch-removes any
+    orphans (expired keys) in one SREM call.  Returns True if live members
+    remain after cleanup.
     """
-    count: int = await r.scard(PRIORITY_ACTIVE_SET)  # type: ignore[misc]
-    if count == 0:
-        return False
-    # Spot-check: verify at least one member is still live
-    members: list[str] = await r.srandmember(PRIORITY_ACTIVE_SET, 1)  # type: ignore[misc]
-    if members:
-        exists: int = await r.exists(f"{_PRIORITY_KEY_PREFIX}{members[0]}")
-        if not exists:
-            await r.srem(PRIORITY_ACTIVE_SET, members[0])  # type: ignore[misc]
-            # Re-check after cleanup
-            return await r.scard(PRIORITY_ACTIVE_SET) > 0  # type: ignore[misc,no-any-return]
-    return True
+    try:
+        members: set[str] = await r.smembers(PRIORITY_ACTIVE_SET)  # type: ignore[misc]
+        if not members:
+            return False
+
+        member_list = list(members)
+        # Pipeline EXISTS for each member's priority key
+        async with r.pipeline(transaction=False) as pipe:
+            for puuid in member_list:
+                pipe.exists(f"{_PRIORITY_KEY_PREFIX}{puuid}")
+            results: list[int] = await pipe.execute()
+
+        # Collect orphans (members whose priority key no longer exists)
+        dead: list[str] = [
+            puuid for puuid, exists in zip(member_list, results) if not exists
+        ]
+
+        if dead:
+            await r.srem(PRIORITY_ACTIVE_SET, *dead)  # type: ignore[misc]
+
+        return len(member_list) - len(dead) > 0
+    except Exception:
+        _log.warning("has_priority_players: Redis error, returning True conservatively")
+        return True

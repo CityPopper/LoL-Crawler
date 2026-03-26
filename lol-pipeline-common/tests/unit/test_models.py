@@ -198,12 +198,14 @@ class TestDLQEnvelopeBoundary:
             "failure_code": "http_429",
             "failed_at": "2024-01-01T00:00:00+00:00",
             "enqueued_at": "2024-01-01T00:00:00+00:00",
+            "original_stream": "stream:match_id",
+            "original_message_id": "123-0",
         }
         dlq = DLQEnvelope.from_redis_fields(fields)
         assert dlq.failure_reason == ""
         assert dlq.failed_by == ""
-        assert dlq.original_stream == ""
-        assert dlq.original_message_id == ""
+        assert dlq.original_stream == "stream:match_id"
+        assert dlq.original_message_id == "123-0"
         assert dlq.retry_after_ms is None
         assert dlq.dlq_attempts == 0
 
@@ -298,6 +300,8 @@ class TestDLQEnvelopePriority:
             "failure_code": "http_429",
             "failed_at": "2024-01-01T00:00:00+00:00",
             "enqueued_at": "2024-01-01T00:00:00+00:00",
+            "original_stream": "stream:match_id",
+            "original_message_id": "123-0",
         }
         dlq = DLQEnvelope.from_redis_fields(fields)
         assert dlq.priority == "normal"

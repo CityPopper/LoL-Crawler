@@ -24,7 +24,7 @@ from lol_pipeline.constants import (
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.priority import PRIORITY_AUTO_20, has_priority_players
-from lol_pipeline.rate_limiter_client import wait_for_token
+from lol_pipeline.rate_limiter_client import try_token
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.riot_api import AuthError, NotFoundError, RiotAPIError, RiotClient
 from lol_pipeline.streams import publish
@@ -44,6 +44,8 @@ from lol_discovery._helpers import (
     _should_skip_seeded,
     _xinfo_groups_safe,
 )
+
+_THROTTLED: tuple[str, str] = ("__throttled__", "__throttled__")
 
 
 async def _is_idle(r: aioredis.Redis) -> bool:
@@ -100,14 +102,19 @@ async def _resolve_names(
     """Return (game_name, tag_line) from Redis backfill or Riot API.
 
     Returns None when the player permanently cannot be resolved (404).
+    Returns ``_THROTTLED`` when the rate-limiter denies a token so the
+    caller can skip this member without removing it from the queue.
     Raises RiotAPIError on transient failures so the caller can retry.
     """
     game_name, tag_line = await r.hmget(f"player:{puuid}", ["game_name", "tag_line"])  # type: ignore[misc]
     if game_name and tag_line:
         return game_name, tag_line
 
+    if not await try_token("riot", "account"):
+        log.debug("throttled — skipping name resolution", extra={"puuid": puuid})
+        return _THROTTLED
+
     try:
-        await wait_for_token("riot", "account")
         account = await riot.get_account_by_puuid(puuid, region)
     except NotFoundError:
         log.warning("account not found by puuid", extra={"puuid": puuid})
@@ -204,10 +211,19 @@ async def _try_promote_member(  # noqa: PLR0913
         await r.set(SYSTEM_HALTED_KEY, "1")
         return None
     except RiotAPIError:
-        log.error("transient api error", extra={"puuid": puuid})
+        log.error("transient api error — deprioritizing", extra={"puuid": puuid})
+        score = await r.zscore(_DISCOVER_KEY, member)
+        if score is not None:
+            new_score = max(score - 86_400_000, 0)
+            if new_score == 0:
+                await r.zrem(_DISCOVER_KEY, member)
+            else:
+                await r.zadd(_DISCOVER_KEY, {member: new_score})
         return 0
     if names is None:
         await r.zrem(_DISCOVER_KEY, member)
+        return 0
+    if names is _THROTTLED:
         return 0
     await _publish_and_commit(
         r,

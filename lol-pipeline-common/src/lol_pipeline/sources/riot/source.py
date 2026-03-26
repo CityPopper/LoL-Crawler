@@ -6,7 +6,6 @@ can fall through to the next source without any Riot-specific knowledge.
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
@@ -76,10 +75,12 @@ class RiotSource:
             if not granted:
                 return FetchResponse(result=FetchResult.THROTTLED)
 
-            data: dict[str, Any] = await self._riot.get_match(context.match_id, context.region)
+            data: dict[str, Any]
+            raw: bytes
+            data, raw = await self._riot.get_match_with_raw(context.match_id, context.region)
             return FetchResponse(
                 result=FetchResult.SUCCESS,
-                raw_blob=json.dumps(data).encode(),
+                raw_blob=raw,
                 data=data,
                 available_data_types=frozenset({MATCH}),
             )

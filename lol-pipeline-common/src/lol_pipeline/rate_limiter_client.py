@@ -18,6 +18,9 @@ _log = logging.getLogger(__name__)
 # Service URL from env (default: internal Docker network name)
 _RATE_LIMITER_URL: str = os.environ.get("RATE_LIMITER_URL", "http://rate-limiter:8079")
 
+# IMP-048: Shared secret sent on every request (empty = auth disabled).
+_RATE_LIMITER_SECRET: str = os.environ.get("RATE_LIMITER_SECRET", "")
+
 # Shared async HTTP client (connection pooling)
 _client: httpx.AsyncClient | None = None
 
@@ -25,7 +28,14 @@ _client: httpx.AsyncClient | None = None
 def _get_client() -> httpx.AsyncClient:
     global _client  # noqa: PLW0603
     if _client is None or _client.is_closed:
-        _client = httpx.AsyncClient(base_url=_RATE_LIMITER_URL, timeout=5.0)
+        headers: dict[str, str] = {}
+        if _RATE_LIMITER_SECRET:
+            headers["X-Rate-Limiter-Secret"] = _RATE_LIMITER_SECRET
+        _client = httpx.AsyncClient(
+            base_url=_RATE_LIMITER_URL,
+            timeout=5.0,
+            headers=headers,
+        )
     return _client
 
 
@@ -38,7 +48,8 @@ async def wait_for_token(
     """Block until a token is granted for (source, endpoint).
 
     Retries with jitter until granted or max_wait_s exceeded.
-    Fail open: if service unreachable, logs warning and returns immediately.
+    Raises ``TimeoutError`` when the deadline is exceeded without a grant.
+    Fail open: if service unreachable or unknown source, logs and returns.
     """
     deadline = asyncio.get_event_loop().time() + max_wait_s
     while True:
@@ -49,7 +60,6 @@ async def wait_for_token(
                 json={"source": source, "endpoint": endpoint},
             )
             if resp.status_code == 404:
-                # Unknown source — fail open
                 _log.warning("rate-limiter: unknown source %r, failing open", source)
                 return
             data = resp.json()
@@ -61,9 +71,13 @@ async def wait_for_token(
             jitter = wait_s * 0.1 * (random.random() * 2 - 1)  # noqa: S311
             actual_wait = max(0.01, wait_s + jitter)
             if asyncio.get_event_loop().time() + actual_wait > deadline:
-                _log.warning("rate-limiter: timeout waiting for token, failing open")
-                return
+                raise TimeoutError(
+                    f"rate-limiter: deadline exceeded waiting for token "
+                    f"(source={source!r}, endpoint={endpoint!r})"
+                )
             await asyncio.sleep(actual_wait)
+        except TimeoutError:
+            raise
         except Exception as exc:
             _log.warning("rate-limiter: service unreachable (%s), failing open", exc)
             return

@@ -93,7 +93,19 @@ async def _process_matches(
     worker_id: str,
     lock_ttl_ms: int,
 ) -> bool:
-    """Process each match atomically via Lua. Returns False if lock lost."""
+    """Process each match atomically via Lua. Returns False if lock lost.
+
+    NOTE: These EVALs are intentionally serial, not pipelined. Each EVAL
+    verifies lock ownership before mutating state (KEYS[1] check at line 1 of
+    _PROCESS_MATCH_LUA). If the lock is lost mid-batch, the script returns 0
+    and we abort immediately — preventing stale writes. Pipelining would send
+    all EVALs before reading any result, making early-abort impossible and
+    risking writes after lock expiration.
+
+    TODO(IMP-077): For large batches (>20 matches), consider a single Lua
+    script that accepts all match data as ARGV pairs and loops internally.
+    This would preserve atomicity while eliminating per-match round trips.
+    """
     stats_key = f"player:stats:{puuid}"
     cursor_key = f"player:stats:cursor:{puuid}"
     champs_key = f"player:champions:{puuid}"

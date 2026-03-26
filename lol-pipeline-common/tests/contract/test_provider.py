@@ -20,7 +20,16 @@ from lol_pipeline.models import DLQEnvelope, MessageEnvelope
 
 from .conftest import load_consumer_pact, load_schema
 
-_FAILURE_CODES = ["http_429", "http_5xx", "http_404", "parse_error", "http_403"]
+_FAILURE_CODES = [
+    "http_429",
+    "http_5xx",
+    "http_404",
+    "parse_error",
+    "http_403",
+    "handler_crash",
+    "corrupt_message",
+    "blob_validation_failed",
+]
 
 
 def _make_dlq_envelope(failure_code: str, retry_after_ms: int | None = None) -> DLQEnvelope:

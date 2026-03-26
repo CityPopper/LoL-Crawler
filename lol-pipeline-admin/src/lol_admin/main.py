@@ -12,9 +12,9 @@ import sys
 
 from lol_pipeline.config import Config
 
-# Re-export get_redis so mocks in tests still patch "lol_admin.main.get_redis"
+# Re-export get_redis/RiotClient so mocks in tests still patch "lol_admin.main.*"
 from lol_pipeline.redis_client import get_redis
-from lol_pipeline.riot_api import RiotClient
+from lol_pipeline.riot_api import RiotClient  # noqa: F401
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import RedisError
 
@@ -180,20 +180,19 @@ async def main(argv: list[str]) -> int:
     cfg = Config()
     try:
         r = get_redis(cfg.redis_url)
-        riot = RiotClient(cfg.riot_api_key)
     except (RedisConnectionError, RedisError) as exc:
         _print_error(f"Cannot connect to Redis. Is the stack running? Try: just up ({exc})")
         return 1
 
+    # IMP-022: RiotClient created lazily inside _dispatch for commands that need it.
     try:
-        return await _dispatch(r, riot, cfg, args)
+        return await _dispatch(r, None, cfg, args)
     except (RedisConnectionError, RedisError) as exc:
         _print_error("Cannot connect to Redis. Is the stack running? Try: just up")
         _log.debug("Redis connection error: %s", exc)
         return 1
     finally:
         await r.aclose()
-        await riot.close()
 
 
 if __name__ == "__main__":

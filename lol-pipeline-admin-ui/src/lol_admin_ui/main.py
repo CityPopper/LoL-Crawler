@@ -61,10 +61,18 @@ async def health() -> JSONResponse:
 
 
 @app.get("/dlq")
-async def list_dlq(r: AuthedRedis) -> JSONResponse:
-    """List all entries in stream:dlq."""
-    entries = await _helpers.list_dlq_entries(r)
-    return JSONResponse({"entries": entries, "total": len(entries)})
+async def list_dlq(
+    r: AuthedRedis,
+    cursor: str = "-",
+    count: int = 100,
+) -> JSONResponse:
+    """List DLQ entries with cursor-based pagination (default 100 per page)."""
+    count = max(1, min(count, 1000))
+    entries, total, next_cursor = await _helpers.list_dlq_entries(r, cursor, count)
+    body: dict[str, object] = {"entries": entries, "total": total}
+    if next_cursor is not None:
+        body["next_cursor"] = next_cursor
+    return JSONResponse(body)
 
 
 # ---------------------------------------------------------------------------

@@ -44,6 +44,11 @@ _DLQ_DISPATCH = {
     "archive": lambda r, cfg, args: _dispatch_dlq_archive(r, cfg, args),
 }
 
+# IMP-022: Commands that require a RiotClient (Riot API calls).
+_RIOT_COMMANDS: frozenset[str] = frozenset(
+    {"stats", "track", "reseed", "reset-stats", "clear-priority"}
+)
+
 _CMD_DISPATCH = {
     "stats": cmd_stats,
     "system-halt": lambda r, riot, cfg, args: cmd_system_halt(r, args),
@@ -66,14 +71,23 @@ _CMD_DISPATCH = {
 
 async def _dispatch(
     r: aioredis.Redis,
-    riot: RiotClient,
+    riot: RiotClient | None,
     cfg: Config,
     args: argparse.Namespace,
 ) -> int:
     handler = _CMD_DISPATCH.get(args.command)
     if handler is None:
         raise AssertionError(f"unreachable command: {args.command}")
-    return await handler(r, riot, cfg, args)  # type: ignore[no-untyped-call]
+    # IMP-022: Lazily instantiate RiotClient only for commands that need it.
+    owned_riot = False
+    if riot is None and args.command in _RIOT_COMMANDS:
+        riot = RiotClient(cfg.riot_api_key)
+        owned_riot = True
+    try:
+        return await handler(r, riot, cfg, args)  # type: ignore[no-untyped-call]
+    finally:
+        if owned_riot and riot is not None:
+            await riot.close()
 
 
 async def _dispatch_dlq(r: aioredis.Redis, cfg: Config, args: argparse.Namespace) -> int:

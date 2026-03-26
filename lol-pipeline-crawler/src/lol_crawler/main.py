@@ -24,7 +24,7 @@ from lol_pipeline.riot_api import (
     ServerError,
 )
 from lol_pipeline.service import run_consumer
-from lol_pipeline.streams import MATCH_ID_STREAM_MAXLEN, ack, publish
+from lol_pipeline.streams import MATCH_ID_STREAM_MAXLEN, ack
 from pydantic import ValidationError
 
 from lol_crawler._constants import (
@@ -99,24 +99,38 @@ async def _publish_batch(  # noqa: PLR0913
     current_priority: str,
     correlation_id: str,
 ) -> tuple[int, str]:
-    """Publish match IDs to stream:match_id via publish(). Return (published, priority)."""
+    """Publish match IDs to stream:match_id via a Redis pipeline. Return (published, priority)."""
+    envelopes: list[MessageEnvelope] = []
     for match_id in new_ids:
         if published >= PRIORITY_DOWNGRADE_THRESHOLD and current_priority == priority:
             current_priority = downgrade_priority(priority)
-        env = MessageEnvelope(
-            source_stream=_OUT_STREAM,
-            type="match_id",
-            payload={
-                "match_id": match_id,
-                "puuid": puuid,
-                "region": region,
-            },
-            max_attempts=cfg.max_attempts,
-            priority=current_priority,
-            correlation_id=correlation_id,
+        envelopes.append(
+            MessageEnvelope(
+                source_stream=_OUT_STREAM,
+                type="match_id",
+                payload={
+                    "match_id": match_id,
+                    "puuid": puuid,
+                    "region": region,
+                },
+                max_attempts=cfg.max_attempts,
+                priority=current_priority,
+                correlation_id=correlation_id,
+            )
         )
-        await publish(r, _OUT_STREAM, env, maxlen=MATCH_ID_STREAM_MAXLEN)
         published += 1
+
+    if envelopes:
+        async with r.pipeline(transaction=False) as pipe:
+            for env in envelopes:
+                pipe.xadd(
+                    _OUT_STREAM,
+                    env.to_redis_fields(),
+                    maxlen=MATCH_ID_STREAM_MAXLEN,
+                    approximate=True,
+                )
+            await pipe.execute()
+
     return published, current_priority
 
 

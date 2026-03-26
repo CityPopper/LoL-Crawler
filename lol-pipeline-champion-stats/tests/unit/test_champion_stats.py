@@ -23,14 +23,7 @@ from lol_champion_stats.main import handle_champion_stats
 _IN_STREAM = "stream:analyze"
 _GROUP = "champion-stats-workers"
 
-try:
-    import lupa  # noqa: F401
-
-    _LUPA_AVAILABLE = True
-except ImportError:
-    _LUPA_AVAILABLE = False
-
-pytestmark = pytest.mark.skipif(not _LUPA_AVAILABLE, reason="lupa required for Lua scripts")
+lupa = pytest.importorskip("lupa", reason="lupa required for Lua scripts")
 
 
 @pytest.fixture

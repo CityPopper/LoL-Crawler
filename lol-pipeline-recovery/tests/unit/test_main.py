@@ -89,8 +89,9 @@ class TestRecoveryRequeue:
         dlq = _make_dlq(failure_code="http_429", dlq_attempts=0, retry_after_ms=5000)
         msg_id = await _setup_dlq_msg(r, dlq)
 
-        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+        result = await _process(r, cfg, "test-consumer", msg_id, dlq, log)
 
+        assert result is True
         members = await r.zrange(_DELAYED_KEY, 0, -1)
         assert len(members) == 1
         env = await _read_delayed_envelope(r, members[0])
@@ -103,8 +104,9 @@ class TestRecoveryRequeue:
         dlq = _make_dlq(failure_code="http_5xx", dlq_attempts=0)
         msg_id = await _setup_dlq_msg(r, dlq)
 
-        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+        result = await _process(r, cfg, "test-consumer", msg_id, dlq, log)
 
+        assert result is True
         members = await r.zrange(_DELAYED_KEY, 0, -1)
         assert len(members) == 1
         env = await _read_delayed_envelope(r, members[0])
@@ -143,8 +145,9 @@ class TestRecoveryArchive:
         )
         msg_id = await _setup_dlq_msg(r, dlq)
 
-        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+        result = await _process(r, cfg, "test-consumer", msg_id, dlq, log)
 
+        assert result is True
         assert await r.xlen(_ARCHIVE_STREAM) == 1
         assert await r.hget("match:NA1_archived", "status") == "failed"
         assert await r.sismember("match:status:failed", "NA1_archived")
@@ -158,8 +161,9 @@ class TestRecoveryDiscard:
         dlq = _make_dlq(failure_code="http_404", match_id="NA1_404")
         msg_id = await _setup_dlq_msg(r, dlq)
 
-        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+        result = await _process(r, cfg, "test-consumer", msg_id, dlq, log)
 
+        assert result is True
         assert await r.zcard(_DELAYED_KEY) == 0
         assert await r.xlen(_ARCHIVE_STREAM) == 0
 
@@ -169,8 +173,9 @@ class TestRecoveryDiscard:
         dlq = _make_dlq(failure_code="parse_error")
         msg_id = await _setup_dlq_msg(r, dlq)
 
-        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+        result = await _process(r, cfg, "test-consumer", msg_id, dlq, log)
 
+        assert result is True
         assert await r.xlen(_ARCHIVE_STREAM) == 1
         assert await r.zcard(_DELAYED_KEY) == 0
 
@@ -181,8 +186,9 @@ class TestRecoveryDiscard:
         msg_id = await _setup_dlq_msg(r, dlq)
 
         with caplog.at_level(logging.ERROR, logger="test-recovery"):
-            await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+            result = await _process(r, cfg, "test-consumer", msg_id, dlq, log)
 
+        assert result is True
         assert await r.xlen(_ARCHIVE_STREAM) == 1
         assert any("unknown failure_code" in rec.message for rec in caplog.records)
 
@@ -194,8 +200,9 @@ class TestRecoveryHalted:
         dlq = _make_dlq(failure_code="http_403")
         msg_id = await _setup_dlq_msg(r, dlq)
 
-        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+        result = await _process(r, cfg, "test-consumer", msg_id, dlq, log)
 
+        assert result is True
         assert await r.get("system:halted") == "1"
         assert await r.xlen(_ARCHIVE_STREAM) == 1
 
@@ -206,8 +213,9 @@ class TestRecoveryHalted:
         dlq = _make_dlq(failure_code="http_5xx")
         msg_id = await _setup_dlq_msg(r, dlq)
 
-        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+        result = await _process(r, cfg, "test-consumer", msg_id, dlq, log)
 
+        assert result is False
         assert await r.zcard(_DELAYED_KEY) == 0
         assert await r.xlen(_ARCHIVE_STREAM) == 0
 
@@ -218,8 +226,9 @@ class TestRecoveryHalted:
         dlq = _make_dlq(failure_code="http_403")
         msg_id = await _setup_dlq_msg(r, dlq)
 
-        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+        result = await _process(r, cfg, "test-consumer", msg_id, dlq, log)
 
+        assert result is True
         assert await r.xlen(_ARCHIVE_STREAM) == 1
 
 
@@ -254,7 +263,8 @@ class TestRecoveryEdgeCases:
         """http_429 with retry_after_ms should use that value, not backoff."""
         dlq = _make_dlq(failure_code="http_429", dlq_attempts=0, retry_after_ms=31000)
         msg_id = await _setup_dlq_msg(r, dlq)
-        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+        result = await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+        assert result is True
 
         members = await r.zrange(_DELAYED_KEY, 0, -1, withscores=True)
         assert len(members) == 1
@@ -271,7 +281,8 @@ class TestRecoveryEdgeCases:
         """http_5xx (no retry_after) should use exponential backoff with jitter."""
         dlq = _make_dlq(failure_code="http_5xx", dlq_attempts=2)
         msg_id = await _setup_dlq_msg(r, dlq)
-        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+        result = await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+        assert result is True
 
         members = await r.zrange(_DELAYED_KEY, 0, -1, withscores=True)
         assert len(members) == 1
@@ -288,8 +299,9 @@ class TestRecoveryEdgeCases:
         """http_5xx at dlq_max_attempts → archived, not requeued."""
         dlq = _make_dlq(failure_code="http_5xx", dlq_attempts=cfg.dlq_max_attempts)
         msg_id = await _setup_dlq_msg(r, dlq)
-        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+        result = await _process(r, cfg, "test-consumer", msg_id, dlq, log)
 
+        assert result is True
         assert await r.xlen(_ARCHIVE_STREAM) == 1
         assert await r.zcard(_DELAYED_KEY) == 0
 
@@ -298,8 +310,9 @@ class TestRecoveryEdgeCases:
         """handler_crash failure code → requeued with backoff (not archived)."""
         dlq = _make_dlq(failure_code="handler_crash", dlq_attempts=0)
         msg_id = await _setup_dlq_msg(r, dlq)
-        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+        result = await _process(r, cfg, "test-consumer", msg_id, dlq, log)
 
+        assert result is True
         assert await r.zcard(_DELAYED_KEY) == 1
         assert await r.xlen(_ARCHIVE_STREAM) == 0
 
@@ -314,7 +327,8 @@ class TestRequeuePreservesFields:
         dlq.priority = "high"
         msg_id = await _setup_dlq_msg(r, dlq)
 
-        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+        result = await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+        assert result is True
 
         members = await r.zrange(_DELAYED_KEY, 0, -1)
         assert len(members) == 1
@@ -328,7 +342,8 @@ class TestRequeuePreservesFields:
         dlq.attempts = 3
         msg_id = await _setup_dlq_msg(r, dlq)
 
-        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+        result = await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+        assert result is True
 
         members = await r.zrange(_DELAYED_KEY, 0, -1)
         env = await _read_delayed_envelope(r, members[0])
@@ -340,8 +355,9 @@ class TestRequeuePreservesFields:
         dlq = _make_dlq(failure_code="handler_crash", dlq_attempts=0)
         msg_id = await _setup_dlq_msg(r, dlq)
 
-        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+        result = await _process(r, cfg, "test-consumer", msg_id, dlq, log)
 
+        assert result is True
         # Should be requeued (transient), not archived (unknown)
         assert await r.zcard(_DELAYED_KEY) == 1
         assert await r.xlen(_ARCHIVE_STREAM) == 0
@@ -355,7 +371,8 @@ class TestRecoveryRetryAfterEdgeCases:
         """retry_after_ms=0 is falsy in Python → should fall through to backoff."""
         dlq = _make_dlq(failure_code="http_429", dlq_attempts=0, retry_after_ms=0)
         msg_id = await _setup_dlq_msg(r, dlq)
-        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+        result = await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+        assert result is True
 
         members = await r.zrange(_DELAYED_KEY, 0, -1, withscores=True)
         assert len(members) == 1
@@ -372,7 +389,8 @@ class TestRecoveryRetryAfterEdgeCases:
         """retry_after_ms=-1 is truthy → code uses it as delay (current behavior)."""
         dlq = _make_dlq(failure_code="http_429", dlq_attempts=0, retry_after_ms=-1)
         msg_id = await _setup_dlq_msg(r, dlq)
-        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+        result = await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+        assert result is True
 
         members = await r.zrange(_DELAYED_KEY, 0, -1, withscores=True)
         assert len(members) == 1
@@ -423,7 +441,8 @@ class TestDelayedEnvelopeStorage:
         """After requeue, ZSET member is the envelope ID (not full JSON blob)."""
         dlq = _make_dlq(failure_code="http_429", dlq_attempts=0, retry_after_ms=5000)
         msg_id = await _setup_dlq_msg(r, dlq)
-        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+        result = await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+        assert result is True
 
         # ZSET member should be the short envelope ID (~36 chars), not JSON blob
         score = await r.zscore(_DELAYED_KEY, dlq.id)
@@ -436,7 +455,8 @@ class TestDelayedEnvelopeStorage:
         """After requeue, delayed:envelope:{id} hash has the full JSON data."""
         dlq = _make_dlq(failure_code="http_429", dlq_attempts=0, retry_after_ms=5000)
         msg_id = await _setup_dlq_msg(r, dlq)
-        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+        result = await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+        assert result is True
 
         data = await r.hget(f"delayed:envelope:{dlq.id}", "data")
         assert data is not None, "delayed:envelope:{id} must contain the envelope JSON"
@@ -984,10 +1004,11 @@ class TestRequeueDelayedAtomic:
 
         r.pipeline = tracking_pipeline
 
-        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+        result = await _process(r, cfg, "test-consumer", msg_id, dlq, log)
 
         r.pipeline = original_pipeline
 
+        assert result is True
         # Verify pipeline was used and ZADD happened
         assert len(pipeline_calls) >= 1
         assert await r.zcard(_DELAYED_KEY) == 1
@@ -1108,9 +1129,29 @@ class TestCorrelationIdPropagation:
         )
         msg_id = await _setup_dlq_msg(r, dlq)
 
-        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+        result = await _process(r, cfg, "test-consumer", msg_id, dlq, log)
 
+        assert result is True
         members = await r.zrange(_DELAYED_KEY, 0, -1)
         assert len(members) == 1
         env = await _read_delayed_envelope(r, members[0])
         assert env.correlation_id == "trace-recovery-xyz"
+
+
+class TestRequeueDelayedTTL:
+    """IMP-066: _requeue_delayed must set a TTL on the delayed:envelope:{id} key."""
+
+    @pytest.mark.asyncio
+    async def test_requeue_delayed_sets_ttl_on_envelope_key(self, r, cfg, log):
+        """After requeue, delayed:envelope:{id} has a TTL > 0 and <= configured limit."""
+        dlq = _make_dlq(failure_code="http_429", dlq_attempts=0, retry_after_ms=5000)
+        msg_id = await _setup_dlq_msg(r, dlq)
+
+        await _process(r, cfg, "test-consumer", msg_id, dlq, log)
+
+        envelope_key = f"delayed:envelope:{dlq.id}"
+        ttl = await r.ttl(envelope_key)
+        assert ttl > 0, f"delayed:envelope:{dlq.id} must have a TTL, got {ttl}"
+        assert ttl <= cfg.delay_envelope_ttl_seconds, (
+            f"TTL {ttl} exceeds configured max {cfg.delay_envelope_ttl_seconds}"
+        )

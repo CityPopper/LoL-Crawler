@@ -8,15 +8,36 @@ from __future__ import annotations
 
 from redis.asyncio import Redis
 
+_DLQ_PAGE_SIZE = 100
 
-async def list_dlq_entries(r: Redis) -> list[dict[str, str]]:
-    """Return all DLQ entries as flat dicts with ``id`` field included."""
-    raw_entries: list[tuple[str, dict[str, str]]] = await r.xrange("stream:dlq")
+
+async def list_dlq_entries(
+    r: Redis,
+    cursor: str = "-",
+    count: int = _DLQ_PAGE_SIZE,
+) -> tuple[list[dict[str, str]], int, str | None]:
+    """Return a page of DLQ entries, total count, and next cursor.
+
+    *cursor* is the exclusive lower bound (``"-"`` for the start of the stream).
+    *count* caps the number of entries returned per call (default 100).
+
+    Returns ``(entries, total, next_cursor)`` where *next_cursor* is ``None``
+    when no more entries exist.
+    """
+    total: int = await r.xlen("stream:dlq")
+    # Use exclusive lower bound when paginating from a previous cursor.
+    range_min = f"({cursor}" if cursor != "-" else "-"
+    raw_entries: list[tuple[str, dict[str, str]]] = await r.xrange(
+        "stream:dlq", min=range_min, count=count,
+    )
     entries: list[dict[str, str]] = []
     for entry_id, fields in raw_entries:
         entry: dict[str, str] = {"id": entry_id, **fields}
         entries.append(entry)
-    return entries
+    next_cursor: str | None = None
+    if entries and len(entries) == count:
+        next_cursor = entries[-1]["id"]
+    return entries, total, next_cursor
 
 
 async def replay_entry(

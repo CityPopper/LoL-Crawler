@@ -80,7 +80,6 @@ class BlobStore:
         path = self._blob_path(source_name, match_id)
         if await asyncio.to_thread(path.exists):
             return
-        path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(f".tmp_{match_id}_{os.getpid()}_{uuid4().hex}.json")
         try:
             await asyncio.to_thread(self._atomic_write, tmp, path, data)
@@ -92,6 +91,7 @@ class BlobStore:
 
     @staticmethod
     def _atomic_write(tmp: Path, final: Path, data: bytes | str) -> None:
+        final.parent.mkdir(parents=True, exist_ok=True)
         raw = data.encode("utf-8") if isinstance(data, str) else data
         fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
         try:

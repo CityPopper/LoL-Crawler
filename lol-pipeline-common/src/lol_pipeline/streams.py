@@ -27,7 +27,7 @@ from lol_pipeline._streams_data import (
 from lol_pipeline._streams_data import (
     MATCH_ID_STREAM_MAXLEN as MATCH_ID_STREAM_MAXLEN,
 )
-from lol_pipeline.constants import STREAM_DLQ, STREAM_DLQ_ARCHIVE
+from lol_pipeline.constants import STREAM_DLQ, STREAM_DLQ_ARCHIVE, VALID_REPLAY_STREAMS
 from lol_pipeline.models import DLQEnvelope, MessageEnvelope
 
 _log = logging.getLogger("streams")
@@ -306,6 +306,8 @@ async def replay_from_dlq(
     Returns ``1`` when the replay succeeds, ``0`` when the DLQ entry no longer
     exists (already replayed — idempotent guard against crash-restart duplicates).
     """
+    if not target_stream or target_stream not in VALID_REPLAY_STREAMS:
+        raise ValueError(f"invalid replay target stream: {target_stream!r}")
     redis_fields = envelope.to_redis_fields()
     ml = _maxlen_for_replay(target_stream)
     flat_args: list[str] = [dlq_entry_id, str(ml)]

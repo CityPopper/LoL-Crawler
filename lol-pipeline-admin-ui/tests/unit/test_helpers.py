@@ -62,24 +62,47 @@ class TestAdminUiStartupValidation:
 
 
 class TestListDlqEntries:
-    """list_dlq_entries returns all DLQ entries as dicts with id field."""
+    """list_dlq_entries returns paginated DLQ entries with total and cursor."""
 
     async def test_list_dlq_entries__empty__returns_empty_list(self, r):
-        entries = await list_dlq_entries(r)
+        entries, total, next_cursor = await list_dlq_entries(r)
         assert entries == []
+        assert total == 0
+        assert next_cursor is None
 
     async def test_list_dlq_entries__with_entries__includes_id(self, r):
         entry_id = await r.xadd("stream:dlq", {"failure_code": "http_429", "payload": "{}"})
-        entries = await list_dlq_entries(r)
+        entries, total, _cursor = await list_dlq_entries(r)
         assert len(entries) == 1
+        assert total == 1
         assert entries[0]["id"] == entry_id
         assert entries[0]["failure_code"] == "http_429"
 
     async def test_list_dlq_entries__multiple_entries(self, r):
         for i in range(3):
             await r.xadd("stream:dlq", {"failure_code": f"code_{i}"})
-        entries = await list_dlq_entries(r)
+        entries, total, _cursor = await list_dlq_entries(r)
         assert len(entries) == 3
+        assert total == 3
+
+    async def test_list_dlq_entries__respects_count_limit(self, r):
+        for i in range(5):
+            await r.xadd("stream:dlq", {"failure_code": f"code_{i}"})
+        entries, total, next_cursor = await list_dlq_entries(r, count=2)
+        assert len(entries) == 2
+        assert total == 5
+        assert next_cursor is not None
+
+    async def test_list_dlq_entries__cursor_paginates(self, r):
+        for i in range(5):
+            await r.xadd("stream:dlq", {"failure_code": f"code_{i}"})
+        page1, total1, cursor1 = await list_dlq_entries(r, count=3)
+        assert len(page1) == 3
+        assert total1 == 5
+        assert cursor1 is not None
+        page2, total2, cursor2 = await list_dlq_entries(r, cursor=cursor1, count=3)
+        assert len(page2) >= 1
+        assert total2 == 5
 
 
 class TestReplayEntry:

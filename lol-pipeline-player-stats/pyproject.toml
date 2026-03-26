@@ -33,7 +33,7 @@ dev = [
 where = ["src"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests/unit"]
+testpaths = ["tests/unit", "tests/contract"]
 addopts = ""
 asyncio_mode = "auto"
 timeout = 10

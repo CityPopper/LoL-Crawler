@@ -14,6 +14,7 @@ from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.raw_store import RawStore
 from lol_pipeline.streams import consume, publish
 
+from lol_parser._extract import _extract_all_perks
 from lol_parser.main import (
     _extract_full_perks,
     _extract_gold_timelines,
@@ -1387,7 +1388,7 @@ class TestWriteBans:
 
     @pytest.mark.asyncio
     async def test_bans_negative_champion_id_ignored(self, r, cfg, log):
-        """championId=-1 (no ban) is skipped; only positive IDs stored."""
+        """championId=-1 (no ban) is skipped; _total_games NOT incremented."""
         info = _ranked_info_with_bans(
             bans_team_100=[{"championId": -1, "pickTurn": 1}],
             bans_team_200=[{"championId": -1, "pickTurn": 2}],
@@ -1395,10 +1396,53 @@ class TestWriteBans:
         await _write_bans(r, "NA1_NOBANCHAMP", info, "14.1", cfg, log)
 
         ban_key = "champion:bans:14.1"
-        # _total_games incremented, but no champion IDs stored
-        assert await r.hget(ban_key, "_total_games") == "1"
+        # No real bans → _total_games must NOT be incremented
+        assert await r.hget(ban_key, "_total_games") is None
         all_fields = await r.hgetall(ban_key)
-        assert len(all_fields) == 1  # only _total_games
+        assert len(all_fields) == 0
+
+    @pytest.mark.asyncio
+    async def test_all_bans_minus_one__no_total_games_increment(self, r, cfg, log):
+        """IMP-076: All bans=-1 (no bans game mode) must NOT increment _total_games."""
+        info = _ranked_info_with_bans(
+            bans_team_100=[
+                {"championId": -1, "pickTurn": 1},
+                {"championId": -1, "pickTurn": 2},
+                {"championId": -1, "pickTurn": 3},
+                {"championId": -1, "pickTurn": 4},
+                {"championId": -1, "pickTurn": 5},
+            ],
+            bans_team_200=[
+                {"championId": -1, "pickTurn": 6},
+                {"championId": -1, "pickTurn": 7},
+                {"championId": -1, "pickTurn": 8},
+                {"championId": -1, "pickTurn": 9},
+                {"championId": -1, "pickTurn": 10},
+            ],
+        )
+        await _write_bans(r, "NA1_ALLNEG", info, "14.1", cfg, log)
+
+        ban_key = "champion:bans:14.1"
+        assert await r.hget(ban_key, "_total_games") is None
+
+    @pytest.mark.asyncio
+    async def test_mixed_bans__total_games_incremented(self, r, cfg, log):
+        """Mixed bans (some real, some -1) still increments _total_games."""
+        info = _ranked_info_with_bans(
+            bans_team_100=[
+                {"championId": 238, "pickTurn": 1},
+                {"championId": -1, "pickTurn": 2},
+            ],
+            bans_team_200=[
+                {"championId": -1, "pickTurn": 3},
+                {"championId": -1, "pickTurn": 4},
+            ],
+        )
+        await _write_bans(r, "NA1_MIXED", info, "14.1", cfg, log)
+
+        ban_key = "champion:bans:14.1"
+        assert await r.hget(ban_key, "_total_games") == "1"
+        assert await r.hget(ban_key, "238") == "1"
 
 
 def _ranked_matchup_participants():
@@ -2254,6 +2298,98 @@ class TestExtractFullPerks:
             },
         }
         primary_sel, sub_sel, stat_shards = _extract_full_perks(p)
+        assert primary_sel == []
+        assert sub_sel == []
+        assert stat_shards == []
+
+
+class TestExtractAllPerks:
+    """IMP-075: _extract_all_perks returns combined perk data in a single pass."""
+
+    def test_extract_all_perks__normal(self):
+        """All six return values extracted correctly from complete perks data."""
+        p = {
+            "perks": {
+                "styles": [
+                    {
+                        "style": 8100,
+                        "selections": [
+                            {"perk": 8112},
+                            {"perk": 8126},
+                            {"perk": 8139},
+                            {"perk": 8135},
+                        ],
+                    },
+                    {
+                        "style": 8300,
+                        "selections": [
+                            {"perk": 8304},
+                            {"perk": 8345},
+                        ],
+                    },
+                ],
+                "statPerks": {
+                    "offense": 5008,
+                    "flex": 5002,
+                    "defense": 5001,
+                },
+            },
+        }
+        keystone, primary_id, sub_id, primary_sel, sub_sel, stat_shards = (
+            _extract_all_perks(p)
+        )
+        assert keystone == 8112
+        assert primary_id == 8100
+        assert sub_id == 8300
+        assert primary_sel == [8112, 8126, 8139, 8135]
+        assert sub_sel == [8304, 8345]
+        assert stat_shards == [5008, 5002, 5001]
+
+    def test_extract_all_perks__empty_participant(self):
+        """Empty dict returns zeroed keystone/styles and empty lists."""
+        keystone, primary_id, sub_id, primary_sel, sub_sel, stat_shards = (
+            _extract_all_perks({})
+        )
+        assert keystone == 0
+        assert primary_id == 0
+        assert sub_id == 0
+        assert primary_sel == []
+        assert sub_sel == []
+        assert stat_shards == []
+
+    def test_extract_all_perks__missing_perks_field(self):
+        """Participant data with no 'perks' key returns safe defaults."""
+        p = {"championName": "Ahri", "kills": 5}
+        keystone, primary_id, sub_id, primary_sel, sub_sel, stat_shards = (
+            _extract_all_perks(p)
+        )
+        assert keystone == 0
+        assert primary_id == 0
+        assert sub_id == 0
+        assert primary_sel == []
+        assert sub_sel == []
+        assert stat_shards == []
+
+    def test_extract_all_perks__empty_perks(self):
+        """perks={} returns safe defaults."""
+        keystone, primary_id, sub_id, primary_sel, sub_sel, stat_shards = (
+            _extract_all_perks({"perks": {}})
+        )
+        assert keystone == 0
+        assert primary_id == 0
+        assert sub_id == 0
+        assert primary_sel == []
+        assert sub_sel == []
+        assert stat_shards == []
+
+    def test_extract_all_perks__empty_styles_list(self):
+        """perks with empty styles list returns safe defaults."""
+        keystone, primary_id, sub_id, primary_sel, sub_sel, stat_shards = (
+            _extract_all_perks({"perks": {"styles": []}})
+        )
+        assert keystone == 0
+        assert primary_id == 0
+        assert sub_id == 0
         assert primary_sel == []
         assert sub_sel == []
         assert stat_shards == []

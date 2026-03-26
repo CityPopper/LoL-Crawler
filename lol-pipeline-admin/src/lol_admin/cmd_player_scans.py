@@ -26,6 +26,8 @@ async def cmd_recalc_priority(r: aioredis.Redis, args: argparse.Namespace) -> in
 
 async def cmd_recalc_players(r: aioredis.Redis, args: argparse.Namespace) -> int:
     """Rebuild players:all sorted set from existing player:{puuid} hashes."""
+    # IMP-021: Delete before rebuild so stale entries are removed.
+    await r.delete("players:all")
     count = 0
     async for key in r.scan_iter(match="player:*", count=200):
         if key.count(":") != 1:

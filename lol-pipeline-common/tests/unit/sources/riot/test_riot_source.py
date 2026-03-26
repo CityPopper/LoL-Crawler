@@ -64,10 +64,13 @@ def context() -> FetchContext:
 def mock_riot_client() -> AsyncMock:
     """AsyncMock standing in for RiotClient.
 
-    By default, get_match returns SAMPLE_MATCH_DATA.
+    By default, get_match and get_match_with_raw return SAMPLE_MATCH_DATA.
+    get_match_with_raw returns (data, raw_bytes) tuple for the no-double-serialize path.
     """
     client = AsyncMock(spec=RiotClient)
+    raw_bytes = json.dumps(SAMPLE_MATCH_DATA).encode()
     client.get_match = AsyncMock(return_value=SAMPLE_MATCH_DATA)
+    client.get_match_with_raw = AsyncMock(return_value=(SAMPLE_MATCH_DATA, raw_bytes))
     client.close = AsyncMock()
     return client
 
@@ -121,14 +124,14 @@ class TestRiotSourceRateLimit:
             response = await riot_source.fetch(context, MATCH)
 
         assert response.result == FetchResult.THROTTLED
-        # RiotClient.get_match must NOT have been called
-        mock_riot_client.get_match.assert_not_called()
+        # RiotClient.get_match_with_raw must NOT have been called
+        mock_riot_client.get_match_with_raw.assert_not_called()
 
     async def test_fetch__rate_limit_error__returns_throttled(
         self, riot_source: RiotSource, context: FetchContext, mock_riot_client: AsyncMock
     ) -> None:
         """HTTP 429 from RiotClient maps to THROTTLED."""
-        mock_riot_client.get_match.side_effect = RateLimitError(retry_after_ms=5000)
+        mock_riot_client.get_match_with_raw.side_effect = RateLimitError(retry_after_ms=5000)
         with patch(
             "lol_pipeline.sources.riot.source.try_token",
             new_callable=AsyncMock,
@@ -142,7 +145,7 @@ class TestRiotSourceRateLimit:
         self, riot_source: RiotSource, context: FetchContext, mock_riot_client: AsyncMock
     ) -> None:
         """retry_after_ms from RateLimitError is propagated in FetchResponse."""
-        mock_riot_client.get_match.side_effect = RateLimitError(retry_after_ms=3000)
+        mock_riot_client.get_match_with_raw.side_effect = RateLimitError(retry_after_ms=3000)
         with patch(
             "lol_pipeline.sources.riot.source.try_token",
             new_callable=AsyncMock,
@@ -211,7 +214,7 @@ class TestRiotSourceErrorMapping:
         self, riot_source: RiotSource, context: FetchContext, mock_riot_client: AsyncMock
     ) -> None:
         """HTTP 403/401 from RiotClient maps to AUTH_ERROR."""
-        mock_riot_client.get_match.side_effect = AuthError("forbidden")
+        mock_riot_client.get_match_with_raw.side_effect = AuthError("forbidden")
         with patch(
             "lol_pipeline.sources.riot.source.try_token",
             new_callable=AsyncMock,
@@ -225,7 +228,7 @@ class TestRiotSourceErrorMapping:
         self, riot_source: RiotSource, context: FetchContext, mock_riot_client: AsyncMock
     ) -> None:
         """HTTP 404 from RiotClient maps to NOT_FOUND."""
-        mock_riot_client.get_match.side_effect = NotFoundError("not found")
+        mock_riot_client.get_match_with_raw.side_effect = NotFoundError("not found")
         with patch(
             "lol_pipeline.sources.riot.source.try_token",
             new_callable=AsyncMock,
@@ -239,7 +242,7 @@ class TestRiotSourceErrorMapping:
         self, riot_source: RiotSource, context: FetchContext, mock_riot_client: AsyncMock
     ) -> None:
         """HTTP 5xx from RiotClient maps to SERVER_ERROR."""
-        mock_riot_client.get_match.side_effect = ServerError("internal error", status_code=500)
+        mock_riot_client.get_match_with_raw.side_effect = ServerError("internal error", status_code=500)
         with patch(
             "lol_pipeline.sources.riot.source.try_token",
             new_callable=AsyncMock,
@@ -253,7 +256,7 @@ class TestRiotSourceErrorMapping:
         self, riot_source: RiotSource, context: FetchContext, mock_riot_client: AsyncMock
     ) -> None:
         """TimeoutError (httpx read timeout, etc.) maps to THROTTLED."""
-        mock_riot_client.get_match.side_effect = TimeoutError("read timed out")
+        mock_riot_client.get_match_with_raw.side_effect = TimeoutError("read timed out")
         with patch(
             "lol_pipeline.sources.riot.source.try_token",
             new_callable=AsyncMock,

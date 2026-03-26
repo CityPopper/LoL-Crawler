@@ -1,0 +1,84 @@
+{
+  "consumer": {
+    "name": "lol-pipeline-player-stats"
+  },
+  "provider": {
+    "name": "lol-pipeline-parser"
+  },
+  "messages": [
+    {
+      "description": "an analyze message with a PUUID whose stats need recalculation",
+      "providerStates": [
+        {
+          "name": "participant data for the PUUID exists in Redis hashes"
+        }
+      ],
+      "contents": {
+        "id": "a2345678-1234-1234-1234-123456789012",
+        "source_stream": "stream:analyze",
+        "type": "analyze",
+        "payload": {
+          "puuid": "abc-def-123-test-puuid"
+        },
+        "attempts": 0,
+        "max_attempts": 5,
+        "enqueued_at": "2024-01-01T00:00:00+00:00",
+        "dlq_attempts": 0,
+        "priority": "normal",
+        "correlation_id": ""
+      },
+      "matchingRules": {
+        "body": {
+          "$.id": {
+            "matchers": [
+              { "match": "regex", "regex": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+            ]
+          },
+          "$.source_stream": {
+            "matchers": [ { "match": "equality" } ]
+          },
+          "$.type": {
+            "matchers": [ { "match": "equality" } ]
+          },
+          "$.payload.puuid": {
+            "matchers": [
+              { "match": "type" }
+            ]
+          },
+          "$.attempts": {
+            "matchers": [ { "match": "integer" } ]
+          },
+          "$.max_attempts": {
+            "matchers": [ { "match": "integer" } ]
+          },
+          "$.enqueued_at": {
+            "matchers": [
+              { "match": "regex", "regex": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*$" }
+            ]
+          },
+          "$.dlq_attempts": {
+            "matchers": [ { "match": "integer" } ]
+          },
+          "$.priority": {
+            "matchers": [
+              { "match": "regex", "regex": "^(manual_20|manual_20plus|auto_20|auto_new|high|normal)$" }
+            ]
+          },
+          "$.correlation_id": {
+            "matchers": [ { "match": "type" } ]
+          }
+        }
+      },
+      "metadata": {
+        "contentType": "application/json"
+      }
+    }
+  ],
+  "metadata": {
+    "pactSpecification": {
+      "version": "3.0.0"
+    },
+    "schemaRef": "../../lol-pipeline-common/contracts/schemas/envelope.json",
+    "payloadSchemaRef": "../../lol-pipeline-common/contracts/schemas/payloads/analyze_payload.json"
+  }
+}

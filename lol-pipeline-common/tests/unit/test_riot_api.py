@@ -158,7 +158,7 @@ class TestRiotClientRateLimitStorage:
         mock_rl_client.post.assert_called_once_with(
             "/headers",
             json={
-                "source": "riot_api",
+                "source": "riot",
                 "rate_limit": "20:1,100:120",
                 "rate_limit_count": "15:1,42:120",
             },

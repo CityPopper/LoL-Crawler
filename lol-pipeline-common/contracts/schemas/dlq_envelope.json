@@ -25,7 +25,7 @@
     },
     "failure_code": {
       "type": "string",
-      "enum": ["http_429", "http_5xx", "http_404", "http_403", "parse_error", "handler_crash", "unknown"],
+      "enum": ["http_429", "http_5xx", "http_404", "http_403", "parse_error", "handler_crash", "corrupt_message", "blob_validation_failed", "unknown"],
       "description": "Machine-readable failure classification"
     },
     "failed_at": {

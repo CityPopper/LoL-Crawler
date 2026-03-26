@@ -11,8 +11,8 @@ class Config(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    riot_api_key: str = Field(min_length=1)
-    redis_url: str = Field(min_length=1)
+    riot_api_key: str = Field(default="", repr=False)
+    redis_url: str = Field(min_length=1, repr=False)
     raw_store_backend: str = "redis"
     raw_store_url: str = ""
     seed_cooldown_minutes: int = Field(default=30, ge=1)
@@ -51,7 +51,7 @@ class Config(BaseSettings):
     opgg_rate_limit_per_second: int = Field(default=2, ge=1)
     opgg_rate_limit_long: int = Field(default=30, ge=1)
     opgg_match_data_dir: str = ""
-    opgg_api_key: str | None = None
+    opgg_api_key: str | None = Field(default=None, repr=False)
     # PRIN-COM-1: formerly raw os.getenv() / hardcoded literals
     player_data_ttl_seconds: int = Field(default=2592000, ge=1)  # 30 days
     champion_stats_ttl_seconds: int = Field(default=7776000, ge=1)  # 90 days
@@ -77,6 +77,8 @@ class Config(BaseSettings):
     delay_scheduler_batch_size: int = Field(default=100, ge=1)
     delay_scheduler_max_member_failures: int = Field(default=10, ge=1)
     delay_scheduler_circuit_open_ttl_s: int = Field(default=300, ge=1)
+    delay_envelope_ttl_seconds: int = Field(default=86400, ge=1)  # 24h safety-net TTL
+    delay_scheduler_backpressure_ratio: float = Field(default=0.8, gt=0, le=1.0)
     # PRIN-DIS-1: Discovery operational params (formerly hardcoded constants)
     discovery_idle_cutoff_days: int = Field(default=3, ge=1)
     default_region: str = "na1"
@@ -100,3 +102,9 @@ class Config(BaseSettings):
         if not self.opgg_match_data_dir and self.match_data_dir:
             self.opgg_match_data_dir = os.path.join(self.match_data_dir, "opgg")
         return self
+
+    def validate_for_riot_api(self) -> None:
+        """Raise ValueError if RIOT_API_KEY is not configured."""
+        if not self.riot_api_key:
+            msg = "RIOT_API_KEY is required for Riot API access"
+            raise ValueError(msg)

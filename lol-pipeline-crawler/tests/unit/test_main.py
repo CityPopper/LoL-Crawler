@@ -18,6 +18,7 @@ from lol_crawler.main import (
     _compute_activity_rate,
     _crawl_player,
     _fetch_rank,
+    _publish_batch,
     main,
 )
 
@@ -759,6 +760,59 @@ class TestCrawlerPublishPipeline:
         ]
         assert "NA1_NEW_1" in match_ids
         assert "NA1_NEW_2" in match_ids
+
+    @pytest.mark.asyncio
+    async def test_publish_batch_calls_xadd_on_pipeline_then_execute(self, r, cfg):
+        """IMP-063: _publish_batch uses r.pipeline() with multiple xadd calls + execute."""
+        # Track pipeline usage via monkeypatching the pipeline context manager
+        xadd_calls = []
+        execute_called = []
+
+        original_pipeline = r.pipeline
+
+        class TrackingPipeline:
+            def __init__(self, real_pipe):
+                self._pipe = real_pipe
+
+            async def __aenter__(self):
+                self._inner = await self._pipe.__aenter__()
+                original_xadd = self._inner.xadd
+
+                def tracking_xadd(*args, **kwargs):
+                    xadd_calls.append(args)
+                    return original_xadd(*args, **kwargs)
+
+                self._inner.xadd = tracking_xadd
+                return self._inner
+
+            async def __aexit__(self, *args):
+                return await self._pipe.__aexit__(*args)
+
+        def patched_pipeline(**kwargs):
+            return TrackingPipeline(original_pipeline(**kwargs))
+
+        r.pipeline = patched_pipeline
+
+        published, priority = await _publish_batch(
+            r, cfg,
+            new_ids=["NA1_A", "NA1_B", "NA1_C"],
+            puuid="test-puuid",
+            region="na1",
+            published=0,
+            priority="normal",
+            current_priority="normal",
+            correlation_id="corr-123",
+        )
+
+        assert published == 3
+        assert priority == "normal"
+        # Pipeline should have received exactly 3 xadd calls
+        assert len(xadd_calls) == 3
+        # Verify the stream name in each xadd call
+        for call_args in xadd_calls:
+            assert call_args[0] == _STREAM_OUT
+        # Verify data actually landed in Redis
+        assert await r.xlen(_STREAM_OUT) == 3
 
 
 class TestPaginationRateLimiterTimeout:

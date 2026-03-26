@@ -71,6 +71,8 @@ def _queue_participant(
     Returns the participant's puuid.
     """
     puuid: str = p["puuid"]
+    if not puuid or not puuid.strip():
+        raise ValueError(f"invalid puuid: {puuid!r}")
     participant_key = f"participant:{match_id}:{puuid}"
     pipe.hset(participant_key, mapping=_participant_fields(p))
     pipe.expire(participant_key, match_data_ttl)

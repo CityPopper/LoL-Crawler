@@ -44,7 +44,7 @@ def _should_skip_seeded(
         return True  # no recrawl scheduled -- skip
     try:
         if float(recrawl_after) > now:
-            return True  # not yet due
+            return False  # not yet due — skip but keep in queue
     except (ValueError, TypeError):
         pass
     return None  # recrawl_after has passed -- allow

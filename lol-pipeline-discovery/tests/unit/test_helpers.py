@@ -44,8 +44,9 @@ class TestShouldSkipSeeded:
     def test_empty_recrawl_after__returns_true(self):
         assert _should_skip_seeded("", 1000.0) is True
 
-    def test_future_recrawl_after__returns_true(self):
-        assert _should_skip_seeded("2000.0", 1000.0) is True
+    def test_future_recrawl_after__returns_false(self):
+        """Future recrawl_after means 'not yet due' — skip but keep in queue."""
+        assert _should_skip_seeded("2000.0", 1000.0) is False
 
     def test_past_recrawl_after__returns_none(self):
         """When recrawl_after has passed, allow re-promotion."""

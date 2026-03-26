@@ -158,14 +158,29 @@ async def _scan_parsed_matches(r: aioredis.Redis) -> set[str]:
     """Collect match IDs whose per-match hash has status=parsed (RDB-2).
 
     Shared by cmd_replay and cmd_backfill (PRIN-ADM-1: DRY extraction).
+
+    IMP-054: Accumulates all candidate keys first, then fetches statuses
+    in a single pipeline batch to avoid N+1 sequential HGET calls.
     """
-    result: set[str] = set()
+    candidate_keys: list[str] = []
     async for key in r.scan_iter(match="match:*", count=200):
         key_str: str = key
         # Skip non-match keys (match:participants:*, match:status:*)
         if key_str.count(":") != 1:
             continue
-        status = await r.hget(key_str, "status")  # type: ignore[misc]
+        candidate_keys.append(key_str)
+
+    if not candidate_keys:
+        return set()
+
+    # Pipeline all HGETs in a single round-trip
+    async with r.pipeline(transaction=False) as pipe:
+        for key_str in candidate_keys:
+            pipe.hget(key_str, "status")  # type: ignore[misc]
+        statuses: list[str | None] = await pipe.execute()
+
+    result: set[str] = set()
+    for key_str, status in zip(candidate_keys, statuses, strict=True):
         if status == "parsed":
             result.add(key_str.removeprefix("match:"))
     return result
@@ -220,27 +235,25 @@ return 1
 """
 
 
-async def _backfill_participant(
-    r: aioredis.Redis,
+def _build_eval_args(
     p: dict[str, str],
     patch: str,
     game_start: str,
     ttl: int,
-) -> None:
-    """Update champion stats for a single participant via Lua eval."""
+) -> tuple[str, str, str, list[int | str]] | None:
+    """Build Lua EVAL arguments for a single participant.
+
+    Returns ``(stats_key, index_key, index_member, argv)`` or ``None``
+    when the participant lacks required fields.
+    """
     team_position = p.get("team_position", "")
     champion_name = p.get("champion_name", "")
     if not team_position or not champion_name:
-        return
+        return None
     stats_key = f"champion:stats:{champion_name}:{patch}:{team_position}"
     index_key = f"champion:index:{patch}"
     index_member = f"{champion_name}:{team_position}"
-    await r.eval(  # type: ignore[misc]
-        _UPDATE_CHAMPION_LUA,
-        3,
-        stats_key,
-        index_key,
-        "patch:list",
+    argv: list[int | str] = [
         int(p.get("win", "0")),
         int(p.get("kills", "0")),
         int(p.get("deaths", "0")),
@@ -257,6 +270,29 @@ async def _backfill_participant(
         int(p.get("triple_kills", "0")),
         int(p.get("quadra_kills", "0")),
         int(p.get("penta_kills", "0")),
+    ]
+    return stats_key, index_key, index_member, argv
+
+
+async def _backfill_participant(
+    r: aioredis.Redis,
+    p: dict[str, str],
+    patch: str,
+    game_start: str,
+    ttl: int,
+) -> None:
+    """Update champion stats for a single participant via Lua eval."""
+    args = _build_eval_args(p, patch, game_start, ttl)
+    if args is None:
+        return
+    stats_key, index_key, _index_member, argv = args
+    await r.eval(  # type: ignore[misc]
+        _UPDATE_CHAMPION_LUA,
+        3,
+        stats_key,
+        index_key,
+        "patch:list",
+        *argv,
     )
 
 
@@ -264,6 +300,12 @@ async def _backfill_batch(r: aioredis.Redis, match_ids: list[str]) -> int:
     """Process a batch of matches for champion stats backfill.
 
     Returns count of ranked matches processed.
+
+    IMP-055: Lua EVALs for participants within each match are now pipelined
+    into a single round-trip. The EVALs are independent — each touches a
+    distinct ``champion:stats:{name}:{patch}:{role}`` key, and the shared
+    ``champion:index:{patch}`` / ``patch:list`` keys use commutative
+    ZINCRBY/ZADD-NX operations, so ordering is irrelevant.
     """
     from lol_pipeline.constants import CHAMPION_STATS_TTL_SECONDS, RANKED_SOLO_QUEUE_ID
 
@@ -289,9 +331,26 @@ async def _backfill_batch(r: aioredis.Redis, match_ids: list[str]) -> int:
                 pipe.hgetall(key)
             participants: list[dict[str, str]] = await pipe.execute()
         game_start = meta.get("game_start", "0")
+        # IMP-055: Pipeline all Lua EVALs for this match's participants
+        eval_args_list = []
         for p in participants:
-            if p:
-                await _backfill_participant(r, p, patch, game_start, ttl)
+            if not p:
+                continue
+            args = _build_eval_args(p, patch, game_start, ttl)
+            if args is not None:
+                eval_args_list.append(args)
+        if eval_args_list:
+            async with r.pipeline(transaction=False) as pipe:
+                for stats_key, index_key, _index_member, argv in eval_args_list:
+                    pipe.eval(  # type: ignore[misc]
+                        _UPDATE_CHAMPION_LUA,
+                        3,
+                        stats_key,
+                        index_key,
+                        "patch:list",
+                        *argv,
+                    )
+                await pipe.execute()
         count += 1
     return count
 
@@ -301,6 +360,9 @@ async def _backfill_batch(r: aioredis.Redis, match_ids: list[str]) -> int:
 # ---------------------------------------------------------------------------
 
 
+ARCHIVE_BATCH_SIZE: int = 500
+
+
 async def _dlq_archive_entries(
     r: aioredis.Redis,
 ) -> list[tuple[str, dict[str, str]]]:
@@ -308,8 +370,27 @@ async def _dlq_archive_entries(
 
     Similar to _dlq_entries but for the archive stream; returns raw field dicts
     because archive entries may be corrupt / partially formed.
+
+    IMP-056: Uses COUNT-capped XRANGE and loops with cursor advancement
+    to avoid OOM on large streams.
     """
     from lol_pipeline.constants import STREAM_DLQ_ARCHIVE
 
-    raw: list[Any] = await r.xrange(STREAM_DLQ_ARCHIVE, "-", "+")
-    return [(entry_id, fields) for entry_id, fields in raw]
+    result: list[tuple[str, dict[str, str]]] = []
+    min_id = "-"
+    while True:
+        raw: list[Any] = await r.xrange(
+            STREAM_DLQ_ARCHIVE, min=min_id, max="+", count=ARCHIVE_BATCH_SIZE
+        )
+        if not raw:
+            break
+        for entry_id, fields in raw:
+            result.append((entry_id, fields))
+        # Advance cursor past the last returned entry to avoid re-fetching it.
+        # Stream IDs are "{ms}-{seq}"; incrementing seq gives exclusive start.
+        last_id: str = raw[-1][0]
+        parts = last_id.split("-", 1)
+        min_id = f"{parts[0]}-{int(parts[1]) + 1}"
+        if len(raw) < ARCHIVE_BATCH_SIZE:
+            break
+    return result

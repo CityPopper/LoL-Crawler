@@ -51,15 +51,52 @@ from lol_delay_scheduler._helpers import (
 # via _init_circuit_config() when env vars customise the value.
 _BATCH_SIZE: int = Config.model_fields["delay_scheduler_batch_size"].default
 
+# Maximum batches per _tick invocation to prevent monopolising the event loop.
+_MAX_BATCHES_PER_TICK: int = 10
+
+# IMP-067: Backpressure ratio — skip dispatch when stream length exceeds this
+# fraction of its MAXLEN.  Overridden at startup from Config.
+_BACKPRESSURE_RATIO: float = Config.model_fields[
+    "delay_scheduler_backpressure_ratio"
+].default
+
+# Defer interval (ms) when backpressure is detected — re-check after 10s.
+_BACKPRESSURE_DEFER_MS: int = 10_000
+
 
 def _init_circuit_config(cfg: Config) -> None:
     """Seed module-level circuit-breaker thresholds and batch size from Config."""
-    global _BATCH_SIZE
+    global _BATCH_SIZE, _BACKPRESSURE_RATIO
     init_circuit_config(
         max_failures=cfg.delay_scheduler_max_member_failures,
         open_ttl_s=cfg.delay_scheduler_circuit_open_ttl_s,
     )
     _BATCH_SIZE = cfg.delay_scheduler_batch_size
+    _BACKPRESSURE_RATIO = cfg.delay_scheduler_backpressure_ratio
+
+
+async def _is_stream_backpressured(
+    r: aioredis.Redis,
+    stream: str,
+    log: logging.Logger,
+) -> bool:
+    """Return True if *stream* length exceeds its MAXLEN * backpressure ratio.
+
+    IMP-067: Prevents XADD dispatch from silently dropping unread entries via
+    MAXLEN trimming when the consumer is slow.
+    """
+    ml = _maxlen_for_stream(stream)
+    if ml is None or ml <= 0:
+        return False
+    threshold = int(ml * _BACKPRESSURE_RATIO)
+    depth: int = await r.xlen(stream)
+    if depth >= threshold:
+        log.warning(
+            "backpressure — target stream too deep, deferring dispatch",
+            extra={"stream": stream, "depth": depth, "threshold": threshold},
+        )
+        return True
+    return False
 
 
 async def _resolve_member(
@@ -167,7 +204,7 @@ async def _dispatch_member(
 
 async def _tick(r: aioredis.Redis, log: logging.Logger) -> None:
     now_ms = int(time.time() * 1000)
-    while True:
+    for _batch_num in range(_MAX_BATCHES_PER_TICK):
         members: list[Any] = await r.zrangebyscore(
             DELAYED_MESSAGES_KEY,
             0,
@@ -188,6 +225,13 @@ async def _tick(r: aioredis.Redis, log: logging.Logger) -> None:
                 continue
             env = await _resolve_member(r, member, log)
             if env is None:
+                dispatched += 1
+                continue
+            # IMP-067: Check backpressure before dispatching to avoid silent
+            # MAXLEN trimming of unread entries in the target stream.
+            if await _is_stream_backpressured(r, env.source_stream, log):
+                defer_ms = int(time.time() * 1000) + _BACKPRESSURE_DEFER_MS
+                await r.zadd(DELAYED_MESSAGES_KEY, {member: defer_ms}, xx=True)
                 dispatched += 1
                 continue
             try:

@@ -51,7 +51,7 @@ def parse_rate_limit_header(
             )
             return None
         return short, long_
-    except ValueError, TypeError:
+    except (ValueError, TypeError):
         _log.warning(
             "Failed to parse rate-limit header",
             extra={"header": header},

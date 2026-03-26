@@ -6,6 +6,7 @@ import asyncio
 import io
 import logging
 import os
+import re
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,6 +19,14 @@ _KEY_PREFIX = "raw:match:"
 # Env: RAW_STORE_TTL_SECONDS (matches Config.raw_store_ttl_seconds).
 _TTL_SECONDS: int = int(os.environ.get("RAW_STORE_TTL_SECONDS", "86400"))
 _log = logging.getLogger("raw_store")
+_MATCH_ID_RE = re.compile(r"^[A-Z]{2,4}\d?_\d{1,15}$")
+
+
+def _validate_match_id(match_id: str) -> None:
+    """Raise ValueError if match_id contains path traversal or unexpected characters."""
+    if not _MATCH_ID_RE.match(match_id):
+        msg = f"invalid match_id: {match_id!r}"
+        raise ValueError(msg)
 
 
 def _write_to_disk(path: Path, data: str) -> None:
@@ -137,17 +146,36 @@ class RawStore:
         """Check if match_id exists in any JSONL bundle."""
         return self._search_bundles(match_id) is not None
 
-    async def exists(self, match_id: str) -> bool:
-        """Return True if the raw blob is stored in Redis or on disk."""
+    async def exists(self, match_id: str, *, redis_only: bool = False) -> bool:
+        """Return True if the raw blob is stored in Redis (and optionally on disk).
+
+        When *redis_only* is True the disk scan is skipped entirely, making the
+        check O(1) against Redis.  Use this on the hot path (e.g. coordinator
+        idempotency guard) where a false-negative is acceptable because a
+        subsequent fetch will simply re-store the blob.
+        """
+        if self._data_dir is not None:
+            _validate_match_id(match_id)
         if bool(await self._r.exists(f"{self._key_prefix}{match_id}")):
             return True
+        if redis_only:
+            return False
         return await asyncio.to_thread(self._exists_in_bundles, match_id)
 
-    async def get(self, match_id: str) -> str | None:
-        """Return raw JSON string; tries Redis first, then disk (repopulates Redis on hit)."""
+    async def get(self, match_id: str, *, redis_only: bool = False) -> str | None:
+        """Return raw JSON string; tries Redis first, then disk (repopulates Redis on hit).
+
+        When *redis_only* is True, only the Redis cache layer is checked — no
+        disk scan is performed.  This is useful on the hot path where the
+        existence check is a fast-reject guard and disk I/O is unnecessary.
+        """
+        if self._data_dir is not None:
+            _validate_match_id(match_id)
         data: str | None = await self._r.get(f"{self._key_prefix}{match_id}")
         if data is not None:
             return data
+        if redis_only:
+            return None
         data = await asyncio.to_thread(self._search_bundles, match_id)
         if data is not None:
             # Write-back: repopulate Redis so subsequent reads are fast
@@ -157,6 +185,8 @@ class RawStore:
 
     async def set(self, match_id: str, data: str) -> None:
         """Write raw JSON blob to Redis and disk. No-op if already stored."""
+        if self._data_dir is not None:
+            _validate_match_id(match_id)
         was_set = await self._r.set(f"{self._key_prefix}{match_id}", data, nx=True, ex=_TTL_SECONDS)
         bp = self._bundle_path(match_id)
         if bp is None:

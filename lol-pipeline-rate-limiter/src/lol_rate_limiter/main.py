@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import redis.asyncio as aioredis
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from lol_rate_limiter._headers import parse_rate_limit_header
@@ -37,6 +37,33 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="LoL Rate Limiter", lifespan=_lifespan)
+
+
+# ---------------------------------------------------------------------------
+# IMP-048: Shared-secret authentication middleware
+# ---------------------------------------------------------------------------
+
+_AUTH_EXEMPT_PATHS: frozenset[str] = frozenset({"/health", "/status"})
+
+
+@app.middleware("http")
+async def _check_secret(request: Request, call_next: Any) -> Any:
+    """Reject unauthenticated requests to mutable endpoints.
+
+    When ``RATE_LIMITER_SECRET`` is set (non-empty), all requests except
+    ``/health`` and ``/status`` must include a matching
+    ``X-Rate-Limiter-Secret`` header. Returns 403 on mismatch.
+    When the secret is empty, auth is disabled (dev/test convenience).
+    """
+    cfg: Config = app.state.cfg
+    if cfg.secret and request.url.path not in _AUTH_EXEMPT_PATHS:
+        provided = request.headers.get("X-Rate-Limiter-Secret", "")
+        if provided != cfg.secret:
+            return JSONResponse(
+                status_code=403,
+                content={"error": "invalid or missing X-Rate-Limiter-Secret"},
+            )
+    return await call_next(request)
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +109,7 @@ async def token_acquire(body: dict[str, str]) -> JSONResponse:
         )
 
     try:
-        granted, retry_after_ms = await acquire_token(r, cfg)
+        granted, retry_after_ms = await acquire_token(r, cfg, key_prefix=f"ratelimit:{source}")
     except Exception:
         _log.warning("Redis unreachable — failing open", exc_info=True)
         return JSONResponse(
@@ -102,15 +129,17 @@ async def headers_update(body: dict[str, str]) -> dict[str, bool]:
     r: aioredis.Redis = app.state.r
     cfg: Config = app.state.cfg
 
+    source = body.get("source", "riot")
     rate_limit = body.get("rate_limit", "")
     rate_limit_count = body.get("rate_limit_count", "")
+    prefix = f"ratelimit:{source}"
 
     # Parse limit header to update stored limits
     limits = parse_rate_limit_header(rate_limit)
     if limits is not None:
         short_limit, long_limit = limits
-        await r.set("ratelimit:limits:short", short_limit, ex=3600)
-        await r.set("ratelimit:limits:long", long_limit, ex=3600)
+        await r.set(f"{prefix}:limits:short", short_limit, ex=3600)
+        await r.set(f"{prefix}:limits:long", long_limit, ex=3600)
 
     # Parse count header for throttle detection
     throttle = False
@@ -121,6 +150,6 @@ async def headers_update(body: dict[str, str]) -> dict[str, bool]:
         # Throttle when current count > 90% of limit
         if short_count > short_limit * 0.9 or long_count > long_limit * 0.9:
             throttle = True
-            await r.set("ratelimit:throttle", "1", px=cfg.short_window_ms)
+            await r.set(f"{prefix}:throttle", "1", px=cfg.short_window_ms)
 
     return {"updated": True, "throttle": throttle}

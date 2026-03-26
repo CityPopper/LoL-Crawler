@@ -571,3 +571,84 @@ class TestPlayerStatsAck:
         # Derived stats should have been recomputed
         assert await r.hget(f"player:stats:{puuid}", "win_rate") == "1.0000"
         assert await r.hget(f"player:stats:{puuid}", "kda") == "7.5000"
+
+
+# ---------------------------------------------------------------------------
+# Serial EVAL Constraint (IMP-077)
+# ---------------------------------------------------------------------------
+
+
+class TestPlayerStatsSerialEval:
+    """EVAL calls are serial — lock loss mid-batch aborts remaining matches."""
+
+    @pytest.mark.asyncio
+    async def test_player_stats__lock_lost_mid_batch__aborts_remaining(self, r, cfg, log):
+        """If the lock is stolen between matches, processing stops immediately.
+
+        This proves the serial EVAL design is necessary: each EVAL checks lock
+        ownership and returns 0 on mismatch, so subsequent matches are skipped.
+        Pipelining would not allow this early-abort behavior.
+        """
+        puuid = "test-puuid-serial"
+        # Set up 3 matches
+        await _add_participant(r, "NA1_S1", puuid, 1000, kills=5, deaths=1, assists=3)
+        await _add_participant(r, "NA1_S2", puuid, 2000, kills=3, deaths=2, assists=7)
+        await _add_participant(r, "NA1_S3", puuid, 3000, kills=1, deaths=1, assists=1)
+        env = _player_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        # Acquire lock as "worker-1"
+        lock_key = f"player:stats:lock:{puuid}"
+        await r.set(lock_key, "worker-1", nx=True, px=30000)
+
+        # Start processing — first EVAL will succeed
+        # After first match, steal the lock by overwriting it
+        original_eval = r.eval
+
+        call_count = 0
+
+        async def eval_with_lock_steal(*args, **kwargs):
+            nonlocal call_count
+            result = await original_eval(*args, **kwargs)
+            call_count += 1
+            if call_count == 1:
+                # After first successful EVAL, steal the lock
+                await r.set(lock_key, "thief-worker", px=30000)
+            return result
+
+        r.eval = eval_with_lock_steal
+
+        # _process_matches is called inside handle_player_stats;
+        # but the lock is acquired in handle_player_stats, so we need
+        # to release it first and let handle_player_stats re-acquire
+        await r.delete(lock_key)
+
+        await handle_player_stats(r, cfg, "worker-1", msg_id, env, log)
+
+        # Only 1 match should have been processed (lock stolen after first EVAL)
+        stats = await r.hgetall(f"player:stats:{puuid}")
+        assert stats.get("total_games") == "1", (
+            f"Expected 1 match processed before lock theft, got {stats.get('total_games')}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_player_stats__multiple_matches__all_processed_in_order(self, r, cfg, log):
+        """Multiple matches are processed sequentially; cursor advances to max score."""
+        puuid = "test-puuid-serial-all"
+        for i in range(5):
+            await _add_participant(
+                r, f"NA1_M{i}", puuid, (i + 1) * 1000,
+                kills=2, deaths=1, assists=1, champion="Annie", role="MID",
+            )
+        env = _player_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        await handle_player_stats(r, cfg, "worker-1", msg_id, env, log)
+
+        stats = await r.hgetall(f"player:stats:{puuid}")
+        assert stats["total_games"] == "5"
+        assert stats["total_kills"] == "10"  # 2 * 5
+        cursor = await r.get(f"player:stats:cursor:{puuid}")
+        assert float(cursor) == 5000.0
+        assert await r.zscore(f"player:champions:{puuid}", "Annie") == 5.0
+        assert await r.zscore(f"player:roles:{puuid}", "MID") == 5.0

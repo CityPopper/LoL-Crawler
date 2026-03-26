@@ -1009,16 +1009,15 @@ class TestMainRedisConnectionError:
 
         mock_dispatch = AsyncMock(side_effect=RedisError("Redis unavailable"))
         mock_r = AsyncMock()
-        mock_riot = AsyncMock()
         with (
             patch("lol_admin.main._dispatch", mock_dispatch),
             patch("lol_admin.main.get_redis", return_value=mock_r),
-            patch("lol_admin.main.RiotClient", return_value=mock_riot),
         ):
             result = await main(["admin", "system-resume"])
         assert result == 1
+        # IMP-022: RiotClient is now lazily created inside _dispatch, so
+        # main() only needs to close the Redis connection.
         mock_r.aclose.assert_awaited_once()
-        mock_riot.close.assert_awaited_once()
 
 
 class TestStatsJson:
@@ -1268,6 +1267,30 @@ class TestRecalcPlayers:
         assert result == 0
         args = mock_dispatch.call_args[0][3]
         assert args.command == "recalc-players"
+
+    @pytest.mark.asyncio
+    async def test_recalc_players__removes_stale_entries(self, r, capsys):
+        """IMP-021: Stale entry in players:all (no backing player hash) is removed after recalc."""
+        # Pre-populate players:all with a stale entry that has no player:{puuid} hash
+        await r.zadd("players:all", {"puuid-stale-gone": 1700000000000.0})
+        # Add a real player that should survive
+        await r.hset(
+            "player:puuid-real",
+            mapping={
+                "game_name": "RealPlayer",
+                "tag_line": "001",
+                "region": "na1",
+                "seeded_at": "2026-03-19T12:00:00+00:00",
+            },
+        )
+        args = argparse.Namespace()
+        result = await cmd_recalc_players(r, args)
+        assert result == 0
+        # Stale entry must be gone (DELETE before rebuild removes it)
+        assert await r.zscore("players:all", "puuid-stale-gone") is None
+        # Real player must be present
+        assert await r.zscore("players:all", "puuid-real") is not None
+        assert "1 players indexed" in capsys.readouterr().out
 
 
 class TestFormatStatsOutput:
@@ -2413,3 +2436,57 @@ class TestRelativeAge:
         then = datetime.now(tz=UTC) - timedelta(seconds=3600)
         result = _relative_age(then.isoformat())
         assert result == "1h ago"
+
+
+class TestLazyRiotClient:
+    """IMP-022: Non-API commands must not instantiate RiotClient."""
+
+    @pytest.mark.asyncio
+    async def test_non_api_command_does_not_create_riot_client(self, r, cfg):
+        """recalc-players is not in _RIOT_COMMANDS — RiotClient must not be created."""
+        from lol_admin._dispatch import _RIOT_COMMANDS, _dispatch
+
+        assert "recalc-players" not in _RIOT_COMMANDS
+
+        args = argparse.Namespace(command="recalc-players", json=False)
+
+        riot_created = False
+        original_riot_init = RiotClient.__init__
+
+        def spy_init(self, *args, **kwargs):
+            nonlocal riot_created
+            riot_created = True
+            return original_riot_init(self, *args, **kwargs)
+
+        with patch.object(RiotClient, "__init__", spy_init):
+            result = await _dispatch(r, None, cfg, args)
+
+        assert result == 0
+        assert not riot_created, "RiotClient should not be instantiated for recalc-players"
+
+    @pytest.mark.asyncio
+    async def test_api_command_creates_riot_client(self, r, cfg):
+        """stats command IS in _RIOT_COMMANDS — RiotClient must be created."""
+        from lol_admin._dispatch import _RIOT_COMMANDS, _dispatch
+
+        assert "stats" in _RIOT_COMMANDS
+
+        args = argparse.Namespace(command="stats", riot_id="Test#001", region="na1", json=False)
+        puuid = "test-puuid-lazy"
+        await r.hset(
+            f"player:stats:{puuid}",
+            mapping={"total_games": "10", "win_rate": "0.5000", "kda": "2.00"},
+        )
+
+        with respx.mock:
+            respx.get(
+                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Test/001"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": puuid, "gameName": "Test", "tagLine": "001"},
+                )
+            )
+            result = await _dispatch(r, None, cfg, args)
+
+        assert result == 0

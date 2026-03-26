@@ -135,13 +135,16 @@ async def _write_bans(
         return
     teams = info.get("teams", [])
     ban_key = f"champion:bans:{patch}"
+    has_real_ban = False
     async with r.pipeline(transaction=False) as pipe:
         for team in teams:
             for ban in team.get("bans", []):
                 champ_id = ban.get("championId", 0)
                 if champ_id > 0:  # -1 means no ban
                     pipe.hincrby(ban_key, str(champ_id), 1)
-        pipe.hincrby(ban_key, "_total_games", 1)
+                    has_real_ban = True
+        if has_real_ban:
+            pipe.hincrby(ban_key, "_total_games", 1)
         pipe.expire(ban_key, CHAMPION_STATS_TTL_SECONDS)
         await pipe.execute()
     log.debug("wrote bans", extra={"match_id": match_id, "patch": patch})

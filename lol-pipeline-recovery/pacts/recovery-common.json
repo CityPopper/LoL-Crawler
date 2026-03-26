@@ -278,6 +278,156 @@
         }
       },
       "metadata": { "contentType": "application/json" }
+    },
+    {
+      "description": "a handler-crash message awaiting retry",
+      "providerStates": [
+        {
+          "name": "a consumer handler crashed unexpectedly and called nack_to_dlq"
+        }
+      ],
+      "contents": {
+        "id": "52345678-1234-1234-1234-123456789017",
+        "source_stream": "stream:dlq",
+        "type": "dlq",
+        "payload": {
+          "match_id": "NA1_4567890127",
+          "region": "na1"
+        },
+        "attempts": 3,
+        "max_attempts": 5,
+        "enqueued_at": "2024-01-01T00:00:00+00:00",
+        "failure_reason": "Unhandled exception in consumer handler",
+        "failure_code": "handler_crash",
+        "failed_at": "2024-01-01T00:01:00+00:00",
+        "failed_by": "run_consumer",
+        "dlq_attempts": 0,
+        "retry_after_ms": null,
+        "original_stream": "stream:parse",
+        "original_message_id": "1704067200000-5",
+        "priority": "normal",
+        "correlation_id": ""
+      },
+      "matchingRules": {
+        "body": {
+          "$.id": {
+            "matchers": [
+              { "match": "regex", "regex": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+            ]
+          },
+          "$.source_stream": { "matchers": [ { "match": "equality" } ] },
+          "$.type": { "matchers": [ { "match": "equality" } ] },
+          "$.payload": { "matchers": [ { "match": "type" } ] },
+          "$.failure_code": { "matchers": [ { "match": "equality" } ] },
+          "$.failed_by": { "matchers": [ { "match": "type" } ] },
+          "$.dlq_attempts": { "matchers": [ { "match": "integer" } ] },
+          "$.retry_after_ms": { "matchers": [ { "match": "null" } ] },
+          "$.original_stream": { "matchers": [ { "match": "type" } ] },
+          "$.original_message_id": { "matchers": [ { "match": "type" } ] },
+          "$.priority": { "matchers": [ { "match": "regex", "regex": "^(manual_20|manual_20plus|auto_20|auto_new|high|normal)$" } ] },
+          "$.correlation_id": { "matchers": [ { "match": "type" } ] }
+        }
+      },
+      "metadata": { "contentType": "application/json" }
+    },
+    {
+      "description": "a corrupt-message entry from deserialization failure",
+      "providerStates": [
+        {
+          "name": "a consumer received a message that could not be deserialized"
+        }
+      ],
+      "contents": {
+        "id": "52345678-1234-1234-1234-123456789018",
+        "source_stream": "stream:dlq",
+        "type": "dlq",
+        "payload": {},
+        "attempts": 1,
+        "max_attempts": 5,
+        "enqueued_at": "2024-01-01T00:00:00+00:00",
+        "failure_reason": "Could not deserialize message from stream",
+        "failure_code": "corrupt_message",
+        "failed_at": "2024-01-01T00:01:00+00:00",
+        "failed_by": "run_consumer",
+        "dlq_attempts": 0,
+        "retry_after_ms": null,
+        "original_stream": "stream:match_id",
+        "original_message_id": "1704067200000-6",
+        "priority": "normal",
+        "correlation_id": ""
+      },
+      "matchingRules": {
+        "body": {
+          "$.id": {
+            "matchers": [
+              { "match": "regex", "regex": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+            ]
+          },
+          "$.source_stream": { "matchers": [ { "match": "equality" } ] },
+          "$.type": { "matchers": [ { "match": "equality" } ] },
+          "$.payload": { "matchers": [ { "match": "type" } ] },
+          "$.failure_code": { "matchers": [ { "match": "equality" } ] },
+          "$.failed_by": { "matchers": [ { "match": "type" } ] },
+          "$.dlq_attempts": { "matchers": [ { "match": "integer" } ] },
+          "$.retry_after_ms": { "matchers": [ { "match": "null" } ] },
+          "$.original_stream": { "matchers": [ { "match": "type" } ] },
+          "$.original_message_id": { "matchers": [ { "match": "type" } ] },
+          "$.priority": { "matchers": [ { "match": "regex", "regex": "^(manual_20|manual_20plus|auto_20|auto_new|high|normal)$" } ] },
+          "$.correlation_id": { "matchers": [ { "match": "type" } ] }
+        }
+      },
+      "metadata": { "contentType": "application/json" }
+    },
+    {
+      "description": "a blob-validation-failed message from waterfall coordinator",
+      "providerStates": [
+        {
+          "name": "a fetcher received a blob that failed validation checks"
+        }
+      ],
+      "contents": {
+        "id": "52345678-1234-1234-1234-123456789019",
+        "source_stream": "stream:dlq",
+        "type": "dlq",
+        "payload": {
+          "match_id": "NA1_4567890128",
+          "region": "na1"
+        },
+        "attempts": 1,
+        "max_attempts": 5,
+        "enqueued_at": "2024-01-01T00:00:00+00:00",
+        "failure_reason": "Blob failed validation: missing required fields",
+        "failure_code": "blob_validation_failed",
+        "failed_at": "2024-01-01T00:01:00+00:00",
+        "failed_by": "fetcher",
+        "dlq_attempts": 0,
+        "retry_after_ms": null,
+        "original_stream": "stream:match_id",
+        "original_message_id": "1704067200000-7",
+        "priority": "normal",
+        "correlation_id": ""
+      },
+      "matchingRules": {
+        "body": {
+          "$.id": {
+            "matchers": [
+              { "match": "regex", "regex": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+            ]
+          },
+          "$.source_stream": { "matchers": [ { "match": "equality" } ] },
+          "$.type": { "matchers": [ { "match": "equality" } ] },
+          "$.payload": { "matchers": [ { "match": "type" } ] },
+          "$.failure_code": { "matchers": [ { "match": "equality" } ] },
+          "$.failed_by": { "matchers": [ { "match": "type" } ] },
+          "$.dlq_attempts": { "matchers": [ { "match": "integer" } ] },
+          "$.retry_after_ms": { "matchers": [ { "match": "null" } ] },
+          "$.original_stream": { "matchers": [ { "match": "type" } ] },
+          "$.original_message_id": { "matchers": [ { "match": "type" } ] },
+          "$.priority": { "matchers": [ { "match": "regex", "regex": "^(manual_20|manual_20plus|auto_20|auto_new|high|normal)$" } ] },
+          "$.correlation_id": { "matchers": [ { "match": "type" } ] }
+        }
+      },
+      "metadata": { "contentType": "application/json" }
     }
   ],
   "metadata": {

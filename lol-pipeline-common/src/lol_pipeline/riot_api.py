@@ -158,9 +158,9 @@ def _check_rate_limit_count(
     count_header: str,
     limits: tuple[int, int] | None,
 ) -> bool:
-    """Log a warning when remaining capacity drops below 10% for either window.
+    """Log a warning when remaining capacity drops to 10% or below for either window.
 
-    Returns True when remaining capacity is below 5% in either window,
+    Returns True when remaining capacity is at or below 5% in either window,
     signalling the caller to set a throttle hint in Redis.
     """
     if not limits:
@@ -171,31 +171,43 @@ def _check_rate_limit_count(
     short_limit, long_limit = limits
     short_count, long_count = counts
     near_limit = False
-    if short_limit > 0 and (short_limit - short_count) < short_limit * 0.1:
+    if short_limit > 0 and (short_limit - short_count) <= short_limit * 0.1:
         _log.warning(
             "rate limit near capacity (short window): %d/%d used",
             short_count,
             short_limit,
             extra={"window": "short", "used": short_count, "limit": short_limit},
         )
-    if long_limit > 0 and (long_limit - long_count) < long_limit * 0.1:
+    if long_limit > 0 and (long_limit - long_count) <= long_limit * 0.1:
         _log.warning(
             "rate limit near capacity (long window): %d/%d used",
             long_count,
             long_limit,
             extra={"window": "long", "used": long_count, "limit": long_limit},
         )
-    # Throttle hint when < 5% capacity remains in either window
-    if short_limit > 0 and (short_limit - short_count) < short_limit * 0.05:
+    # Throttle hint when <= 5% capacity remains in either window
+    if short_limit > 0 and (short_limit - short_count) <= short_limit * 0.05:
         near_limit = True
-    if long_limit > 0 and (long_limit - long_count) < long_limit * 0.05:
+    if long_limit > 0 and (long_limit - long_count) <= long_limit * 0.05:
         near_limit = True
     return near_limit
 
 
-def _raise_for_status(resp: httpx.Response) -> Any:
+def _raise_for_status_raw(resp: httpx.Response) -> tuple[Any, bytes]:
+    """Like _raise_for_status but also returns the raw response body on success.
+
+    Returns (parsed_data, raw_bytes) for 200 responses so callers can avoid
+    a redundant json.dumps() round-trip when they need both forms.
+    """
     if resp.status_code == 200:
-        return resp.json()
+        return resp.json(), resp.content
+    _raise_for_non_200(resp)
+    # unreachable — _raise_for_non_200 always raises
+    raise AssertionError  # pragma: no cover
+
+
+def _raise_for_non_200(resp: httpx.Response) -> None:
+    """Raise the appropriate exception for non-200 status codes."""
     if resp.status_code == 404:
         raise NotFoundError(str(resp.url))
     if resp.status_code in (401, 403):
@@ -209,13 +221,17 @@ def _raise_for_status(resp: httpx.Response) -> Any:
                 if not math.isfinite(parsed) or parsed < 0:
                     retry_ms = 1000
                 else:
-                    # +1000ms jitter to avoid thundering herd on rate-limit window reset
                     retry_ms = int(parsed) * 1000 + 1000
             except (ValueError, TypeError, OverflowError):
-                # HTTP-date format or other non-numeric value — use 1s default
                 retry_ms = 1000
         raise RateLimitError(retry_ms)
     raise ServerError(f"HTTP {resp.status_code}: {resp.text[:200]}", status_code=resp.status_code)
+
+
+def _raise_for_status(resp: httpx.Response) -> Any:
+    if resp.status_code == 200:
+        return resp.json()
+    _raise_for_non_200(resp)
 
 
 class RiotClient:
@@ -302,7 +318,7 @@ class RiotClient:
             rl_resp = await rl_client.post(
                 "/headers",
                 json={
-                    "source": "riot_api",
+                    "source": "riot",
                     "rate_limit": rate_limit,
                     "rate_limit_count": rate_limit_count,
                 },
@@ -321,6 +337,19 @@ class RiotClient:
         data = _raise_for_status(resp)
         await self._persist_rate_limits(resp)
         return data
+
+    async def _get_with_raw(self, url: str) -> tuple[Any, bytes]:
+        """Like _get but also returns the raw response bytes.
+
+        Returns (parsed_data, raw_bytes) to avoid a json.dumps() round-trip
+        when the caller needs both forms (e.g. RiotSource storing raw_blob).
+        """
+        self._check_circuit_breaker()
+        resp = await self._send_request(url)
+        self._track_5xx(resp)
+        data, raw = _raise_for_status_raw(resp)
+        await self._persist_rate_limits(resp)
+        return data, raw
 
     # -- Public API methods ---------------------------------------------------
 
@@ -353,6 +382,17 @@ class RiotClient:
         base = self._resolve_base(region)
         url = f"{base}/lol/match/v5/matches/{match_id}"
         return cast(dict[str, Any], await self._get(url))
+
+    async def get_match_with_raw(self, match_id: str, region: str) -> tuple[dict[str, Any], bytes]:
+        """Fetch match data and raw response bytes in a single request.
+
+        Returns (parsed_dict, raw_bytes) so callers can persist the raw bytes
+        without a redundant json.dumps() round-trip.
+        """
+        base = self._resolve_base(region)
+        url = f"{base}/lol/match/v5/matches/{match_id}"
+        data, raw = await self._get_with_raw(url)
+        return cast(dict[str, Any], data), raw
 
     async def get_match_timeline(self, match_id: str, region: str) -> dict[str, Any]:
         """Fetch match timeline JSON by match_id."""

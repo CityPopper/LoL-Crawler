@@ -54,11 +54,11 @@ class RetryTracker:
     async def incr(self, r: aioredis.Redis, stream: str, msg_id: str) -> int:
         """Increment the retry counter and return the new value.
 
-        INCR and EXPIRE are batched in a single pipeline so a crash between them
-        cannot leave the key without a TTL.
+        INCR and EXPIRE are wrapped in a MULTI/EXEC transaction so a crash
+        between them cannot leave the key without a TTL.
         """
         k = self.key(stream, msg_id)
-        async with r.pipeline(transaction=False) as pipe:
+        async with r.pipeline(transaction=True) as pipe:
             pipe.incr(k)
             pipe.expire(k, self._ttl)
             results: list[int] = await pipe.execute()

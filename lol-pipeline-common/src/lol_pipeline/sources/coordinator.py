@@ -62,7 +62,9 @@ class WaterfallCoordinator:
     ) -> WaterfallResult:
         """Try sources in priority order. Returns result with data or failure info."""
         # Step 1: Check raw_store -- if blob exists, skip fetch entirely.
-        if await self._raw_store.exists(context.match_id):
+        # redis_only=True avoids an expensive disk scan on every message;
+        # a false-negative just means we re-fetch and re-store (safe).
+        if await self._raw_store.exists(context.match_id, redis_only=True):
             return WaterfallResult(status="cached")
 
         # Step 2: Check blob_store across all sources.
@@ -213,7 +215,12 @@ class WaterfallCoordinator:
             )
             return None, False
 
-        blob_dict: dict[str, str] = json.loads(response.raw_blob)
+        # Prefer pre-parsed data to avoid redundant json.loads(raw_blob).
+        blob_dict: dict[str, str] = (
+            response.data
+            if response.data is not None
+            else json.loads(response.raw_blob)
+        )
         extractor = self._get_extractor(source_name, data_type)
         if extractor is None:
             log.warning("no extractor for (%s, %s), skipping", source_name, data_type)
