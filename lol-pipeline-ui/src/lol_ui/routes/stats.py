@@ -17,7 +17,7 @@ from lol_pipeline.config import Config
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.priority import PRIORITY_MANUAL_20, set_priority
-from lol_pipeline.rate_limiter import wait_for_token
+from lol_pipeline.rate_limiter_client import wait_for_token
 from lol_pipeline.riot_api import (
     AuthError,
     NotFoundError,
@@ -201,11 +201,7 @@ async def _resolve_puuid(
     if cached_puuid:
         return cached_puuid
     try:
-        await wait_for_token(
-            r,
-            limit_per_second=cfg.api_rate_limit_per_second,
-            region=region,
-        )
+        await wait_for_token("riot", "account")
         account = await riot.get_account_by_riot_id(game_name, tag_line, region)
     except NotFoundError:
         return HTMLResponse(

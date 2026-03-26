@@ -1,11 +1,11 @@
-"""Unit tests for lol_pipeline.riot_api — rate limit header parsing and storage."""
+"""Unit tests for lol_pipeline.riot_api — rate limit header parsing and HTTP service calls."""
 
 from __future__ import annotations
 
 import json
 import logging
+from unittest.mock import AsyncMock, patch
 
-import fakeredis.aioredis
 import httpx
 import pytest
 import respx
@@ -125,76 +125,56 @@ class TestRiotClientHeaders:
 
 
 class TestRiotClientRateLimitStorage:
-    @pytest.fixture
-    def fake_redis(self) -> fakeredis.aioredis.FakeRedis:
-        return fakeredis.aioredis.FakeRedis(decode_responses=True)
+    """RL-4: _persist_rate_limits forwards headers to POST /headers on the rate-limiter service."""
 
     @pytest.mark.asyncio
-    async def test_stores_limits_on_200(self, fake_redis: fakeredis.aioredis.FakeRedis) -> None:
-        # Input:  200 response with "X-App-Rate-Limit: 20:1,100:120" header
-        #         RiotClient constructed with r=<redis>
-        # Output: ratelimit:limits:short == "20"
-        #         ratelimit:limits:long  == "100"
-        with respx.mock:
+    async def test_persist_rate_limits__calls_post_headers(self) -> None:
+        # Input:  200 response with X-App-Rate-Limit and X-App-Rate-Limit-Count headers
+        # Output: POST /headers called on rate-limiter service (not Redis SET)
+        mock_rl_response = httpx.Response(200, json={"updated": True, "throttle": False})
+        mock_rl_client = AsyncMock()
+        mock_rl_client.post = AsyncMock(return_value=mock_rl_response)
+
+        with (
+            respx.mock,
+            patch("lol_pipeline.riot_api._get_rl_client", return_value=mock_rl_client),
+        ):
             respx.get(
                 "https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Faker/KR1"
             ).mock(
                 return_value=httpx.Response(
                     200,
                     json={"puuid": "test-puuid", "gameName": "Faker", "tagLine": "KR1"},
-                    headers={"X-App-Rate-Limit": "20:1,100:120"},
+                    headers={
+                        "X-App-Rate-Limit": "20:1,100:120",
+                        "X-App-Rate-Limit-Count": "15:1,42:120",
+                    },
                 )
             )
-            client = RiotClient("RGAPI-test", r=fake_redis)
+            client = RiotClient("RGAPI-test")
             await client.get_account_by_riot_id("Faker", "KR1", "kr")
             await client.close()
 
-        assert await fake_redis.get("ratelimit:limits:short") == "20"
-        assert await fake_redis.get("ratelimit:limits:long") == "100"
-        await fake_redis.aclose()
+        mock_rl_client.post.assert_called_once_with(
+            "/headers",
+            json={
+                "source": "riot_api",
+                "rate_limit": "20:1,100:120",
+                "rate_limit_count": "15:1,42:120",
+            },
+        )
 
     @pytest.mark.asyncio
-    async def test_stores_limits_on_200__prod_key_windows(
-        self, fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # Input:  200 response with "X-App-Rate-Limit: 500:10,30000:600" header
-        #         RATE_LIMIT_SHORT_WINDOW_S=10, RATE_LIMIT_LONG_WINDOW_S=600
-        # Output: ratelimit:limits:short == "500"
-        #         ratelimit:limits:long  == "30000"
-        monkeypatch.setenv("RATE_LIMIT_SHORT_WINDOW_S", "10")
-        monkeypatch.setenv("RATE_LIMIT_LONG_WINDOW_S", "600")
-        # Force re-read of module-level config
-        import lol_pipeline.riot_api as riot_api_mod
-
-        monkeypatch.setattr(riot_api_mod, "_SHORT_WINDOW_S", 10)
-        monkeypatch.setattr(riot_api_mod, "_LONG_WINDOW_S", 600)
-
-        with respx.mock:
-            respx.get(
-                "https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Faker/KR1"
-            ).mock(
-                return_value=httpx.Response(
-                    200,
-                    json={"puuid": "test-puuid", "gameName": "Faker", "tagLine": "KR1"},
-                    headers={"X-App-Rate-Limit": "500:10,30000:600"},
-                )
-            )
-            client = RiotClient("RGAPI-test", r=fake_redis)
-            await client.get_account_by_riot_id("Faker", "KR1", "kr")
-            await client.close()
-
-        assert await fake_redis.get("ratelimit:limits:short") == "500"
-        assert await fake_redis.get("ratelimit:limits:long") == "30000"
-        await fake_redis.aclose()
-
-    @pytest.mark.asyncio
-    async def test_no_write_when_header_absent(
-        self, fake_redis: fakeredis.aioredis.FakeRedis
-    ) -> None:
+    async def test_no_post_when_header_absent(self) -> None:
         # Input:  200 response WITHOUT X-App-Rate-Limit header
-        #         RiotClient constructed with r=<redis>
-        # Output: ratelimit:limits:short and :long are NOT set (remain None)
-        with respx.mock:
+        # Output: POST /headers is NOT called
+        mock_rl_client = AsyncMock()
+        mock_rl_client.post = AsyncMock()
+
+        with (
+            respx.mock,
+            patch("lol_pipeline.riot_api._get_rl_client", return_value=mock_rl_client),
+        ):
             respx.get(
                 "https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Faker/KR1"
             ).mock(
@@ -203,37 +183,46 @@ class TestRiotClientRateLimitStorage:
                     json={"puuid": "test-puuid", "gameName": "Faker", "tagLine": "KR1"},
                 )
             )
-            client = RiotClient("RGAPI-test", r=fake_redis)
+            client = RiotClient("RGAPI-test")
             await client.get_account_by_riot_id("Faker", "KR1", "kr")
             await client.close()
 
-        assert await fake_redis.get("ratelimit:limits:short") is None
-        assert await fake_redis.get("ratelimit:limits:long") is None
-        await fake_redis.aclose()
+        mock_rl_client.post.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_no_write_on_non_200(self, fake_redis: fakeredis.aioredis.FakeRedis) -> None:
+    async def test_no_post_on_non_200(self) -> None:
         # Input:  404 response (raises NotFoundError)
-        #         RiotClient constructed with r=<redis>
-        # Output: ratelimit:limits:* keys are NOT set
-        with respx.mock:
+        # Output: POST /headers is NOT called (_persist_rate_limits only runs after 200)
+        mock_rl_client = AsyncMock()
+        mock_rl_client.post = AsyncMock()
+
+        with (
+            respx.mock,
+            patch("lol_pipeline.riot_api._get_rl_client", return_value=mock_rl_client),
+        ):
             respx.get(
                 "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Nobody/NA1"
             ).mock(return_value=httpx.Response(404))
-            client = RiotClient("RGAPI-test", r=fake_redis)
+            client = RiotClient("RGAPI-test")
             with pytest.raises(NotFoundError):
                 await client.get_account_by_riot_id("Nobody", "NA1", "na1")
             await client.close()
 
-        assert await fake_redis.get("ratelimit:limits:short") is None
-        await fake_redis.aclose()
+        mock_rl_client.post.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_crash_without_redis(self) -> None:
         # Input:  200 response with X-App-Rate-Limit header
         #         RiotClient constructed WITHOUT r (r=None, the default)
         # Output: returns data dict normally, no exception raised
-        with respx.mock:
+        mock_rl_response = httpx.Response(200, json={"updated": True, "throttle": False})
+        mock_rl_client = AsyncMock()
+        mock_rl_client.post = AsyncMock(return_value=mock_rl_response)
+
+        with (
+            respx.mock,
+            patch("lol_pipeline.riot_api._get_rl_client", return_value=mock_rl_client),
+        ):
             respx.get(
                 "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Test/NA1"
             ).mock(
@@ -250,14 +239,18 @@ class TestRiotClientRateLimitStorage:
         assert result["puuid"] == "test-puuid"
 
     @pytest.mark.asyncio
-    async def test_updates_limits_on_subsequent_calls(
-        self, fake_redis: fakeredis.aioredis.FakeRedis
-    ) -> None:
+    async def test_forwards_headers_on_subsequent_calls(self) -> None:
         # Input:  first call returns X-App-Rate-Limit: 20:1,100:120
-        #         second call returns X-App-Rate-Limit: 100:1,1000:120 (key rotated/upgraded)
-        # Output: after second call, ratelimit:limits:short == "100"
-        #         (stored value is always the most recent)
-        with respx.mock:
+        #         second call returns X-App-Rate-Limit: 100:1,1000:120
+        # Output: POST /headers called twice with the respective raw header strings
+        mock_rl_response = httpx.Response(200, json={"updated": True, "throttle": False})
+        mock_rl_client = AsyncMock()
+        mock_rl_client.post = AsyncMock(return_value=mock_rl_response)
+
+        with (
+            respx.mock,
+            patch("lol_pipeline.riot_api._get_rl_client", return_value=mock_rl_client),
+        ):
             route = respx.get(
                 "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Test/NA1"
             )
@@ -273,27 +266,27 @@ class TestRiotClientRateLimitStorage:
                     headers={"X-App-Rate-Limit": "100:1,1000:120"},
                 ),
             ]
-            client = RiotClient("RGAPI-test", r=fake_redis)
+            client = RiotClient("RGAPI-test")
             await client.get_account_by_riot_id("Test", "NA1", "na1")
             await client.get_account_by_riot_id("Test", "NA1", "na1")
             await client.close()
 
-        assert await fake_redis.get("ratelimit:limits:short") == "100"
-        assert await fake_redis.get("ratelimit:limits:long") == "1000"
-        await fake_redis.aclose()
+        assert mock_rl_client.post.call_count == 2
 
 
-class TestRateLimitKeyTTL:
-    """B15: ratelimit:limits:short/long keys have a TTL to expire stale limits."""
-
-    @pytest.fixture
-    def fake_redis(self) -> fakeredis.aioredis.FakeRedis:
-        return fakeredis.aioredis.FakeRedis(decode_responses=True)
+class TestRateLimiterServiceFailOpen:
+    """RL-4: _persist_rate_limits fails open when the rate-limiter service is unreachable."""
 
     @pytest.mark.asyncio
-    async def test_stored_limits_have_ttl(self, fake_redis: fakeredis.aioredis.FakeRedis) -> None:
-        """B15: ratelimit:limits:short and :long have a 1-hour TTL after being set."""
-        with respx.mock:
+    async def test_fail_open_on_service_error(self) -> None:
+        """If POST /headers raises, a warning is logged and the call succeeds."""
+        mock_rl_client = AsyncMock()
+        mock_rl_client.post = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+
+        with (
+            respx.mock,
+            patch("lol_pipeline.riot_api._get_rl_client", return_value=mock_rl_client),
+        ):
             respx.get(
                 "https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Faker/KR1"
             ).mock(
@@ -303,186 +296,39 @@ class TestRateLimitKeyTTL:
                     headers={"X-App-Rate-Limit": "20:1,100:120"},
                 )
             )
-            client = RiotClient("RGAPI-test", r=fake_redis)
-            await client.get_account_by_riot_id("Faker", "KR1", "kr")
+            client = RiotClient("RGAPI-test")
+            result = await client.get_account_by_riot_id("Faker", "KR1", "kr")
             await client.close()
 
-        short_ttl = await fake_redis.ttl("ratelimit:limits:short")
-        long_ttl = await fake_redis.ttl("ratelimit:limits:long")
-        # TTL should be close to 3600 (1 hour), allowing tolerance for execution
-        assert 3590 <= short_ttl <= 3600
-        assert 3590 <= long_ttl <= 3600
-        await fake_redis.aclose()
+        # Should still return the result — fail open
+        assert result["puuid"] == "test-puuid"
 
     @pytest.mark.asyncio
-    async def test_ttl_refreshed_on_subsequent_calls(
-        self, fake_redis: fakeredis.aioredis.FakeRedis
-    ) -> None:
-        """B15: Each successful API call refreshes the TTL on limit keys
-        once the write-interval has elapsed (rate limit values are cached
-        in-process to avoid redundant Redis writes)."""
-        with respx.mock:
-            route = respx.get(
-                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Test/NA1"
-            )
-            route.side_effect = [
-                httpx.Response(
-                    200,
-                    json={"puuid": "puuid1", "gameName": "Test", "tagLine": "NA1"},
-                    headers={"X-App-Rate-Limit": "20:1,100:120"},
-                ),
-                httpx.Response(
-                    200,
-                    json={"puuid": "puuid1", "gameName": "Test", "tagLine": "NA1"},
-                    headers={"X-App-Rate-Limit": "20:1,100:120"},
-                ),
-            ]
-            client = RiotClient("RGAPI-test", r=fake_redis)
-            await client.get_account_by_riot_id("Test", "NA1", "na1")
-            # Manually reduce TTL to simulate time passing
-            await fake_redis.expire("ratelimit:limits:short", 100)
-            # Simulate that the write interval has elapsed so the client
-            # will re-write on the next call and refresh the TTL
-            import time as _time
+    async def test_fail_open_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        """If POST /headers fails, a warning is logged."""
+        mock_rl_client = AsyncMock()
+        mock_rl_client.post = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
-            client._limits_last_written_at = _time.monotonic() - 3600
-            await client.get_account_by_riot_id("Test", "NA1", "na1")
-            await client.close()
-
-        # After second call, TTL should be refreshed back to ~3600
-        short_ttl = await fake_redis.ttl("ratelimit:limits:short")
-        assert short_ttl > 100  # Was refreshed, not still at 100
-        await fake_redis.aclose()
-
-
-class TestRateLimitWriteCaching:
-    """Rate limit values are cached in-process to avoid redundant Redis writes."""
-
-    @pytest.fixture
-    def fake_redis(self) -> fakeredis.aioredis.FakeRedis:
-        return fakeredis.aioredis.FakeRedis(decode_responses=True)
-
-    @pytest.mark.asyncio
-    async def test_skips_redis_write_when_values_unchanged(
-        self, fake_redis: fakeredis.aioredis.FakeRedis
-    ) -> None:
-        """Second call with identical limits does NOT write to Redis again."""
-        with respx.mock:
-            route = respx.get(
-                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Test/NA1"
-            )
-            route.side_effect = [
-                httpx.Response(
-                    200,
-                    json={"puuid": "puuid1", "gameName": "Test", "tagLine": "NA1"},
-                    headers={"X-App-Rate-Limit": "20:1,100:120"},
-                ),
-                httpx.Response(
-                    200,
-                    json={"puuid": "puuid1", "gameName": "Test", "tagLine": "NA1"},
-                    headers={"X-App-Rate-Limit": "20:1,100:120"},
-                ),
-            ]
-            client = RiotClient("RGAPI-test", r=fake_redis)
-            await client.get_account_by_riot_id("Test", "NA1", "na1")
-            # Overwrite the key with a marker value after first write
-            await fake_redis.set("ratelimit:limits:short", "MARKER")
-            await client.get_account_by_riot_id("Test", "NA1", "na1")
-            await client.close()
-
-        # MARKER should remain — proving the second call did NOT overwrite
-        assert await fake_redis.get("ratelimit:limits:short") == "MARKER"
-        await fake_redis.aclose()
-
-    @pytest.mark.asyncio
-    async def test_writes_redis_when_values_change(
-        self, fake_redis: fakeredis.aioredis.FakeRedis
-    ) -> None:
-        """When API returns different limits (key tier upgrade), Redis is updated."""
-        with respx.mock:
-            route = respx.get(
-                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Test/NA1"
-            )
-            route.side_effect = [
-                httpx.Response(
-                    200,
-                    json={"puuid": "puuid1", "gameName": "Test", "tagLine": "NA1"},
-                    headers={"X-App-Rate-Limit": "20:1,100:120"},
-                ),
-                httpx.Response(
-                    200,
-                    json={"puuid": "puuid1", "gameName": "Test", "tagLine": "NA1"},
-                    headers={"X-App-Rate-Limit": "100:1,1000:120"},
-                ),
-            ]
-            client = RiotClient("RGAPI-test", r=fake_redis)
-            await client.get_account_by_riot_id("Test", "NA1", "na1")
-            assert await fake_redis.get("ratelimit:limits:short") == "20"
-            await client.get_account_by_riot_id("Test", "NA1", "na1")
-            await client.close()
-
-        # Values changed, so Redis should have the new values
-        assert await fake_redis.get("ratelimit:limits:short") == "100"
-        assert await fake_redis.get("ratelimit:limits:long") == "1000"
-        await fake_redis.aclose()
-
-    @pytest.mark.asyncio
-    async def test_first_call_always_writes(self, fake_redis: fakeredis.aioredis.FakeRedis) -> None:
-        """First call writes to Redis even though cache starts as None."""
-        with respx.mock:
+        with (
+            respx.mock,
+            patch("lol_pipeline.riot_api._get_rl_client", return_value=mock_rl_client),
+        ):
             respx.get(
-                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Test/NA1"
+                "https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Faker/KR1"
             ).mock(
                 return_value=httpx.Response(
                     200,
-                    json={"puuid": "puuid1", "gameName": "Test", "tagLine": "NA1"},
+                    json={"puuid": "test-puuid", "gameName": "Faker", "tagLine": "KR1"},
                     headers={"X-App-Rate-Limit": "20:1,100:120"},
                 )
             )
-            client = RiotClient("RGAPI-test", r=fake_redis)
-            assert client._cached_short_limit is None
-            assert client._cached_long_limit is None
-            await client.get_account_by_riot_id("Test", "NA1", "na1")
+            client = RiotClient("RGAPI-test")
+            with caplog.at_level(logging.WARNING, logger="riot_api"):
+                await client.get_account_by_riot_id("Faker", "KR1", "kr")
             await client.close()
 
-        assert await fake_redis.get("ratelimit:limits:short") == "20"
-        assert await fake_redis.get("ratelimit:limits:long") == "100"
-        await fake_redis.aclose()
-
-    @pytest.mark.asyncio
-    async def test_rewrites_after_write_interval_elapsed(
-        self, fake_redis: fakeredis.aioredis.FakeRedis
-    ) -> None:
-        """After the write interval elapses, same values are re-written to refresh TTL."""
-        with respx.mock:
-            route = respx.get(
-                "https://americas.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Test/NA1"
-            )
-            route.side_effect = [
-                httpx.Response(
-                    200,
-                    json={"puuid": "puuid1", "gameName": "Test", "tagLine": "NA1"},
-                    headers={"X-App-Rate-Limit": "20:1,100:120"},
-                ),
-                httpx.Response(
-                    200,
-                    json={"puuid": "puuid1", "gameName": "Test", "tagLine": "NA1"},
-                    headers={"X-App-Rate-Limit": "20:1,100:120"},
-                ),
-            ]
-            client = RiotClient("RGAPI-test", r=fake_redis)
-            await client.get_account_by_riot_id("Test", "NA1", "na1")
-            # Overwrite with marker, then simulate write interval elapsed
-            import time as _time
-
-            await fake_redis.set("ratelimit:limits:short", "MARKER")
-            client._limits_last_written_at = _time.monotonic() - 3600
-            await client.get_account_by_riot_id("Test", "NA1", "na1")
-            await client.close()
-
-        # MARKER should be overwritten because the write interval elapsed
-        assert await fake_redis.get("ratelimit:limits:short") == "20"
-        await fake_redis.aclose()
+        warn_msgs = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("POST /headers failed" in msg for msg in warn_msgs)
 
 
 # ---------------------------------------------------------------------------
@@ -839,81 +685,17 @@ class TestCircuitBreaker:
 class TestRateLimitCountParsing:
     """R5: X-App-Rate-Limit-Count header is parsed for near-limit warnings."""
 
-    @pytest.fixture
-    def fake_redis(self) -> fakeredis.aioredis.FakeRedis:
-        return fakeredis.aioredis.FakeRedis(decode_responses=True)
-
     @pytest.mark.asyncio
-    async def test_rate_limit_count_header_parsed(
-        self,
-        fake_redis: fakeredis.aioredis.FakeRedis,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """Near-limit usage triggers a warning log."""
-        with respx.mock:
-            respx.get(
-                "https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Faker/KR1"
-            ).mock(
-                return_value=httpx.Response(
-                    200,
-                    json={"puuid": "test-puuid", "gameName": "Faker", "tagLine": "KR1"},
-                    headers={
-                        "X-App-Rate-Limit": "20:1,100:120",
-                        # 19/20 and 95/100 -- both near limit
-                        "X-App-Rate-Limit-Count": "19:1,95:120",
-                    },
-                )
-            )
-            client = RiotClient("RGAPI-test", r=fake_redis)
-            with caplog.at_level(logging.WARNING, logger="riot_api"):
-                await client.get_account_by_riot_id("Faker", "KR1", "kr")
-            await client.close()
-
-        # Should have logged warnings about near capacity
-        warn_msgs = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
-        assert any("near capacity" in msg for msg in warn_msgs), (
-            f"Expected near-capacity warning, got: {warn_msgs}"
-        )
-        await fake_redis.aclose()
-
-    @pytest.mark.asyncio
-    async def test_rate_limit_count_no_warning_when_under_threshold(
-        self,
-        fake_redis: fakeredis.aioredis.FakeRedis,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """Low usage does not trigger a warning."""
-        with respx.mock:
-            respx.get(
-                "https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Faker/KR1"
-            ).mock(
-                return_value=httpx.Response(
-                    200,
-                    json={"puuid": "test-puuid", "gameName": "Faker", "tagLine": "KR1"},
-                    headers={
-                        "X-App-Rate-Limit": "20:1,100:120",
-                        "X-App-Rate-Limit-Count": "5:1,30:120",  # well under 90%
-                    },
-                )
-            )
-            client = RiotClient("RGAPI-test", r=fake_redis)
-            with caplog.at_level(logging.WARNING, logger="riot_api"):
-                await client.get_account_by_riot_id("Faker", "KR1", "kr")
-            await client.close()
-
-        warn_msgs = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
-        assert not any("near capacity" in msg for msg in warn_msgs), (
-            f"Did not expect near-capacity warning, got: {warn_msgs}"
-        )
-        await fake_redis.aclose()
-
-    @pytest.mark.asyncio
-    async def test_rate_limit_count_missing_header_no_crash(
-        self,
-        fake_redis: fakeredis.aioredis.FakeRedis,
-    ) -> None:
+    async def test_rate_limit_count_missing_header_no_crash(self) -> None:
         """Missing X-App-Rate-Limit-Count does not crash."""
-        with respx.mock:
+        mock_rl_response = httpx.Response(200, json={"updated": True, "throttle": False})
+        mock_rl_client = AsyncMock()
+        mock_rl_client.post = AsyncMock(return_value=mock_rl_response)
+
+        with (
+            respx.mock,
+            patch("lol_pipeline.riot_api._get_rl_client", return_value=mock_rl_client),
+        ):
             respx.get(
                 "https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Faker/KR1"
             ).mock(
@@ -924,12 +706,14 @@ class TestRateLimitCountParsing:
                     # No X-App-Rate-Limit-Count header
                 )
             )
-            client = RiotClient("RGAPI-test", r=fake_redis)
+            client = RiotClient("RGAPI-test")
             result = await client.get_account_by_riot_id("Faker", "KR1", "kr")
             await client.close()
 
         assert result["puuid"] == "test-puuid"
-        await fake_redis.aclose()
+        # rate_limit_count should be empty string in the payload
+        call_json = mock_rl_client.post.call_args[1]["json"]
+        assert call_json["rate_limit_count"] == ""
 
 
 class TestParseRateLimitCount:
@@ -1183,73 +967,20 @@ class TestGetMatchTimeline:
 
 
 class TestThrottleHint:
-    """Proactive throttle hint set when near rate limit capacity."""
-
-    @pytest.fixture
-    def fake_redis(self) -> fakeredis.aioredis.FakeRedis:
-        return fakeredis.aioredis.FakeRedis(decode_responses=True)
+    """RL-4: Proactive 200ms sleep when rate-limiter service reports throttle: true."""
 
     @pytest.mark.asyncio
-    async def test_throttle_hint_set_when_near_capacity(
-        self,
-        fake_redis: fakeredis.aioredis.FakeRedis,
-    ) -> None:
-        """When < 5% capacity remains, ratelimit:throttle is set in Redis."""
-        with respx.mock:
-            respx.get(
-                "https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/F/KR1"
-            ).mock(
-                return_value=httpx.Response(
-                    200,
-                    json={"puuid": "p", "gameName": "F", "tagLine": "KR1"},
-                    headers={
-                        "X-App-Rate-Limit": "20:1,100:120",
-                        "X-App-Rate-Limit-Count": "19:1,96:120",  # 96/100 = 4% remaining
-                    },
-                )
-            )
-            client = RiotClient("RGAPI-test", r=fake_redis)
-            await client.get_account_by_riot_id("F", "KR1", "kr")
-            await client.close()
+    async def test_throttle_true_triggers_sleep(self) -> None:
+        """When service returns throttle: true, asyncio.sleep(0.2) is called."""
+        mock_rl_response = httpx.Response(200, json={"updated": True, "throttle": True})
+        mock_rl_client = AsyncMock()
+        mock_rl_client.post = AsyncMock(return_value=mock_rl_response)
 
-        throttle = await fake_redis.get("ratelimit:throttle")
-        assert throttle == "1"
-        await fake_redis.aclose()
-
-    @pytest.mark.asyncio
-    async def test_throttle_hint_not_set_when_under_threshold(
-        self,
-        fake_redis: fakeredis.aioredis.FakeRedis,
-    ) -> None:
-        """When plenty of capacity remains, no throttle hint is set."""
-        with respx.mock:
-            respx.get(
-                "https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/F/KR1"
-            ).mock(
-                return_value=httpx.Response(
-                    200,
-                    json={"puuid": "p", "gameName": "F", "tagLine": "KR1"},
-                    headers={
-                        "X-App-Rate-Limit": "20:1,100:120",
-                        "X-App-Rate-Limit-Count": "5:1,30:120",  # lots of headroom
-                    },
-                )
-            )
-            client = RiotClient("RGAPI-test", r=fake_redis)
-            await client.get_account_by_riot_id("F", "KR1", "kr")
-            await client.close()
-
-        throttle = await fake_redis.get("ratelimit:throttle")
-        assert throttle is None
-        await fake_redis.aclose()
-
-    @pytest.mark.asyncio
-    async def test_throttle_hint_has_ttl(
-        self,
-        fake_redis: fakeredis.aioredis.FakeRedis,
-    ) -> None:
-        """Throttle hint key expires after a short TTL."""
-        with respx.mock:
+        with (
+            respx.mock,
+            patch("lol_pipeline.riot_api._get_rl_client", return_value=mock_rl_client),
+            patch("lol_pipeline.riot_api.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
             respx.get(
                 "https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/F/KR1"
             ).mock(
@@ -1262,10 +993,38 @@ class TestThrottleHint:
                     },
                 )
             )
-            client = RiotClient("RGAPI-test", r=fake_redis)
+            client = RiotClient("RGAPI-test")
             await client.get_account_by_riot_id("F", "KR1", "kr")
             await client.close()
 
-        ttl = await fake_redis.ttl("ratelimit:throttle")
-        assert 0 < ttl <= 2
-        await fake_redis.aclose()
+        mock_sleep.assert_awaited_once_with(0.2)
+
+    @pytest.mark.asyncio
+    async def test_throttle_false_no_sleep(self) -> None:
+        """When service returns throttle: false, no sleep is applied."""
+        mock_rl_response = httpx.Response(200, json={"updated": True, "throttle": False})
+        mock_rl_client = AsyncMock()
+        mock_rl_client.post = AsyncMock(return_value=mock_rl_response)
+
+        with (
+            respx.mock,
+            patch("lol_pipeline.riot_api._get_rl_client", return_value=mock_rl_client),
+            patch("lol_pipeline.riot_api.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
+            respx.get(
+                "https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/F/KR1"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"puuid": "p", "gameName": "F", "tagLine": "KR1"},
+                    headers={
+                        "X-App-Rate-Limit": "20:1,100:120",
+                        "X-App-Rate-Limit-Count": "5:1,30:120",
+                    },
+                )
+            )
+            client = RiotClient("RGAPI-test")
+            await client.get_account_by_riot_id("F", "KR1", "kr")
+            await client.close()
+
+        mock_sleep.assert_not_awaited()

@@ -185,8 +185,8 @@ def main() -> int:
 
     # Load token and resolve repo once
     token = _load_env_token()
-    api = HfApi()
-    user_info = api.whoami(token=token)
+    api = HfApi(token=token)
+    user_info = api.whoami()
     repo_id = os.environ.get("HF_DATASET_REPO") or f"{user_info['name']}/lol-pipeline-seed"
     salt = os.environ.get("ANON_SALT", "")
 

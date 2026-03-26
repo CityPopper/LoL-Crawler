@@ -1,4 +1,7 @@
-"""Rate limiter constants and Lua script — extracted from rate_limiter.py."""
+"""Lua script constants for sliding-window ZSET rate limiting.
+
+Ported from lol-pipeline-common/src/lol_pipeline/_rate_limiter_data.py.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +15,7 @@ from __future__ import annotations
 # successful API response. If present they override the ARGV fallback values so
 # the limiter automatically adapts to the real API key limits.
 # All key access uses the KEYS array for Redis Cluster compatibility (no CROSSSLOT).
-_LUA_RATE_LIMIT_SCRIPT = """
+LUA_RATE_LIMIT_SCRIPT = """
 local key_s = KEYS[1]
 local key_l = KEYS[2]
 local now     = tonumber(ARGV[1])
@@ -59,8 +62,3 @@ redis.call("PEXPIRE", key_s, win_s)
 redis.call("PEXPIRE", key_l, win_l)
 return 1
 """
-
-_SHORT_WINDOW_MS = 1_000  # 1 second
-_SHORT_LIMIT = 20  # 20 req/s
-_LONG_WINDOW_MS = 120_000  # 2 minutes
-_LONG_LIMIT = 100  # 100 req/2 min

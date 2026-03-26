@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import time as _time
@@ -11,15 +12,16 @@ from urllib.parse import quote
 import httpx
 import redis.asyncio as aioredis
 
+from lol_pipeline.rate_limiter_client import _get_client as _get_rl_client
+
 _log = logging.getLogger("riot_api")
 
-# Rate-limit window durations — hardcoded to match _rate_limiter_data.py
-# (1_000 ms = 1 s, 120_000 ms = 120 s).
+# Rate-limit window durations used for *informational* header parsing only.
+# The rate-limiter service controls actual limiting; these constants let
+# _parse_rate_limit_header extract short/long values for logging and the
+# POST /headers payload.
 _SHORT_WINDOW_S: int = 1
 _LONG_WINDOW_S: int = 120
-
-_RATE_LIMIT_KEY_TTL = 3600  # 1 hour — stale limits expire after API key rotation
-_RATE_LIMIT_WRITE_INTERVAL_S = 1800  # Re-write cached values every 30 min to refresh TTL
 
 PLATFORM_TO_REGION: dict[str, str] = {
     "na1": "americas",
@@ -230,16 +232,11 @@ class RiotClient:
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._api_key = api_key
-        self._r = r
+        self._r = r  # kept for backward-compat; no longer used for rate-limit writes
         self._client = client or httpx.AsyncClient(timeout=30.0)
         # R4: Circuit breaker state
         self._consecutive_5xx: int = 0
         self._circuit_open_until: float = 0.0
-        # Cache last-written rate limit values to avoid redundant Redis writes.
-        # Initialized to None so the first successful call always writes.
-        self._cached_short_limit: int | None = None
-        self._cached_long_limit: int | None = None
-        self._limits_last_written_at: float = 0.0
 
     # -- PRIN-COM-3: circuit-breaker increment extracted ----------------------
 
@@ -290,27 +287,31 @@ class RiotClient:
             self._consecutive_5xx = 0
 
     async def _persist_rate_limits(self, resp: httpx.Response) -> None:
-        """Parse rate-limit headers from *resp* and persist to Redis if needed."""
-        if not self._r:
+        """Forward rate-limit headers to the rate-limiter service via POST /headers.
+
+        If the service reports ``throttle: true`` (>90% capacity used),
+        applies a 200 ms proactive sleep.  Fails open: if the HTTP call
+        fails for any reason, a warning is logged and execution continues.
+        """
+        rate_limit = resp.headers.get("X-App-Rate-Limit", "")
+        rate_limit_count = resp.headers.get("X-App-Rate-Limit-Count", "")
+        if not rate_limit:
             return
-        limits = _parse_app_rate_limit(resp.headers.get("X-App-Rate-Limit", ""))
-        if limits:
-            short, long_ = limits
-            now = _time.monotonic()
-            values_changed = short != self._cached_short_limit or long_ != self._cached_long_limit
-            ttl_stale = now - self._limits_last_written_at >= _RATE_LIMIT_WRITE_INTERVAL_S
-            if values_changed or ttl_stale:
-                await self._r.set("ratelimit:limits:short", str(short), ex=_RATE_LIMIT_KEY_TTL)
-                await self._r.set("ratelimit:limits:long", str(long_), ex=_RATE_LIMIT_KEY_TTL)
-                self._cached_short_limit = short
-                self._cached_long_limit = long_
-                self._limits_last_written_at = now
-        should_throttle = _check_rate_limit_count(
-            resp.headers.get("X-App-Rate-Limit-Count", ""),
-            limits,
-        )
-        if should_throttle:
-            await self._r.set("ratelimit:throttle", "1", ex=2)
+        try:
+            rl_client = _get_rl_client()
+            rl_resp = await rl_client.post(
+                "/headers",
+                json={
+                    "source": "riot_api",
+                    "rate_limit": rate_limit,
+                    "rate_limit_count": rate_limit_count,
+                },
+            )
+            data = rl_resp.json()
+            if data.get("throttle"):
+                await asyncio.sleep(0.2)
+        except Exception as exc:
+            _log.warning("rate-limiter: POST /headers failed (%s), continuing", exc)
 
     async def _get(self, url: str) -> Any:
         """Authenticated GET with circuit breaker, error mapping, and rate-limit persistence."""

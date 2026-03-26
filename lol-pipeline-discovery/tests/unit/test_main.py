@@ -1324,8 +1324,8 @@ class TestResolveNamesRateLimiting:
         mock_wft.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_resolve_names__wait_for_token_receives_redis_and_config(self, r, log):
-        """wait_for_token is called with the Redis client."""
+    async def test_resolve_names__wait_for_token_receives_source_and_endpoint(self, r, log):
+        """wait_for_token is called with source='riot' and endpoint='account'."""
         with respx.mock:
             respx.get(
                 "https://americas.api.riotgames.com/riot/account/v1/accounts/by-puuid/puuid-args"
@@ -1345,9 +1345,7 @@ class TestResolveNamesRateLimiting:
                 await _resolve_names(r, riot, "puuid-args", "na1", log)
             await riot.close()
 
-        mock_wft.assert_called_once()
-        # First positional arg should be the Redis instance
-        assert mock_wft.call_args[0][0] is r
+        mock_wft.assert_called_once_with("riot", "account")
 
 
 class TestPromoteBatchStaleCleanup:

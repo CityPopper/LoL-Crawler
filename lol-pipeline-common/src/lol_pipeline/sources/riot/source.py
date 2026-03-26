@@ -64,9 +64,7 @@ class RiotSource:
     def __init__(self, riot_client: RiotClient) -> None:
         self._riot = riot_client
 
-    async def fetch(
-        self, context: FetchContext, data_type: DataType
-    ) -> FetchResponse:
+    async def fetch(self, context: FetchContext, data_type: DataType) -> FetchResponse:
         """Fetch match data from the Riot API.
 
         1. Non-blocking rate-limit check via ``try_token()``.
@@ -78,9 +76,7 @@ class RiotSource:
             if not granted:
                 return FetchResponse(result=FetchResult.THROTTLED)
 
-            data: dict[str, Any] = await self._riot.get_match(
-                context.match_id, context.region
-            )
+            data: dict[str, Any] = await self._riot.get_match(context.match_id, context.region)
             return FetchResponse(
                 result=FetchResult.SUCCESS,
                 raw_blob=json.dumps(data).encode(),
@@ -110,8 +106,6 @@ class RiotExtractor:
         """Check that the blob has the minimum required Riot match structure."""
         return "info" in blob and "metadata" in blob
 
-    def extract(
-        self, blob: dict[str, str], match_id: str, region: str
-    ) -> dict[str, str]:
+    def extract(self, blob: dict[str, str], match_id: str, region: str) -> dict[str, str]:
         """Riot blobs are canonical -- return as-is."""
         return blob

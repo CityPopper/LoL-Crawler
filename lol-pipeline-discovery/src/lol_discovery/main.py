@@ -24,7 +24,7 @@ from lol_pipeline.constants import (
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.priority import PRIORITY_AUTO_20, has_priority_players
-from lol_pipeline.rate_limiter import wait_for_token
+from lol_pipeline.rate_limiter_client import wait_for_token
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.riot_api import AuthError, NotFoundError, RiotAPIError, RiotClient
 from lol_pipeline.streams import publish
@@ -107,7 +107,7 @@ async def _resolve_names(
         return game_name, tag_line
 
     try:
-        await wait_for_token(r, region=region)
+        await wait_for_token("riot", "account")
         account = await riot.get_account_by_puuid(puuid, region)
     except NotFoundError:
         log.warning("account not found by puuid", extra={"puuid": puuid})

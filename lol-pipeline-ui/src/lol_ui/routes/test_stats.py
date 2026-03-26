@@ -213,3 +213,16 @@ class TestPlayerRefresh:
         assert resp.status_code == 400
         body = resp.json()
         assert "invalid" in body["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_refresh__invalid_region__returns_422(self, client) -> None:
+        """region not in _REGIONS_SET -> 422 invalid region."""
+        c, _r = client
+
+        resp = await c.post(
+            "/player/refresh",
+            json={"riot_id": "GameName#TAG", "region": "invalid_region"},
+        )
+
+        assert resp.status_code == 422
+        assert resp.json() == {"error": "invalid region"}

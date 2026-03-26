@@ -17,7 +17,7 @@ import httpx
 import redis.asyncio as aioredis
 
 from lol_pipeline._opgg_etl import normalize_game
-from lol_pipeline.rate_limiter import wait_for_token
+from lol_pipeline.rate_limiter_client import wait_for_token
 
 _log = logging.getLogger("opgg_client")
 
@@ -33,11 +33,6 @@ _DEFAULT_HEADERS = {
     "Origin": "https://www.op.gg",
     "Referer": "https://www.op.gg/",
 }
-
-# Per-endpoint rate limit key prefixes.  Each endpoint gets its own sliding
-# window so a burst on summoner lookups does not starve match history fetches.
-_RL_SUMMONER = "ratelimit:opgg:summoner"
-_RL_GAMES = "ratelimit:opgg:games"
 
 
 class OpggParseError(Exception):
@@ -56,9 +51,9 @@ class OpggClient:
     """Thin HTTP client for op.gg internal API.
 
     Rate limiting:
-        Pass ``r`` (a Redis client) to enable distributed rate limiting via the
-        shared ``wait_for_token`` infrastructure.  Each endpoint (summoner lookup,
-        match history) uses its own sliding-window key prefix so bursts on one
+        Pass ``r`` (a Redis client) to enable rate limiting via the
+        centralized rate-limiter HTTP service.  Each endpoint (summoner lookup,
+        match history) uses its own endpoint name so bursts on one
         endpoint do not starve the other.  When ``r`` is None, rate limiting is
         skipped (useful in unit tests with respx mocks).
 
@@ -93,27 +88,22 @@ class OpggClient:
             raise OpggRateLimitError(retry_ms)
         resp.raise_for_status()
 
-    async def _acquire(self, key_prefix: str) -> None:
-        """Acquire a rate limit token for the given endpoint key prefix.
+    async def _acquire(self, endpoint: str) -> None:
+        """Acquire a rate limit token for the given endpoint via HTTP service.
 
-        No-op when no Redis client is configured.
+        No-op when no Redis client is configured (backward-compat signal
+        that rate limiting should be skipped, e.g. in unit tests).
         """
         if self._r is None:
             return
-        await wait_for_token(
-            self._r,
-            key_prefix=key_prefix,
-            limit_per_second=self._rate_limit_per_second,
-            limit_long=self._rate_limit_long,
-            throttle_key="ratelimit:opgg:throttle",
-        )
+        await wait_for_token("opgg", endpoint)
 
     async def get_summoner_id(self, game_name: str, tag_line: str, region: str) -> str:
         """Resolve a Riot ID (game_name#tag_line) to an op.gg summoner_id.
 
         Raises ``OpggParseError`` if the summoner is not found or on parse failure.
         """
-        await self._acquire(_RL_SUMMONER)
+        await self._acquire("summoner")
         riot_id = f"{game_name}#{tag_line}"
         url = f"{_BASE_URL}/v3/{region}/summoners"
         params = {"riot_id": riot_id, "hl": "en_US"}
@@ -140,7 +130,7 @@ class OpggClient:
         Returns a list of match-v5-shaped dicts (normalized via ETL layer).
         Raises ``OpggParseError`` on unexpected response structure.
         """
-        await self._acquire(_RL_GAMES)
+        await self._acquire("games")
         url = f"{_BASE_URL}/{region}/summoners/{summoner_id}/games"
         params: dict[str, str | int] = {
             "limit": limit,

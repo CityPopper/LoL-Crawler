@@ -213,10 +213,7 @@ class TestOpggClientRateLimiting:
         with patch("lol_pipeline.opgg_client.wait_for_token", new_callable=AsyncMock) as mock_wft:
             await c.get_summoner_id("TestPlayer", "NA1", "na")
 
-        mock_wft.assert_called_once()
-        call_kwargs = mock_wft.call_args
-        assert call_kwargs.args[0] is r  # Redis client passed through
-        assert "ratelimit:opgg" in call_kwargs.kwargs.get("key_prefix", "")
+        mock_wft.assert_called_once_with("opgg", "summoner")
 
         await c.close()
         await r.aclose()
@@ -240,10 +237,7 @@ class TestOpggClientRateLimiting:
         with patch("lol_pipeline.opgg_client.wait_for_token", new_callable=AsyncMock) as mock_wft:
             await c.get_match_history("xAmCbJxxx", "na")
 
-        mock_wft.assert_called_once()
-        call_kwargs = mock_wft.call_args
-        assert call_kwargs.args[0] is r
-        assert "ratelimit:opgg" in call_kwargs.kwargs.get("key_prefix", "")
+        mock_wft.assert_called_once_with("opgg", "games")
 
         await c.close()
         await r.aclose()
@@ -286,19 +280,19 @@ class TestOpggClientRateLimiting:
         http = httpx.AsyncClient()
         c = OpggClient(http, r=r)
 
-        prefixes_used: list[str] = []
+        endpoints_used: list[str] = []
 
-        async def capture_prefix(redis, *, key_prefix="", **kwargs):
-            prefixes_used.append(key_prefix)
+        async def capture_endpoint(source: str, endpoint: str) -> None:
+            endpoints_used.append(endpoint)
 
-        with patch("lol_pipeline.opgg_client.wait_for_token", side_effect=capture_prefix):
+        with patch("lol_pipeline.opgg_client.wait_for_token", side_effect=capture_endpoint):
             await c.get_summoner_id("TestPlayer", "NA1", "na")
             await c.get_match_history("xAmCbJxxx", "na")
 
-        assert len(prefixes_used) == 2
-        # Each endpoint has its own sub-prefix for independent windowing
-        assert prefixes_used[0] != prefixes_used[1], (
-            "Summoner and games endpoints should use different rate limit prefixes"
+        assert len(endpoints_used) == 2
+        # Each endpoint has its own name for independent windowing
+        assert endpoints_used[0] != endpoints_used[1], (
+            "Summoner and games endpoints should use different rate limit endpoints"
         )
 
         await c.close()
@@ -306,8 +300,8 @@ class TestOpggClientRateLimiting:
 
     @pytest.mark.asyncio
     @respx.mock
-    async def test_rate_limit_config_forwarded(self):
-        """Custom rate limit config is forwarded to wait_for_token."""
+    async def test_rate_limit_source_and_endpoint_forwarded(self):
+        """wait_for_token is called with source='opgg' and correct endpoint."""
         from unittest.mock import AsyncMock, patch
 
         import fakeredis.aioredis
@@ -323,9 +317,7 @@ class TestOpggClientRateLimiting:
         with patch("lol_pipeline.opgg_client.wait_for_token", new_callable=AsyncMock) as mock_wft:
             await c.get_match_history("xAmCbJxxx", "na")
 
-        call_kwargs = mock_wft.call_args.kwargs
-        assert call_kwargs["limit_per_second"] == 5
-        assert call_kwargs["limit_long"] == 60
+        mock_wft.assert_called_once_with("opgg", "games")
 
         await c.close()
         await r.aclose()

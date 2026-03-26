@@ -14,7 +14,7 @@ from lol_pipeline.constants import PLAYER_DATA_TTL_SECONDS
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.priority import PRIORITY_DOWNGRADE_THRESHOLD, clear_priority, downgrade_priority
-from lol_pipeline.rate_limiter import wait_for_token
+from lol_pipeline.rate_limiter_client import wait_for_token
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.riot_api import (
     AuthError,
@@ -134,11 +134,7 @@ async def _should_stop_pagination(
     if await _check_backpressure(r, cfg, puuid, log):
         return True
     try:
-        await wait_for_token(
-            r,
-            limit_per_second=cfg.api_rate_limit_per_second,
-            region=region,
-        )
+        await wait_for_token("riot", "match_history")
     except TimeoutError:
         log.warning(
             "rate limiter timeout — aborting crawl",
@@ -333,21 +329,13 @@ async def _fetch_rank(
     if not cfg.fetch_rank_on_crawl:
         return
     try:
-        await wait_for_token(
-            r,
-            limit_per_second=cfg.api_rate_limit_per_second,
-            region=region,
-        )
+        await wait_for_token("riot", "summoner")
         summoner = await riot.get_summoner_by_puuid(puuid, region)
         summoner_id: str = summoner.get("id", "")
         if not summoner_id:
             return
         await _update_summoner_profile(r, puuid, summoner)
-        await wait_for_token(
-            r,
-            limit_per_second=cfg.api_rate_limit_per_second,
-            region=region,
-        )
+        await wait_for_token("riot", "league")
         entries: list[dict[str, object]] = await riot.get_league_entries(summoner_id, region)
         for entry in entries:
             if entry.get("queueType") == "RANKED_SOLO_5x5":

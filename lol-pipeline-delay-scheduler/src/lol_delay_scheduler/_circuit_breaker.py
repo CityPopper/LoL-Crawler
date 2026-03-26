@@ -5,6 +5,10 @@ from __future__ import annotations
 import logging
 import time
 
+from lol_pipeline.config import Config
+
+_CONFIG_FIELDS = Config.model_fields
+
 
 class CircuitBreakerState:
     """Encapsulates mutable circuit-breaker state for the Delay Scheduler."""
@@ -52,7 +56,12 @@ class CircuitBreakerState:
 
 
 # Singleton instance — module-level state survives across ticks.
-_cb = CircuitBreakerState()
+# Defaults sourced from Config (single source of truth); overridden at startup
+# via init_circuit_config() when env vars customise the values.
+_cb = CircuitBreakerState(
+    max_failures=_CONFIG_FIELDS["delay_scheduler_max_member_failures"].default,
+    open_ttl_s=_CONFIG_FIELDS["delay_scheduler_circuit_open_ttl_s"].default,
+)
 
 # Expose the underlying dicts so existing code (and tests) that reference
 # _member_failures / _circuit_open by name can still read and mutate them.

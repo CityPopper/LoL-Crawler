@@ -1,4 +1,9 @@
-"""IT-07 — Rate limit enforcement: 3 fetchers never exceed 20 req/s."""
+"""IT-07 — Rate limit enforcement: 3 fetchers never exceed 20 req/s.
+
+The rate limiter now runs as an HTTP service (lol-pipeline-rate-limiter).
+The fetcher calls ``wait_for_token("riot", "match")`` via the HTTP client.
+The rate monitor still samples the Redis ZSET cardinality directly.
+"""
 
 from __future__ import annotations
 
@@ -69,6 +74,7 @@ async def test_rate_limit_enforcement(
     r: aioredis.Redis,
     cfg: Config,
     match_normal: dict,
+    rate_limiter_container: str,
 ) -> None:
     """3 fetchers sharing rate limiter never exceed 20 req/s."""
     raw_store = RawStore(r)

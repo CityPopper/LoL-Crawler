@@ -47,8 +47,9 @@ from lol_delay_scheduler._helpers import (
     _maxlen_for_stream as _maxlen_for_stream,
 )
 
-# Batch size — overridden from Config at startup via _init_circuit_config().
-_BATCH_SIZE: int = 100
+# Batch size — sourced from Config (single source of truth); overridden at startup
+# via _init_circuit_config() when env vars customise the value.
+_BATCH_SIZE: int = Config.model_fields["delay_scheduler_batch_size"].default
 
 
 def _init_circuit_config(cfg: Config) -> None:

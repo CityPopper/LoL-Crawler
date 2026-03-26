@@ -2282,7 +2282,7 @@ class TestRateLimitBeforeRiotCall:
         with patch("lol_ui.routes.stats.wait_for_token", new_callable=AsyncMock) as mock_wft:
             await show_stats(request)
 
-        mock_wft.assert_called_once_with(mock_r, limit_per_second=15, region="na1")
+        mock_wft.assert_called_once_with("riot", "account")
 
     @pytest.mark.asyncio
     async def test_show_stats__cached_puuid_skips_wait_for_token(self):
