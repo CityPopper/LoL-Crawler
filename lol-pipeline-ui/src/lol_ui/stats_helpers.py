@@ -18,6 +18,7 @@ from lol_ui.constants import (
     _STATS_ORDER_SET,
     VALID_ROLES,
 )
+from lol_ui.rendering import _badge
 
 
 def _champion_diversity(champ_data: list[tuple[str, float]]) -> tuple[float, str]:
@@ -186,9 +187,15 @@ def _stats_table(
             'color:var(--color-muted)">'
             "Pool Diversity: &mdash;</div>"
         )
+    preliminary_badge = ""
+    if stats.get("source") == "opgg_prefetch":
+        match_count = stats.get("total_games", "?")
+        preliminary_badge = " " + _badge(
+            "warning", f"Preliminary \u2014 {match_count} matches"
+        )
     return f"""
 <details>
-<summary><h3 style="display:inline">Player Stats</h3></summary>
+<summary><h3 style="display:inline">Player Stats</h3>{preliminary_badge}</summary>
 <div class="table-scroll">
 <table><thead><tr><th scope="col">Stat</th><th scope="col">Value</th></tr></thead>\
 <tbody>{rows}</tbody></table>

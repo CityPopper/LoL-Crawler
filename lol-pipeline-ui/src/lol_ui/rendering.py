@@ -271,7 +271,8 @@ def _stats_form(
     setTimeout(function() { btn.disabled = false; btn.innerHTML = orig; }, 3000);
   });
 })();
-</script>'''
+</script>
+<button class="btn btn--muted" onclick="window.location.reload()">Reload page</button>'''
             if stats_html
             else ""
         }

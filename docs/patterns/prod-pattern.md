@@ -82,6 +82,21 @@ Each agent must:
 3. Limit output to 3–5 substantial questions
 4. **Cite the specific finding that motivated each question** — a file path, a search result, a concrete calculation. A question without a citation is rejected.
 
+### 3.5 Debate contradictory questions
+
+If two agents return questions that directly contradict each other (e.g., one argues the design is over-engineered, another argues it is under-specified), route to a structured debate before consolidation:
+
+1. **Frame the contradiction** — orchestrator writes one sentence identifying the specific claim each agent asserts.
+2. **Round 1** — each agent reads the other's questions, then either:
+   - **Withdraws** some or all of their questions, with an explanation of what the other agent's evidence already addressed.
+   - **Defends** by citing a specific finding the other agent did not address.
+3. **Round 2** — each agent either:
+   - **Concedes**: write "I concede: [reason]" — only the winning agent's questions proceed to Step 4.
+   - **Strengthens**: add exactly one new citation not used in Round 1.
+4. **Orchestrator rules** if no concession after Round 2. Record ruling; record the losing agent's strongest unrefuted question in `workspace/rejected.md`.
+
+**Hard limits:** Maximum 2 rounds. Vague or uncited arguments are disqualified.
+
 ### 4. Consolidate and answer
 
 Collect all questions. For each:

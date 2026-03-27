@@ -69,6 +69,21 @@ The fetcher container in `docker-compose.yml` sets `BLOB_DATA_DIR=/blob-data` an
 
 ---
 
+## Crawler-Side op.gg Discovery (PRIORITY_MANUAL_20)
+
+The waterfall described above governs per-match fetches inside the **fetcher** service. The **crawler** service has a complementary op.gg-first path that runs earlier in the pipeline, at match-ID discovery time.
+
+For players with priority `PRIORITY_MANUAL_20` (manually seeded, highest priority):
+
+1. **Phase 1 — op.gg discovery** (`_opgg_discover` in `lol-pipeline-crawler/src/lol_crawler/main.py`): runs before any Riot API pagination. It publishes freshly discovered match IDs and returns `(published_count, discovered_ids)`.
+2. **Dedup handoff**: the returned `discovered_ids` set is unioned into `known` before Riot pagination runs (`combined_known = known | opgg_known`). Any match ID already published via op.gg is skipped by Riot pagination, preventing double-publish.
+3. **Phase 2 — Riot pagination** (`_fetch_match_ids_paginated`): always runs, regardless of whether op.gg produced any results. It uses `combined_known` so it only emits IDs not already covered.
+4. **Combined count**: `published = opgg_published + riot_published` is the single value forwarded to `_post_crawl_update`, so player-level bookkeeping is always consistent.
+
+Lower-priority players bypass `_opgg_discover` entirely — the `PRIORITY_MANUAL_20` gate is checked before Phase 1.
+
+---
+
 ## Error Semantics
 
 | WaterfallResult status | Fetcher action |

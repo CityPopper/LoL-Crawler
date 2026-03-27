@@ -37,15 +37,13 @@ services:
   redis:
     image: redis:7.2.11-alpine  # Pinned: CVE-2025-49844 (Lua RCE) patched in 7.2.11+
     restart: always
-    mem_limit: 2g  # Headroom for AOF rewrite fork (doubles memory briefly)
+    mem_limit: 3g  # Headroom for AOF rewrite fork (doubles memory briefly)
     command: >
       redis-server
+      --save ""
       --appendonly yes
       --appendfsync everysec
-      --save 900 1
-      --save 300 10
-      --save 60 10000
-      --maxmemory 800mb
+      --maxmemory 2gb
       --maxmemory-policy noeviction
       --stop-writes-on-bgsave-error no
     ports:
@@ -57,6 +55,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+      start_period: 90s
     logging:
       driver: json-file
       options:
@@ -91,7 +90,7 @@ services:
       - ./logs:/logs
     environment:
       BLOB_DATA_DIR: /blob-data
-      SOURCE_WATERFALL_ORDER: ${SOURCE_WATERFALL_ORDER:-riot}
+      SOURCE_WATERFALL_ORDER: ${SOURCE_WATERFALL_ORDER:-opgg,riot}
     command: ["python", "-m", "lol_fetcher"]
 
   parser:

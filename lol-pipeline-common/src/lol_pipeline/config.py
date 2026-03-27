@@ -44,7 +44,7 @@ class Config(BaseSettings):
     # Weight for activity rate in discovery scoring
     activity_rate_weight: float = Field(default=1.0, ge=0.0)
     # Source waterfall
-    source_waterfall_order: str = "riot"  # comma-separated source priority
+    source_waterfall_order: str = "opgg,riot"  # comma-separated source priority
     blob_data_dir: str = ""  # disk directory for raw source blobs; empty = disabled
     # op.gg integration
     opgg_rate_limit_per_second: int = Field(default=2, ge=1)

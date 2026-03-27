@@ -139,6 +139,7 @@ async def _requeue_delayed(
         dlq_attempts=dlq.dlq_attempts + 1,
         priority=dlq.priority,
         correlation_id=dlq.correlation_id,
+        defer_count=dlq.defer_count,
     )
     ready_ms = int(time.time() * 1000) + delay_ms
     envelope_data = json.dumps(env.to_redis_fields())

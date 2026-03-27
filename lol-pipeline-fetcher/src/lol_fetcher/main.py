@@ -393,6 +393,7 @@ async def main() -> None:
     )
     logging.getLogger("lol_pipeline.sources.coordinator").setLevel(cfg.waterfall_log_level)
     coordinator = _build_coordinator(riot, raw_store, cfg, opgg)
+    log.info("waterfall order: %s", cfg.source_waterfall_order)
     consumer = consumer_id()
 
     async def _handler(msg_id: str, envelope: MessageEnvelope) -> None:

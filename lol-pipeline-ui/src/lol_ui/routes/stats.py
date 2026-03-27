@@ -279,22 +279,37 @@ async def _auto_enqueue_or_wait(
     matches_count: int = await r.zcard(f"player:matches:{puuid}")
     riot_id_display = html.escape(f"{game_name}#{tag_line}")
 
+    safe_puuid = html.escape(puuid)
     poll_html = (
-        '<p class="info">\u27f3 Checking for stats automatically\u2026</p>'
-        '<p id="poll-countdown">Checking again in '
-        '<span id="poll-secs">10</span>s\u2026</p>'
+        '<p id="poll-status">Starting up\u2026</p>'
         "<script>"
         "(function() {"
-        "  var secs = 10;"
-        "  var el = document.getElementById('poll-secs');"
-        "  var timer = setInterval(function() {"
-        "    secs--;"
-        "    if (el) el.textContent = secs;"
-        "    if (secs <= 0) {"
-        "      clearInterval(timer);"
-        "      window.location.reload();"
+        '  var puuid = "' + safe_puuid + '";'
+        "  var maxPolls = 60;"
+        "  var polls = 0;"
+        "  function poll() {"
+        "    if (polls >= maxPolls) {"
+        '      document.getElementById("poll-status").textContent ='
+        '        "Still processing \\u2014 refresh manually when ready.";'
+        "      return;"
         "    }"
-        "  }, 1000);"
+        "    polls++;"
+        '    fetch("/stats/poll?puuid=" + encodeURIComponent(puuid))'
+        "      .then(function(r) { return r.json(); })"
+        "      .then(function(data) {"
+        "        if (data.stats_ready) {"
+        "          window.location.reload();"
+        "        } else {"
+        "          var n = data.matches_processed;"
+        '          document.getElementById("poll-status").textContent ='
+        '            n > 0 ? "Processing match history \\u2014 "'
+        '              + n + " matches discovered so far." : "Starting up\\u2026";'
+        "          setTimeout(poll, 3000);"
+        "        }"
+        "      })"
+        "      .catch(function() { setTimeout(poll, 3000); });"
+        "  }"
+        "  setTimeout(poll, 3000);"
         "})();"
         "</script>"
     )
@@ -548,6 +563,21 @@ async def _build_stats_response(
 # ---------------------------------------------------------------------------
 # Route handlers
 # ---------------------------------------------------------------------------
+
+
+@router.get("/stats/poll")
+async def stats_poll(request: Request) -> JSONResponse:
+    """Lightweight JSON endpoint for the loading-page polling loop."""
+    puuid = request.query_params.get("puuid", "")
+    if not _PUUID_RE.fullmatch(puuid):
+        return JSONResponse({"error": "invalid puuid"}, status_code=400)
+    r = request.app.state.r
+    stats_exists: int = await r.exists(f"player:stats:{puuid}")
+    matches_processed: int = await r.zcard(f"player:matches:{puuid}")
+    return JSONResponse({
+        "stats_ready": bool(stats_exists),
+        "matches_processed": matches_processed,
+    })
 
 
 @router.get("/stats", response_class=HTMLResponse)

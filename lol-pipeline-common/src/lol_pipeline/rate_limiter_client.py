@@ -22,8 +22,10 @@ _RATE_LIMITER_URL: str = os.environ.get("RATE_LIMITER_URL", "http://rate-limiter
 _RATE_LIMITER_SECRET: str = os.environ.get("RATE_LIMITER_SECRET", "")
 
 # Number of connection retries before wait_for_token fails open.
-_RATE_LIMITER_CONNECT_RETRIES: int = int(
-    os.environ.get("RATE_LIMITER_CONNECT_RETRIES", "3")
+# Capped at 10 to prevent the retry sleep loop (0.5s each) from stalling
+# past the max_wait_s deadline at high retry counts.
+_RATE_LIMITER_CONNECT_RETRIES: int = min(
+    int(os.environ.get("RATE_LIMITER_CONNECT_RETRIES", "3")), 10
 )
 
 # Shared async HTTP client (connection pooling)

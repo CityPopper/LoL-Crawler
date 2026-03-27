@@ -13,7 +13,12 @@ from lol_pipeline.config import Config
 from lol_pipeline.constants import PLAYER_DATA_TTL_SECONDS
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
-from lol_pipeline.priority import PRIORITY_DOWNGRADE_THRESHOLD, clear_priority, downgrade_priority
+from lol_pipeline.priority import (
+    PRIORITY_DOWNGRADE_THRESHOLD,
+    PRIORITY_MANUAL_20,
+    clear_priority,
+    downgrade_priority,
+)
 from lol_pipeline.rate_limiter_client import wait_for_token
 from lol_pipeline.redis_client import get_redis
 from lol_pipeline.riot_api import (
@@ -25,6 +30,8 @@ from lol_pipeline.riot_api import (
 )
 from lol_pipeline.service import run_consumer
 from lol_pipeline.streams import MATCH_ID_STREAM_MAXLEN, ack
+from lol_pipeline._opgg_etl import RIOT_PLATFORM_TO_OPGG_REGION
+from lol_pipeline.opgg_client import OpggClient
 from pydantic import ValidationError
 
 from lol_crawler._constants import (
@@ -40,9 +47,12 @@ async def _check_backpressure(
     cfg: Config,
     puuid: str,
     log: logging.Logger,
+    priority: str = "",
 ) -> bool:
     """Return True if stream:match_id depth exceeds the threshold."""
     if cfg.match_id_backpressure_threshold <= 0:
+        return False
+    if priority == PRIORITY_MANUAL_20:
         return False
     depth = await r.xlen(_OUT_STREAM)
     if depth > cfg.match_id_backpressure_threshold:
@@ -140,12 +150,13 @@ async def _should_stop_pagination(
     puuid: str,
     region: str,
     log: logging.Logger,
+    priority: str = "",
 ) -> bool:
     """Return True if pagination should be aborted (halt, backpressure, rate limit)."""
     if await is_system_halted(r):
         log.info("system halted — aborting", extra={"puuid": puuid})
         return True
-    if await _check_backpressure(r, cfg, puuid, log):
+    if await _check_backpressure(r, cfg, puuid, log, priority):
         return True
     try:
         await wait_for_token("riot", "match_history")
@@ -227,7 +238,7 @@ async def _fetch_match_ids_paginated(  # noqa: PLR0913
     page_size = cfg.crawler_page_size
     cursor_ttl = cfg.crawler_cursor_ttl
 
-    while not await _should_stop_pagination(r, cfg, puuid, region, log):
+    while not await _should_stop_pagination(r, cfg, puuid, region, log, priority):
         page = await riot.get_match_ids(puuid, region, start=start, count=page_size)
         pages_fetched += 1
         await r.set(cursor_key, str(start + page_size), ex=cursor_ttl)
@@ -254,6 +265,74 @@ async def _fetch_match_ids_paginated(  # noqa: PLR0913
 
     await r.delete(cursor_key)
     return published, pages_fetched
+
+
+async def _opgg_discover(
+    r: aioredis.Redis,
+    cfg: Config,
+    opgg_client: OpggClient,
+    puuid: str,
+    region: str,
+    known: set[str],
+    priority: str,
+    correlation_id: str,
+    log: logging.Logger,
+) -> tuple[int, set[str]]:
+    """Discover match IDs via op.gg before Riot pagination.
+
+    For PRIORITY_MANUAL_20 players, runs first so Riot pagination can
+    deduplicate against already-published op.gg IDs.
+
+    Returns ``(published_count, discovered_ids)`` where *discovered_ids*
+    is the full set of raw IDs from op.gg (for union into the known set
+    before Riot pagination, preventing double-publish).
+    """
+    opgg_region = RIOT_PLATFORM_TO_OPGG_REGION.get(region.upper())
+    if not opgg_region:
+        log.debug(
+            "opgg discover: no region mapping",
+            extra={"puuid": puuid, "region": region},
+        )
+        return 0, set()
+
+    try:
+        summoner_id = await opgg_client.get_summoner_id_by_puuid(puuid, opgg_region)
+        raw_games = await opgg_client.get_raw_games(
+            summoner_id, opgg_region, limit=cfg.opgg_prefetch_limit
+        )
+    except Exception:
+        log.debug(
+            "opgg discover: fetch failed — non-critical",
+            extra={"puuid": puuid, "region": region},
+            exc_info=True,
+        )
+        return 0, set()
+
+    platform = region.upper()
+    match_ids = [
+        f"{platform}_{game['id']}"
+        for game in raw_games
+        if game.get("id") is not None
+    ]
+    if not match_ids:
+        return 0, set()
+
+    new_ids = await _dedup_ids(r, match_ids, known)
+    if not new_ids:
+        log.info(
+            "opgg discover: all matches already seen",
+            extra={"puuid": puuid, "region": region},
+        )
+        return 0, set(match_ids)
+
+    published, _ = await _publish_batch(
+        r, cfg, new_ids, puuid, region, 0, priority, priority, correlation_id
+    )
+    log.info(
+        "opgg discover complete",
+        extra={"puuid": puuid, "region": region, "discovered": len(match_ids), "published": published},
+    )
+    return published, set(match_ids)
 
 
 async def _handle_crawl_error(
@@ -451,6 +530,7 @@ async def _run_crawl(
     region: str,
     envelope: MessageEnvelope,
     log: logging.Logger,
+    opgg_client: OpggClient | None = None,
 ) -> tuple[int, int]:
     """Execute the crawl workflow: load known matches, paginate, post-update.
 
@@ -468,19 +548,38 @@ async def _run_crawl(
             "known_matches": len(known),
         },
     )
-    published, pages_fetched = await _fetch_match_ids_paginated(
+
+    # Phase 1: op.gg discovery (PRIORITY_MANUAL_20 only, runs before Riot pagination)
+    opgg_published = 0
+    opgg_known: set[str] = set()
+    if (
+        envelope.priority == PRIORITY_MANUAL_20
+        and opgg_client is not None
+        and cfg.opgg_enabled
+    ):
+        opgg_published, opgg_known = await _opgg_discover(
+            r, cfg, opgg_client, puuid, region,
+            known, envelope.priority, envelope.correlation_id, log,
+        )
+
+    # Union op.gg IDs into known before Riot pagination to prevent double-publish
+    combined_known = known | opgg_known
+
+    # Phase 2: Riot pagination (always runs, provides historical depth)
+    riot_published, pages_fetched = await _fetch_match_ids_paginated(
         r,
         riot,
         cfg,
         puuid,
         region,
-        known,
+        combined_known,
         log,
         priority=envelope.priority,
         correlation_id=envelope.correlation_id,
     )
-    if pages_fetched > 0:
-        await _post_crawl_update(r, riot, cfg, puuid, region, published, log)
+
+    published = opgg_published + riot_published
+    await _post_crawl_update(r, riot, cfg, puuid, region, published, log)
     return published, pages_fetched
 
 
@@ -491,6 +590,7 @@ async def _crawl_player(
     msg_id: str,
     envelope: MessageEnvelope,
     log: logging.Logger,
+    opgg_client: OpggClient | None = None,
 ) -> None:
     if await is_system_halted(r):
         log.critical("system halted — skipping message")
@@ -508,16 +608,11 @@ async def _crawl_player(
             region,
             envelope,
             log,
+            opgg_client=opgg_client,
         )
     except (NotFoundError, AuthError, RateLimitError, ServerError) as exc:
         await _handle_crawl_error(r, msg_id, envelope, exc, puuid, log)
         return
-
-    if pages_fetched == 0:
-        log.warning(
-            "crawl aborted before any API call (rate limiter timeout)",
-            extra={"puuid": puuid},
-        )
 
     log.info(
         "crawl complete",
@@ -546,10 +641,18 @@ async def main() -> None:
         sys.exit(1)
     r = get_redis(cfg.redis_url)
     riot = RiotClient(cfg.riot_api_key, r=r)
+    opgg_client: OpggClient | None = None
+    if cfg.opgg_enabled:
+        opgg_client = OpggClient(
+            r=r,
+            rate_limit_per_second=cfg.opgg_rate_limit_per_second,
+            rate_limit_long=cfg.opgg_rate_limit_long,
+            summoner_cache_ttl_seconds=cfg.opgg_summoner_cache_ttl_seconds,
+        )
     consumer = consumer_id()
 
     async def _handler(msg_id: str, envelope: MessageEnvelope) -> None:
-        await _crawl_player(r, riot, cfg, msg_id, envelope, log)
+        await _crawl_player(r, riot, cfg, msg_id, envelope, log, opgg_client=opgg_client)
 
     log.info("crawler started", extra={"consumer": consumer})
     try:
@@ -566,3 +669,5 @@ async def main() -> None:
     finally:
         await r.aclose()
         await riot.close()
+        if opgg_client is not None:
+            await opgg_client.close()

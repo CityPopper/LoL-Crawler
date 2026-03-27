@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Download anonymized seed data from Hugging Face Datasets.
+"""Download seed data from Hugging Face Datasets.
 
 Downloads dump.rdb + NA1/*.jsonl.zst to local disk.
 Called by `just download` and auto-called by `just up` if data is missing.

@@ -6159,3 +6159,16 @@ class TestRiotIdValidationRegression:
         )
 
         await r.aclose()
+
+
+class TestReloadPageButton:
+    def test_reload_page_button__present_on_stats_page(self):
+        """When stats_html is provided, the Reload page button must be rendered."""
+        result = _stats_form(stats_html="<table>stats</table>")
+        assert "window.location.reload()" in result
+        assert "Reload page" in result
+
+    def test_reload_page_button__not_on_loading_page(self):
+        """When no stats_html is provided (loading/empty), the Reload page button must NOT appear."""
+        result = _stats_form()
+        assert "window.location.reload()" not in result

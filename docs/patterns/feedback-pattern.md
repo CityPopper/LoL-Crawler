@@ -56,7 +56,23 @@ Launch all relevant specialist agents simultaneously. Give each the questions fi
 
 Relevant agents: `architect`, `developer`, `tester`, `security`, `optimizer`, `formal-verifier`, `devops`.
 
-Each agent responds with **APPROVE** or **REQUEST CHANGES**. If unresolved after one round, escalate to the user.
+Each agent responds with **APPROVE** or **REQUEST CHANGES**. If unresolved after two rounds, go to step 4.5.
+
+### 4.5 Resolve disagreements via structured debate
+
+If agents disagree (one APPROVE, another REQUEST CHANGES on the same question):
+
+1. **Frame the contention** — orchestrator writes one sentence: what exactly the agents disagree on.
+2. **Round 1** — each dissenting agent reads the other's full position, then responds with:
+   - Their strongest 1–3 counter-arguments
+   - A citation for every counter-argument (file path + line, calculation, or external source)
+   - No approvals, no fixes — only rebuttals.
+3. **Round 2** — each agent must either:
+   - **Concede**: write "I concede: [reason]" — debate ends; record the winner's position as the locked decision.
+   - **Strengthen**: add exactly one new piece of evidence not cited in Round 1.
+4. **Orchestrator rules** — if no concession after Round 2, the orchestrator decides based on the citation with the highest specificity (concrete measurement beats general principle). Record the ruling and the losing agent's strongest unrefuted argument.
+
+**Hard limits:** Maximum 2 rounds. Citations without a specific file path, line number, or quantitative result are rejected as insufficient evidence.
 
 ### 5. Lock decisions
 

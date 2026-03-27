@@ -19,6 +19,7 @@ from lol_crawler.main import (
     _crawl_player,
     _fetch_rank,
     _publish_batch,
+    _run_crawl,
     main,
 )
 
@@ -1924,3 +1925,205 @@ class TestClearPriorityOnPagesFetchedZero:
         # Message was ACKed
         pending = await r.xpending(_STREAM_IN, _GROUP)
         assert pending["pending"] == 0
+
+
+class TestRunCrawlOpggPhase:
+    """OPGG-2: _run_crawl runs op.gg discovery before Riot pagination for PRIORITY_MANUAL_20."""
+
+    _PUUID = "test-puuid-opgg"
+    _REGION = "na1"
+
+    def _envelope(self, priority: str = "normal") -> MessageEnvelope:
+        return MessageEnvelope(
+            source_stream=_STREAM_IN,
+            type="puuid",
+            payload={
+                "puuid": self._PUUID,
+                "region": self._REGION,
+                "game_name": "Test",
+                "tag_line": "NA1",
+            },
+            max_attempts=5,
+            priority=priority,
+        )
+
+    @pytest.mark.asyncio
+    async def test_run_crawl__manual20__opgg_runs_first(self, r, cfg, log):
+        """op.gg discovery runs and its published count adds to Riot's."""
+        env = self._envelope(priority="manual_20")
+        opgg_client = AsyncMock()
+
+        with (
+            patch(
+                "lol_crawler.main._load_known_matches",
+                new_callable=AsyncMock,
+                return_value=set(),
+            ),
+            patch(
+                "lol_crawler.main._opgg_discover",
+                new_callable=AsyncMock,
+                return_value=(3, {"OGG1", "OGG2", "OGG3"}),
+            ) as mock_opgg,
+            patch(
+                "lol_crawler.main._fetch_match_ids_paginated",
+                new_callable=AsyncMock,
+                return_value=(2, 1),
+            ) as mock_riot,
+            patch(
+                "lol_crawler.main._post_crawl_update",
+                new_callable=AsyncMock,
+            ),
+        ):
+            result = await _run_crawl(
+                r, AsyncMock(), cfg, self._PUUID, self._REGION, env, log,
+                opgg_client=opgg_client,
+            )
+
+        mock_opgg.assert_called_once()
+        mock_riot.assert_called_once()
+        assert result == (5, 1)
+
+    @pytest.mark.asyncio
+    async def test_run_crawl__auto20__opgg_skipped(self, r, cfg, log):
+        """op.gg discovery is skipped for non-PRIORITY_MANUAL_20 envelopes."""
+        env = self._envelope(priority="auto_20")
+        opgg_client = AsyncMock()
+
+        with (
+            patch(
+                "lol_crawler.main._load_known_matches",
+                new_callable=AsyncMock,
+                return_value=set(),
+            ),
+            patch(
+                "lol_crawler.main._opgg_discover",
+                new_callable=AsyncMock,
+            ) as mock_opgg,
+            patch(
+                "lol_crawler.main._fetch_match_ids_paginated",
+                new_callable=AsyncMock,
+                return_value=(4, 2),
+            ) as mock_riot,
+            patch(
+                "lol_crawler.main._post_crawl_update",
+                new_callable=AsyncMock,
+            ),
+        ):
+            result = await _run_crawl(
+                r, AsyncMock(), cfg, self._PUUID, self._REGION, env, log,
+                opgg_client=opgg_client,
+            )
+
+        mock_opgg.assert_not_called()
+        mock_riot.assert_called_once()
+        assert result == (4, 2)
+
+    @pytest.mark.asyncio
+    async def test_run_crawl__opgg_ids_excluded_from_riot(self, r, cfg, log):
+        """op.gg discovered IDs are unioned into known set before Riot pagination."""
+        env = self._envelope(priority="manual_20")
+        opgg_client = AsyncMock()
+
+        with (
+            patch(
+                "lol_crawler.main._load_known_matches",
+                new_callable=AsyncMock,
+                return_value={"EXISTING"},
+            ),
+            patch(
+                "lol_crawler.main._opgg_discover",
+                new_callable=AsyncMock,
+                return_value=(2, {"MATCH_A", "MATCH_B"}),
+            ),
+            patch(
+                "lol_crawler.main._fetch_match_ids_paginated",
+                new_callable=AsyncMock,
+                return_value=(1, 1),
+            ) as mock_riot,
+            patch(
+                "lol_crawler.main._post_crawl_update",
+                new_callable=AsyncMock,
+            ),
+        ):
+            await _run_crawl(
+                r, AsyncMock(), cfg, self._PUUID, self._REGION, env, log,
+                opgg_client=opgg_client,
+            )
+
+        # The 'known' arg passed to _fetch_match_ids_paginated must be the union
+        call_kwargs = mock_riot.call_args
+        known_arg = call_kwargs[0][5] if len(call_kwargs[0]) > 5 else call_kwargs[1]["known"]
+        assert known_arg == {"EXISTING", "MATCH_A", "MATCH_B"}
+
+    @pytest.mark.asyncio
+    async def test_run_crawl__post_crawl_called_once(self, r, cfg, log):
+        """_post_crawl_update receives the combined published count from both phases."""
+        env = self._envelope(priority="manual_20")
+        opgg_client = AsyncMock()
+
+        with (
+            patch(
+                "lol_crawler.main._load_known_matches",
+                new_callable=AsyncMock,
+                return_value=set(),
+            ),
+            patch(
+                "lol_crawler.main._opgg_discover",
+                new_callable=AsyncMock,
+                return_value=(5, {"A", "B", "C", "D", "E"}),
+            ),
+            patch(
+                "lol_crawler.main._fetch_match_ids_paginated",
+                new_callable=AsyncMock,
+                return_value=(3, 2),
+            ),
+            patch(
+                "lol_crawler.main._post_crawl_update",
+                new_callable=AsyncMock,
+            ) as mock_post,
+        ):
+            await _run_crawl(
+                r, AsyncMock(), cfg, self._PUUID, self._REGION, env, log,
+                opgg_client=opgg_client,
+            )
+
+        mock_post.assert_called_once()
+        # published is the 6th positional arg (index 5): r, riot, cfg, puuid, region, published
+        call_args = mock_post.call_args[0]
+        assert call_args[5] == 8
+
+    @pytest.mark.asyncio
+    async def test_run_crawl__opgg_disabled__skipped(self, r, cfg, log, monkeypatch):
+        """op.gg discovery is skipped when cfg.opgg_enabled is False."""
+        # Override source_waterfall_order to exclude opgg
+        monkeypatch.setattr(cfg, "source_waterfall_order", "riot")
+        env = self._envelope(priority="manual_20")
+        opgg_client = AsyncMock()
+
+        with (
+            patch(
+                "lol_crawler.main._load_known_matches",
+                new_callable=AsyncMock,
+                return_value=set(),
+            ),
+            patch(
+                "lol_crawler.main._opgg_discover",
+                new_callable=AsyncMock,
+            ) as mock_opgg,
+            patch(
+                "lol_crawler.main._fetch_match_ids_paginated",
+                new_callable=AsyncMock,
+                return_value=(2, 1),
+            ),
+            patch(
+                "lol_crawler.main._post_crawl_update",
+                new_callable=AsyncMock,
+            ),
+        ):
+            result = await _run_crawl(
+                r, AsyncMock(), cfg, self._PUUID, self._REGION, env, log,
+                opgg_client=opgg_client,
+            )
+
+        mock_opgg.assert_not_called()
+        assert result == (2, 1)
