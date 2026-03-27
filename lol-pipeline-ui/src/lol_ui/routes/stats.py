@@ -455,6 +455,66 @@ async def _load_recent_matches(
     return [p for p in participant_results if p]
 
 
+def _load_more_button(puuid: str, matches_processed: int) -> str:
+    """Return the 'Load more stats' button + polling script HTML."""
+    safe_puuid = html.escape(puuid)
+    return f'''
+<div id="load-more-wrap" style="text-align:center; margin:var(--space-lg) 0;">
+  <button
+    id="btn-load-more"
+    class="btn btn--refresh"
+    data-puuid="{safe_puuid}"
+    data-baseline="{matches_processed}"
+  >
+    Load more stats
+  </button>
+</div>
+<script>
+(function() {{
+  var wrap = document.getElementById("load-more-wrap");
+  var btn  = document.getElementById("btn-load-more");
+  if (!btn) return;
+
+  btn.addEventListener("click", function() {{
+    var puuid    = btn.dataset.puuid;
+    var baseline = parseInt(btn.dataset.baseline, 10);
+
+    btn.disabled = true;
+    btn.innerHTML = \'Load more stats <span class="spinner"></span>\';
+
+    fetch("/stats/load_more?puuid=" + encodeURIComponent(puuid), {{ method: "POST" }})
+      .catch(function() {{}});
+
+    var polls = 0;
+    var maxPolls = 60;
+
+    function poll() {{
+      if (polls >= maxPolls) {{
+        btn.disabled = false;
+        btn.textContent = "Load more stats";
+        return;
+      }}
+      polls++;
+      fetch("/stats/poll?puuid=" + encodeURIComponent(puuid))
+        .then(function(r) {{ return r.json(); }})
+        .then(function(data) {{
+          var processed = data.matches_processed || 0;
+          if (processed - baseline >= 20 || data.history_exhausted) {{
+            window.location.reload();
+          }} else {{
+            setTimeout(poll, 3000);
+          }}
+        }})
+        .catch(function() {{ setTimeout(poll, 3000); }});
+    }}
+
+    setTimeout(poll, 3000);
+  }});
+}})();
+</script>
+'''
+
+
 async def _build_stats_response(
     r: Any,
     puuid: str,
@@ -549,6 +609,13 @@ async def _build_stats_response(
     layout_html = '<div class="stats-layout">' + sidebar_html + main_html + "</div>"
     tabbed_html = _profile_tabs_html(layout_html) + _profile_tab_js()
 
+    # "Load more stats" button — shown when history is not yet exhausted
+    load_more_html = ""
+    history_exhausted = bool(await r.exists(f"player:history_exhausted:{puuid}"))
+    matches_processed: int = await r.zcard(f"player:matches:{puuid}")
+    if not history_exhausted:
+        load_more_html = _load_more_button(puuid, matches_processed)
+
     return HTMLResponse(
         _stats_form(
             heading,
@@ -556,6 +623,7 @@ async def _build_stats_response(
             tabbed_html,
             selected_region=region,
             value=riot_id,
+            load_more_html=load_more_html,
         )
     )
 
@@ -574,10 +642,35 @@ async def stats_poll(request: Request) -> JSONResponse:
     r = request.app.state.r
     stats_exists: int = await r.exists(f"player:stats:{puuid}")
     matches_processed: int = await r.zcard(f"player:matches:{puuid}")
+    history_exhausted: bool = bool(await r.exists(f"player:history_exhausted:{puuid}"))
     return JSONResponse({
         "stats_ready": bool(stats_exists),
         "matches_processed": matches_processed,
+        "history_exhausted": history_exhausted,
     })
+
+
+@router.post("/stats/load_more")
+async def stats_load_more(request: Request) -> JSONResponse:
+    """Re-queue player at PRIORITY_MANUAL_20 for a further 20-match fetch."""
+    puuid = request.query_params.get("puuid", "")
+    if not _PUUID_RE.fullmatch(puuid):
+        return JSONResponse({"error": "invalid puuid"}, status_code=400)
+    r = request.app.state.r
+    cfg: Config = request.app.state.cfg
+    region: str = await r.hget(f"player:{puuid}", "region") or cfg.default_region
+    if isinstance(region, bytes):
+        region = region.decode()
+    envelope = MessageEnvelope(
+        source_stream="stream:puuid",
+        type="puuid",
+        payload={"puuid": puuid, "region": region},
+        max_attempts=cfg.max_attempts,
+        priority=PRIORITY_MANUAL_20,
+        correlation_id=str(uuid.uuid4()),
+    )
+    await publish(r, "stream:puuid", envelope)
+    return JSONResponse({"queued": True})
 
 
 @router.get("/stats", response_class=HTMLResponse)

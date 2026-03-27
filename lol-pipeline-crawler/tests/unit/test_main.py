@@ -17,6 +17,7 @@ from lol_pipeline.streams import consume, publish
 from lol_crawler.main import (
     _compute_activity_rate,
     _crawl_player,
+    _fetch_match_ids_paginated,
     _fetch_rank,
     _opgg_discover,
     _publish_batch,
@@ -1968,7 +1969,7 @@ class TestRunCrawlOpggPhase:
             patch(
                 "lol_crawler.main._fetch_match_ids_paginated",
                 new_callable=AsyncMock,
-                return_value=(2, 1),
+                return_value=(2, 1, False),
             ) as mock_riot,
             patch(
                 "lol_crawler.main._post_crawl_update",
@@ -2003,7 +2004,7 @@ class TestRunCrawlOpggPhase:
             patch(
                 "lol_crawler.main._fetch_match_ids_paginated",
                 new_callable=AsyncMock,
-                return_value=(4, 2),
+                return_value=(4, 2, False),
             ) as mock_riot,
             patch(
                 "lol_crawler.main._post_crawl_update",
@@ -2039,7 +2040,7 @@ class TestRunCrawlOpggPhase:
             patch(
                 "lol_crawler.main._fetch_match_ids_paginated",
                 new_callable=AsyncMock,
-                return_value=(1, 1),
+                return_value=(1, 1, False),
             ) as mock_riot,
             patch(
                 "lol_crawler.main._post_crawl_update",
@@ -2076,7 +2077,7 @@ class TestRunCrawlOpggPhase:
             patch(
                 "lol_crawler.main._fetch_match_ids_paginated",
                 new_callable=AsyncMock,
-                return_value=(3, 2),
+                return_value=(3, 2, False),
             ),
             patch(
                 "lol_crawler.main._post_crawl_update",
@@ -2114,7 +2115,7 @@ class TestRunCrawlOpggPhase:
             patch(
                 "lol_crawler.main._fetch_match_ids_paginated",
                 new_callable=AsyncMock,
-                return_value=(2, 1),
+                return_value=(2, 1, False),
             ),
             patch(
                 "lol_crawler.main._post_crawl_update",
@@ -2215,7 +2216,7 @@ class TestSharedCounter:
             patch(
                 "lol_crawler.main._fetch_match_ids_paginated",
                 new_callable=AsyncMock,
-                return_value=(5, 1),
+                return_value=(5, 1, False),
             ) as mock_riot,
             patch(
                 "lol_crawler.main._post_crawl_update",
@@ -2252,7 +2253,7 @@ class TestSharedCounter:
             patch(
                 "lol_crawler.main._fetch_match_ids_paginated",
                 new_callable=AsyncMock,
-                return_value=(3, 1),
+                return_value=(3, 1, False),
             ) as mock_riot,
             patch(
                 "lol_crawler.main._post_crawl_update",
@@ -2267,3 +2268,127 @@ class TestSharedCounter:
         # published_offset == 20, which is >= PRIORITY_DOWNGRADE_THRESHOLD (20)
         # so Riot phase starts with the counter already at the threshold
         assert mock_riot.call_args[1]["published_offset"] == 20
+
+
+class TestHistoryExhaustedFlag:
+    """LOAD-MORE-1: _fetch_match_ids_paginated returns exhausted flag."""
+
+    @pytest.mark.asyncio
+    async def test_fetch_paginated__empty_page__sets_exhausted(self, r, cfg, log):
+        """Empty page from Riot API -> exhausted=True."""
+        puuid = "test-puuid-0001"
+        with respx.mock:
+            respx.get(_match_ids_url(start=0)).mock(
+                return_value=httpx.Response(200, json=[])
+            )
+            riot = RiotClient("RGAPI-test")
+            published, pages, exhausted = await _fetch_match_ids_paginated(
+                r, riot, cfg, puuid, "na1", set(), log,
+            )
+            await riot.close()
+
+        assert exhausted is True
+        assert published == 0
+        assert pages == 1
+
+    @pytest.mark.asyncio
+    async def test_fetch_paginated__short_page__sets_exhausted(self, r, cfg, log):
+        """Page with fewer than page_size results -> exhausted=True."""
+        puuid = "test-puuid-0001"
+        short_page = [f"NA1_{i}" for i in range(50)]
+        with respx.mock:
+            respx.get(_match_ids_url(start=0)).mock(
+                return_value=httpx.Response(200, json=short_page)
+            )
+            riot = RiotClient("RGAPI-test")
+            published, pages, exhausted = await _fetch_match_ids_paginated(
+                r, riot, cfg, puuid, "na1", set(), log,
+            )
+            await riot.close()
+
+        assert exhausted is True
+        assert published == 50
+
+    @pytest.mark.asyncio
+    async def test_fetch_paginated__stop_pagination__not_exhausted(self, r, cfg, log):
+        """_should_stop_pagination fires (e.g. system halted) -> exhausted=False."""
+        puuid = "test-puuid-0001"
+        await r.set("system:halted", "1")
+
+        with respx.mock:
+            riot = RiotClient("RGAPI-test")
+            published, pages, exhausted = await _fetch_match_ids_paginated(
+                r, riot, cfg, puuid, "na1", set(), log,
+            )
+            await riot.close()
+
+        assert exhausted is False
+        assert published == 0
+        assert pages == 0
+
+    @pytest.mark.asyncio
+    async def test_run_crawl__exhausted__sets_redis_key(self, r, cfg, log):
+        """Full _run_crawl where Riot phase returns exhausted=True -> Redis key set."""
+        puuid = "test-puuid-exh"
+        env = MessageEnvelope(
+            source_stream=_STREAM_IN,
+            type="puuid",
+            payload={"puuid": puuid, "region": "na1", "game_name": "T", "tag_line": "1"},
+            max_attempts=5,
+        )
+
+        with (
+            patch(
+                "lol_crawler.main._load_known_matches",
+                new_callable=AsyncMock,
+                return_value=set(),
+            ),
+            patch(
+                "lol_crawler.main._fetch_match_ids_paginated",
+                new_callable=AsyncMock,
+                return_value=(5, 1, True),
+            ),
+            patch(
+                "lol_crawler.main._post_crawl_update",
+                new_callable=AsyncMock,
+            ),
+        ):
+            await _run_crawl(r, AsyncMock(), cfg, puuid, "na1", env, log)
+
+        val = await r.get(f"player:history_exhausted:{puuid}")
+        assert val == "1"
+        ttl = await r.ttl(f"player:history_exhausted:{puuid}")
+        # TTL should be close to 604800 (7 days)
+        assert 604700 < ttl <= 604800
+
+    @pytest.mark.asyncio
+    async def test_run_crawl__not_exhausted__no_redis_key(self, r, cfg, log):
+        """Full _run_crawl where Riot phase returns exhausted=False -> no Redis key."""
+        puuid = "test-puuid-notexh"
+        env = MessageEnvelope(
+            source_stream=_STREAM_IN,
+            type="puuid",
+            payload={"puuid": puuid, "region": "na1", "game_name": "T", "tag_line": "1"},
+            max_attempts=5,
+        )
+
+        with (
+            patch(
+                "lol_crawler.main._load_known_matches",
+                new_callable=AsyncMock,
+                return_value=set(),
+            ),
+            patch(
+                "lol_crawler.main._fetch_match_ids_paginated",
+                new_callable=AsyncMock,
+                return_value=(5, 1, False),
+            ),
+            patch(
+                "lol_crawler.main._post_crawl_update",
+                new_callable=AsyncMock,
+            ),
+        ):
+            await _run_crawl(r, AsyncMock(), cfg, puuid, "na1", env, log)
+
+        val = await r.get(f"player:history_exhausted:{puuid}")
+        assert val is None

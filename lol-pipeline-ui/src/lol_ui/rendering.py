@@ -194,6 +194,7 @@ def _stats_form(
     stats_html: str = "",
     selected_region: str = "na1",
     value: str = "",
+    load_more_html: str = "",
 ) -> str:
     if css_class not in _VALID_MSG_CLASSES:
         css_class = "error"
@@ -277,6 +278,7 @@ def _stats_form(
             else ""
         }
 {stats_html}
+{load_more_html if stats_html else ""}
 """,
         path="/stats",
     )

@@ -225,10 +225,12 @@ async def _fetch_match_ids_paginated(  # noqa: PLR0913
     priority: str = "normal",
     correlation_id: str = "",
     published_offset: int = 0,
-) -> tuple[int, int]:
+) -> tuple[int, int, bool]:
     """Paginate through Riot match-ID API and publish new IDs.
 
-    Returns ``(published, pages_fetched)``.  Raises Riot API exceptions
+    Returns ``(published, pages_fetched, exhausted)``.  *exhausted* is True
+    when the Riot API returned fewer results than available (empty page,
+    short page, or all-known full page).  Raises Riot API exceptions
     to the caller.
     """
     start = await _resume_cursor(r, puuid)
@@ -238,12 +240,14 @@ async def _fetch_match_ids_paginated(  # noqa: PLR0913
     cursor_key = _key_crawl_cursor(puuid)
     page_size = cfg.crawler_page_size
     cursor_ttl = cfg.crawler_cursor_ttl
+    exhausted: bool = False
 
     while not await _should_stop_pagination(r, cfg, puuid, region, log, priority):
         page = await riot.get_match_ids(puuid, region, start=start, count=page_size)
         pages_fetched += 1
         await r.set(cursor_key, str(start + page_size), ex=cursor_ttl)
         if not page:
+            exhausted = True
             break
         published, current_priority, has_new = await _process_page(
             r,
@@ -259,13 +263,15 @@ async def _fetch_match_ids_paginated(  # noqa: PLR0913
             log,
         )
         if len(page) == page_size and not has_new:
+            exhausted = True
             break
         if len(page) < page_size:
+            exhausted = True
             break
         start += page_size
 
     await r.delete(cursor_key)
-    return published - published_offset, pages_fetched
+    return published - published_offset, pages_fetched, exhausted
 
 
 async def _opgg_discover(
@@ -588,7 +594,7 @@ async def _run_crawl(
     combined_known = known | opgg_known
 
     # Phase 2: Riot pagination (always runs, provides historical depth)
-    riot_published, pages_fetched = await _fetch_match_ids_paginated(
+    riot_published, pages_fetched, exhausted = await _fetch_match_ids_paginated(
         r,
         riot,
         cfg,
@@ -602,6 +608,8 @@ async def _run_crawl(
     )
 
     published = opgg_published + riot_published
+    if exhausted:
+        await r.set(f"player:history_exhausted:{puuid}", "1", ex=604800)
     await _post_crawl_update(r, riot, cfg, puuid, region, published, log)
     return published, pages_fetched
 
