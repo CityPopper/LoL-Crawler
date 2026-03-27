@@ -284,14 +284,14 @@ async def test_wf03__blob_cache_hit__publishes_without_http(
     log = tlog("it-wf-03")
     raw_store = RawStore(r)
 
-    # Pre-write a blob to BlobStore disk: {source_name}/{platform}/{match_id}.json
+    # Pre-write a blob to BlobStore disk: {source_name}/{platform}/{match_id}.json.zst
     blob = _valid_riot_blob()
     blob["metadata"]["matchId"] = _MATCH_B
     blob_store = BlobStore(str(tmp_path))
     await blob_store.write("riot", _MATCH_B, json.dumps(blob).encode())
 
-    # Verify the blob file was written
-    blob_path = tmp_path / "riot" / "NA1" / f"{_MATCH_B}.json"
+    # Verify the blob file was written (zstd-compressed)
+    blob_path = tmp_path / "riot" / "NA1" / f"{_MATCH_B}.json.zst"
     assert blob_path.exists()
 
     # Create a FakeSource that should NOT be called

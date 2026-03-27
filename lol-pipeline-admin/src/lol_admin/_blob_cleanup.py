@@ -100,7 +100,7 @@ def _process_files(
         if fname.startswith(".tmp_"):
             skipped_tmp += 1
             continue
-        if not fname.endswith(".json"):
+        if not (fname.endswith(".json") or fname.endswith(".json.zst")):
             continue
 
         fpath = dirpath / fname

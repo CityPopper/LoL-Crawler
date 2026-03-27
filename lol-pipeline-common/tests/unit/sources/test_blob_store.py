@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 
 import pytest
+import zstandard
 
 from lol_pipeline.sources.blob_store import BlobStore
 
@@ -26,9 +27,10 @@ class TestWrite:
         store = BlobStore(data_dir=str(tmp_path))
         await store.write("riot", "NA1_12345", b'{"hello": "world"}')
 
-        expected = tmp_path / "riot" / "NA1" / "NA1_12345.json"
+        expected = tmp_path / "riot" / "NA1" / "NA1_12345.json.zst"
         assert expected.exists()
-        assert expected.read_bytes() == b'{"hello": "world"}'
+        decompressed = zstandard.ZstdDecompressor().decompress(expected.read_bytes())
+        assert decompressed == b'{"hello": "world"}'
 
     async def test_write__is_idempotent(self, tmp_path) -> None:
         store = BlobStore(data_dir=str(tmp_path))
@@ -36,13 +38,14 @@ class TestWrite:
         # Second write with different data should be a no-op (write-once).
         await store.write("riot", "NA1_99999", b'{"second": "write"}')
 
-        expected = tmp_path / "riot" / "NA1" / "NA1_99999.json"
+        expected = tmp_path / "riot" / "NA1" / "NA1_99999.json.zst"
         assert expected.exists()
         # Content should be from the first write, not overwritten.
-        assert json.loads(expected.read_bytes()) == {"first": "write"}
+        decompressed = zstandard.ZstdDecompressor().decompress(expected.read_bytes())
+        assert json.loads(decompressed) == {"first": "write"}
 
         # Verify only one file exists in the directory.
-        files = list((tmp_path / "riot" / "NA1").glob("NA1_99999*.json"))
+        files = list((tmp_path / "riot" / "NA1").glob("NA1_99999*.json.zst"))
         # Filter out any .tmp files that might linger.
         final_files = [f for f in files if not f.name.startswith(".tmp_")]
         assert len(final_files) == 1
@@ -144,3 +147,42 @@ class TestPathValidation:
         # _validate_platform regex ^[A-Z0-9]+$.
         with pytest.raises(ValueError):
             await store.write("riot", "na1_123", b'{"bad": true}')
+
+
+# ---------------------------------------------------------------------------
+# Zstd compression
+# ---------------------------------------------------------------------------
+
+
+class TestBlobCompression:
+    """BlobStore writes zstd-compressed files and reads them transparently."""
+
+    async def test_write_produces_zst_file(self, tmp_path) -> None:
+        """write() creates a .json.zst file on disk."""
+        store = BlobStore(data_dir=str(tmp_path))
+        await store.write("riot", "NA1_10001", b'{"compressed": true}')
+
+        zst_path = tmp_path / "riot" / "NA1" / "NA1_10001.json.zst"
+        assert zst_path.exists()
+        # Plain .json must NOT exist.
+        assert not (tmp_path / "riot" / "NA1" / "NA1_10001.json").exists()
+
+    async def test_read_decompresses_correctly(self, tmp_path) -> None:
+        """write() then read() returns the original data."""
+        store = BlobStore(data_dir=str(tmp_path))
+        original = {"gameId": 42, "participants": ["a", "b"]}
+        await store.write("riot", "KR_20002", json.dumps(original).encode())
+
+        result = await store.read("riot", "KR_20002")
+        assert result == original
+
+    async def test_read_falls_back_to_plain_json(self, tmp_path) -> None:
+        """read() can still load legacy uncompressed .json files."""
+        store = BlobStore(data_dir=str(tmp_path))
+        legacy_dir = tmp_path / "riot" / "NA1"
+        legacy_dir.mkdir(parents=True)
+        legacy_file = legacy_dir / "NA1_30003.json"
+        legacy_file.write_bytes(b'{"legacy": true}')
+
+        result = await store.read("riot", "NA1_30003")
+        assert result == {"legacy": True}

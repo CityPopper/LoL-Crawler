@@ -4,10 +4,11 @@ Disk layout:
     {BLOB_DATA_DIR}/
       {source_name}/          # e.g. "riot", "opgg"
         {platform}/           # e.g. "NA1", "KR"
-          {match_id}.json     # one file per blob
+          {match_id}.json.zst # one file per blob (zstd-compressed)
 
 Atomic writes use the tmpfile-fsync-os.replace() pattern.
 Write-once: a blob is never overwritten once it exists.
+Reads fall back to uncompressed .json for pre-compression blobs.
 """
 
 from __future__ import annotations
@@ -20,11 +21,16 @@ import re
 from pathlib import Path
 from uuid import uuid4
 
+import zstandard
+
 log = logging.getLogger(__name__)
 
 _PLATFORM_RE = re.compile(r"^[A-Z0-9]+$")
 
 MAX_BLOB_SIZE_BYTES: int = 2 * 1024 * 1024  # 2 MB
+
+_ZST_COMPRESSOR = zstandard.ZstdCompressor(level=3)
+_ZST_DECOMPRESSOR = zstandard.ZstdDecompressor()
 
 
 class BlobStore:
@@ -36,7 +42,7 @@ class BlobStore:
             raise ValueError(f"invalid platform segment: {platform!r}")
 
     def _blob_path(self, source_name: str, match_id: str) -> Path:
-        """Construct and validate the blob file path.
+        """Construct and validate the blob file path (compressed .json.zst).
 
         Path traversal prevention:
         1. source_name validated at SourceEntry construction (^[a-z0-9_]+$).
@@ -46,41 +52,59 @@ class BlobStore:
         assert self._data_dir is not None  # noqa: S101
         platform = match_id.split("_")[0]
         self._validate_platform(platform)
-        path = (self._data_dir / source_name / platform / f"{match_id}.json").resolve()
+        path = (self._data_dir / source_name / platform / f"{match_id}.json.zst").resolve()
         if not path.is_relative_to(self._data_dir):
             raise ValueError(f"path escapes BLOB_DATA_DIR: {path}")
         return path
 
+    def _legacy_blob_path(self, source_name: str, match_id: str) -> Path:
+        """Return the legacy uncompressed .json path for fallback reads."""
+        assert self._data_dir is not None  # noqa: S101
+        platform = match_id.split("_")[0]
+        return (self._data_dir / source_name / platform / f"{match_id}.json").resolve()
+
     async def exists(self, source_name: str, match_id: str) -> bool:
-        """O(1) stat call."""
+        """O(1) stat call. Checks compressed (.json.zst) then legacy (.json)."""
         if self._data_dir is None:
             return False
         path = self._blob_path(source_name, match_id)
-        return await asyncio.to_thread(path.exists)
+        if await asyncio.to_thread(path.exists):
+            return True
+        legacy = self._legacy_blob_path(source_name, match_id)
+        return await asyncio.to_thread(legacy.exists)
 
     async def read(self, source_name: str, match_id: str) -> dict[str, str] | None:
-        """Read and parse a blob. Returns parsed dict or None."""
+        """Read and parse a blob. Tries .json.zst first, falls back to .json."""
         if self._data_dir is None:
             return None
         path = self._blob_path(source_name, match_id)
-        if not await asyncio.to_thread(path.exists):
-            return None
-        data = await asyncio.to_thread(path.read_bytes)
-        return json.loads(data)  # type: ignore[no-any-return]
+        raw = await asyncio.to_thread(self._read_if_exists, path)
+        if raw is not None:
+            data = _ZST_DECOMPRESSOR.decompress(raw)
+            return json.loads(data)  # type: ignore[no-any-return]
+        legacy = self._legacy_blob_path(source_name, match_id)
+        raw = await asyncio.to_thread(self._read_if_exists, legacy)
+        if raw is not None:
+            return json.loads(raw)  # type: ignore[no-any-return]
+        return None
 
     async def write(self, source_name: str, match_id: str, data: bytes | str) -> None:
         """Atomic write: tmpfile -> fsync -> os.replace(). Write-once semantics.
 
         Accepts bytes (from FetchResponse.raw_blob) or str.
         If str, encodes as UTF-8 before writing.
-        If the blob already exists, returns without overwriting.
+        Data is zstd-compressed before writing to disk.
+        If the blob already exists (.json.zst or legacy .json), returns without overwriting.
         """
         if self._data_dir is None:
             return
         path = self._blob_path(source_name, match_id)
         if await asyncio.to_thread(path.exists):
             return
-        tmp = path.with_name(f".tmp_{match_id}_{os.getpid()}_{uuid4().hex}.json")
+        legacy = self._legacy_blob_path(source_name, match_id)
+        if await asyncio.to_thread(legacy.exists):
+            return
+        tmp = path.with_name(f".tmp_{match_id}_{os.getpid()}_{uuid4().hex}.json.zst")
         try:
             await asyncio.to_thread(self._atomic_write, tmp, path, data)
         except FileExistsError:
@@ -93,20 +117,23 @@ class BlobStore:
     def _atomic_write(tmp: Path, final: Path, data: bytes | str) -> None:
         final.parent.mkdir(parents=True, exist_ok=True)
         raw = data.encode("utf-8") if isinstance(data, str) else data
+        compressed = _ZST_COMPRESSOR.compress(raw)
         fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
         try:
-            os.write(fd, raw)
+            os.write(fd, compressed)
             os.fsync(fd)
         finally:
             os.close(fd)
         os.replace(str(tmp), str(final))
 
     async def delete(self, source_name: str, match_id: str) -> None:
-        """Delete a cached blob. Removes stale/corrupt blobs after can_extract() failure."""
+        """Delete a cached blob. Removes both .json.zst and legacy .json if present."""
         if self._data_dir is None:
             return
         path = self._blob_path(source_name, match_id)
         await asyncio.to_thread(path.unlink, missing_ok=True)
+        legacy = self._legacy_blob_path(source_name, match_id)
+        await asyncio.to_thread(legacy.unlink, missing_ok=True)
 
     async def find_any(
         self, match_id: str, source_names: list[str]
@@ -131,24 +158,26 @@ class BlobStore:
         except ValueError:
             return None
         for name in source_names:
-            blob_path = (self._data_dir / name / platform / f"{match_id}.json").resolve()
-            if not blob_path.is_relative_to(self._data_dir):
-                raise ValueError(f"blob path escapes data dir: {blob_path}")
-            raw = await asyncio.to_thread(self._read_if_exists, blob_path)
-            if raw is None:
-                continue
-            if len(raw) > MAX_BLOB_SIZE_BYTES:
-                log.warning(
-                    "oversized blob at %s (%d bytes), treating as cache miss",
-                    blob_path,
-                    len(raw),
-                )
-                continue
-            try:
-                return (name, json.loads(raw))
-            except json.JSONDecodeError:
-                log.warning("corrupt blob at %s, treating as cache miss", blob_path)
-                continue
+            for ext in (".json.zst", ".json"):
+                blob_path = (self._data_dir / name / platform / f"{match_id}{ext}").resolve()
+                if not blob_path.is_relative_to(self._data_dir):
+                    raise ValueError(f"blob path escapes data dir: {blob_path}")
+                raw = await asyncio.to_thread(self._read_if_exists, blob_path)
+                if raw is None:
+                    continue
+                if len(raw) > MAX_BLOB_SIZE_BYTES:
+                    log.warning(
+                        "oversized blob at %s (%d bytes), treating as cache miss",
+                        blob_path,
+                        len(raw),
+                    )
+                    break  # skip this source entirely
+                try:
+                    data = _ZST_DECOMPRESSOR.decompress(raw) if ext == ".json.zst" else raw
+                    return (name, json.loads(data))
+                except json.JSONDecodeError:
+                    log.warning("corrupt blob at %s, treating as cache miss", blob_path)
+                    break  # skip this source entirely
         return None
 
     @staticmethod

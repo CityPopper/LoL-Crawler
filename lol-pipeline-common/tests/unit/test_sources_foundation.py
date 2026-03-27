@@ -349,7 +349,7 @@ class TestBlobStorePlatformValidation:
         await store.write("alpha", "NA1_12345", b'{"test": true}')
         from pathlib import Path
 
-        expected = Path(str(tmp_path)) / "alpha" / "NA1" / "NA1_12345.json"
+        expected = Path(str(tmp_path)) / "alpha" / "NA1" / "NA1_12345.json.zst"
         assert expected.exists()
 
 
@@ -382,7 +382,7 @@ class TestBlobStoreAtomicWrite:
         tmp_files = list(platform_dir.glob(".tmp_*"))
         assert tmp_files == [], f"leftover tmp files: {tmp_files}"
         # The final blob file should exist.
-        assert (platform_dir / "NA1_12345.json").exists()
+        assert (platform_dir / "NA1_12345.json.zst").exists()
 
 
 # ===========================================================================

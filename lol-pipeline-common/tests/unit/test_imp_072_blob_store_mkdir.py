@@ -52,9 +52,12 @@ class TestMkdirRunsInThread:
         store = BlobStore(data_dir=str(tmp_path))
         await store.write("riot", "NA1_99999", b'{"data": true}')
 
-        expected = tmp_path / "riot" / "NA1" / "NA1_99999.json"
+        expected = tmp_path / "riot" / "NA1" / "NA1_99999.json.zst"
         assert expected.exists()
-        assert expected.read_bytes() == b'{"data": true}'
+        import zstandard
+
+        decompressed = zstandard.ZstdDecompressor().decompress(expected.read_bytes())
+        assert decompressed == b'{"data": true}'
 
     async def test_atomic_write_creates_parent_dirs(self, tmp_path) -> None:
         """_atomic_write itself creates parent dirs before writing."""
@@ -67,4 +70,7 @@ class TestMkdirRunsInThread:
         BlobStore._atomic_write(tmp, final, b'{"ok": true}')
 
         assert final.exists()
-        assert final.read_bytes() == b'{"ok": true}'
+        import zstandard
+
+        decompressed = zstandard.ZstdDecompressor().decompress(final.read_bytes())
+        assert decompressed == b'{"ok": true}'

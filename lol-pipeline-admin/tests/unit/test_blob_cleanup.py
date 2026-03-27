@@ -275,3 +275,24 @@ class TestCleanupBlobsNonExistentDir:
             "bytes_freed": 0,
             "dirs_pruned": 0,
         }
+
+
+# ---------------------------------------------------------------------------
+# cleanup_blobs — .json.zst files
+# ---------------------------------------------------------------------------
+
+
+class TestCleanupBlobsZstFiles:
+    """cleanup_blobs handles zstd-compressed .json.zst files."""
+
+    def test_cleanup_finds_zst_files(self, tmp_path: Path) -> None:
+        """Old .json.zst files are included in deletion."""
+        f = _create_blob(
+            tmp_path, "riot", "NA1", "NA1_40004.json.zst",
+            content="fake-compressed-data", mtime=_OLD_MTIME,
+        )
+
+        result = cleanup_blobs(tmp_path, older_than_seconds=90 * 86400)
+
+        assert result["deleted"] == 1
+        assert not f.exists()
