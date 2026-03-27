@@ -224,6 +224,7 @@ async def _fetch_match_ids_paginated(  # noqa: PLR0913
     log: logging.Logger,
     priority: str = "normal",
     correlation_id: str = "",
+    published_offset: int = 0,
 ) -> tuple[int, int]:
     """Paginate through Riot match-ID API and publish new IDs.
 
@@ -231,7 +232,7 @@ async def _fetch_match_ids_paginated(  # noqa: PLR0913
     to the caller.
     """
     start = await _resume_cursor(r, puuid)
-    published = 0
+    published = published_offset
     pages_fetched = 0
     current_priority = priority
     cursor_key = _key_crawl_cursor(puuid)
@@ -264,7 +265,7 @@ async def _fetch_match_ids_paginated(  # noqa: PLR0913
         start += page_size
 
     await r.delete(cursor_key)
-    return published, pages_fetched
+    return published - published_offset, pages_fetched
 
 
 async def _opgg_discover(
@@ -295,11 +296,33 @@ async def _opgg_discover(
         )
         return 0, set()
 
+    platform = region.upper()
+
     try:
         summoner_id = await opgg_client.get_summoner_id_by_puuid(puuid, opgg_region)
-        raw_games = await opgg_client.get_raw_games(
-            summoner_id, opgg_region, limit=cfg.opgg_prefetch_limit
-        )
+        all_raw_games: list[dict] = []
+        ended_at: str | None = None
+        for _page in range(cfg.opgg_discover_max_pages):
+            page_games = await opgg_client.get_raw_games(
+                summoner_id, opgg_region,
+                limit=cfg.opgg_prefetch_limit,
+                ended_at=ended_at,
+            )
+            if not page_games:
+                break
+            all_raw_games.extend(page_games)
+            # Stop if all IDs in this page are already known
+            page_ids = {f"{platform}_{g['id']}" for g in page_games if "id" in g}
+            if page_ids.issubset(known):
+                break
+            # Short page means last page
+            if len(page_games) < cfg.opgg_prefetch_limit:
+                break
+            # Advance cursor: use created_at of last game
+            try:
+                ended_at = page_games[-1]["created_at"]
+            except (KeyError, IndexError):
+                break
     except Exception:
         log.debug(
             "opgg discover: fetch failed — non-critical",
@@ -308,10 +331,9 @@ async def _opgg_discover(
         )
         return 0, set()
 
-    platform = region.upper()
     match_ids = [
         f"{platform}_{game['id']}"
-        for game in raw_games
+        for game in all_raw_games
         if game.get("id") is not None
     ]
     if not match_ids:
@@ -576,6 +598,7 @@ async def _run_crawl(
         log,
         priority=envelope.priority,
         correlation_id=envelope.correlation_id,
+        published_offset=opgg_published,
     )
 
     published = opgg_published + riot_published

@@ -53,6 +53,7 @@ class Config(BaseSettings):
     opgg_summoner_cache_ttl_seconds: int = Field(default=3600, ge=1)
     opgg_fetch_game_limit: int = Field(default=5, ge=1)
     opgg_prefetch_limit: int = Field(default=20, ge=1)  # for UI pre-fetch background task
+    opgg_discover_max_pages: int = Field(default=3, ge=1)  # max op.gg pages per PRIORITY_MANUAL_20 crawl
     # PRIN-COM-1: formerly raw os.getenv() / hardcoded literals
     player_data_ttl_seconds: int = Field(default=2592000, ge=1)  # 30 days
     champion_stats_ttl_seconds: int = Field(default=7776000, ge=1)  # 90 days

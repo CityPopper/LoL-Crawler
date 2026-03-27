@@ -18,6 +18,7 @@ from lol_crawler.main import (
     _compute_activity_rate,
     _crawl_player,
     _fetch_rank,
+    _opgg_discover,
     _publish_batch,
     _run_crawl,
     main,
@@ -2127,3 +2128,142 @@ class TestRunCrawlOpggPhase:
 
         mock_opgg.assert_not_called()
         assert result == (2, 1)
+
+
+class TestOpggDiscoverPagination:
+    """OPGG-4: cursor pagination in _opgg_discover."""
+
+    _PUUID = "test-puuid-opgg-pag"
+    _REGION = "na1"
+
+    @pytest.mark.asyncio
+    async def test_opgg_discover__paginates_to_second_page(self, r, cfg, log):
+        """Two pages fetched: page 1 full (20 games), page 2 short (10) -> stops."""
+        page1 = [{"id": i, "created_at": f"2025-01-01T00:{i:02d}:00"} for i in range(20)]
+        page2 = [{"id": 100 + i, "created_at": f"2025-01-02T00:{i:02d}:00"} for i in range(10)]
+
+        opgg_client = AsyncMock()
+        opgg_client.get_summoner_id_by_puuid.return_value = "summ-123"
+        opgg_client.get_raw_games.side_effect = [page1, page2]
+
+        published, discovered = await _opgg_discover(
+            r, cfg, opgg_client, self._PUUID, self._REGION,
+            set(), "manual_20", "corr-1", log,
+        )
+
+        assert opgg_client.get_raw_games.call_count == 2
+        # 30 unique games discovered (20 + 10)
+        assert len(discovered) == 30
+        assert published == 30
+
+    @pytest.mark.asyncio
+    async def test_opgg_discover__stops_when_all_known(self, r, cfg, log):
+        """Single page where all IDs are already known -> stops after page 1."""
+        page1 = [{"id": i, "created_at": f"2025-01-01T00:{i:02d}:00"} for i in range(20)]
+        known = {f"NA1_{i}" for i in range(20)}
+
+        opgg_client = AsyncMock()
+        opgg_client.get_summoner_id_by_puuid.return_value = "summ-456"
+        opgg_client.get_raw_games.return_value = page1
+
+        published, discovered = await _opgg_discover(
+            r, cfg, opgg_client, self._PUUID, self._REGION,
+            known, "manual_20", "corr-2", log,
+        )
+
+        # Only one call — pagination stops because all page IDs are in known
+        assert opgg_client.get_raw_games.call_count == 1
+
+
+class TestSharedCounter:
+    """PRIOR-1: shared published counter across op.gg + Riot phases."""
+
+    _PUUID = "test-puuid-shared"
+    _REGION = "na1"
+
+    def _envelope(self, priority: str = "normal") -> MessageEnvelope:
+        return MessageEnvelope(
+            source_stream=_STREAM_IN,
+            type="puuid",
+            payload={
+                "puuid": self._PUUID,
+                "region": self._REGION,
+                "game_name": "Test",
+                "tag_line": "NA1",
+            },
+            max_attempts=5,
+            priority=priority,
+        )
+
+    @pytest.mark.asyncio
+    async def test_run_crawl__shared_counter__opgg_offset_passed(self, r, cfg, log):
+        """_fetch_match_ids_paginated receives published_offset=15 from opgg phase."""
+        env = self._envelope(priority="manual_20")
+        opgg_client = AsyncMock()
+
+        with (
+            patch(
+                "lol_crawler.main._load_known_matches",
+                new_callable=AsyncMock,
+                return_value=set(),
+            ),
+            patch(
+                "lol_crawler.main._opgg_discover",
+                new_callable=AsyncMock,
+                return_value=(15, {f"OGG{i}" for i in range(15)}),
+            ),
+            patch(
+                "lol_crawler.main._fetch_match_ids_paginated",
+                new_callable=AsyncMock,
+                return_value=(5, 1),
+            ) as mock_riot,
+            patch(
+                "lol_crawler.main._post_crawl_update",
+                new_callable=AsyncMock,
+            ),
+        ):
+            await _run_crawl(
+                r, AsyncMock(), cfg, self._PUUID, self._REGION, env, log,
+                opgg_client=opgg_client,
+            )
+
+        mock_riot.assert_called_once()
+        call_kwargs = mock_riot.call_args
+        # published_offset is a keyword argument
+        assert call_kwargs[1]["published_offset"] == 15
+
+    @pytest.mark.asyncio
+    async def test_run_crawl__priority_degrades_after_20_total(self, r, cfg, log):
+        """opgg publishes 20 -> Riot phase receives offset=20 -> threshold already met."""
+        env = self._envelope(priority="manual_20")
+        opgg_client = AsyncMock()
+
+        with (
+            patch(
+                "lol_crawler.main._load_known_matches",
+                new_callable=AsyncMock,
+                return_value=set(),
+            ),
+            patch(
+                "lol_crawler.main._opgg_discover",
+                new_callable=AsyncMock,
+                return_value=(20, {f"OGG{i}" for i in range(20)}),
+            ),
+            patch(
+                "lol_crawler.main._fetch_match_ids_paginated",
+                new_callable=AsyncMock,
+                return_value=(3, 1),
+            ) as mock_riot,
+            patch(
+                "lol_crawler.main._post_crawl_update",
+                new_callable=AsyncMock,
+            ),
+        ):
+            await _run_crawl(
+                r, AsyncMock(), cfg, self._PUUID, self._REGION, env, log,
+                opgg_client=opgg_client,
+            )
+
+        # published_offset == 20, which is >= PRIORITY_DOWNGRADE_THRESHOLD (20)
+        # so Riot phase starts with the counter already at the threshold
+        assert mock_riot.call_args[1]["published_offset"] == 20
