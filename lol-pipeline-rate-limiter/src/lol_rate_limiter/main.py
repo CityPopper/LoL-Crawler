@@ -12,7 +12,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from lol_rate_limiter._headers import parse_rate_limit_header
-from lol_rate_limiter._token import acquire_token
+from lol_rate_limiter._token import acquire_token, acquire_token_with_method, set_cooling_off
 from lol_rate_limiter.config import Config
 
 _log = logging.getLogger("rate_limiter")
@@ -102,14 +102,48 @@ async def token_acquire(body: dict[str, str]) -> JSONResponse:
     cfg: Config = app.state.cfg
 
     source = body.get("source", "")
+    endpoint = body.get("endpoint", "")
     if source not in cfg.known_sources:
         return JSONResponse(
             status_code=404,
             content={"error": "unknown source"},
         )
 
+    key_prefix = f"ratelimit:{source}"
+
     try:
-        granted, retry_after_ms = await acquire_token(r, cfg, key_prefix=f"ratelimit:{source}")
+        if source == "opgg":
+            granted, retry_after_ms = await acquire_token(
+                r,
+                cfg,
+                key_prefix=key_prefix,
+                short_limit=cfg.opgg_short_limit,
+                long_limit=cfg.opgg_long_limit - cfg.opgg_ui_long_limit,
+            )
+        elif source == "opgg:ui":
+            granted, retry_after_ms = await acquire_token(
+                r,
+                cfg,
+                key_prefix=key_prefix,
+                short_limit=cfg.opgg_ui_short_limit,
+                long_limit=cfg.opgg_ui_long_limit,
+            )
+        elif source == "riot:ui":
+            granted, retry_after_ms = await acquire_token(
+                r,
+                cfg,
+                key_prefix=key_prefix,
+                short_limit=cfg.riot_ui_short_limit,
+                long_limit=cfg.riot_ui_long_limit,
+            )
+        elif endpoint and source.startswith("riot"):
+            granted, retry_after_ms = await acquire_token_with_method(
+                r, cfg, key_prefix, endpoint,
+            )
+        else:
+            granted, retry_after_ms = await acquire_token(
+                r, cfg, key_prefix=key_prefix,
+            )
     except Exception:
         _log.warning("Redis unreachable — failing open", exc_info=True)
         return JSONResponse(
@@ -121,6 +155,29 @@ async def token_acquire(body: dict[str, str]) -> JSONResponse:
         status_code=200,
         content={"granted": granted, "retry_after_ms": retry_after_ms},
     )
+
+
+@app.post("/cooling-off")
+async def cooling_off_notify(body: dict[str, Any]) -> JSONResponse:
+    """Record that the given source received a real 429 -- blocks all further tokens."""
+    r: aioredis.Redis = app.state.r
+    cfg: Config = app.state.cfg
+    source = body.get("source", "")
+    if source not in cfg.known_sources:
+        return JSONResponse(status_code=404, content={"error": "unknown source"})
+    delay_ms = int(body.get("delay_ms", 60_000))
+    try:
+        await set_cooling_off(r, f"ratelimit:{source}", delay_ms)
+    except Exception:
+        _log.warning("Redis unreachable for cooling-off set", exc_info=True)
+        return JSONResponse(status_code=200, content={"ok": False})
+    _log.warning(
+        "source %r entering cooling-off for %dms",
+        source,
+        delay_ms,
+        extra={"source": source, "delay_ms": delay_ms},
+    )
+    return JSONResponse(status_code=200, content={"ok": True})
 
 
 @app.post("/headers")

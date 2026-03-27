@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from lol_pipeline._helpers import is_system_halted
 from lol_pipeline.config import Config
 
@@ -87,6 +87,7 @@ async def show_logs(request: Request) -> HTMLResponse:
         fragment_url="/logs/fragment",
         interval_ms=2000,
         clear_btn_id="clear-btn",
+        clear_url="/logs/clear",
         svc_select_id="svc-filter",
         pause_label=t("logs_pause"),
         resume_label=t("logs_resume"),
@@ -105,3 +106,23 @@ async def show_logs(request: Request) -> HTMLResponse:
         f"{log_content}{script}"
     )
     return HTMLResponse(_page(t("page_logs"), body, path="/logs"))
+
+
+def _truncate_log_files(log_dir: Path) -> int:
+    """Truncate all *.log files in *log_dir* and return the count."""
+    count = 0
+    for f in log_dir.glob("*.log"):
+        f.open("w").close()
+        count += 1
+    return count
+
+
+@router.post("/logs/clear")
+async def clear_logs(request: Request) -> JSONResponse:
+    """Truncate every *.log file in the configured log directory."""
+    cfg: Config = request.app.state.cfg
+    if not cfg.log_dir:
+        return JSONResponse({"cleared": 0})
+    log_dir = Path(cfg.log_dir)
+    count = await asyncio.to_thread(_truncate_log_files, log_dir)
+    return JSONResponse({"cleared": count})

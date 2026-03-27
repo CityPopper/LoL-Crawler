@@ -334,7 +334,14 @@ class RiotClient:
         self._check_circuit_breaker()
         resp = await self._send_request(url)
         self._track_5xx(resp)
-        data = _raise_for_status(resp)
+        try:
+            data = _raise_for_status(resp)
+        except RateLimitError:
+            _log.warning(
+                "riot API 429",
+                extra={"url": url, "retry_after": resp.headers.get("Retry-After", "")},
+            )
+            raise
         await self._persist_rate_limits(resp)
         return data
 
@@ -347,7 +354,14 @@ class RiotClient:
         self._check_circuit_breaker()
         resp = await self._send_request(url)
         self._track_5xx(resp)
-        data, raw = _raise_for_status_raw(resp)
+        try:
+            data, raw = _raise_for_status_raw(resp)
+        except RateLimitError:
+            _log.warning(
+                "riot API 429",
+                extra={"url": url, "retry_after": resp.headers.get("Retry-After", "")},
+            )
+            raise
         await self._persist_rate_limits(resp)
         return data, raw
 

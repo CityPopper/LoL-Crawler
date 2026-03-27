@@ -35,6 +35,7 @@ def _common_to_redis(obj: MessageEnvelope | DLQEnvelope) -> dict[str, str]:
         "dlq_attempts": str(obj.dlq_attempts),
         "priority": obj.priority,
         "correlation_id": obj.correlation_id,
+        "defer_count": str(obj.defer_count),
     }
 
 
@@ -51,6 +52,7 @@ def _common_from_redis(fields: dict[str, str]) -> dict[str, Any]:
         "dlq_attempts": int(fields.get("dlq_attempts", "0")),
         "priority": fields.get("priority", "normal"),
         "correlation_id": fields.get("correlation_id", ""),
+        "defer_count": int(fields.get("defer_count", "0")),
     }
 
 
@@ -73,6 +75,7 @@ class MessageEnvelope:
     dlq_attempts: int = 0
     priority: str = "normal"
     correlation_id: str = ""
+    defer_count: int = 0
 
     def to_redis_fields(self) -> dict[str, str]:
         return _common_to_redis(self)
@@ -103,6 +106,7 @@ class DLQEnvelope:
     dlq_attempts: int = 0
     priority: str = "normal"
     correlation_id: str = ""
+    defer_count: int = 0
 
     def to_redis_fields(self) -> dict[str, str]:
         base = _common_to_redis(self)
@@ -151,4 +155,5 @@ def make_replay_envelope(dlq: DLQEnvelope, max_attempts: int) -> MessageEnvelope
         dlq_attempts=dlq.dlq_attempts,
         priority=dlq.priority,
         correlation_id=dlq.correlation_id,
+        defer_count=dlq.defer_count,
     )

@@ -138,6 +138,7 @@ _ENVELOPE_REDIS_KEYS = {
     "dlq_attempts",
     "priority",
     "correlation_id",
+    "defer_count",
 }
 
 _DLQ_ENVELOPE_REDIS_KEYS = _ENVELOPE_REDIS_KEYS | {

@@ -58,8 +58,6 @@ class TestDashboardChinese:
         assert ">Dashboard<" not in body
         assert ">Stats<" not in body
         assert ">Champions<" not in body
-        assert ">Matchups<" not in body
-        assert ">Players<" not in body
         assert ">Streams<" not in body
         assert ">DLQ<" not in body
         assert ">Logs<" not in body
@@ -67,8 +65,6 @@ class TestDashboardChinese:
         assert "仪表盘" in body  # Dashboard
         assert "数据" in body  # Stats
         assert "英雄" in body  # Champions
-        assert "对位" in body  # Matchups
-        assert "玩家" in body  # Players
         assert "流" in body  # Streams
         assert "死信" in body  # DLQ
         assert "日志" in body  # Logs

@@ -652,3 +652,232 @@ class TestPlayerStatsSerialEval:
         assert float(cursor) == 5000.0
         assert await r.zscore(f"player:champions:{puuid}", "Annie") == 5.0
         assert await r.zscore(f"player:roles:{puuid}", "MID") == 5.0
+
+
+# ---------------------------------------------------------------------------
+# FP-4.3: Overwrite Guard for opgg_prefetch Source Marker
+# ---------------------------------------------------------------------------
+
+
+class TestOpggPrefetchOverwriteGuard:
+    """When player:stats has source=opgg_prefetch, stats are cleared before recompute."""
+
+    @pytest.mark.asyncio
+    async def test_opgg_prefetch_source__clears_and_recomputes(self, r, cfg, log):
+        """Pre-populated source=opgg_prefetch with total_kills=50; one match kills=5
+        -> total_kills=5 (recomputed from scratch, not accumulated)."""
+        puuid = "test-puuid-opgg-guard"
+        await r.hset(
+            f"player:stats:{puuid}",
+            mapping={
+                "total_games": "10",
+                "total_wins": "5",
+                "total_kills": "50",
+                "total_deaths": "20",
+                "total_assists": "30",
+                "source": "opgg_prefetch",
+            },
+        )
+        await r.set(f"player:stats:cursor:{puuid}", "500")
+        await _add_participant(
+            r, "NA1_OG1", puuid, 1000, kills=5, deaths=1, assists=3, win=True
+        )
+        env = _player_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        await handle_player_stats(r, cfg, "worker-1", msg_id, env, log)
+
+        stats = await r.hgetall(f"player:stats:{puuid}")
+        assert stats["total_kills"] == "5"
+        assert stats["total_games"] == "1"
+
+    @pytest.mark.asyncio
+    async def test_no_source_marker__preserves_accumulation(self, r, cfg, log):
+        """Pre-populated without source marker, total_kills=50; one match kills=5
+        -> total_kills=55 (normal HINCRBY accumulation preserved)."""
+        puuid = "test-puuid-no-marker"
+        await r.hset(
+            f"player:stats:{puuid}",
+            mapping={
+                "total_games": "10",
+                "total_wins": "5",
+                "total_kills": "50",
+                "total_deaths": "20",
+                "total_assists": "30",
+            },
+        )
+        await r.set(f"player:stats:cursor:{puuid}", "500")
+        await _add_participant(
+            r, "NA1_NM1", puuid, 1000, kills=5, deaths=1, assists=3, win=True
+        )
+        env = _player_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        await handle_player_stats(r, cfg, "worker-1", msg_id, env, log)
+
+        stats = await r.hgetall(f"player:stats:{puuid}")
+        assert stats["total_kills"] == "55"
+        assert stats["total_games"] == "11"
+
+    @pytest.mark.asyncio
+    async def test_opgg_prefetch__champion_roles_cleared_no_double_count(self, r, cfg, log):
+        """REV-9: Pre-populated champion/role from opgg_prefetch are cleared before
+        recompute — ZINCRBY does not accumulate on top of stale prefetch counts."""
+        puuid = "test-puuid-opgg-champ"
+        await r.hset(
+            f"player:stats:{puuid}",
+            mapping={
+                "total_games": "5",
+                "total_wins": "3",
+                "total_kills": "25",
+                "total_deaths": "10",
+                "total_assists": "15",
+                "source": "opgg_prefetch",
+            },
+        )
+        await r.set(f"player:stats:cursor:{puuid}", "500")
+        await r.zadd(f"player:champions:{puuid}", {"Jinx": 5})
+        await r.zadd(f"player:roles:{puuid}", {"BOTTOM": 5})
+
+        for i in range(5):
+            await _add_participant(
+                r, f"NA1_DC{i}", puuid, 1000 + i,
+                kills=5, deaths=2, assists=3, win=True, champion="Jinx", role="BOTTOM",
+            )
+        env = _player_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+
+        await handle_player_stats(r, cfg, "worker-1", msg_id, env, log)
+
+        assert await r.zscore(f"player:champions:{puuid}", "Jinx") == 5.0
+        assert await r.zscore(f"player:roles:{puuid}", "BOTTOM") == 5.0
+
+
+# ---------------------------------------------------------------------------
+# Stats Window Filter (split start / min games lookback)
+# ---------------------------------------------------------------------------
+
+
+class TestStatsWindowFilter:
+    """Lookback window: max(split_start, score_of_Nth_newest) controls recompute."""
+
+    @pytest.mark.asyncio
+    async def test_window_split_start__resets_and_recomputes(self, r, cfg, log, monkeypatch):
+        """Cursor before split_start: stats reset and recomputed from split_start."""
+        puuid = "test-puuid-win-split"
+        t_split = 5000
+
+        # Pre-populate cursor at an old timestamp (before split)
+        await r.set(f"player:stats:cursor:{puuid}", "1000")
+        await r.hset(
+            f"player:stats:{puuid}",
+            mapping={
+                "total_games": "10",
+                "total_wins": "5",
+                "total_kills": "50",
+                "total_deaths": "20",
+                "total_assists": "30",
+            },
+        )
+
+        # 5 matches all at or after split_start
+        for i in range(5):
+            await _add_participant(
+                r, f"NA1_WS{i}", puuid, t_split + i,
+                kills=2, deaths=1, assists=1, win=True, champion="Lux", role="MID",
+            )
+
+        monkeypatch.setattr(cfg, "stats_split_start_ms", t_split)
+        # Set min games high so it doesn't interfere (all 5 < 100)
+        monkeypatch.setattr(cfg, "stats_min_games_lookback", 100)
+
+        env = _player_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+        await handle_player_stats(r, cfg, "worker-1", msg_id, env, log)
+
+        stats = await r.hgetall(f"player:stats:{puuid}")
+        assert stats["total_games"] == "5"
+        assert stats["total_kills"] == "10"  # 2 * 5
+        assert stats["total_deaths"] == "5"  # 1 * 5
+        assert stats["total_assists"] == "5"  # 1 * 5
+
+    @pytest.mark.asyncio
+    async def test_window_min_games__older_than_split__uses_game_floor(
+        self, r, cfg, log, monkeypatch
+    ):
+        """150 matches newer than split; min_games=100 keeps only newest 100."""
+        puuid = "test-puuid-win-floor"
+        t_split = 1000
+
+        # 150 matches all after split_start (timestamps 2000..2149)
+        for i in range(150):
+            await _add_participant(
+                r, f"NA1_FL{i}", puuid, 2000 + i,
+                kills=1, deaths=1, assists=1, win=(i % 2 == 0), champion="Ahri", role="MID",
+            )
+
+        monkeypatch.setattr(cfg, "stats_split_start_ms", t_split)
+        monkeypatch.setattr(cfg, "stats_min_games_lookback", 100)
+
+        env = _player_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+        await handle_player_stats(r, cfg, "worker-1", msg_id, env, log)
+
+        stats = await r.hgetall(f"player:stats:{puuid}")
+        # score_of_100th (0-indexed 99) newest match: 2149, 2148, ..., 2050
+        # The 100th newest = timestamp 2050
+        # window_start = max(1000, 2050) = 2050
+        # Matches with score >= 2050: timestamps 2050..2149 = 100 matches
+        assert stats["total_games"] == "100"
+        assert stats["total_kills"] == "100"  # 1 * 100
+
+    @pytest.mark.asyncio
+    async def test_window_cursor_within_window__incremental_only(
+        self, r, cfg, log, monkeypatch
+    ):
+        """Cursor within window: only new matches processed (no reset)."""
+        puuid = "test-puuid-win-incr"
+        t_split = 100
+
+        # Pre-existing stats from earlier processing
+        await r.set(f"player:stats:cursor:{puuid}", "500")
+        await r.hset(
+            f"player:stats:{puuid}",
+            mapping={
+                "total_games": "3",
+                "total_wins": "2",
+                "total_kills": "15",
+                "total_deaths": "6",
+                "total_assists": "9",
+            },
+        )
+
+        # Old matches (already processed, below cursor)
+        for i in range(3):
+            await _add_participant(
+                r, f"NA1_OLD{i}", puuid, 200 + i * 100,
+                kills=5, deaths=2, assists=3, win=True,
+            )
+
+        # Two new matches after cursor
+        await _add_participant(
+            r, "NA1_NEW1", puuid, 600, kills=4, deaths=1, assists=2, win=True
+        )
+        await _add_participant(
+            r, "NA1_NEW2", puuid, 700, kills=6, deaths=3, assists=4, win=False
+        )
+
+        monkeypatch.setattr(cfg, "stats_split_start_ms", t_split)
+        monkeypatch.setattr(cfg, "stats_min_games_lookback", 100)
+
+        env = _player_envelope(puuid)
+        msg_id = await _setup_message(r, env)
+        await handle_player_stats(r, cfg, "worker-1", msg_id, env, log)
+
+        stats = await r.hgetall(f"player:stats:{puuid}")
+        # 3 old + 2 new = 5
+        assert stats["total_games"] == "5"
+        # 15 + 4 + 6 = 25
+        assert stats["total_kills"] == "25"
+        cursor = await r.get(f"player:stats:cursor:{puuid}")
+        assert float(cursor) == 700.0

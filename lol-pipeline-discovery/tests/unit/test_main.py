@@ -836,6 +836,7 @@ class TestMainEntryPoint:
         monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
         monkeypatch.setenv("REDIS_URL", "redis://localhost")
         mock_r = self._mock_redis_not_halted()
+        mock_r.xlen = AsyncMock(return_value=0)
         call_count = 0
 
         async def fake_is_idle(*args):
@@ -853,6 +854,7 @@ class TestMainEntryPoint:
             patch("lol_discovery.main.get_redis", return_value=mock_r),
             patch("lol_discovery.main.RiotClient") as mock_riot,
             patch("lol_discovery.main._is_idle", side_effect=fake_is_idle),
+            patch("lol_discovery.main._promote_batch", new_callable=AsyncMock, return_value=0),
             patch("lol_discovery.main.asyncio.sleep", new_callable=AsyncMock),
             patch("lol_discovery.main.asyncio.get_running_loop", return_value=mock_loop),
         ):
@@ -1750,3 +1752,147 @@ class TestResolveNamesThrottled:
         assert await r.zcard("discover:players") == 1
         score = await r.zscore("discover:players", "puuid-throttled:na1")
         assert score == 1700000000000.0
+
+
+class TestTrickleCrawlMode:
+    """Trickle mode: promote 1 player when stream:puuid is shallow, even if not fully idle."""
+
+    @pytest.mark.asyncio
+    async def test_trickle__below_threshold__promotes_one(self, monkeypatch):
+        """When _is_idle() is False but xlen(stream:puuid) < threshold, one player is promoted."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        monkeypatch.setenv("DISCOVERY_TRICKLE_THRESHOLD", "2")
+
+        mock_r = AsyncMock()
+        mock_r.get = AsyncMock(return_value=None)  # not halted
+        mock_r.xlen = AsyncMock(return_value=0)  # stream:puuid empty
+
+        call_count = 0
+        promote_calls: list[dict] = []
+
+        async def fake_is_idle(*args):
+            nonlocal call_count
+            call_count += 1
+            if call_count > 1:
+                raise KeyboardInterrupt
+            return False  # pipeline NOT idle
+
+        original_promote = _promote_batch
+
+        async def tracking_promote(*args, **kwargs):
+            promote_calls.append(kwargs)
+            return 1
+
+        mock_loop = MagicMock()
+        mock_loop.add_signal_handler.return_value = None
+
+        with (
+            patch("lol_discovery.main.Config") as mock_cfg,
+            patch("lol_discovery.main.get_redis", return_value=mock_r),
+            patch("lol_discovery.main.RiotClient") as mock_riot,
+            patch("lol_discovery.main._is_idle", side_effect=fake_is_idle),
+            patch("lol_discovery.main._promote_batch", side_effect=tracking_promote),
+            patch("lol_discovery.main.asyncio.sleep", new_callable=AsyncMock),
+            patch("lol_discovery.main.asyncio.get_running_loop", return_value=mock_loop),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            mock_riot.return_value = AsyncMock()
+            with pytest.raises(KeyboardInterrupt):
+                await main()
+
+        # _promote_batch must have been called with batch_size=1
+        assert len(promote_calls) == 1
+        assert promote_calls[0].get("batch_size") == 1
+
+    @pytest.mark.asyncio
+    async def test_trickle__above_threshold__no_promotion(self, monkeypatch):
+        """When xlen(stream:puuid) >= threshold, no trickle promotion occurs."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        monkeypatch.setenv("DISCOVERY_TRICKLE_THRESHOLD", "2")
+
+        mock_r = AsyncMock()
+        mock_r.get = AsyncMock(return_value=None)
+        mock_r.xlen = AsyncMock(return_value=3)  # above threshold
+
+        call_count = 0
+        promote_called = False
+
+        async def fake_is_idle(*args):
+            nonlocal call_count
+            call_count += 1
+            if call_count > 1:
+                raise KeyboardInterrupt
+            return False
+
+        async def tracking_promote(*args, **kwargs):
+            nonlocal promote_called
+            promote_called = True
+            return 0
+
+        mock_loop = MagicMock()
+        mock_loop.add_signal_handler.return_value = None
+
+        with (
+            patch("lol_discovery.main.Config") as mock_cfg,
+            patch("lol_discovery.main.get_redis", return_value=mock_r),
+            patch("lol_discovery.main.RiotClient") as mock_riot,
+            patch("lol_discovery.main._is_idle", side_effect=fake_is_idle),
+            patch("lol_discovery.main._promote_batch", side_effect=tracking_promote),
+            patch("lol_discovery.main.asyncio.sleep", new_callable=AsyncMock),
+            patch("lol_discovery.main.asyncio.get_running_loop", return_value=mock_loop),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            mock_riot.return_value = AsyncMock()
+            with pytest.raises(KeyboardInterrupt):
+                await main()
+
+        assert not promote_called
+
+    @pytest.mark.asyncio
+    async def test_trickle__disabled__no_promotion(self, monkeypatch):
+        """When discovery_trickle_threshold=0, no trickle even if stream:puuid is empty."""
+        monkeypatch.setenv("RIOT_API_KEY", "RGAPI-test")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost")
+        monkeypatch.setenv("DISCOVERY_TRICKLE_THRESHOLD", "0")
+
+        mock_r = AsyncMock()
+        mock_r.get = AsyncMock(return_value=None)
+        mock_r.xlen = AsyncMock(return_value=0)  # stream:puuid empty
+
+        call_count = 0
+        promote_called = False
+
+        async def fake_is_idle(*args):
+            nonlocal call_count
+            call_count += 1
+            if call_count > 1:
+                raise KeyboardInterrupt
+            return False
+
+        async def tracking_promote(*args, **kwargs):
+            nonlocal promote_called
+            promote_called = True
+            return 0
+
+        mock_loop = MagicMock()
+        mock_loop.add_signal_handler.return_value = None
+
+        with (
+            patch("lol_discovery.main.Config") as mock_cfg,
+            patch("lol_discovery.main.get_redis", return_value=mock_r),
+            patch("lol_discovery.main.RiotClient") as mock_riot,
+            patch("lol_discovery.main._is_idle", side_effect=fake_is_idle),
+            patch("lol_discovery.main._promote_batch", side_effect=tracking_promote),
+            patch("lol_discovery.main.asyncio.sleep", new_callable=AsyncMock),
+            patch("lol_discovery.main.asyncio.get_running_loop", return_value=mock_loop),
+        ):
+            mock_cfg.return_value = Config(_env_file=None)
+            mock_riot.return_value = AsyncMock()
+            with pytest.raises(KeyboardInterrupt):
+                await main()
+
+        # xlen should never be called when trickle is disabled
+        mock_r.xlen.assert_not_called()
+        assert not promote_called

@@ -6,6 +6,7 @@ import dataclasses
 import json
 import logging
 import sys
+import time
 from datetime import UTC, datetime
 
 import redis.asyncio as aioredis
@@ -14,6 +15,7 @@ from lol_pipeline.config import Config
 from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.opgg_client import OpggClient
+from lol_pipeline.priority import PRIORITY_MANUAL_20, PRIORITY_MANUAL_20PLUS, has_priority_players
 from lol_pipeline.rate_limiter_client import wait_for_token
 from lol_pipeline.raw_store import RawStore
 from lol_pipeline.redis_client import get_redis
@@ -33,7 +35,7 @@ from lol_pipeline.sources.opgg.extractors import OpggMatchExtractor
 from lol_pipeline.sources.opgg.source import OpggSource
 from lol_pipeline.sources.registry import SourceEntry, SourceRegistry
 from lol_pipeline.sources.riot.source import RiotExtractor, RiotSource
-from lol_pipeline.streams import ack, nack_to_dlq, publish
+from lol_pipeline.streams import ack, defer_message, nack_to_dlq, publish
 from pydantic import ValidationError
 
 from lol_fetcher._constants import GROUP, IN_STREAM, OUT_STREAM
@@ -42,6 +44,20 @@ _IN_STREAM = IN_STREAM
 _OUT_STREAM = OUT_STREAM
 _GROUP = GROUP
 _log = get_logger("fetcher")
+
+# 2-second cache for has_priority_players() to avoid hammering Redis
+_priority_cache: tuple[bool, float] = (False, 0.0)  # (result, expiry_timestamp)
+
+
+async def _has_priority_cached(r: aioredis.Redis) -> bool:
+    """Return cached has_priority_players() result, refreshing every 2 seconds."""
+    global _priority_cache  # noqa: PLW0603
+    result, expiry = _priority_cache
+    if time.monotonic() < expiry:
+        return result
+    result = await has_priority_players(r)
+    _priority_cache = (result, time.monotonic() + 2.0)
+    return result
 
 
 async def _set_match_status(
@@ -260,6 +276,18 @@ async def _fetch_match(  # noqa: PLR0913
         log.critical("system halted — skipping message")
         return
 
+    is_low_priority = envelope.priority not in (PRIORITY_MANUAL_20, PRIORITY_MANUAL_20PLUS)
+    if is_low_priority and await _has_priority_cached(r):
+        await defer_message(
+            r, msg_id, envelope, _IN_STREAM, _GROUP,
+            envelope_ttl=cfg.delay_envelope_ttl_seconds,
+        )
+        log.debug(
+            "deferred low-priority message — priority player active",
+            extra={"match_id": envelope.payload.get("match_id", "")},
+        )
+        return
+
     match_id: str = envelope.payload["match_id"]
     region: str = envelope.payload["region"]
     puuid: str = envelope.payload.get("puuid", "")
@@ -312,10 +340,17 @@ async def _fetch_match(  # noqa: PLR0913
 
     # Determine failure code from coordinator hints
     failure_code = "http_429" if result.retry_after_ms else "http_5xx"
+    throttled = result.throttled_source or "unknown"
+    failure_reason = (
+        f"{failure_code} (source={throttled}, region={region})"
+        if result.retry_after_ms
+        else failure_code
+    )
     await nack_to_dlq(
         r,
         envelope,
         failure_code=failure_code,
+        failure_reason=failure_reason,
         failed_by="fetcher",
         original_message_id=msg_id,
         retry_after_ms=result.retry_after_ms,
@@ -323,7 +358,12 @@ async def _fetch_match(  # noqa: PLR0913
     await ack(r, _IN_STREAM, _GROUP, msg_id)
     log.error(
         "all sources exhausted — routing to DLQ",
-        extra={"match_id": match_id, "failure_code": failure_code},
+        extra={
+            "match_id": match_id,
+            "failure_code": failure_code,
+            "throttled_source": throttled,
+            "region": region,
+        },
     )
 
 

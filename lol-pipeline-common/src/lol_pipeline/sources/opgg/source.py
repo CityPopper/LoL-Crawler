@@ -15,6 +15,7 @@ import httpx
 
 from lol_pipeline._opgg_etl import OPGG_REGION_MAP, RIOT_PLATFORM_TO_OPGG_REGION
 from lol_pipeline.opgg_client import OpggClient, OpggParseError, OpggRateLimitError
+from lol_pipeline.rate_limiter_client import notify_cooling_off
 from lol_pipeline.sources.base import (
     MATCH,
     DataType,
@@ -76,6 +77,8 @@ class OpggSource:
                 summoner_id, opgg_region, limit=self._game_limit, blocking=False
             )
         except OpggRateLimitError as exc:
+            if exc.retry_ms:
+                await notify_cooling_off("opgg", exc.retry_ms)
             return FetchResponse(
                 result=FetchResult.THROTTLED, retry_after_ms=exc.retry_ms
             )

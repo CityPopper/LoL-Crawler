@@ -242,10 +242,13 @@ async def _promote_batch(
     cfg: Config,
     log: logging.Logger,
     riot: RiotClient,
+    *,
+    batch_size: int | None = None,
 ) -> int:
     """Promote discovered players from discover:players to stream:puuid."""
     if await is_system_halted(r):
         return 0
+    size = batch_size if batch_size is not None else cfg.discovery_batch_size
     cutoff = time.time() - PLAYER_DATA_TTL_SECONDS
     removed = await r.zremrangebyscore(PLAYERS_ALL_KEY, "-inf", cutoff)
     if removed:
@@ -253,7 +256,7 @@ async def _promote_batch(
     members: list[Any] = await r.zrevrange(
         _DISCOVER_KEY,
         0,
-        cfg.discovery_batch_size - 1,
+        size - 1,
     )
     if not members:
         return 0
@@ -283,6 +286,32 @@ async def _promote_batch(
     if promoted:
         log.info("promoted discovered players", extra={"count": promoted})
     return promoted
+
+
+async def _try_trickle_promote(
+    r: aioredis.Redis,
+    cfg: Config,
+    log: logging.Logger,
+    riot: RiotClient,
+) -> bool:
+    """Attempt a single trickle promotion when stream:puuid is shallow.
+
+    Returns True when a player was promoted (caller should NOT bump
+    polls_since_log), False otherwise (caller should bump).
+    """
+    puuid_depth: int = await r.xlen(STREAM_PUUID)
+    if puuid_depth >= cfg.discovery_trickle_threshold:
+        return False
+    promoted = await _promote_batch(r, cfg, log, riot, batch_size=1)
+    if promoted:
+        log.debug(
+            "trickle-promoted player",
+            extra={
+                "puuid_depth": puuid_depth,
+                "threshold": cfg.discovery_trickle_threshold,
+            },
+        )
+    return bool(promoted)
 
 
 async def main() -> None:
@@ -325,6 +354,9 @@ async def main() -> None:
                 if idle:
                     promoted = await _promote_batch(r, cfg, log, riot)
                     if promoted == 0:
+                        polls_since_log += 1
+                elif cfg.discovery_trickle_threshold > 0:
+                    if not await _try_trickle_promote(r, cfg, log, riot):
                         polls_since_log += 1
                 else:
                     polls_since_log += 1

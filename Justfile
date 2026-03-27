@@ -183,6 +183,13 @@ logs-all:
 restart svc:
     {{DC}} restart {{svc}}
 
+# Build and force-recreate a single service (e.g. just deploy ui)
+deploy svc:
+    {{DC}} build {{svc}}
+    {{DC}} stop {{svc}}
+    {{DC}} rm -f {{svc}}
+    {{DC}} up -d {{svc}}
+
 # Open an interactive redis-cli session inside the Redis container
 redis-cli:
     {{RUNTIME}} exec -it {{_redis_ctr}} redis-cli
@@ -396,12 +403,34 @@ typecheck-svc name:
     COMMON_SRC="$PWD/lol-pipeline-common/src"
     cd lol-pipeline-{{name}} && MYPYPATH="$COMMON_SRC" mypy src/
 
-# Quick post-change validation without API key (lint + typecheck + unit tests)
-smoke: lint typecheck test
+# Quick post-change validation without API key (lint + typecheck + unit tests + entrypoint imports)
+smoke: lint typecheck test smoke-entrypoints
 
 # Full CI mirror — runs exactly what GitHub Actions runs (minus docker build + integration tests)
 # Intended to be run inside the dev container (via just dev-ci); calls internal recipes directly.
-ci: lint typecheck _test _contract
+ci: lint typecheck _test _contract _smoke-entrypoints
+
+# Verify all service entrypoints import cleanly inside the dev container
+smoke-entrypoints: _ensure-dev-image
+    {{RUNTIME}} run --rm -v "{{justfile_directory()}}:/workspace" -w /workspace lol-crawler-dev \
+        bash -c "just _reinstall-workspace && just _smoke-entrypoints"
+
+# Internal: import every service entrypoint to catch missing symbols or module-level crashes
+_smoke-entrypoints:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "=== Smoke-testing service entrypoints ==="
+    python -c "from lol_crawler.main import main"
+    python -c "from lol_fetcher.main import main"
+    python -c "from lol_parser.main import main"
+    python -c "from lol_player_stats.main import main"
+    python -c "from lol_champion_stats.main import main"
+    python -c "from lol_recovery.main import main"
+    python -c "from lol_delay_scheduler.main import main"
+    python -c "from lol_discovery.main import main"
+    python -c "from lol_ui.main import app"
+    python -c "from lol_rate_limiter.main import app"
+    echo "All entrypoints OK"
 
 # Build the dev container (Python 3.14 + all deps + Node.js + Claude Code CLI)
 dev-build:

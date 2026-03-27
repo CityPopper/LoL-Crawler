@@ -97,6 +97,9 @@ async def has_priority_players(r: aioredis.Redis) -> bool:
     remain after cleanup.
     """
     try:
+        if await r.scard(PRIORITY_ACTIVE_SET) == 0:
+            return False
+
         members: set[str] = await r.smembers(PRIORITY_ACTIVE_SET)  # type: ignore[misc]
         if not members:
             return False

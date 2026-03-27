@@ -69,7 +69,7 @@ async def index(request: Request) -> HTMLResponse:
     <h3 class="card__title">{t("system_status")}</h3>
     <div>{system_badge}</div>
     <p class="mt-sm">
-      <a href="/streams">{t("view_streams")} &rarr;</a>
+      <a href="/system">{t("view_streams")} &rarr;</a>
     </p>
   </div>
   <div class="card">
@@ -79,7 +79,7 @@ async def index(request: Request) -> HTMLResponse:
       <span class="stat__label">{t("total_players")}</span>
     </div>
     <p class="mt-sm">
-      <a href="/players">{t("browse_players")} &rarr;</a>
+      <a href="/stats">{t("look_up_player")} &rarr;</a>
     </p>
   </div>
   <div class="card">

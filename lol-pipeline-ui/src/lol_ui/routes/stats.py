@@ -22,6 +22,7 @@ from lol_pipeline._opgg_etl import OPGG_REGION_MAP, RIOT_PLATFORM_TO_OPGG_REGION
 from lol_pipeline.config import Config
 from lol_pipeline.log import get_logger
 from lol_pipeline.opgg_client import OpggClient
+from lol_pipeline.opgg_fast_stats import compute_opgg_fast_stats
 from lol_pipeline.sources.blob_store import BlobStore
 from lol_pipeline.models import MessageEnvelope
 from lol_pipeline.priority import PRIORITY_MANUAL_20, set_priority
@@ -200,7 +201,7 @@ async def _resolve_puuid(
     region: str,
     cfg: Config,
 ) -> str | HTMLResponse:
-    """Look up PUUID from cache or Riot API (read-only — no Redis writes).
+    """Look up PUUID from cache or Riot API, caching the result for 24 h.
 
     Returns the PUUID string on success, or an HTMLResponse on error.
     """
@@ -220,7 +221,7 @@ async def _resolve_puuid(
     if cached_puuid:
         return cached_puuid
     try:
-        await wait_for_token("riot", "account")
+        await wait_for_token("riot:ui", "account", max_wait_s=10.0)
         account = await riot.get_account_by_riot_id(game_name, tag_line, region)
     except NotFoundError:
         return HTMLResponse(
@@ -259,6 +260,7 @@ async def _resolve_puuid(
             )
         )
     puuid: str = account["puuid"]
+    await r.set(cache_key, puuid, ex=86400)
     return puuid
 
 
@@ -354,16 +356,31 @@ async def _opgg_prefetch_bg(
     opgg_region: str,
     blob_store: BlobStore,
     limit: int,
+    r: Any = None,
 ) -> None:
     """Background task: pre-fetch op.gg games into BlobStore. Errors are logged, never raised."""
     try:
-        await opgg_client.prefetch_player_games(puuid, opgg_region, blob_store, limit=limit)
+        raw_games = await opgg_client.prefetch_player_games(
+            puuid, opgg_region, blob_store, limit=limit
+        )
     except Exception:
         _log.warning(
             "opgg background prefetch failed",
             extra={"puuid": puuid, "region": opgg_region},
             exc_info=True,
         )
+        return
+
+    if r is not None and raw_games:
+        try:
+            champion_id_map: dict[str, str] = await r.hgetall("ddragon:champion_ids")
+            await compute_opgg_fast_stats(r, puuid, raw_games, champion_id_map)
+        except Exception:
+            _log.warning(
+                "opgg fast stats computation failed",
+                extra={"puuid": puuid, "region": opgg_region},
+                exc_info=True,
+            )
 
 
 def _maybe_start_opgg_prefetch(
@@ -386,8 +403,9 @@ def _maybe_start_opgg_prefetch(
     if not opgg_region:
         return
     limit: int = getattr(cfg, "opgg_prefetch_limit", 20)
+    r = request.app.state.r
     asyncio.create_task(
-        _opgg_prefetch_bg(opgg_client, puuid, opgg_region, blob_store, limit)
+        _opgg_prefetch_bg(opgg_client, puuid, opgg_region, blob_store, limit, r)
     )
 
 

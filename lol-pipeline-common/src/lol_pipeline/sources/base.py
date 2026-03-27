@@ -172,3 +172,4 @@ class WaterfallResult:
     available_data_types: frozenset[DataType] = field(default_factory=frozenset)
     blob_validation_failed: bool = False
     tried_sources: list[tuple[str, FetchResult]] = field(default_factory=list)
+    throttled_source: str | None = None

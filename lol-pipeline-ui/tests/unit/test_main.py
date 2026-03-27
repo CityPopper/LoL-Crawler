@@ -41,7 +41,6 @@ from lol_ui.ddragon import _DDRAGON_CHAMPION_IDS_KEY, _get_champion_id_map
 from lol_ui.log_helpers import _merged_log_lines, _parse_log_line, _render_log_lines, _tail_file
 from lol_ui.match_badges import _match_badges, _match_badges_html
 from lol_ui.match_history import _match_history_html, _match_history_section
-from lol_ui.player_helpers import _render_player_rows
 from lol_ui.playstyle import _playstyle_pills_html, _playstyle_tags
 from lol_ui.rank import _rank_history_html
 from lol_ui.rendering import (
@@ -116,20 +115,12 @@ class TestPage:
         result = _page("X", "")
         assert "/stats" in result
         assert "/champions" in result
-        assert "/players" in result
-        assert "/streams" in result
+        assert "/system" in result
         assert "/logs" in result
 
     def test_nav_active_state__stats(self):
         result = _page("X", "", path="/stats")
         assert 'href="/stats" class="active"' in result
-        # Other links should not be active
-        assert 'href="/players" class="active"' not in result
-
-    def test_nav_active_state__players(self):
-        result = _page("X", "", path="/players")
-        assert 'href="/players" class="active"' in result
-        assert 'href="/stats" class="active"' not in result
 
     def test_nav_no_active_without_path(self):
         result = _page("X", "")
@@ -640,7 +631,7 @@ class TestAutoSeedPriority:
         import fakeredis.aioredis
         from lol_pipeline.priority import set_priority
 
-        from lol_ui.routes.streams import show_streams
+        from lol_ui.routes.system import show_system
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         await set_priority(r, "puuid-1")
@@ -650,7 +641,7 @@ class TestAutoSeedPriority:
         request = MagicMock()
         request.app.state.r = r
 
-        resp = await show_streams(request)
+        resp = await show_system(request)
         body = resp.body.decode()
         assert "Priority players in-flight" in body
         assert "<strong>Yes</strong>" in body
@@ -866,104 +857,6 @@ class TestDepthBadge:
         assert "badge--success" in result
 
 
-class TestPlayersPageCount:
-    """Sprint 2.2: /players shows 'page X of Y' and full ISO timestamps."""
-
-    @pytest.mark.asyncio
-    async def test_players__shows_page_indicator(self):
-        """Single page of players shows 'page 1 of 1' indicator."""
-        from unittest.mock import MagicMock
-
-        import fakeredis.aioredis
-
-        from lol_ui.routes.players import show_players
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        await r.hset(
-            "player:test-puuid",
-            mapping={
-                "game_name": "TestPlayer",
-                "tag_line": "NA1",
-                "region": "na1",
-                "seeded_at": "2026-03-19T12:00:00+00:00",
-            },
-        )
-        await r.zadd("players:all", {"test-puuid": 1710835200.0})
-        request = MagicMock()
-        request.app.state.r = r
-        request.query_params = {"page": "0"}
-
-        resp = await show_players(request)
-        body = resp.body.decode()
-
-        assert "page 1 of 1" in body
-        await r.aclose()
-
-    @pytest.mark.asyncio
-    async def test_players__shows_date_only_timestamp(self):
-        """P10-RD-9: seeded_at is rendered as date-only, not full ISO string."""
-        from unittest.mock import MagicMock
-
-        import fakeredis.aioredis
-
-        from lol_ui.routes.players import show_players
-
-        iso_ts = "2026-03-19T12:34:56+00:00"
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        await r.hset(
-            "player:test-puuid",
-            mapping={
-                "game_name": "TestPlayer",
-                "tag_line": "NA1",
-                "region": "na1",
-                "seeded_at": iso_ts,
-            },
-        )
-        await r.zadd("players:all", {"test-puuid": 1710835200.0})
-        request = MagicMock()
-        request.app.state.r = r
-        request.query_params = {"page": "0"}
-
-        resp = await show_players(request)
-        body = resp.body.decode()
-
-        assert "2026-03-19" in body
-        assert "T12:34:56" not in body
-        await r.aclose()
-
-    @pytest.mark.asyncio
-    async def test_players__multipage_shows_correct_indicator(self):
-        """26 players across 2 pages: page=1 shows 'page 2 of 2'."""
-        from unittest.mock import MagicMock
-
-        import fakeredis.aioredis
-
-        from lol_ui.constants import _PLAYERS_PAGE_SIZE
-        from lol_ui.routes.players import show_players
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        for i in range(_PLAYERS_PAGE_SIZE + 1):
-            await r.hset(
-                f"player:puuid-{i}",
-                mapping={
-                    "game_name": f"Player{i}",
-                    "tag_line": "NA1",
-                    "region": "na1",
-                    "seeded_at": "2026-03-19T00:00:00",
-                },
-            )
-            await r.zadd("players:all", {f"puuid-{i}": 1710835200.0 + i})
-        request = MagicMock()
-        request.app.state.r = r
-        request.query_params = {"page": "1"}
-
-        resp = await show_players(request)
-        body = resp.body.decode()
-
-        assert "page 2 of 2" in body
-        await r.aclose()
-
-
 class TestStatsHeading:
     """Sprint 2.1: /stats heading shows Riot ID name only (no PUUID)."""
 
@@ -1063,7 +956,7 @@ class TestStreamsFragment:
         """Fragment endpoint returns table HTML without <!doctype html> wrapper."""
         import fakeredis.aioredis
 
-        from lol_ui.routes.streams import streams_fragment
+        from lol_ui.routes.system import system_fragment_streams
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -1072,7 +965,7 @@ class TestStreamsFragment:
         request = MagicMock()
         request.app.state.r = r
 
-        resp = await streams_fragment(request)
+        resp = await system_fragment_streams(request)
         body = resp.body.decode()
 
         assert "<!doctype" not in body.lower()
@@ -1088,7 +981,7 @@ class TestStreamsFragment:
         """Fragment shows HALTED banner when system:halted is set."""
         import fakeredis.aioredis
 
-        from lol_ui.routes.streams import streams_fragment
+        from lol_ui.routes.system import system_fragment_streams
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         await r.set("system:halted", "1")
@@ -1098,7 +991,7 @@ class TestStreamsFragment:
         request = MagicMock()
         request.app.state.r = r
 
-        resp = await streams_fragment(request)
+        resp = await system_fragment_streams(request)
         body = resp.body.decode()
 
         assert "HALTED" in body
@@ -1110,7 +1003,7 @@ class TestStreamsFragment:
         """Fragment shows running banner when system is not halted."""
         import fakeredis.aioredis
 
-        from lol_ui.routes.streams import streams_fragment
+        from lol_ui.routes.system import system_fragment_streams
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -1119,7 +1012,7 @@ class TestStreamsFragment:
         request = MagicMock()
         request.app.state.r = r
 
-        resp = await streams_fragment(request)
+        resp = await system_fragment_streams(request)
         body = resp.body.decode()
 
         assert "System running" in body
@@ -1132,7 +1025,7 @@ class TestStreamsFragment:
         import fakeredis.aioredis
         from lol_pipeline.priority import set_priority
 
-        from lol_ui.routes.streams import streams_fragment
+        from lol_ui.routes.system import system_fragment_streams
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
         await set_priority(r, "puuid-1")
@@ -1142,7 +1035,7 @@ class TestStreamsFragment:
         request = MagicMock()
         request.app.state.r = r
 
-        resp = await streams_fragment(request)
+        resp = await system_fragment_streams(request)
         body = resp.body.decode()
 
         assert "<strong>Yes</strong>" in body
@@ -1158,7 +1051,7 @@ class TestStreamsAutoRefresh:
         """The /streams page includes JS polling script."""
         import fakeredis.aioredis
 
-        from lol_ui.routes.streams import show_streams
+        from lol_ui.routes.system import show_system
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -1167,10 +1060,10 @@ class TestStreamsAutoRefresh:
         request = MagicMock()
         request.app.state.r = r
 
-        resp = await show_streams(request)
+        resp = await show_system(request)
         body = resp.body.decode()
 
-        assert "/streams/fragment" in body
+        assert "/system/fragment/streams" in body
         assert "setInterval" in body
         assert "5000" in body
         await r.aclose()
@@ -1178,10 +1071,10 @@ class TestStreamsAutoRefresh:
     @pytest.mark.asyncio
     @pytest.mark.skipif(not _LUPA_AVAILABLE, reason="lupa required for Lua scripts")
     async def test_show_streams__has_pause_button(self):
-        """The /streams page includes a Pause button."""
+        """The /system page includes a Pause button."""
         import fakeredis.aioredis
 
-        from lol_ui.routes.streams import show_streams
+        from lol_ui.routes.system import show_system
 
         r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -1190,10 +1083,10 @@ class TestStreamsAutoRefresh:
         request = MagicMock()
         request.app.state.r = r
 
-        resp = await show_streams(request)
+        resp = await show_system(request)
         body = resp.body.decode()
 
-        assert "streams-pause-btn" in body
+        assert "sys-streams-pause" in body
         assert "Pause" in body
         assert "Auto-refresh every 5s" in body
         await r.aclose()
@@ -1491,33 +1384,6 @@ class TestPriorityBadge:
         body = resp.body.decode()
 
         assert "Priority" not in body
-
-
-class TestPlayersEmptyState:
-    """Sprint 3.3: /players empty state uses _empty_state() component."""
-
-    @pytest.mark.asyncio
-    async def test_no_players__shows_empty_state(self):
-        """When no players seeded, shows styled empty state with guidance."""
-        import fakeredis.aioredis
-
-        from lol_ui.routes.players import show_players
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-
-        from unittest.mock import MagicMock
-
-        request = MagicMock()
-        request.app.state.r = r
-        request.query_params = {"page": "0"}
-
-        resp = await show_players(request)
-        body = resp.body.decode()
-
-        assert 'class="empty-state"' in body
-        assert "No players seeded yet" in body
-        assert "just seed GameName#Tag" in body
-        await r.aclose()
 
 
 class TestDlqBrowser:
@@ -1875,154 +1741,6 @@ class TestStatsMatchesEdgeCases:
         await r.aclose()
 
 
-class TestPlayerSearch:
-    """Sprint 5.5: /players has client-side search filter input."""
-
-    @pytest.mark.asyncio
-    async def test_players__has_search_input(self):
-        """The /players page includes a search input when players exist."""
-        import fakeredis.aioredis
-
-        from lol_ui.routes.players import show_players
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        await r.hset(
-            "player:test-puuid",
-            mapping={
-                "game_name": "TestPlayer",
-                "tag_line": "NA1",
-                "region": "na1",
-                "seeded_at": "2026-03-19T00:00:00",
-            },
-        )
-        await r.zadd("players:all", {"test-puuid": 1710835200.0})
-
-        from unittest.mock import MagicMock
-
-        request = MagicMock()
-        request.app.state.r = r
-        request.query_params = {"page": "0"}
-
-        resp = await show_players(request)
-        body = resp.body.decode()
-
-        assert 'id="player-search"' in body
-        assert 'placeholder="Filter players..."' in body
-        await r.aclose()
-
-
-class TestPlayersAllZset:
-    """Performance: /players uses players:all ZSET instead of SCAN."""
-
-    @pytest.mark.asyncio
-    async def test_players__uses_zrevrange_not_scan(self):
-        """show_players reads from players:all ZSET, not scan_iter."""
-        import fakeredis.aioredis
-
-        from lol_ui.routes.players import show_players
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        # Add player to players:all ZSET and set up hash
-        await r.zadd("players:all", {"puuid-zset": 1710835200.0})
-        await r.hset(
-            "player:puuid-zset",
-            mapping={
-                "game_name": "ZsetPlayer",
-                "tag_line": "001",
-                "region": "na1",
-                "seeded_at": "2026-03-19T00:00:00",
-            },
-        )
-
-        from unittest.mock import MagicMock
-
-        request = MagicMock()
-        request.app.state.r = r
-        request.query_params = {"page": "0"}
-
-        resp = await show_players(request)
-        body = resp.body.decode()
-
-        # Player from ZSET should appear
-        assert "ZsetPlayer#001" in body
-        await r.aclose()
-
-    @pytest.mark.asyncio
-    async def test_players__player_in_hash_but_not_zset__not_shown(self):
-        """Player hashes without a players:all entry are NOT shown."""
-        import fakeredis.aioredis
-
-        from lol_ui.routes.players import show_players
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        # Only set up hash, NOT players:all
-        await r.hset(
-            "player:puuid-orphan",
-            mapping={
-                "game_name": "OrphanPlayer",
-                "tag_line": "001",
-                "region": "na1",
-                "seeded_at": "2026-03-19T00:00:00",
-            },
-        )
-
-        from unittest.mock import MagicMock
-
-        request = MagicMock()
-        request.app.state.r = r
-        request.query_params = {"page": "0"}
-
-        resp = await show_players(request)
-        body = resp.body.decode()
-
-        # Should show empty state since players:all is empty
-        assert "No players seeded yet" in body
-        await r.aclose()
-
-    @pytest.mark.asyncio
-    async def test_players__ordered_most_recent_first(self):
-        """Players are shown most recently seeded first (highest score in ZSET)."""
-        import fakeredis.aioredis
-
-        from lol_ui.routes.players import show_players
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        await r.zadd("players:all", {"puuid-old": 1000.0, "puuid-new": 2000.0})
-        await r.hset(
-            "player:puuid-old",
-            mapping={
-                "game_name": "OldPlayer",
-                "tag_line": "001",
-                "region": "na1",
-                "seeded_at": "2024-01-01T00:00:00",
-            },
-        )
-        await r.hset(
-            "player:puuid-new",
-            mapping={
-                "game_name": "NewPlayer",
-                "tag_line": "002",
-                "region": "na1",
-                "seeded_at": "2026-03-19T00:00:00",
-            },
-        )
-
-        from unittest.mock import MagicMock
-
-        request = MagicMock()
-        request.app.state.r = r
-        request.query_params = {"page": "0"}
-
-        resp = await show_players(request)
-        body = resp.body.decode()
-
-        # NewPlayer should appear before OldPlayer
-        new_pos = body.index("NewPlayer")
-        old_pos = body.index("OldPlayer")
-        assert new_pos < old_pos
-        await r.aclose()
-
-
 class TestUiEntryPoint:
     """Tests for __main__ module."""
 
@@ -2289,7 +2007,7 @@ class TestRateLimitBeforeRiotCall:
         with patch("lol_ui.routes.stats.wait_for_token", new_callable=AsyncMock) as mock_wft:
             await show_stats(request)
 
-        mock_wft.assert_called_once_with("riot", "account")
+        mock_wft.assert_called_once_with("riot:ui", "account", max_wait_s=10.0)
 
     @pytest.mark.asyncio
     async def test_show_stats__cached_puuid_skips_wait_for_token(self):
@@ -3175,16 +2893,6 @@ class TestDashboardRegionSelector:
         await r.aclose()
 
 
-class TestRenderPlayerRowsSeededTruncated:
-    def test_render_player_rows__seeded_at_truncated_to_date(self):
-        """P10-RD-9: seeded_at ISO timestamp must be truncated to date-only."""
-        rows = [("TestPlayer", "NA1", "na1", "2024-01-15T14:23:11+00:00", {})]
-        result = _render_player_rows(rows)
-        assert "2024-01-15" in result
-        assert "T14:23:11" not in result
-        assert "14:23:11+00:00" not in result
-
-
 class TestSecurityHeaders:
     """P10-SEC-4: Every response must include security headers."""
 
@@ -3768,95 +3476,6 @@ class TestStatsPageRankDisplay:
 # ---------------------------------------------------------------------------
 # Matchups page
 # ---------------------------------------------------------------------------
-
-
-class TestMatchupsPage:
-    """The /matchups page shows a form and matchup data."""
-
-    @pytest.mark.asyncio
-    async def test_matchups_page__form_shown_without_params(self):
-        """When no champion params are provided, the search form is rendered."""
-        from unittest.mock import MagicMock
-
-        import fakeredis.aioredis
-
-        from lol_ui.routes.matchups import show_matchups
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        request = MagicMock()
-        request.app.state.r = r
-        request.query_params = {}
-
-        resp = await show_matchups(request)
-        body = resp.body.decode()
-
-        assert "Champion Matchups" in body
-        assert "Champion A" in body
-        assert "Champion B" in body
-        assert "Compare" in body
-        assert "form" in body
-        await r.aclose()
-
-    @pytest.mark.asyncio
-    async def test_matchups_page__shows_data_when_available(self):
-        """When matchup data exists, win rates are shown for both champions."""
-        from unittest.mock import MagicMock
-
-        import fakeredis.aioredis
-
-        from lol_ui.routes.matchups import show_matchups
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        await r.zadd("patch:list", {"14.5": 1710000000})
-        await r.hset(
-            "matchup:Jinx:Caitlyn:BOTTOM:14.5",
-            mapping={"games": "100", "wins": "55"},
-        )
-        request = MagicMock()
-        request.app.state.r = r
-        request.query_params = {
-            "champ_a": "Jinx",
-            "champ_b": "Caitlyn",
-            "role": "BOTTOM",
-            "patch": "14.5",
-        }
-
-        resp = await show_matchups(request)
-        body = resp.body.decode()
-
-        assert "Jinx" in body
-        assert "Caitlyn" in body
-        assert "100" in body  # games count
-        assert "55.0%" in body  # Jinx win rate
-        assert "45.0%" in body  # Caitlyn win rate
-        await r.aclose()
-
-    @pytest.mark.asyncio
-    async def test_matchups_page__no_data_shows_empty_state(self):
-        """When no matchup data exists, an empty state message is shown."""
-        from unittest.mock import MagicMock
-
-        import fakeredis.aioredis
-
-        from lol_ui.routes.matchups import show_matchups
-
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        await r.zadd("patch:list", {"14.5": 1710000000})
-        request = MagicMock()
-        request.app.state.r = r
-        request.query_params = {
-            "champ_a": "Jinx",
-            "champ_b": "Caitlyn",
-            "role": "BOTTOM",
-            "patch": "14.5",
-        }
-
-        resp = await show_matchups(request)
-        body = resp.body.decode()
-
-        assert "No matchup data" in body
-        assert "empty-state" in body
-        await r.aclose()
 
 
 # ---------------------------------------------------------------------------

@@ -25,7 +25,7 @@
     },
     "failure_code": {
       "type": "string",
-      "enum": ["http_429", "http_5xx", "http_404", "http_403", "parse_error", "handler_crash", "corrupt_message", "blob_validation_failed", "unknown"],
+      "enum": ["http_429", "http_5xx", "http_404", "http_403", "parse_error", "handler_crash", "corrupt_message", "blob_validation_failed", "deferred_too_long", "unknown"],
       "description": "Machine-readable failure classification"
     },
     "failed_at": {
@@ -35,7 +35,7 @@
     },
     "failed_by": {
       "type": "string",
-      "enum": ["seed", "crawler", "fetcher", "parser", "analyzer", "recovery", "delay-scheduler", "run_consumer"],
+      "enum": ["seed", "crawler", "fetcher", "parser", "analyzer", "recovery", "delay-scheduler", "run_consumer", "defer_message"],
       "description": "Service name that produced this DLQ entry"
     },
     "dlq_attempts": {
@@ -66,6 +66,9 @@
       "type": "string",
       "default": "",
       "description": "UUID tracing a message through the entire pipeline. Propagated from the original message."
+    },
+    "defer_count": {
+      "$ref": "envelope.json#/properties/defer_count"
     }
   }
 }

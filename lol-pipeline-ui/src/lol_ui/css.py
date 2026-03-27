@@ -6,9 +6,7 @@ _NAV_ITEMS = [
     ("/", "nav_dashboard"),
     ("/stats", "nav_stats"),
     ("/champions", "nav_champions"),
-    ("/matchups", "nav_matchups"),
-    ("/players", "nav_players"),
-    ("/streams", "nav_streams"),
+    ("/system", "nav_system"),
     ("/dlq", "nav_dlq"),
     ("/logs", "nav_logs"),
 ]

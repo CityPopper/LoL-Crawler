@@ -83,6 +83,9 @@ class Config(BaseSettings):
     delay_scheduler_backpressure_ratio: float = Field(default=0.8, gt=0, le=1.0)
     # PRIN-DIS-1: Discovery operational params (formerly hardcoded constants)
     discovery_idle_cutoff_days: int = Field(default=3, ge=1)
+    discovery_trickle_threshold: int = Field(default=2, ge=0)
+    # env: DISCOVERY_TRICKLE_THRESHOLD — promote up to 1 player when stream:puuid depth
+    # is below this value, even when the pipeline is not fully idle. 0 = disabled.
     default_region: str = "na1"
     # PRIN-REC-1: Recovery operational params (formerly hardcoded constants)
     recovery_claim_idle_ms: int = Field(default=60_000, ge=1)
@@ -93,6 +96,11 @@ class Config(BaseSettings):
     recovery_archive_maxlen: int = Field(default=50_000, ge=1)
     recovery_count: int = Field(default=10, ge=1)
     recovery_block_ms: int = Field(default=5000, ge=1)
+    # Stats lookback window
+    stats_split_start_ms: int = Field(default=0, ge=0)
+    # env: STATS_SPLIT_START_MS — Unix timestamp in ms of current split start (0 = disabled)
+    stats_min_games_lookback: int = Field(default=100, ge=1)
+    # env: STATS_MIN_GAMES_LOOKBACK — minimum games to include regardless of split filter
     # PRIN-UI-1: UI operational params (formerly hardcoded)
     ddragon_timeout_s: float = Field(default=5.0, gt=0)
     stats_fragment_cache_ttl_s: int = Field(default=21600, ge=1)  # 6 hours

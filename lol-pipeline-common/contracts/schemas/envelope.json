@@ -57,6 +57,12 @@
       "type": "string",
       "default": "",
       "description": "UUID tracing a message through the entire pipeline. Set at pipeline entry (Seed/UI), propagated by all services."
+    },
+    "defer_count": {
+      "type": "integer",
+      "default": 0,
+      "minimum": 0,
+      "description": "Number of times this message has been deferred via defer_message(). Capped at DEFER_MAX_COUNT (default 100) to prevent infinite deferral loops."
     }
   }
 }

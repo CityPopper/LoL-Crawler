@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from lol_pipeline.rate_limiter_client import try_token
+from lol_pipeline.rate_limiter_client import notify_cooling_off, try_token
 from lol_pipeline.riot_api import (
     PLATFORM_TO_REGION,
     AuthError,
@@ -87,6 +87,11 @@ class RiotSource:
                 available_data_types=frozenset({MATCH}),
             )
         except (RateLimitError, NotFoundError, AuthError, ServerError, TimeoutError) as exc:
+            if isinstance(exc, RateLimitError) and exc.retry_after_ms:
+                await notify_cooling_off(
+                    f"riot:{routing_region}",
+                    exc.retry_after_ms,
+                )
             return _map_riot_error(exc)
 
     async def close(self) -> None:

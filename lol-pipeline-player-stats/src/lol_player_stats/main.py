@@ -10,10 +10,13 @@ from __future__ import annotations
 import logging
 
 import redis.asyncio as aioredis
-from lol_pipeline._helpers import is_system_halted
+from lol_pipeline._helpers import consumer_id, is_system_halted
 from lol_pipeline.config import Config
 from lol_pipeline.constants import PLAYER_DATA_TTL_SECONDS
+from lol_pipeline.log import get_logger
 from lol_pipeline.models import MessageEnvelope
+from lol_pipeline.redis_client import get_redis
+from lol_pipeline.service import run_consumer
 from lol_pipeline.streams import ack
 
 _IN_STREAM = "stream:analyze"
@@ -173,12 +176,45 @@ async def handle_player_stats(
         return
 
     try:
+        source = await r.hget(f"player:stats:{puuid}", "source")  # type: ignore[misc]
+        if source == "opgg_prefetch":
+            await r.delete(
+                f"player:stats:{puuid}",
+                f"player:stats:cursor:{puuid}",
+                f"player:champions:{puuid}",
+                f"player:roles:{puuid}",
+            )
+
         cursor_str: str | None = await r.get(f"player:stats:cursor:{puuid}")
         cursor = float(cursor_str) if cursor_str else 0.0
 
-        new_matches: list[tuple[str, float]] = await r.zrangebyscore(
-            f"player:matches:{puuid}", f"({cursor}", "+inf", withscores=True
+        # Determine lookback window: max(split_start, score_of_Nth_newest_match)
+        min_count_result: list[tuple[str, float]] = await r.zrevrangebyscore(
+            f"player:matches:{puuid}",
+            "+inf",
+            "-inf",
+            start=cfg.stats_min_games_lookback - 1,
+            num=1,
+            withscores=True,
         )
+        score_of_nth = float(min_count_result[0][1]) if min_count_result else 0.0
+        window_start = max(float(cfg.stats_split_start_ms), score_of_nth)
+
+        if window_start > cursor:
+            # Window advanced past cursor: reset and recompute from window_start
+            await r.delete(
+                f"player:stats:{puuid}",
+                f"player:stats:cursor:{puuid}",
+                f"player:champions:{puuid}",
+                f"player:roles:{puuid}",
+            )
+            new_matches: list[tuple[str, float]] = await r.zrangebyscore(
+                f"player:matches:{puuid}", str(window_start), "+inf", withscores=True
+            )
+        else:
+            new_matches = await r.zrangebyscore(
+                f"player:matches:{puuid}", f"({cursor}", "+inf", withscores=True
+            )
 
         if new_matches:
             async with r.pipeline(transaction=False) as pipe:
@@ -213,3 +249,29 @@ async def handle_player_stats(
         await r.eval(_RELEASE_LOCK_LUA, 1, lock_key, worker_id)  # type: ignore[misc]
 
     await ack(r, _IN_STREAM, _GROUP, msg_id)
+
+
+async def main() -> None:
+    """Player stats worker loop."""
+    log = get_logger("player-stats")
+    cfg = Config()
+    r = get_redis(cfg.redis_url)
+    worker = consumer_id()
+
+    async def _handler(msg_id: str, envelope: MessageEnvelope) -> None:
+        await handle_player_stats(r, cfg, worker, msg_id, envelope, log)
+
+    log.info("player-stats started", extra={"consumer": worker})
+    try:
+        autoclaim_ms = cfg.stream_ack_timeout * 1000
+        await run_consumer(
+            r,
+            _IN_STREAM,
+            _GROUP,
+            worker,
+            _handler,
+            log,
+            autoclaim_min_idle_ms=autoclaim_ms,
+        )
+    finally:
+        await r.aclose()

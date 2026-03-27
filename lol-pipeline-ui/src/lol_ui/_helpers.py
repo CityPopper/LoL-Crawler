@@ -51,28 +51,6 @@ def _parse_item_ids(participant: dict[str, str], *, slots: int = 7) -> list[str]
     return (list(map(str, item_list)) + ["0"] * slots)[:slots]
 
 
-def _champion_datalist(name_map: dict[str, str]) -> str:
-    """Render a ``<datalist>`` element with champion names for autocomplete."""
-    if not name_map:
-        return ""
-    options = "\n".join(
-        f'<option value="{_html_mod.escape(display_name)}">'
-        for display_name in sorted(name_map.values())
-    )
-    return f'<datalist id="champion-list">\n{options}\n</datalist>'
-
-
-def _role_options(lang: str) -> str:
-    """Render localized ``<option>`` elements for the role dropdown."""
-    from lol_pipeline.i18n import label
-
-    roles = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]
-    return "\n    ".join(
-        f'<option value="{key}">{_html_mod.escape(label("role", key, lang))}</option>'
-        for key in roles
-    )
-
-
 # ---------------------------------------------------------------------------
 # Language request utilities (REFACTOR-10)
 # ---------------------------------------------------------------------------

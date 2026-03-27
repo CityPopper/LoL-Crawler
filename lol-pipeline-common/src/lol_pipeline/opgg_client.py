@@ -66,6 +66,7 @@ class OpggClient:
         rate_limit_per_second: int = 2,
         rate_limit_long: int = 30,
         summoner_cache_ttl_seconds: int = 3600,
+        rate_limit_source: str = "opgg",
     ) -> None:
         self._client = client or httpx.AsyncClient(
             headers=_DEFAULT_HEADERS,
@@ -76,6 +77,7 @@ class OpggClient:
         self._rate_limit_per_second = rate_limit_per_second
         self._rate_limit_long = rate_limit_long
         self._summoner_cache_ttl = summoner_cache_ttl_seconds
+        self._rate_limit_source = rate_limit_source
 
     @staticmethod
     def _check_status(resp: httpx.Response) -> None:
@@ -97,7 +99,7 @@ class OpggClient:
         """
         if self._r is None:
             return
-        await wait_for_token("opgg", endpoint)
+        await wait_for_token(self._rate_limit_source, endpoint)
 
     async def get_summoner_id(self, game_name: str, tag_line: str, region: str) -> str:
         """Resolve a Riot ID (game_name#tag_line) to an op.gg summoner_id.
@@ -179,7 +181,7 @@ class OpggClient:
         if blocking:
             await self._acquire("summoner")
         else:
-            granted = await try_token("opgg", "summoner")
+            granted = await try_token(self._rate_limit_source, "summoner")
             if not granted:
                 raise OpggRateLimitError(
                     "opgg summoner token unavailable", retry_ms=0
@@ -191,7 +193,17 @@ class OpggClient:
             raise OpggParseError(
                 f"Summoner not found for PUUID {puuid!r} in {region!r}"
             )
-        self._check_status(resp)
+        try:
+            self._check_status(resp)
+        except OpggRateLimitError:
+            _log.warning(
+                "opgg API 429",
+                extra={
+                    "url": str(resp.url),
+                    "retry_after": resp.headers.get("Retry-After", ""),
+                },
+            )
+            raise
 
         data = resp.json()
         summoner_id = (
@@ -225,7 +237,7 @@ class OpggClient:
         if blocking:
             await self._acquire("games")
         else:
-            granted = await try_token("opgg", "games")
+            granted = await try_token(self._rate_limit_source, "games")
             if not granted:
                 raise OpggRateLimitError(
                     "opgg games token unavailable", retry_ms=0
@@ -236,7 +248,17 @@ class OpggClient:
             f"?limit={limit}&game_type=total&hl=en_US"
         )
         resp = await self._client.get(url)
-        self._check_status(resp)
+        try:
+            self._check_status(resp)
+        except OpggRateLimitError:
+            _log.warning(
+                "opgg API 429",
+                extra={
+                    "url": str(resp.url),
+                    "retry_after": resp.headers.get("Retry-After", ""),
+                },
+            )
+            raise
 
         payload = resp.json()
         raw_games: list[dict[str, Any]] | None = payload.get("data")
@@ -251,10 +273,10 @@ class OpggClient:
         blob_store: object,
         *,
         limit: int = 20,
-    ) -> int:
-        """Pre-fetch player's recent games to BlobStore. Returns count written.
+    ) -> list[dict[str, Any]]:
+        """Pre-fetch player's recent games to BlobStore. Returns raw game dicts.
 
-        Non-fatal on errors -- logs warnings and returns 0.
+        Non-fatal on errors -- logs warnings and returns empty list.
         """
         import json
 
@@ -277,10 +299,9 @@ class OpggClient:
                 opgg_region,
                 exc,
             )
-            return 0
+            return []
 
         platform = opgg_to_platform.get(opgg_region, opgg_region.upper())
-        count = 0
         for game in raw_games:
             game_id = game.get("id")
             if game_id is None:
@@ -288,8 +309,7 @@ class OpggClient:
             match_id = f"{platform}_{game_id}"
             raw_blob = json.dumps(game).encode()
             try:
-                blob_store.write("opgg", match_id, raw_blob)  # type: ignore[attr-defined]
-                count += 1
+                await blob_store.write("opgg", match_id, raw_blob)  # type: ignore[attr-defined]
             except Exception as exc:
                 _log.warning(
                     "opgg prefetch: blob_store.write failed (match_id=%s): %s",
@@ -297,7 +317,7 @@ class OpggClient:
                     exc,
                 )
 
-        return count
+        return raw_games
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""

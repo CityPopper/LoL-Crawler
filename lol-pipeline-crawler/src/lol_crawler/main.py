@@ -529,6 +529,7 @@ async def _crawl_player(
             "published": published,
         },
     )
+    await clear_priority(r, puuid)
     await ack(r, _IN_STREAM, _GROUP, msg_id)
 
 

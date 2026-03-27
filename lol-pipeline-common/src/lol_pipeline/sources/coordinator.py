@@ -128,6 +128,7 @@ class WaterfallCoordinator:
     ) -> WaterfallResult:
         """Iterate sources for data_type. Returns final WaterfallResult."""
         retry_hints: list[int] = []
+        throttled_source: str | None = None
         any_blob_validation_failed = False
         tried: list[tuple[str, FetchResult]] = []
 
@@ -158,6 +159,8 @@ class WaterfallCoordinator:
 
             if response.retry_after_ms is not None:
                 retry_hints.append(response.retry_after_ms)
+                if throttled_source is None:  # first throttling source wins
+                    throttled_source = entry.name
 
             if response.result in (
                 FetchResult.THROTTLED,
@@ -187,6 +190,7 @@ class WaterfallCoordinator:
             retry_after_ms=max(retry_hints) if retry_hints else None,
             blob_validation_failed=any_blob_validation_failed,
             tried_sources=tried,
+            throttled_source=throttled_source,
         )
 
     async def _handle_success(

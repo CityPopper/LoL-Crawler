@@ -25,11 +25,9 @@ from lol_ui.routes.dashboard import router as dashboard_router
 from lol_ui.routes.dlq import router as dlq_router
 from lol_ui.routes.language import router as language_router
 from lol_ui.routes.logs import router as logs_router
-from lol_ui.routes.matchups import router as matchups_router
-from lol_ui.routes.players import router as players_router
 from lol_ui.routes.stats import _init_cache_ttl
 from lol_ui.routes.stats import router as stats_router
-from lol_ui.routes.streams import router as streams_router
+from lol_ui.routes.system import router as system_router
 from lol_ui.routes.theme import router as theme_router
 from lol_ui.strings import t, t_raw
 from lol_ui.themes import _current_theme, get_theme
@@ -59,6 +57,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             rate_limit_per_second=cfg.opgg_rate_limit_per_second,
             rate_limit_long=cfg.opgg_rate_limit_long,
             summoner_cache_ttl_seconds=cfg.opgg_summoner_cache_ttl_seconds,
+            rate_limit_source="opgg:ui",
         )
         if cfg.blob_data_dir:
             blob_store = BlobStore(cfg.blob_data_dir)
@@ -165,11 +164,9 @@ async def health(request: Request) -> JSONResponse:
 
 app.include_router(dashboard_router)
 app.include_router(stats_router)
-app.include_router(players_router)
-app.include_router(streams_router)
+app.include_router(system_router)
 app.include_router(dlq_router)
 app.include_router(champions_router)
-app.include_router(matchups_router)
 app.include_router(logs_router)
 app.include_router(language_router)
 app.include_router(theme_router)

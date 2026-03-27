@@ -663,14 +663,14 @@ class TestGetRawGames:
 class TestPrefetchPlayerGames:
     @pytest.mark.asyncio
     async def test_success__writes_blobs(self):
-        """Valid response → blob_store.write() called per game, returns count."""
+        """Valid response → blob_store.write() called per game, returns raw games."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         http = httpx.AsyncClient()
         c = OpggClient(http)
 
         mock_blob_store = MagicMock()
-        mock_blob_store.write = MagicMock()
+        mock_blob_store.write = AsyncMock()
 
         raw_games = [
             {"id": 7234567890, "data": "game1"},
@@ -691,11 +691,11 @@ class TestPrefetchPlayerGames:
                 return_value=raw_games,
             ),
         ):
-            count = await c.prefetch_player_games(
+            result = await c.prefetch_player_games(
                 VALID_PUUID, "na", mock_blob_store, limit=5
             )
 
-        assert count == 2
+        assert len(result) == 2
         assert mock_blob_store.write.call_count == 2
         # Verify match_id format: NA1_{game_id} (na → NA1 via reverse map)
         call_args_list = mock_blob_store.write.call_args_list
@@ -705,8 +705,8 @@ class TestPrefetchPlayerGames:
         await c.close()
 
     @pytest.mark.asyncio
-    async def test_opgg_parse_error__returns_zero(self):
-        """get_summoner_id_by_puuid raises OpggParseError → returns 0."""
+    async def test_opgg_parse_error__returns_empty(self):
+        """get_summoner_id_by_puuid raises OpggParseError → returns []."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         http = httpx.AsyncClient()
@@ -720,17 +720,56 @@ class TestPrefetchPlayerGames:
             new_callable=AsyncMock,
             side_effect=OpggParseError("summoner not found"),
         ):
-            count = await c.prefetch_player_games(
+            result = await c.prefetch_player_games(
                 VALID_PUUID, "na", mock_blob_store
             )
 
-        assert count == 0
+        assert result == []
         mock_blob_store.write.assert_not_called()
         await c.close()
 
     @pytest.mark.asyncio
-    async def test_rate_limit_error__returns_zero(self):
-        """OpggRateLimitError → returns 0, no crash."""
+    async def test_blob_store_write_is_awaited(self):
+        """blob_store.write() must be awaited — AsyncMock tracks .await_count."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        http = httpx.AsyncClient()
+        c = OpggClient(http)
+
+        mock_blob_store = MagicMock()
+        mock_blob_store.write = AsyncMock()
+
+        raw_games = [
+            {"id": 7234567890, "data": "game1"},
+            {"id": 7234567891, "data": "game2"},
+        ]
+
+        with (
+            patch.object(
+                c,
+                "get_summoner_id_by_puuid",
+                new_callable=AsyncMock,
+                return_value="sid-123",
+            ),
+            patch.object(
+                c,
+                "get_raw_games",
+                new_callable=AsyncMock,
+                return_value=raw_games,
+            ),
+        ):
+            result = await c.prefetch_player_games(
+                VALID_PUUID, "na", mock_blob_store, limit=5
+            )
+
+        assert len(result) == 2
+        assert mock_blob_store.write.await_count == 2
+
+        await c.close()
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_error__returns_empty(self):
+        """OpggRateLimitError → returns [], no crash."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from lol_pipeline.opgg_client import OpggRateLimitError
@@ -746,10 +785,10 @@ class TestPrefetchPlayerGames:
             new_callable=AsyncMock,
             side_effect=OpggRateLimitError("rate limited", retry_ms=5000),
         ):
-            count = await c.prefetch_player_games(
+            result = await c.prefetch_player_games(
                 VALID_PUUID, "na", mock_blob_store
             )
 
-        assert count == 0
+        assert result == []
         mock_blob_store.write.assert_not_called()
         await c.close()

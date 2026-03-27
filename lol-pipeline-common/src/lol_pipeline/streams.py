@@ -1,9 +1,10 @@
-"""Stream operations: publish, consume, ack, nack_to_dlq, replay_from_dlq."""
+"""Stream operations: publish, consume, ack, nack_to_dlq, defer_message, replay_from_dlq."""
 
 from __future__ import annotations
 
 import json
 import logging
+import time
 import weakref
 from collections.abc import Callable
 from typing import Any
@@ -27,10 +28,18 @@ from lol_pipeline._streams_data import (
 from lol_pipeline._streams_data import (
     MATCH_ID_STREAM_MAXLEN as MATCH_ID_STREAM_MAXLEN,
 )
-from lol_pipeline.constants import STREAM_DLQ, STREAM_DLQ_ARCHIVE, VALID_REPLAY_STREAMS
+from lol_pipeline.constants import (
+    DELAYED_MESSAGES_KEY,
+    STREAM_DLQ,
+    STREAM_DLQ_ARCHIVE,
+    VALID_REPLAY_STREAMS,
+)
 from lol_pipeline.models import DLQEnvelope, MessageEnvelope
 
 _log = logging.getLogger("streams")
+
+# Maximum number of times a message may be deferred before routing to the DLQ.
+_DEFER_MAX_COUNT: int = 100
 
 # Cache of (stream, group) pairs for which _ensure_group has already succeeded.
 # Uses a WeakKeyDictionary keyed on the Redis client so that different connections
@@ -281,6 +290,77 @@ async def nack_to_dlq(
     )
     fields: dict[str, Any] = dlq.to_redis_fields()
     await r.xadd(STREAM_DLQ, fields, maxlen=50_000, approximate=True)  # type: ignore[arg-type]
+
+
+async def defer_message(  # noqa: PLR0913
+    r: aioredis.Redis,
+    msg_id: str,
+    envelope: MessageEnvelope,
+    stream: str,
+    group: str,
+    delay_ms: int = 30_000,
+    envelope_ttl: int | None = None,
+) -> None:
+    """Defer a message to delayed:messages without DLQ involvement.
+
+    Atomically: ZADD delayed:messages, HSET envelope data, EXPIRE, XACK.
+    Does NOT modify envelope.attempts or envelope.dlq_attempts.
+
+    When ``envelope.defer_count`` reaches ``_DEFER_MAX_COUNT`` the message is
+    routed to the DLQ with ``failure_code="deferred_too_long"`` instead of
+    being re-deferred, preventing infinite deferral loops.
+    """
+    if envelope.defer_count >= _DEFER_MAX_COUNT:
+        await nack_to_dlq(
+            r,
+            envelope,
+            failure_code="deferred_too_long",
+            failed_by="defer_message",
+            original_message_id=msg_id,
+            failure_reason=(
+                f"message deferred {envelope.defer_count} times, exceeding cap of"
+                f" {_DEFER_MAX_COUNT}"
+            ),
+        )
+        await r.xack(stream, group, msg_id)
+        _log.warning(
+            "defer cap reached — routed to DLQ",
+            extra={
+                "msg_id": msg_id,
+                "envelope_id": envelope.id,
+                "defer_count": envelope.defer_count,
+            },
+        )
+        return
+
+    envelope.defer_count += 1
+
+    if envelope_ttl is None:
+        try:
+            from lol_pipeline.config import Config
+
+            envelope_ttl = Config().delay_envelope_ttl_seconds
+        except Exception:
+            envelope_ttl = 86400
+
+    ready_ms = int(time.time() * 1000) + delay_ms
+    envelope_data = json.dumps(envelope.to_redis_fields())
+    envelope_key = f"delayed:envelope:{envelope.id}"
+    async with r.pipeline(transaction=True) as pipe:
+        await pipe.zadd(DELAYED_MESSAGES_KEY, {envelope.id: ready_ms})
+        await pipe.hset(envelope_key, "data", envelope_data)  # type: ignore[misc]
+        await pipe.expire(envelope_key, envelope_ttl)
+        await pipe.xack(stream, group, msg_id)
+        await pipe.execute()
+    _log.debug(
+        "deferred message",
+        extra={
+            "msg_id": msg_id,
+            "delay_ms": delay_ms,
+            "envelope_id": envelope.id,
+            "defer_count": envelope.defer_count,
+        },
+    )
 
 
 def _maxlen_for_replay(stream: str) -> int:

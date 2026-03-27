@@ -33,8 +33,6 @@ PAGES = [
     ("/", "dashboard"),
     ("/stats", "stats_empty"),
     ("/champions", "champions"),
-    ("/matchups", "matchups"),
-    ("/players", "players"),
     ("/streams", "streams"),
     ("/dlq", "dlq"),
     ("/logs", "logs"),

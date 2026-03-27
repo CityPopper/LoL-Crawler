@@ -28,7 +28,7 @@ _SRC_ROOT = Path(__file__).resolve().parents[2] / "src" / "lol_ui"
 # publishes to stream:puuid — it lives in the otherwise read-only stats module.
 # Key: relative path from _SRC_ROOT, Value: set of function names.
 _WRITE_ALLOWED_FUNCTIONS: dict[str, set[str]] = {
-    "routes/stats.py": {"player_refresh"},
+    "routes/stats.py": {"player_refresh", "show_stats", "_auto_enqueue_or_wait", "_resolve_puuid"},
 }
 
 # Module-level import lines that are only used by allowed write functions.

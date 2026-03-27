@@ -169,7 +169,11 @@ class TestCrawlPriorityClearCallBehavior:
 
     @pytest.mark.asyncio
     async def test_crawl__published_gt_zero__clear_priority_called(self, r, cfg, log):
-        """R5: When published > 0, clear_priority() IS called."""
+        """R5: When published > 0, clear_priority() IS called.
+
+        FP-3: clear_priority is now called both in _post_crawl_update and
+        unconditionally before ack, so it may be called twice (idempotent).
+        """
         puuid = "test-puuid-0001"
         await r.set(f"player:priority:{puuid}", "high")
         env = _puuid_envelope(puuid=puuid)
@@ -187,11 +191,16 @@ class TestCrawlPriorityClearCallBehavior:
             await riot.close()
 
         # R5: Always clear priority after a successful crawl
-        mock_clear.assert_called_once_with(r, puuid)
+        mock_clear.assert_called_with(r, puuid)
+        assert mock_clear.call_count >= 1
 
     @pytest.mark.asyncio
     async def test_crawl__published_eq_zero__clear_priority_called(self, r, cfg, log):
-        """When published == 0, clear_priority() must be called with (r, puuid)."""
+        """When published == 0, clear_priority() must be called with (r, puuid).
+
+        FP-3: clear_priority is now called both in _post_crawl_update and
+        unconditionally before ack, so it may be called twice (idempotent).
+        """
         puuid = "test-puuid-0001"
         await r.set(f"player:priority:{puuid}", "high")
         env = _puuid_envelope(puuid=puuid)
@@ -207,7 +216,8 @@ class TestCrawlPriorityClearCallBehavior:
             await riot.close()
 
         # No matches published, so clear_priority must have been called
-        mock_clear.assert_called_once_with(r, puuid)
+        mock_clear.assert_called_with(r, puuid)
+        assert mock_clear.call_count >= 1
 
     @pytest.mark.asyncio
     async def test_crawl__all_known_matches__clear_priority_called(self, r, cfg, log):
@@ -231,7 +241,9 @@ class TestCrawlPriorityClearCallBehavior:
             await riot.close()
 
         # All matches known → published=0 → clear_priority called
-        mock_clear.assert_called_once_with(r, puuid)
+        # FP-3: may be called twice (idempotent) — once in _post_crawl_update, once before ack
+        mock_clear.assert_called_with(r, puuid)
+        assert mock_clear.call_count >= 1
 
 
 class TestCrawlPagination:
@@ -848,12 +860,11 @@ class TestPaginationRateLimiterTimeout:
         assert pending["pending"] == 0
 
     @pytest.mark.asyncio
-    async def test_crawl__timeout_before_api__clear_priority_not_called(self, r, cfg, log):
-        """V16-1: TimeoutError before first API call — clear_priority must NOT run.
+    async def test_crawl__timeout_before_api__clear_priority_called(self, r, cfg, log):
+        """FP-3: TimeoutError before first API call — clear_priority IS called.
 
-        When pages_fetched == 0 we cannot confirm whether new matches exist,
-        so priority must be preserved to prevent Discovery from unblocking
-        prematurely for a player whose crawl never completed.
+        Even when pages_fetched == 0, the unconditional clear_priority before
+        ack prevents the priority key from lingering for 24h.
         """
         puuid = "test-puuid-0001"
         await r.set(f"player:priority:{puuid}", "1", ex=86400)
@@ -873,8 +884,8 @@ class TestPaginationRateLimiterTimeout:
             await _crawl_player(r, riot, cfg, msg_id, env, log)
             await riot.close()
 
-        # Priority key must still be present — timeout means no API call was made
-        assert await r.get(f"player:priority:{puuid}") == "1"
+        # FP-3: Priority key cleared even when pages_fetched == 0
+        assert await r.get(f"player:priority:{puuid}") is None
         # No matches published and no DLQ entry
         assert await r.xlen(_STREAM_OUT) == 0
         assert await r.xlen("stream:dlq") == 0
@@ -1877,3 +1888,39 @@ class TestRankStoragePipeline:
         assert rank["division"] == "II"
         ttl = await r.ttl(f"player:rank:{puuid}")
         assert ttl > 0
+
+
+class TestClearPriorityOnPagesFetchedZero:
+    """FP-3: clear_priority is called even when pages_fetched == 0."""
+
+    @pytest.mark.asyncio
+    async def test_crawl__pages_fetched_zero__clear_priority_called(self, r, cfg, log):
+        """When _should_stop_pagination returns True immediately (pages_fetched=0),
+        clear_priority must be called before ack.
+        """
+        puuid = "test-puuid-0001"
+        await r.set(f"player:priority:{puuid}", "1", ex=86400)
+
+        env = _puuid_envelope(puuid=puuid)
+        msg_id = await _setup_message(r, env)
+
+        with (
+            respx.mock,
+            patch(
+                "lol_crawler.main.wait_for_token",
+                new_callable=AsyncMock,
+                side_effect=TimeoutError("rate limiter timeout"),
+            ),
+            patch(
+                "lol_crawler.main.clear_priority", new_callable=AsyncMock
+            ) as mock_clear,
+        ):
+            riot = RiotClient("RGAPI-test")
+            await _crawl_player(r, riot, cfg, msg_id, env, log)
+            await riot.close()
+
+        # clear_priority must be called even when pages_fetched == 0
+        mock_clear.assert_called_once_with(r, puuid)
+        # Message was ACKed
+        pending = await r.xpending(_STREAM_IN, _GROUP)
+        assert pending["pending"] == 0
