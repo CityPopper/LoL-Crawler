@@ -117,15 +117,17 @@ upload:
     echo ""
     echo "Upload complete. To regenerate dump.rdb, see workspace/design-seed-data.md SEED-7."
 
-# Internal: download seed data if missing
+# Internal: download seed data if missing (skipped if no HF token or data unavailable)
 _seed-data-check:
     #!/usr/bin/env bash
     set -euo pipefail
     DATA_DIR="pipeline-data/riot-api/NA1"
     DUMP="redis-data/dump.rdb"
     if [ ! -f "$DUMP" ] && ! ls "$DATA_DIR"/*.jsonl.zst &>/dev/null 2>&1; then
-        echo "No seed data found — downloading from Hugging Face..."
-        python3 scripts/download_seed.py
+        echo "No seed data found — attempting download from Hugging Face..."
+        python3 scripts/download_seed.py || {
+            echo "Warning: seed data download skipped (no HUGGINGFACE_TOKEN or data unavailable). Starting with empty database."
+        }
     fi
 
 # Internal: remove stale AOF directory (bind mount survives docker compose down -v)
