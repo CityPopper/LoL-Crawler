@@ -482,8 +482,8 @@ class TestWaterfallRiotThrottledOpggFallback:
         }
 
         # -- 6. Mock: Riot try_token -> False (denied), opgg try_token -> True (granted)
-        async def mock_try_token(source, endpoint):
-            if source.startswith("riot"):
+        async def mock_try_token(domain, endpoint, *, is_ui=False, priority=0):
+            if domain.startswith("riot"):
                 return False  # Riot throttled
             return True  # opgg granted
 

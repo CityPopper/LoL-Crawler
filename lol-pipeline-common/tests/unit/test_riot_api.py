@@ -158,7 +158,7 @@ class TestRiotClientRateLimitStorage:
         mock_rl_client.post.assert_called_once_with(
             "/headers",
             json={
-                "source": "riot",
+                "domain": "riot:asia",
                 "rate_limit": "20:1,100:120",
                 "rate_limit_count": "15:1,42:120",
             },
@@ -967,11 +967,11 @@ class TestGetMatchTimeline:
 
 
 class TestThrottleHint:
-    """RL-4: Proactive 200ms sleep when rate-limiter service reports throttle: true."""
+    """RL-4: Throttle sleep removed — _persist_rate_limits just POSTs headers, no sleep."""
 
     @pytest.mark.asyncio
-    async def test_throttle_true_triggers_sleep(self) -> None:
-        """When service returns throttle: true, asyncio.sleep(0.2) is called."""
+    async def test_no_throttle_sleep_regardless_of_response(self) -> None:
+        """POST /headers is called with the correct domain but no sleep is triggered."""
         mock_rl_response = httpx.Response(200, json={"updated": True, "throttle": True})
         mock_rl_client = AsyncMock()
         mock_rl_client.post = AsyncMock(return_value=mock_rl_response)
@@ -979,7 +979,6 @@ class TestThrottleHint:
         with (
             respx.mock,
             patch("lol_pipeline.riot_api._get_rl_client", return_value=mock_rl_client),
-            patch("lol_pipeline.riot_api.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
         ):
             respx.get(
                 "https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/F/KR1"
@@ -994,37 +993,16 @@ class TestThrottleHint:
                 )
             )
             client = RiotClient("RGAPI-test")
-            await client.get_account_by_riot_id("F", "KR1", "kr")
+            result = await client.get_account_by_riot_id("F", "KR1", "kr")
             await client.close()
 
-        mock_sleep.assert_awaited_once_with(0.2)
-
-    @pytest.mark.asyncio
-    async def test_throttle_false_no_sleep(self) -> None:
-        """When service returns throttle: false, no sleep is applied."""
-        mock_rl_response = httpx.Response(200, json={"updated": True, "throttle": False})
-        mock_rl_client = AsyncMock()
-        mock_rl_client.post = AsyncMock(return_value=mock_rl_response)
-
-        with (
-            respx.mock,
-            patch("lol_pipeline.riot_api._get_rl_client", return_value=mock_rl_client),
-            patch("lol_pipeline.riot_api.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
-        ):
-            respx.get(
-                "https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/F/KR1"
-            ).mock(
-                return_value=httpx.Response(
-                    200,
-                    json={"puuid": "p", "gameName": "F", "tagLine": "KR1"},
-                    headers={
-                        "X-App-Rate-Limit": "20:1,100:120",
-                        "X-App-Rate-Limit-Count": "5:1,30:120",
-                    },
-                )
-            )
-            client = RiotClient("RGAPI-test")
-            await client.get_account_by_riot_id("F", "KR1", "kr")
-            await client.close()
-
-        mock_sleep.assert_not_awaited()
+        # POST /headers was called with domain derived from hostname
+        mock_rl_client.post.assert_called_once_with(
+            "/headers",
+            json={
+                "domain": "riot:asia",
+                "rate_limit": "20:1,100:120",
+                "rate_limit_count": "19:1,96:120",
+            },
+        )
+        assert result["puuid"] == "p"

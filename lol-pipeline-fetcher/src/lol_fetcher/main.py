@@ -339,7 +339,7 @@ async def _fetch_match(  # noqa: PLR0913
         return
 
     # Determine failure code from coordinator hints
-    failure_code = "http_429" if result.retry_after_ms else "http_5xx"
+    failure_code = "http_429" if result.retry_after_ms is not None else "http_5xx"
     throttled = result.throttled_source or "unknown"
     failure_reason = (
         f"{failure_code} (source={throttled}, region={region})"
@@ -356,6 +356,7 @@ async def _fetch_match(  # noqa: PLR0913
         retry_after_ms=result.retry_after_ms,
     )
     await ack(r, _IN_STREAM, _GROUP, msg_id)
+    tried = {name: fr.value for name, fr in (result.tried_sources or [])}
     log.error(
         "all sources exhausted — routing to DLQ",
         extra={
@@ -363,6 +364,7 @@ async def _fetch_match(  # noqa: PLR0913
             "failure_code": failure_code,
             "throttled_source": throttled,
             "region": region,
+            "tried_sources": tried,
         },
     )
 

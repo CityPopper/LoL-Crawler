@@ -12,7 +12,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from lol_rate_limiter._headers import parse_rate_limit_header
-from lol_rate_limiter._token import acquire_token, acquire_token_with_method, set_cooling_off
+from lol_rate_limiter._token import acquire_token_for_domain
 from lol_rate_limiter.config import Config
 
 _log = logging.getLogger("rate_limiter")
@@ -27,7 +27,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     cfg = Config()
     app.state.cfg = cfg
     app.state.r = aioredis.from_url(cfg.redis_url, decode_responses=True)
-    _log.info("Rate-limiter starting", extra={"redis_url": cfg.redis_url})
+    _log.info(
+        "Rate-limiter starting",
+        extra={"redis_url": cfg.redis_url, "domains": list(cfg.domains)},
+    )
     yield
     await app.state.r.aclose()
 
@@ -79,71 +82,58 @@ async def health() -> dict[str, str]:
 
 @app.get("/status")
 async def status() -> dict[str, Any]:
-    """Observability: bucket cardinalities and configured limits."""
+    """Observability: per-domain bucket status and configured limits."""
     r: aioredis.Redis = app.state.r
     cfg: Config = app.state.cfg
-    try:
-        short_count = await r.zcard("ratelimit:short")
-        long_count = await r.zcard("ratelimit:long")
-    except Exception:
-        short_count = -1
-        long_count = -1
-    return {
-        "buckets": {"short": short_count, "long": long_count},
-        "short_limit": cfg.short_limit,
-        "long_limit": cfg.long_limit,
-    }
+    domains_status: dict[str, Any] = {}
+
+    for domain_name, domain in cfg.domains.items():
+        try:
+            halved_raw = await r.get(f"ratelimit:{domain_name}:halved")
+            halve_count_raw = await r.get(f"ratelimit:{domain_name}:halve_count")
+            halved_at_raw = await r.get(f"ratelimit:{domain_name}:halved_at")
+            stored_short = await r.get(f"ratelimit:{domain_name}:limits:short")
+            stored_long = await r.get(f"ratelimit:{domain_name}:limits:long")
+        except Exception:
+            halved_raw = halve_count_raw = halved_at_raw = stored_short = stored_long = None
+
+        entry: dict[str, Any] = {
+            "short_limit": int(stored_short) if stored_short else domain.short_limit,
+            "long_limit": int(stored_long) if stored_long else domain.long_limit,
+            "halved": bool(halved_raw),
+            "halve_count": int(halve_count_raw) if halve_count_raw else 0,
+            "header_aware": domain.header_aware,
+            "has_method_limits": domain.has_method_limits,
+        }
+        if halved_at_raw:
+            entry["halved_at"] = int(halved_at_raw)
+        domains_status[domain_name] = entry
+
+    return {"domains": domains_status}
 
 
 @app.post("/token/acquire")
-async def token_acquire(body: dict[str, str]) -> JSONResponse:
-    """Attempt to acquire a rate-limit token for the given source."""
+async def token_acquire(body: dict[str, Any]) -> JSONResponse:
+    """Attempt to acquire a rate-limit token for the given domain."""
     r: aioredis.Redis = app.state.r
     cfg: Config = app.state.cfg
 
-    source = body.get("source", "")
-    endpoint = body.get("endpoint", "")
-    if source not in cfg.known_sources:
-        return JSONResponse(
-            status_code=404,
-            content={"error": "unknown source"},
-        )
+    domain_name = body.get("domain", "")
+    endpoint = str(body.get("endpoint", ""))
+    is_ui = bool(body.get("is_ui", False))
+    # priority accepted but not used in DYN-2 (reserved for DYN-3)
 
-    key_prefix = f"ratelimit:{source}"
+    domain = cfg.domains.get(domain_name)
+    if domain is None:
+        return JSONResponse(status_code=404, content={"error": "unknown domain"})
 
     try:
-        if source == "opgg":
-            granted, retry_after_ms = await acquire_token(
-                r,
-                cfg,
-                key_prefix=key_prefix,
-                short_limit=cfg.opgg_short_limit,
-                long_limit=cfg.opgg_long_limit - cfg.opgg_ui_long_limit,
-            )
-        elif source == "opgg:ui":
-            granted, retry_after_ms = await acquire_token(
-                r,
-                cfg,
-                key_prefix=key_prefix,
-                short_limit=cfg.opgg_ui_short_limit,
-                long_limit=cfg.opgg_ui_long_limit,
-            )
-        elif source == "riot:ui":
-            granted, retry_after_ms = await acquire_token(
-                r,
-                cfg,
-                key_prefix=key_prefix,
-                short_limit=cfg.riot_ui_short_limit,
-                long_limit=cfg.riot_ui_long_limit,
-            )
-        elif endpoint and source.startswith("riot"):
-            granted, retry_after_ms = await acquire_token_with_method(
-                r, cfg, key_prefix, endpoint,
-            )
-        else:
-            granted, retry_after_ms = await acquire_token(
-                r, cfg, key_prefix=key_prefix,
-            )
+        granted, retry_after_ms = await acquire_token_for_domain(
+            r,
+            domain,
+            endpoint,
+            is_ui=is_ui,
+        )
     except Exception:
         _log.warning("Redis unreachable — failing open", exc_info=True)
         return JSONResponse(
@@ -159,54 +149,60 @@ async def token_acquire(body: dict[str, str]) -> JSONResponse:
 
 @app.post("/cooling-off")
 async def cooling_off_notify(body: dict[str, Any]) -> JSONResponse:
-    """Record that the given source received a real 429 -- blocks all further tokens."""
+    """Record that the given domain received a real 429 — blocks all tokens."""
     r: aioredis.Redis = app.state.r
     cfg: Config = app.state.cfg
-    source = body.get("source", "")
-    if source not in cfg.known_sources:
-        return JSONResponse(status_code=404, content={"error": "unknown source"})
+    domain_name = body.get("domain", "")
+    domain = cfg.domains.get(domain_name)
+    if domain is None:
+        return JSONResponse(status_code=404, content={"error": "unknown domain"})
     delay_ms = int(body.get("delay_ms", 60_000))
     try:
-        await set_cooling_off(r, f"ratelimit:{source}", delay_ms)
+        await r.set(f"ratelimit:{domain_name}:cooling_off", "1", px=max(delay_ms, 1000))
     except Exception:
         _log.warning("Redis unreachable for cooling-off set", exc_info=True)
         return JSONResponse(status_code=200, content={"ok": False})
-    _log.warning(
-        "source %r entering cooling-off for %dms",
-        source,
-        delay_ms,
-        extra={"source": source, "delay_ms": delay_ms},
+    _log.warning("domain %r entering cooling-off for %dms", domain_name, delay_ms)
+    return JSONResponse(status_code=200, content={"ok": True})
+
+
+@app.post("/cooling-off/reset")
+async def cooling_off_reset(body: dict[str, Any]) -> JSONResponse:
+    """Reset halved limits for a domain, falling back to config defaults."""
+    r: aioredis.Redis = app.state.r
+    cfg: Config = app.state.cfg
+    domain_name = body.get("domain", "")
+    if domain_name not in cfg.domains:
+        return JSONResponse(status_code=404, content={"error": "unknown domain"})
+    await r.delete(
+        f"ratelimit:{domain_name}:halved",
+        f"ratelimit:{domain_name}:limits:short",
+        f"ratelimit:{domain_name}:limits:long",
     )
     return JSONResponse(status_code=200, content={"ok": True})
 
 
 @app.post("/headers")
-async def headers_update(body: dict[str, str]) -> dict[str, bool]:
-    """Parse Riot rate-limit response headers and update Redis buckets."""
+async def headers_update(body: dict[str, str]) -> JSONResponse:
+    """Parse rate-limit response headers and update Redis buckets."""
     r: aioredis.Redis = app.state.r
     cfg: Config = app.state.cfg
 
-    source = body.get("source", "riot")
-    rate_limit = body.get("rate_limit", "")
-    rate_limit_count = body.get("rate_limit_count", "")
-    prefix = f"ratelimit:{source}"
+    domain_name = body.get("domain", "")
+    domain = cfg.domains.get(domain_name)
+    if domain is None:
+        return JSONResponse(status_code=404, content={"error": "unknown domain"})
 
-    # Parse limit header to update stored limits
+    if not domain.header_aware:
+        return JSONResponse(status_code=200, content={"updated": False})
+
+    rate_limit = body.get("rate_limit", "")
+    prefix = f"ratelimit:{domain_name}"
+
     limits = parse_rate_limit_header(rate_limit)
     if limits is not None:
         short_limit, long_limit = limits
         await r.set(f"{prefix}:limits:short", short_limit, ex=3600)
         await r.set(f"{prefix}:limits:long", long_limit, ex=3600)
 
-    # Parse count header for throttle detection
-    throttle = False
-    counts = parse_rate_limit_header(rate_limit_count)
-    if counts is not None and limits is not None:
-        short_count, long_count = counts
-        short_limit, long_limit = limits
-        # Throttle when current count > 90% of limit
-        if short_count > short_limit * 0.9 or long_count > long_limit * 0.9:
-            throttle = True
-            await r.set(f"{prefix}:throttle", "1", px=cfg.short_window_ms)
-
-    return {"updated": True, "throttle": throttle}
+    return JSONResponse(status_code=200, content={"updated": True})

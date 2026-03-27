@@ -15,7 +15,7 @@ try:
 except ImportError:
     _LUPA_AVAILABLE = False
 
-from lol_rate_limiter.config import Config
+from lol_rate_limiter.config import Config, Domain
 from lol_rate_limiter.main import app
 
 
@@ -38,6 +38,16 @@ async def client(mock_redis):
     connect to a real Redis).  ASGITransport does not invoke lifespans.
     """
     app.state.cfg = Config()
+    app.state.cfg.domains = {
+        "opgg": Domain(name="opgg", short_limit=2, long_limit=100),
+        "riot:americas": Domain(
+            name="riot:americas",
+            short_limit=18,
+            long_limit=90,
+            has_method_limits=True,
+            header_aware=True,
+        ),
+    }
     app.state.r = mock_redis
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
@@ -52,13 +62,13 @@ async def test_health_returns_ok(client):
 
 
 @pytest.mark.asyncio
-async def test_unknown_source_returns_404(client):
+async def test_unknown_domain_returns_404(client):
     resp = await client.post(
         "/token/acquire",
-        json={"source": "unknown", "endpoint": "match"},
+        json={"domain": "unknown", "endpoint": "match"},
     )
     assert resp.status_code == 404
-    assert resp.json() == {"error": "unknown source"}
+    assert resp.json() == {"error": "unknown domain"}
 
 
 @pytest.mark.asyncio
@@ -66,7 +76,7 @@ async def test_known_source_granted_when_empty(client, mock_redis):
     mock_redis.eval = AsyncMock(return_value=1)
     resp = await client.post(
         "/token/acquire",
-        json={"source": "fetcher", "endpoint": "match"},
+        json={"domain": "opgg", "endpoint": "match"},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -79,7 +89,7 @@ async def test_headers_route_accepted(client):
     resp = await client.post(
         "/headers",
         json={
-            "source": "fetcher",
+            "domain": "riot:americas",
             "rate_limit": "20:1,100:120",
             "rate_limit_count": "15:1,42:120",
         },
@@ -94,7 +104,7 @@ async def test_fail_open_on_redis_error(client, mock_redis):
     mock_redis.eval = AsyncMock(side_effect=ConnectionError("Redis down"))
     resp = await client.post(
         "/token/acquire",
-        json={"source": "fetcher", "endpoint": "match"},
+        json={"domain": "opgg", "endpoint": "match"},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -115,8 +125,9 @@ async def test_21_concurrent_requests__20_granted_1_denied():
     fake_r = fakeredis.aioredis.FakeRedis(decode_responses=True)
     try:
         cfg = Config()
-        # Ensure short_limit=20 (default) is the binding constraint
-        assert cfg.short_limit == 20
+        cfg.domains = {
+            "opgg": Domain(name="opgg", short_limit=20, long_limit=100),
+        }
 
         app.state.cfg = cfg
         app.state.r = fake_r
@@ -127,7 +138,7 @@ async def test_21_concurrent_requests__20_granted_1_denied():
             async def _acquire():
                 return await ac.post(
                     "/token/acquire",
-                    json={"source": "fetcher", "endpoint": "match"},
+                    json={"domain": "opgg", "endpoint": "match"},
                 )
 
             responses = await asyncio.gather(*[_acquire() for _ in range(21)])
@@ -145,99 +156,18 @@ async def test_21_concurrent_requests__20_granted_1_denied():
 
 
 # ---------------------------------------------------------------------------
-# op.gg source-specific budget tests
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_opgg_ui_in_known_sources():
-    """opgg:ui must appear in the default known sources."""
-    cfg = Config()
-    assert "opgg:ui" in cfg.known_sources
-    assert "opgg" in cfg.known_sources
-
-
-@pytest.mark.asyncio
-async def test_opgg_source_uses_pipeline_budget(client, mock_redis):
-    """The 'opgg' source should use opgg_long_limit minus opgg_ui_long_limit."""
-    cfg = app.state.cfg
-    expected_long = cfg.opgg_long_limit - cfg.opgg_ui_long_limit
-
-    with patch(
-        "lol_rate_limiter.main.acquire_token",
-        new_callable=AsyncMock,
-        return_value=(True, None),
-    ) as mock_acquire:
-        resp = await client.post(
-            "/token/acquire",
-            json={"source": "opgg"},
-        )
-        assert resp.status_code == 200
-        assert resp.json()["granted"] is True
-
-        mock_acquire.assert_called_once()
-        _, kwargs = mock_acquire.call_args
-        assert kwargs["short_limit"] == cfg.opgg_short_limit
-        assert kwargs["long_limit"] == expected_long
-
-
-@pytest.mark.asyncio
-async def test_opgg_ui_source_uses_reserved_budget(client, mock_redis):
-    """The 'opgg:ui' source should use opgg_ui_long_limit as its long limit."""
-    cfg = app.state.cfg
-
-    with patch(
-        "lol_rate_limiter.main.acquire_token",
-        new_callable=AsyncMock,
-        return_value=(True, None),
-    ) as mock_acquire:
-        resp = await client.post(
-            "/token/acquire",
-            json={"source": "opgg:ui"},
-        )
-        assert resp.status_code == 200
-        assert resp.json()["granted"] is True
-
-        mock_acquire.assert_called_once()
-        _, kwargs = mock_acquire.call_args
-        assert kwargs["short_limit"] == cfg.opgg_ui_short_limit
-        assert kwargs["long_limit"] == cfg.opgg_ui_long_limit
-
-
-@pytest.mark.asyncio
-async def test_non_opgg_source_uses_default_limits(client, mock_redis):
-    """Non-opgg sources should not pass short_limit/long_limit overrides."""
-    with patch(
-        "lol_rate_limiter.main.acquire_token",
-        new_callable=AsyncMock,
-        return_value=(True, None),
-    ) as mock_acquire:
-        resp = await client.post(
-            "/token/acquire",
-            json={"source": "fetcher"},
-        )
-        assert resp.status_code == 200
-        assert resp.json()["granted"] is True
-
-        mock_acquire.assert_called_once()
-        _, kwargs = mock_acquire.call_args
-        assert "short_limit" not in kwargs
-        assert "long_limit" not in kwargs
-
-
-# ---------------------------------------------------------------------------
 # Cooling-off endpoint tests
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_cooling_off__unknown_source__404(client):
+async def test_cooling_off__unknown_domain__404(client):
     resp = await client.post(
         "/cooling-off",
-        json={"source": "nonexistent", "delay_ms": 5000},
+        json={"domain": "nonexistent", "delay_ms": 5000},
     )
     assert resp.status_code == 404
-    assert resp.json() == {"error": "unknown source"}
+    assert resp.json() == {"error": "unknown domain"}
 
 
 @pytest.mark.asyncio
@@ -249,7 +179,7 @@ async def test_cooling_off__known_source__sets_key(client, mock_redis):
     mock_redis.eval = AsyncMock(return_value=1)
     resp = await client.post(
         "/token/acquire",
-        json={"source": "fetcher", "endpoint": "match"},
+        json={"domain": "opgg", "endpoint": "match"},
     )
     assert resp.status_code == 200
     assert resp.json()["granted"] is True
@@ -257,18 +187,18 @@ async def test_cooling_off__known_source__sets_key(client, mock_redis):
     # Step 2: Set cooling-off via the endpoint
     resp = await client.post(
         "/cooling-off",
-        json={"source": "fetcher", "delay_ms": 30000},
+        json={"domain": "opgg", "delay_ms": 30000},
     )
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
-    mock_redis.set.assert_called_with("ratelimit:fetcher:cooling_off", "1", px=30000)
+    mock_redis.set.assert_called_with("ratelimit:opgg:cooling_off", "1", px=30000)
 
     # Step 3: Simulate pttl returning the remaining cooling-off TTL
     mock_redis.pttl = AsyncMock(return_value=29500)
 
     resp = await client.post(
         "/token/acquire",
-        json={"source": "fetcher", "endpoint": "match"},
+        json={"domain": "opgg", "endpoint": "match"},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -300,8 +230,11 @@ async def test_time_spread__denies_burst_at_window_start():
 
     fake_r = fakeredis.aioredis.FakeRedis(decode_responses=True)
     try:
-        cfg = Config()
         prefix = "ratelimit:spread"
+        short_limit = 20
+        long_limit = 100
+        short_window_ms = 1000
+        long_window_ms = 120_000
         # Use direct eval with controlled timestamps instead of acquire_token
         # so we can simulate time passing within the test.
         base_ts = 1_000_000_000_000  # arbitrary base time in ms
@@ -316,10 +249,10 @@ async def test_time_spread__denies_burst_at_window_start():
                 f"{prefix}:limits:short",
                 f"{prefix}:limits:long",
                 base_ts,
-                cfg.short_limit,
-                cfg.long_limit,
-                cfg.short_window_ms,
-                cfg.long_window_ms,
+                short_limit,
+                long_limit,
+                short_window_ms,
+                long_window_ms,
                 f"uid-{i}",
             )
             # All 3 should be granted (elapsed=0, ideal=0, spread skipped)
@@ -337,10 +270,10 @@ async def test_time_spread__denies_burst_at_window_start():
             f"{prefix}:limits:short",
             f"{prefix}:limits:long",
             base_ts + elapsed_ms,
-            cfg.short_limit,
-            cfg.long_limit,
-            cfg.short_window_ms,
-            cfg.long_window_ms,
+            short_limit,
+            long_limit,
+            short_window_ms,
+            long_window_ms,
             "uid-denied",
         )
         result_int = int(result)
@@ -408,39 +341,37 @@ async def test_method_level__endpoint_bucket_exhausted__still_denied():
     """
     import fakeredis.aioredis
 
-    from lol_rate_limiter._token import acquire_token_with_method
+    from lol_rate_limiter._token import acquire_token_for_domain
 
     fake_r = fakeredis.aioredis.FakeRedis(decode_responses=True)
     try:
-        cfg = Config()
         # App-level: generous (20 short, 100 long)
-        # Method-level: tiny (2 short, 5 long) — the binding constraint
-        method_short = 2
-        method_long = 5
+        # Method-level inherits the same limits from the domain in the new API,
+        # so we use a domain with small limits to make the method bucket binding.
+        domain = Domain(
+            name="riot",
+            short_limit=2,
+            long_limit=5,
+            has_method_limits=True,
+        )
 
         granted_count = 0
-        for _ in range(method_short):
-            granted, _ = await acquire_token_with_method(
+        for _ in range(domain.short_limit):
+            granted, _ = await acquire_token_for_domain(
                 fake_r,
-                cfg,
-                "ratelimit:riot",
+                domain,
                 "match-v5",
-                method_short_limit=method_short,
-                method_long_limit=method_long,
             )
             if granted:
                 granted_count += 1
 
-        assert granted_count == method_short
+        assert granted_count == domain.short_limit
 
         # Next request should be denied: method short bucket is full
-        granted, retry_after_ms = await acquire_token_with_method(
+        granted, retry_after_ms = await acquire_token_for_domain(
             fake_r,
-            cfg,
-            "ratelimit:riot",
+            domain,
             "match-v5",
-            method_short_limit=method_short,
-            method_long_limit=method_long,
         )
         assert granted is False
         assert retry_after_ms is not None
@@ -450,18 +381,19 @@ async def test_method_level__endpoint_bucket_exhausted__still_denied():
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not _LUPA_AVAILABLE, reason="lupa not installed — Lua scripting unavailable")
 async def test_method_level__riot_source_uses_method_acquire(client):
-    """Riot sources with an endpoint should use acquire_token_with_method."""
+    """Riot domains with has_method_limits and an endpoint should dispatch
+    through acquire_token_for_domain (which internally uses the method script).
+    """
     with patch(
-        "lol_rate_limiter.main.acquire_token_with_method",
+        "lol_rate_limiter.main.acquire_token_for_domain",
         new_callable=AsyncMock,
         return_value=(True, None),
-    ) as mock_method:
+    ) as mock_acquire:
         resp = await client.post(
             "/token/acquire",
-            json={"source": "riot", "endpoint": "match-v5"},
+            json={"domain": "riot:americas", "endpoint": "match-v5"},
         )
         assert resp.status_code == 200
         assert resp.json()["granted"] is True
-        mock_method.assert_called_once()
+        mock_acquire.assert_called_once()

@@ -47,16 +47,18 @@ def _get_client() -> httpx.AsyncClient:
 
 
 async def wait_for_token(
-    source: str,
+    domain: str,
     endpoint: str,
     *,
     max_wait_s: float = 60.0,
+    is_ui: bool = False,
+    priority: int = 0,
 ) -> None:
-    """Block until a token is granted for (source, endpoint).
+    """Block until a token is granted for (domain, endpoint).
 
     Retries with jitter until granted or max_wait_s exceeded.
     Raises ``TimeoutError`` when the deadline is exceeded without a grant.
-    Fail open: if service unreachable or unknown source, logs and returns.
+    Fail open: if service unreachable or unknown domain, logs and returns.
     """
     deadline = asyncio.get_event_loop().time() + max_wait_s
     _connect_attempts = 0
@@ -65,10 +67,15 @@ async def wait_for_token(
             client = _get_client()
             resp = await client.post(
                 "/token/acquire",
-                json={"source": source, "endpoint": endpoint},
+                json={
+                    "domain": domain,
+                    "endpoint": endpoint,
+                    "is_ui": is_ui,
+                    "priority": priority,
+                },
             )
             if resp.status_code == 404:
-                _log.warning("rate-limiter: unknown source %r, failing open", source)
+                _log.warning("rate-limiter: unknown domain %r, failing open", domain)
                 return
             data = resp.json()
             if data.get("granted"):
@@ -83,7 +90,7 @@ async def wait_for_token(
             if asyncio.get_event_loop().time() + actual_wait > deadline:
                 raise TimeoutError(
                     f"rate-limiter: deadline exceeded waiting for token "
-                    f"(source={source!r}, endpoint={endpoint!r})"
+                    f"(domain={domain!r}, endpoint={endpoint!r})"
                 )
             await asyncio.sleep(actual_wait)
         except TimeoutError:
@@ -106,7 +113,7 @@ async def wait_for_token(
             return
 
 
-async def notify_cooling_off(source: str, delay_ms: int) -> None:
+async def notify_cooling_off(domain: str, delay_ms: int) -> None:
     """Tell the rate-limiter a real 429 was received; blocks all tokens for delay_ms ms.
 
     Best-effort: logs on failure but does not raise.
@@ -115,14 +122,20 @@ async def notify_cooling_off(source: str, delay_ms: int) -> None:
         client = _get_client()
         await client.post(
             "/cooling-off",
-            json={"source": source, "delay_ms": delay_ms},
+            json={"domain": domain, "delay_ms": delay_ms},
             timeout=1.0,
         )
     except Exception as exc:
         _log.warning("rate-limiter: /cooling-off failed (%s)", exc)
 
 
-async def try_token(source: str, endpoint: str) -> bool:
+async def try_token(
+    domain: str,
+    endpoint: str,
+    *,
+    is_ui: bool = False,
+    priority: int = 0,
+) -> bool:
     """Try to acquire a token once. Returns True if granted.
 
     Fail open: returns True if service unreachable.
@@ -131,10 +144,15 @@ async def try_token(source: str, endpoint: str) -> bool:
         client = _get_client()
         resp = await client.post(
             "/token/acquire",
-            json={"source": source, "endpoint": endpoint},
+            json={
+                "domain": domain,
+                "endpoint": endpoint,
+                "is_ui": is_ui,
+                "priority": priority,
+            },
         )
         if resp.status_code == 404:
-            _log.warning("rate-limiter: unknown source %r, failing open", source)
+            _log.warning("rate-limiter: unknown domain %r, failing open", domain)
             return True
         return bool(resp.json().get("granted", True))
     except Exception as exc:

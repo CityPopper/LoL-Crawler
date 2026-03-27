@@ -84,7 +84,16 @@ class OpggSource:
             )
         except OpggParseError:
             return FetchResponse(result=FetchResult.UNAVAILABLE)
-        except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.RequestError):
+        except httpx.HTTPStatusError as exc:
+            _log.debug(
+                "opgg http error: %s %s — %s",
+                exc.response.status_code,
+                exc.request.url,
+                exc,
+                extra={"match_id": context.match_id},
+            )
+            return FetchResponse(result=FetchResult.UNAVAILABLE)
+        except (httpx.TimeoutException, httpx.RequestError):
             return FetchResponse(result=FetchResult.UNAVAILABLE)
 
         for game in raw_games:

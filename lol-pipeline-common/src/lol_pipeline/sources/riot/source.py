@@ -73,7 +73,7 @@ class RiotSource:
         """
         try:
             routing_region = PLATFORM_TO_REGION.get(context.region.lower(), "americas")
-            granted = await try_token(source=f"riot:{routing_region}", endpoint="match")
+            granted = await try_token(domain=f"riot:{routing_region}", endpoint="match")
             if not granted:
                 return FetchResponse(result=FetchResult.THROTTLED)
 
@@ -87,6 +87,12 @@ class RiotSource:
                 available_data_types=frozenset({MATCH}),
             )
         except (RateLimitError, NotFoundError, AuthError, ServerError, TimeoutError) as exc:
+            _log.debug(
+                "riot source error: %s — %s",
+                type(exc).__name__,
+                exc,
+                extra={"match_id": context.match_id},
+            )
             if isinstance(exc, RateLimitError) and exc.retry_after_ms:
                 await notify_cooling_off(
                     f"riot:{routing_region}",

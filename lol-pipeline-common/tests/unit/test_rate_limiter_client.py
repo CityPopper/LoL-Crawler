@@ -25,7 +25,7 @@ class TestWaitForTokenGranted:
 
         mock_client.post.assert_called_once_with(
             "/token/acquire",
-            json={"source": "riot", "endpoint": "match"},
+            json={"domain": "riot", "endpoint": "match", "is_ui": False, "priority": 0},
         )
 
 

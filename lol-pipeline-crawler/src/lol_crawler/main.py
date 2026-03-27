@@ -610,7 +610,8 @@ async def _run_crawl(
     published = opgg_published + riot_published
     if exhausted:
         await r.set(f"player:history_exhausted:{puuid}", "1", ex=604800)
-    await _post_crawl_update(r, riot, cfg, puuid, region, published, log)
+    if pages_fetched > 0 or opgg_published > 0:
+        await _post_crawl_update(r, riot, cfg, puuid, region, published, log)
     return published, pages_fetched
 
 

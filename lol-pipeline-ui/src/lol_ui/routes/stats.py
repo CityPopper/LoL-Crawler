@@ -221,7 +221,7 @@ async def _resolve_puuid(
     if cached_puuid:
         return cached_puuid
     try:
-        await wait_for_token("riot:ui", "account", max_wait_s=10.0)
+        await wait_for_token("riot:americas", "account", max_wait_s=10.0, is_ui=True)
         account = await riot.get_account_by_riot_id(game_name, tag_line, region)
     except NotFoundError:
         return HTMLResponse(

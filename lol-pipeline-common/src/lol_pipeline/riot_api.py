@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import math
 import time as _time
@@ -305,27 +304,29 @@ class RiotClient:
     async def _persist_rate_limits(self, resp: httpx.Response) -> None:
         """Forward rate-limit headers to the rate-limiter service via POST /headers.
 
-        If the service reports ``throttle: true`` (>90% capacity used),
-        applies a 200 ms proactive sleep.  Fails open: if the HTTP call
-        fails for any reason, a warning is logged and execution continues.
+        Derives the domain from the request URL hostname (e.g.
+        ``americas.api.riotgames.com`` -> ``riot:americas``).
+        Fails open: if the HTTP call fails for any reason, a warning is
+        logged and execution continues.
         """
         rate_limit = resp.headers.get("X-App-Rate-Limit", "")
         rate_limit_count = resp.headers.get("X-App-Rate-Limit-Count", "")
         if not rate_limit:
             return
         try:
+            # Extract routing region from hostname (e.g. "americas.api.riotgames.com")
+            host = str(resp.request.url.host)
+            routing_region = host.split(".")[0]
             rl_client = _get_rl_client()
-            rl_resp = await rl_client.post(
+            await rl_client.post(
                 "/headers",
                 json={
-                    "source": "riot",
+                    "domain": f"riot:{routing_region}",
                     "rate_limit": rate_limit,
                     "rate_limit_count": rate_limit_count,
                 },
             )
-            data = rl_resp.json()
-            if data.get("throttle"):
-                await asyncio.sleep(0.2)
+            # throttle hint removed; rate limiter self-regulates via stored limits
         except Exception as exc:
             _log.warning("rate-limiter: POST /headers failed (%s), continuing", exc)
 

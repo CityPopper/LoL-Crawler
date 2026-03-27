@@ -78,18 +78,28 @@ class TestHeaderParseErrorPaths:
 
 
 class TestHeaderParseViaRoute:
-    """Headers route handles malformed headers gracefully (returns updated=True, throttle=False)."""
+    """Headers route handles malformed headers gracefully."""
 
     @pytest.mark.asyncio
-    async def test_malformed_headers__route_returns_no_throttle(self):
+    async def test_malformed_headers__route_returns_updated_true(self):
         from unittest.mock import AsyncMock
 
         from httpx import ASGITransport, AsyncClient
 
-        from lol_rate_limiter.config import Config
+        from lol_rate_limiter.config import Config, Domain
         from lol_rate_limiter.main import app
 
-        app.state.cfg = Config()
+        cfg = Config()
+        cfg.domains = {
+            "riot:americas": Domain(
+                name="riot:americas",
+                short_limit=18,
+                long_limit=90,
+                header_aware=True,
+                has_method_limits=True,
+            ),
+        }
+        app.state.cfg = cfg
         app.state.r = AsyncMock()
         app.state.r.set = AsyncMock(return_value=True)
         app.state.r.aclose = AsyncMock()
@@ -99,6 +109,7 @@ class TestHeaderParseViaRoute:
             resp = await ac.post(
                 "/headers",
                 json={
+                    "domain": "riot:americas",
                     "rate_limit": "not-valid-at-all",
                     "rate_limit_count": "also:broken:data",
                 },
@@ -106,18 +117,27 @@ class TestHeaderParseViaRoute:
         assert resp.status_code == 200
         data = resp.json()
         assert data["updated"] is True
-        assert data["throttle"] is False
 
     @pytest.mark.asyncio
-    async def test_empty_headers__route_returns_no_throttle(self):
+    async def test_empty_headers__route_returns_updated_true(self):
         from unittest.mock import AsyncMock
 
         from httpx import ASGITransport, AsyncClient
 
-        from lol_rate_limiter.config import Config
+        from lol_rate_limiter.config import Config, Domain
         from lol_rate_limiter.main import app
 
-        app.state.cfg = Config()
+        cfg = Config()
+        cfg.domains = {
+            "riot:americas": Domain(
+                name="riot:americas",
+                short_limit=18,
+                long_limit=90,
+                header_aware=True,
+                has_method_limits=True,
+            ),
+        }
+        app.state.cfg = cfg
         app.state.r = AsyncMock()
         app.state.r.aclose = AsyncMock()
 
@@ -125,9 +145,12 @@ class TestHeaderParseViaRoute:
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
             resp = await ac.post(
                 "/headers",
-                json={"rate_limit": "", "rate_limit_count": ""},
+                json={
+                    "domain": "riot:americas",
+                    "rate_limit": "",
+                    "rate_limit_count": "",
+                },
             )
         assert resp.status_code == 200
         data = resp.json()
         assert data["updated"] is True
-        assert data["throttle"] is False
